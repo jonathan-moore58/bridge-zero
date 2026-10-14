@@ -1,0 +1,12 @@
+# Secrets: never commit
+.env
+.env.*
+*.account*.json
+keystore/
+
+# Build output
+node_modules/
+out/
+cache/
+broadcast/*/*/dry-run/
+dist/
