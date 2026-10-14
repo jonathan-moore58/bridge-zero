@@ -1,0 +1,25 @@
+{
+  "name": "@bridge-zero/relayer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fetches Portaldot finality and storage proofs, and captures and re-verifies chain fixtures.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "capture": "tsx src/capture.ts",
+    "check": "tsx src/check.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.0",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3"
+  }
+}
