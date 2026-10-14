@@ -1,0 +1,175 @@
+{
+  "provenance": {
+    "chain": "Portaldot Mainnet",
+    "rpc": "wss://mainnet.portaldot.io",
+    "genesisHash": "0x83b5212c69f85f3996f8696bb35bf913af51b176a5f53d0a74fd3a83dc0b8a54",
+    "runtime": {
+      "specName": "portaldot",
+      "specVersion": 1002,
+      "implName": "substrate-node",
+      "implVersion": 0,
+      "transactionVersion": 2
+    },
+    "block": {
+      "number": 2725888,
+      "hash": "0xe57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004"
+    },
+    "setId": 3895,
+    "capturedAt": "2026-10-14T18:40:57.644Z",
+    "tool": {
+      "name": "@bridge-zero/relayer",
+      "version": "0.1.0",
+      "script": "src/capture.ts",
+      "gitCommit": "e50d1c57bb53fd8dd53c972a4f1300507ae9eab2",
+      "gitDirty": true
+    }
+  },
+  "kind": "stored-justification",
+  "about": "A justification the node stores every 512 blocks, read with chain_getBlock.",
+  "source": {
+    "method": "chain_getBlock",
+    "engine": "FRNK",
+    "period": 512
+  },
+  "header": {
+    "hash": "0xe57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004",
+    "number": 2725888,
+    "parentHash": "0xedfd7c09175f9ecbdba7af53a826b6c3b042b6a29494cc5ffa0887a4ab9d1004",
+    "stateRoot": "0x7ea64c8d4dcdc7715facd5d8c9aab989903bb9875d6f9ee1bd3a55ca519e66ca",
+    "extrinsicsRoot": "0xc04b38df2319da5bffaa1925b2598429b339fae1f567e9081284e2c934ca46e3",
+    "digest": [
+      {
+        "kind": "PreRuntime",
+        "engine": "BABE",
+        "bytes": 19,
+        "scale": "0x0642414245340206000000a4b9c70100000000"
+      },
+      {
+        "kind": "Seal",
+        "engine": "BABE",
+        "bytes": 71,
+        "scale": "0x05424142450101f8c7322a9dba9460cf4451bb8c40ad00b06db416e9f9501435a2dfc4bebad2032f9ce2dbd0df61350420c67d367ec2652e17cca8f1f3970ce7e726c86a58f989"
+      }
+    ],
+    "bytes": 191,
+    "scale": "0xedfd7c09175f9ecbdba7af53a826b6c3b042b6a29494cc5ffa0887a4ab9d10040260a6007ea64c8d4dcdc7715facd5d8c9aab989903bb9875d6f9ee1bd3a55ca519e66cac04b38df2319da5bffaa1925b2598429b339fae1f567e9081284e2c934ca46e3080642414245340206000000a4b9c7010000000005424142450101f8c7322a9dba9460cf4451bb8c40ad00b06db416e9f9501435a2dfc4bebad2032f9ce2dbd0df61350420c67d367ec2652e17cca8f1f3970ce7e726c86a58f989"
+  },
+  "justification": {
+    "round": 5103,
+    "targetHash": "0xe57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004",
+    "targetNumber": 2725888,
+    "precommits": [
+      {
+        "authorityIndex": 5,
+        "authorityId": "0x1047f3ad08990edf8b6f14359e09b20b1ed109337f0e76a73ee9f161dc48fdd8",
+        "targetHash": "0xe57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004",
+        "targetNumber": 2725888,
+        "signature": "0x6fec54db492ca43e91e912542691601532f88b231018f91f16ddedd9dd06d1aa95ce45b8a43fa9ef285124ed184f95ecb883f7f0354cdb77406cf5b04b6c1307"
+      },
+      {
+        "authorityIndex": 3,
+        "authorityId": "0x39e0aa70271b38a18ddcdcb5e43b00045d0eaa85951f6186886f73bb4872e540",
+        "targetHash": "0xe57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004",
+        "targetNumber": 2725888,
+        "signature": "0xf2981f9605e2ee81675255ddd991d3626a00a77eb406228a989f5010a62c62e9573af20baf59c9a876c88870de95f47bf5d5ff6743b3d9317ebe801fdd7daa04"
+      },
+      {
+        "authorityIndex": 8,
+        "authorityId": "0x3e57fe6144a3715ea40a12100d07a0d97d941389ca144fc28f646ca4120f96aa",
+        "targetHash": "0xe57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004",
+        "targetNumber": 2725888,
+        "signature": "0xb185352bc9ddd796433b3424b397cef64305b6af1e4a8caac726e614b9926ff7773aaed5c752f7e44c46494a5a8edf1bed799ed7b043e1adc2b2eda901f4580e"
+      },
+      {
+        "authorityIndex": 7,
+        "authorityId": "0x7b309a087503802d7b9b251ccbc651746101096b8e67a3f6e4dea9d0931d1438",
+        "targetHash": "0xe57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004",
+        "targetNumber": 2725888,
+        "signature": "0xe3aea00c5c502545195bc8748e302b992d4a9f7275bf9679a74b9e916fa51dbdf2e41d1826aa939e3451772b6b7fcbc40469e36ec3e68c0422fd6a7fde970e02"
+      },
+      {
+        "authorityIndex": 9,
+        "authorityId": "0xe471a7126177e3aa0076620535a2ab6bc44b9aae2c0bc2848273a6082191b235",
+        "targetHash": "0xe57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004",
+        "targetNumber": 2725888,
+        "signature": "0x72e6f29d69325b4457451530f242752d00c43b1f3d8c1eaad9bc522b60172b24a5153c48b34f67b1ebf861b7b5c7b912553516d6a47f52b7a18b6e8648afa009"
+      },
+      {
+        "authorityIndex": 2,
+        "authorityId": "0xf1f8231cc78ccd947a37c51c0cabd7d299dea51386efff4edce4c45f1e96be06",
+        "targetHash": "0xe57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004",
+        "targetNumber": 2725888,
+        "signature": "0x2a18528f097d551fda5681ff2504a41c687d909d4e9b0254277784b6ac8d178e3f2ac1c84b975d35923f66f31138f452d48a63ab717d140930346c3eeb759d02"
+      },
+      {
+        "authorityIndex": 1,
+        "authorityId": "0xf63048a01177a43b1cd11df5e3e2802b479a9e9dd86d04cb70b1ac09dcb72167",
+        "targetHash": "0xe57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004",
+        "targetNumber": 2725888,
+        "signature": "0xd05274272dfef5250b19906ceea724b390ea479726a4ebd07e38ee2e47ec567403e4937a2b4a9a4b6be472738b1075815a4e49a8e7fd5bd7edfe81c661472701"
+      }
+    ],
+    "votesAncestries": 0,
+    "bytes": 970,
+    "scale": "0xef13000000000000e57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004009829001ce57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004009829006fec54db492ca43e91e912542691601532f88b231018f91f16ddedd9dd06d1aa95ce45b8a43fa9ef285124ed184f95ecb883f7f0354cdb77406cf5b04b6c13071047f3ad08990edf8b6f14359e09b20b1ed109337f0e76a73ee9f161dc48fdd8e57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd8900400982900f2981f9605e2ee81675255ddd991d3626a00a77eb406228a989f5010a62c62e9573af20baf59c9a876c88870de95f47bf5d5ff6743b3d9317ebe801fdd7daa0439e0aa70271b38a18ddcdcb5e43b00045d0eaa85951f6186886f73bb4872e540e57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd8900400982900b185352bc9ddd796433b3424b397cef64305b6af1e4a8caac726e614b9926ff7773aaed5c752f7e44c46494a5a8edf1bed799ed7b043e1adc2b2eda901f4580e3e57fe6144a3715ea40a12100d07a0d97d941389ca144fc28f646ca4120f96aae57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd8900400982900e3aea00c5c502545195bc8748e302b992d4a9f7275bf9679a74b9e916fa51dbdf2e41d1826aa939e3451772b6b7fcbc40469e36ec3e68c0422fd6a7fde970e027b309a087503802d7b9b251ccbc651746101096b8e67a3f6e4dea9d0931d1438e57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd890040098290072e6f29d69325b4457451530f242752d00c43b1f3d8c1eaad9bc522b60172b24a5153c48b34f67b1ebf861b7b5c7b912553516d6a47f52b7a18b6e8648afa009e471a7126177e3aa0076620535a2ab6bc44b9aae2c0bc2848273a6082191b235e57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd89004009829002a18528f097d551fda5681ff2504a41c687d909d4e9b0254277784b6ac8d178e3f2ac1c84b975d35923f66f31138f452d48a63ab717d140930346c3eeb759d02f1f8231cc78ccd947a37c51c0cabd7d299dea51386efff4edce4c45f1e96be06e57d976961e1265081349c38d22ff5d3e74853bbd9617f6c5cbba7712dd8900400982900d05274272dfef5250b19906ceea724b390ea479726a4ebd07e38ee2e47ec567403e4937a2b4a9a4b6be472738b1075815a4e49a8e7fd5bd7edfe81c661472701f63048a01177a43b1cd11df5e3e2802b479a9e9dd86d04cb70b1ac09dcb7216700"
+  },
+  "signingSet": {
+    "setId": 3895,
+    "at": {
+      "number": 2725887,
+      "hash": "0xedfd7c09175f9ecbdba7af53a826b6c3b042b6a29494cc5ffa0887a4ab9d1004"
+    },
+    "count": 10,
+    "threshold": 7,
+    "authorities": [
+      {
+        "id": "0x8545ca1ecc2187dafab12f87c0af7734d6226656dc5127b1289b9ee1d6e3108b",
+        "weight": 1
+      },
+      {
+        "id": "0xf63048a01177a43b1cd11df5e3e2802b479a9e9dd86d04cb70b1ac09dcb72167",
+        "weight": 1
+      },
+      {
+        "id": "0xf1f8231cc78ccd947a37c51c0cabd7d299dea51386efff4edce4c45f1e96be06",
+        "weight": 1
+      },
+      {
+        "id": "0x39e0aa70271b38a18ddcdcb5e43b00045d0eaa85951f6186886f73bb4872e540",
+        "weight": 1
+      },
+      {
+        "id": "0x964f1c97c3a665060f1c682ab5702720b6fa8491a6de18b7f7f825b769faac8d",
+        "weight": 1
+      },
+      {
+        "id": "0x1047f3ad08990edf8b6f14359e09b20b1ed109337f0e76a73ee9f161dc48fdd8",
+        "weight": 1
+      },
+      {
+        "id": "0x8c9ba55cd1d34c7960ff4e048e37225c0868d603e9a6ea7e4c3b35453a0abde7",
+        "weight": 1
+      },
+      {
+        "id": "0x7b309a087503802d7b9b251ccbc651746101096b8e67a3f6e4dea9d0931d1438",
+        "weight": 1
+      },
+      {
+        "id": "0x3e57fe6144a3715ea40a12100d07a0d97d941389ca144fc28f646ca4120f96aa",
+        "weight": 1
+      },
+      {
+        "id": "0xe471a7126177e3aa0076620535a2ab6bc44b9aae2c0bc2848273a6082191b235",
+        "weight": 1
+      }
+    ],
+    "setIdStorage": {
+      "key": "0x5f9cc45b7a00c5899361e1c6099678dc8a2d09463effcc78a22d75b9cb87dffc",
+      "scale": "0x370f000000000000"
+    },
+    "runtimeCall": {
+      "method": "GrandpaApi_grandpa_authorities",
+      "scale": "0x288545ca1ecc2187dafab12f87c0af7734d6226656dc5127b1289b9ee1d6e3108b0100000000000000f63048a01177a43b1cd11df5e3e2802b479a9e9dd86d04cb70b1ac09dcb721670100000000000000f1f8231cc78ccd947a37c51c0cabd7d299dea51386efff4edce4c45f1e96be06010000000000000039e0aa70271b38a18ddcdcb5e43b00045d0eaa85951f6186886f73bb4872e5400100000000000000964f1c97c3a665060f1c682ab5702720b6fa8491a6de18b7f7f825b769faac8d01000000000000001047f3ad08990edf8b6f14359e09b20b1ed109337f0e76a73ee9f161dc48fdd801000000000000008c9ba55cd1d34c7960ff4e048e37225c0868d603e9a6ea7e4c3b35453a0abde701000000000000007b309a087503802d7b9b251ccbc651746101096b8e67a3f6e4dea9d0931d143801000000000000003e57fe6144a3715ea40a12100d07a0d97d941389ca144fc28f646ca4120f96aa0100000000000000e471a7126177e3aa0076620535a2ab6bc44b9aae2c0bc2848273a6082191b2350100000000000000"
+    }
+  }
+}
