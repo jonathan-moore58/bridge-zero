@@ -40,7 +40,7 @@ contract GrandpaLightClient is IFinalizedStateRoots {
         ForcedChange, // a FRNK ForcedChange
         DelayedChange, // a ScheduledChange with a non-zero delay
         MultipleChanges, // more than one ScheduledChange or ForcedChange in one header
-        UnusableAuthoritySet // empty, above MAX_AUTHORITIES, a duplicate key or a key that is not a curve point
+        UnusableAuthoritySet // empty, above MAX_AUTHORITIES, a weight other than 1, a duplicate key, or a key that is not a curve point or has small order
     }
 
     struct FinalizedHeader {
@@ -83,6 +83,9 @@ contract GrandpaLightClient is IFinalizedStateRoots {
     uint8 private constant SCHEDULED_CHANGE = 1;
     uint8 private constant FORCED_CHANGE = 2;
     uint256 private constant NO_BAD_KEY = type(uint256).max;
+    /// y of the ed25519 points of order 8 (the other two have y = p - Y_ORDER_8). With the
+    /// points of order 1, 2 (x = 0) and 4 (y = 0) they are every point of small order.
+    uint256 private constant Y_ORDER_8 = 0x05fc536d880238b13933c6d305acdfd5f098eff289f4c345b027b2c28f95e826;
 
     // ------------------------------------------------------------------ state
 
@@ -143,7 +146,6 @@ contract GrandpaLightClient is IFinalizedStateRoots {
     error TooManyAuthorities(uint256 count);
     error InvalidAuthorityKey(uint256 index, bytes32 key);
     error DuplicateAuthorityKey(uint256 index, bytes32 key);
-    error UnsupportedWeight(uint256 index, uint64 weight);
     error UnknownAuthoritySet(uint64 setId);
 
     error HeaderHashMismatch(bytes32 commitTarget, bytes32 computed);
@@ -435,7 +437,7 @@ contract GrandpaLightClient is IFinalizedStateRoots {
         Header.Authority[] memory next = change.nextAuthorities;
         bytes32[] memory keys = new bytes32[](next.length);
         for (uint256 i = 0; i < next.length; i++) {
-            if (next[i].weight != 1) revert UnsupportedWeight(i, next[i].weight);
+            if (next[i].weight != 1) return _halt(h, HaltReason.UnusableAuthoritySet);
             keys[i] = next[i].key;
         }
         if (keys.length == 0 || keys.length > MAX_AUTHORITIES) return _halt(h, HaltReason.UnusableAuthoritySet);
@@ -520,7 +522,8 @@ contract GrandpaLightClient is IFinalizedStateRoots {
 
     /// Decompresses an ed25519 public key (RFC 8032, 5.1.3) and converts the point to the
     /// Weierstrass form SCL verifies with. Returns false for a key that is not the canonical
-    /// encoding of a curve point, or whose x is 0 (y = 1 or -1: small order).
+    /// encoding of a curve point, or that is a point of small order (1, 2, 4 or 8): anyone can
+    /// produce signatures that verify under such a key, without a secret.
     function deriveKey(bytes32 key) public view returns (bool ok, uint256 wx, uint256 wy) {
         uint256 y = SCL_sha512.Swap256(uint256(key)); // little-endian y, sign of x in bit 255
         uint256 sign = y >> 255;
@@ -533,6 +536,7 @@ contract GrandpaLightClient is IFinalizedStateRoots {
         uint256 x = _modexp(xx, P_PLUS_3_DIV_8);
         if (mulmod(x, x, P25519) != xx) x = mulmod(x, SQRT_M1, P25519);
         if (mulmod(x, x, P25519) != xx || x == 0) return (false, 0, 0);
+        if (y == 0 || y == Y_ORDER_8 || y == P25519 - Y_ORDER_8) return (false, 0, 0);
         if (x & 1 != sign) x = P25519 - x;
         (wx, wy) = SCL_EIP6565.Edwards2WeierStrass(x, y);
         ok = true;

@@ -650,12 +650,10 @@ contract LightClientSyntheticTest is LightClientBase {
         assertEq(lc.currentSetId(), SET_ID);
     }
 
-    function test_weightNotOne_reverts() public {
+    function test_weightNotOne_halts() public {
         _initOne();
         bytes memory h1 = _header(_hash(checkpoint), START + 1, _items(_scheduled(_keys(1, 2), 2, 0)));
-        bytes memory j1 = _justify(h1, START + 1, SET_ID, 0, 1);
-        vm.expectRevert(abi.encodeWithSelector(GrandpaLightClient.UnsupportedWeight.selector, 0, 2));
-        lc.importHeader(h1, j1, _seq(1));
+        _expectHalt(h1, GrandpaLightClient.HaltReason.UnusableAuthoritySet);
     }
 
     // ------------------------------------------------------------------ synthetic chain
