@@ -1,0 +1,365 @@
+{
+  "provenance": {
+    "chain": "Westend Asset Hub",
+    "rpc": "wss://westend-asset-hub-rpc.polkadot.io",
+    "genesisHash": "0x67f9723393ef76214df0118c34bbbd3dbebc8ed46a10973a8c969d48fe7598c9",
+    "runtime": {
+      "specName": "westmint",
+      "specVersion": 1025002,
+      "implName": "westmint",
+      "implVersion": 0,
+      "transactionVersion": 16,
+      "stateVersion": 1
+    },
+    "block": {
+      "number": 18168530,
+      "hash": "0xc1883bf051ad1c871c39a5fc20a93624cb833a109d835e1d084eef8032eecb85"
+    },
+    "setId": null,
+    "capturedAt": "2026-10-15T13:23:00.623Z",
+    "tool": {
+      "name": "@bridge-zero/relayer",
+      "version": "0.1.0",
+      "script": "src/probe.ts",
+      "gitCommit": "9352bb7c56400f49860a5c2b9e8358fe5a2e5d97",
+      "gitDirty": true
+    }
+  },
+  "kind": "probe",
+  "about": "Read-only probe of one node: can it serve what a GRANDPA light client on Ethereum needs (finality proofs that verify, read proofs that walk from the finalized state_root, child read proofs, timely finality, non-development validators)?",
+  "connection": {
+    "ok": true,
+    "elapsedMs": 797
+  },
+  "identity": {
+    "genesisHash": "0x67f9723393ef76214df0118c34bbbd3dbebc8ed46a10973a8c969d48fe7598c9",
+    "chain": "Westend Asset Hub",
+    "name": "polkadot-parachain",
+    "version": "1.25.0-7a8daa68e18",
+    "chainType": "Live",
+    "properties": {
+      "tokenDecimals": 12,
+      "tokenSymbol": "WND"
+    }
+  },
+  "runtimeApis": {
+    "flags": {
+      "Core": {
+        "id": "0xdf6acb689907609b",
+        "present": true,
+        "version": 5
+      },
+      "GrandpaApi": {
+        "id": "0xed99c5acb25eedf5",
+        "present": false,
+        "version": null
+      },
+      "BeefyApi": {
+        "id": "0x49eaaf1b548a0cb0",
+        "present": false,
+        "version": null
+      },
+      "MmrApi": {
+        "id": "0x91d5df18b0d2cf58",
+        "present": false,
+        "version": null
+      },
+      "ReviveApi": {
+        "id": "0x8c403e5c4a9fd442",
+        "present": true,
+        "version": 2
+      },
+      "EthereumRuntimeRPCApi": {
+        "id": "0x582211f65bb14b89",
+        "present": false,
+        "version": null
+      },
+      "BabeApi": {
+        "id": "0xcbca25e39f142387",
+        "present": false,
+        "version": null
+      },
+      "AuraApi": {
+        "id": "0xdd718d5cc53262d4",
+        "present": true,
+        "version": 1
+      }
+    },
+    "all": [
+      {
+        "id": "0xad694c0c2537478a",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0xdd718d5cc53262d4",
+        "version": 1,
+        "name": "AuraApi"
+      },
+      {
+        "id": "0x8c403e5c4a9fd442",
+        "version": 2,
+        "name": "ReviveApi"
+      },
+      {
+        "id": "0xde92b8a0426b9bf6",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0x37e397fc7c91f5e4",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0xf78b278be53f454c",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0x17a6bc0d0062aeb3",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0xdf6acb689907609b",
+        "version": 5,
+        "name": "Core"
+      },
+      {
+        "id": "0x9ffb505aa738d69c",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x18ef58a3b67ba770",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0xbc9d89904f5b923f",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x162bf19137abacbd",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0xf3ff14d5ab527059",
+        "version": 3,
+        "name": null
+      },
+      {
+        "id": "0xea93e3f16f3d6962",
+        "version": 3,
+        "name": null
+      },
+      {
+        "id": "0xd7bdd8a272ca0d65",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0x2609be83ac4468dc",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x37c8bb1350a9a2a8",
+        "version": 4,
+        "name": null
+      },
+      {
+        "id": "0xa2ddb6a58477bf63",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x6ff52ee858e6c5bd",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0xfbc577b9d747efd6",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x899a250cbe84f250",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x8a8047a53a8277ec",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0xccd9de6396c899ca",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x04e70521a0d3d2f8",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0xab3c0572291feb8b",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0x12c8e3d4d7e06de0",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x40fe3ad401f8959a",
+        "version": 6,
+        "name": null
+      },
+      {
+        "id": "0x91b1c8b16328eb92",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0x65f855d6e093c2f1",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0xd2bc9897eed08f15",
+        "version": 3,
+        "name": null
+      }
+    ]
+  },
+  "rpcSurface": {
+    "methodCount": 118,
+    "flags": {
+      "grandpa_proveFinality": false,
+      "grandpa_subscribeJustifications": false,
+      "state_getReadProof": true,
+      "state_getChildReadProof": true,
+      "beefy_getFinalizedHead": false,
+      "mmr_generateProof": false
+    },
+    "ethMethods": []
+  },
+  "finality": {
+    "best": 18168543,
+    "finalized": {
+      "number": 18168530,
+      "hash": "0xc1883bf051ad1c871c39a5fc20a93624cb833a109d835e1d084eef8032eecb85"
+    },
+    "lagBlocks": 13,
+    "blockTimeMs": 0,
+    "blockTimeAvgMs": 2400,
+    "blockTimeSpan": 10,
+    "blockTimeDeltasMs": [
+      0,
+      0,
+      0,
+      24000,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ],
+    "headTimestamp": "2026-10-15T13:22:24.000Z",
+    "sudoKey": {
+      "id": "0x02450a52aee25e189c4139993620bfdc893b1d120504eb9e87cf8a6437c46141",
+      "ss58": "5C7gTm4UGHkaS1TpjdJ5T8fS52PM6zRWcXW6BQSWMEtNnzMa"
+    }
+  },
+  "stateProofs": {
+    "readProof": {
+      "account": {
+        "id": "0x02450a52aee25e189c4139993620bfdc893b1d120504eb9e87cf8a6437c46141",
+        "ss58": "5C7gTm4UGHkaS1TpjdJ5T8fS52PM6zRWcXW6BQSWMEtNnzMa",
+        "source": "Sudo.Key"
+      },
+      "key": "0x26aa394eea5630e07c48ae0c9558cef7b99d880ec681799c0cf30e8886371da92f67f8b6ed0b9313913448dcd527315a02450a52aee25e189c4139993620bfdc893b1d120504eb9e87cf8a6437c46141",
+      "at": {
+        "number": 18168530,
+        "hash": "0xc1883bf051ad1c871c39a5fc20a93624cb833a109d835e1d084eef8032eecb85"
+      },
+      "stateRoot": "0x7ca39d925aa9b0f5b64bb39156e4fb1530247a3fc03ce5231aa3dce1dd35fcf4",
+      "nodes": 11,
+      "bytes": 3657,
+      "runtimeStateVersion": 1,
+      "hashedValueNodes": 1,
+      "itemsThatAreNotNodes": 1,
+      "trieVersion": 1,
+      "verified": true,
+      "itemsUsed": 11,
+      "hashedValuesInWalk": 1,
+      "value": {
+        "bytes": 80,
+        "scale": "0x61000000010000000100000000000000a00314d3350721000000000000000000c0af2bd995371c0100000000000000000000000000000000000000000000000000000000000000000000000000000080"
+      },
+      "tamperedRootRejected": true,
+      "free": "9296601987416992"
+    },
+    "childReadProof": {
+      "listedInRpcMethods": true,
+      "probeCall": "answered with 7 proof items for an absent child trie",
+      "routed": true
+    }
+  },
+  "evm": null,
+  "gates": [
+    {
+      "gate": "GRANDPA proofs served",
+      "status": "FAIL",
+      "detail": "grandpa_proveFinality is not exposed"
+    },
+    {
+      "gate": "Justification verifies",
+      "status": "FAIL",
+      "detail": "no proof to verify"
+    },
+    {
+      "gate": "Threshold met",
+      "status": "FAIL",
+      "detail": "no verified justification"
+    },
+    {
+      "gate": "Read proofs served and verified",
+      "status": "PASS",
+      "detail": "11 nodes, 3,657 B, value 80 B, trie V1 (1 hashed value), walked from the state_root of #18,168,530"
+    },
+    {
+      "gate": "Trie V1 on chain",
+      "status": "WARN",
+      "detail": "trie V1 proof verified off-chain by trie.ts; the Solidity walker has not run a V1 proof yet"
+    },
+    {
+      "gate": "Child read proofs served",
+      "status": "PASS",
+      "detail": "listed in rpc_methods; answered with 7 proof items for an absent child trie"
+    },
+    {
+      "gate": "Finality lag under 10 blocks",
+      "status": "WARN",
+      "detail": "best #18,168,543, finalized #18,168,530: 13 blocks behind"
+    },
+    {
+      "gate": "Real or development validators",
+      "status": "FAIL",
+      "detail": "no GRANDPA authority set in state (Grandpa.CurrentSetId is empty)"
+    }
+  ],
+  "verdict": "FAIL",
+  "errors": {
+    "grandpaSet.head": "Grandpa.CurrentSetId is empty",
+    "grandpa_proveFinality": "grandpa_proveFinality: Method not found (code -32601)"
+  },
+  "elapsedMs": 4868
+}

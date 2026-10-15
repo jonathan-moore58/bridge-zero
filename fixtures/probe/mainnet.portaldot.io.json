@@ -1,0 +1,330 @@
+{
+  "provenance": {
+    "chain": "Portaldot Mainnet",
+    "rpc": "wss://mainnet.portaldot.io",
+    "genesisHash": "0x83b5212c69f85f3996f8696bb35bf913af51b176a5f53d0a74fd3a83dc0b8a54",
+    "runtime": {
+      "specName": "portaldot",
+      "specVersion": 1002,
+      "implName": "substrate-node",
+      "implVersion": 0,
+      "transactionVersion": 2
+    },
+    "block": {
+      "number": 2727324,
+      "hash": "0x9ea54e07a1f9ba5f5ed53526893291b7b4911a56c0325ee8cd6ae33917bbdbcc"
+    },
+    "setId": 3897,
+    "capturedAt": "2026-10-15T13:22:50.599Z",
+    "tool": {
+      "name": "@bridge-zero/relayer",
+      "version": "0.1.0",
+      "script": "src/probe.ts",
+      "gitCommit": "9352bb7c56400f49860a5c2b9e8358fe5a2e5d97",
+      "gitDirty": true
+    }
+  },
+  "kind": "probe",
+  "about": "Read-only probe of one node: can it serve what a GRANDPA light client on Ethereum needs (finality proofs that verify, read proofs that walk from the finalized state_root, child read proofs, timely finality, non-development validators)?",
+  "connection": {
+    "ok": true,
+    "elapsedMs": 559
+  },
+  "identity": {
+    "genesisHash": "0x83b5212c69f85f3996f8696bb35bf913af51b176a5f53d0a74fd3a83dc0b8a54",
+    "chain": "Portaldot Mainnet",
+    "name": "Portaldot Node",
+    "version": "2.0.0-unknown-x86_64-linux-gnu",
+    "chainType": "Live",
+    "properties": {
+      "ss58Format": 42,
+      "tokenDecimals": 14,
+      "tokenSymbol": "POT"
+    }
+  },
+  "runtimeApis": {
+    "flags": {
+      "Core": {
+        "id": "0xdf6acb689907609b",
+        "present": true,
+        "version": 3
+      },
+      "GrandpaApi": {
+        "id": "0xed99c5acb25eedf5",
+        "present": true,
+        "version": 2
+      },
+      "BeefyApi": {
+        "id": "0x49eaaf1b548a0cb0",
+        "present": false,
+        "version": null
+      },
+      "MmrApi": {
+        "id": "0x91d5df18b0d2cf58",
+        "present": true,
+        "version": 1
+      },
+      "ReviveApi": {
+        "id": "0x8c403e5c4a9fd442",
+        "present": false,
+        "version": null
+      },
+      "EthereumRuntimeRPCApi": {
+        "id": "0x582211f65bb14b89",
+        "present": false,
+        "version": null
+      },
+      "BabeApi": {
+        "id": "0xcbca25e39f142387",
+        "present": true,
+        "version": 2
+      },
+      "AuraApi": {
+        "id": "0xdd718d5cc53262d4",
+        "present": false,
+        "version": null
+      }
+    },
+    "all": [
+      {
+        "id": "0xdf6acb689907609b",
+        "version": 3,
+        "name": "Core"
+      },
+      {
+        "id": "0x37e397fc7c91f5e4",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x40fe3ad401f8959a",
+        "version": 5,
+        "name": null
+      },
+      {
+        "id": "0xd2bc9897eed08f15",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0xf78b278be53f454c",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0xed99c5acb25eedf5",
+        "version": 2,
+        "name": "GrandpaApi"
+      },
+      {
+        "id": "0xcbca25e39f142387",
+        "version": 2,
+        "name": "BabeApi"
+      },
+      {
+        "id": "0x687ad44ad37f03c2",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0xbc9d89904f5b923f",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x68b66ba122c93fa7",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x37c8bb1350a9a2a8",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x91d5df18b0d2cf58",
+        "version": 1,
+        "name": "MmrApi"
+      },
+      {
+        "id": "0xab3c0572291feb8b",
+        "version": 1,
+        "name": null
+      }
+    ]
+  },
+  "rpcSurface": {
+    "methodCount": 93,
+    "flags": {
+      "grandpa_proveFinality": true,
+      "grandpa_subscribeJustifications": true,
+      "state_getReadProof": true,
+      "state_getChildReadProof": true,
+      "beefy_getFinalizedHead": false,
+      "mmr_generateProof": true
+    },
+    "ethMethods": []
+  },
+  "finality": {
+    "best": 2727326,
+    "finalized": {
+      "number": 2727324,
+      "hash": "0x9ea54e07a1f9ba5f5ed53526893291b7b4911a56c0325ee8cd6ae33917bbdbcc"
+    },
+    "lagBlocks": 2,
+    "blockTimeMs": 60000,
+    "blockTimeAvgMs": 60000,
+    "blockTimeSpan": 10,
+    "blockTimeDeltasMs": [
+      60000,
+      59999,
+      60000,
+      60001,
+      60000,
+      60000,
+      60000,
+      60000,
+      59999,
+      60001
+    ],
+    "headTimestamp": "2026-10-15T13:20:00.000Z",
+    "authoritySet": {
+      "at": {
+        "number": 2727324,
+        "hash": "0x9ea54e07a1f9ba5f5ed53526893291b7b4911a56c0325ee8cd6ae33917bbdbcc"
+      },
+      "setId": 3897,
+      "count": 10,
+      "threshold": 7,
+      "weights": [
+        "1"
+      ],
+      "aliceIsAuthority": false,
+      "authorities": [
+        "0x8545ca1ecc2187dafab12f87c0af7734d6226656dc5127b1289b9ee1d6e3108b",
+        "0xf63048a01177a43b1cd11df5e3e2802b479a9e9dd86d04cb70b1ac09dcb72167",
+        "0xf1f8231cc78ccd947a37c51c0cabd7d299dea51386efff4edce4c45f1e96be06",
+        "0x39e0aa70271b38a18ddcdcb5e43b00045d0eaa85951f6186886f73bb4872e540",
+        "0x964f1c97c3a665060f1c682ab5702720b6fa8491a6de18b7f7f825b769faac8d",
+        "0x1047f3ad08990edf8b6f14359e09b20b1ed109337f0e76a73ee9f161dc48fdd8",
+        "0x8c9ba55cd1d34c7960ff4e048e37225c0868d603e9a6ea7e4c3b35453a0abde7",
+        "0x7b309a087503802d7b9b251ccbc651746101096b8e67a3f6e4dea9d0931d1438",
+        "0x3e57fe6144a3715ea40a12100d07a0d97d941389ca144fc28f646ca4120f96aa",
+        "0xe471a7126177e3aa0076620535a2ab6bc44b9aae2c0bc2848273a6082191b235"
+      ]
+    },
+    "proof": {
+      "requested": 2727324,
+      "target": {
+        "number": 2727324,
+        "hash": "0x9ea54e07a1f9ba5f5ed53526893291b7b4911a56c0325ee8cd6ae33917bbdbcc"
+      },
+      "signingSetReadAt": {
+        "number": 2727323,
+        "hash": "0x5938349e9e984b3172b0942cb897e2760b1af8a9d015f5f66fa81654dca23c68"
+      },
+      "setId": 3897,
+      "round": "4927",
+      "authorities": 10,
+      "weights": [
+        "1"
+      ],
+      "precommits": 7,
+      "validSignatures": 7,
+      "required": 7,
+      "thresholdMet": true,
+      "verified": true,
+      "problems": [],
+      "votesAncestries": 0,
+      "unknownHeaders": 0,
+      "proofBytes": 1005,
+      "justificationBytes": 970,
+      "targetHeaderBytes": 191,
+      "negativeControls": {
+        "wrongSetIdRejected": true,
+        "flippedSignatureRejected": true
+      },
+      "aliceSigned": false
+    },
+    "sudoKey": {
+      "id": "0xecdbca89116f9f6ca40dd9a3f84bec7472b86ea0e26cac8caeb0c5164b1bf027",
+      "ss58": "5HRGT2aUSAZjkczr62dh22Ny4H57iakVBatkkyaEFoK9tzoZ"
+    }
+  },
+  "stateProofs": {
+    "readProof": {
+      "account": {
+        "id": "0xecdbca89116f9f6ca40dd9a3f84bec7472b86ea0e26cac8caeb0c5164b1bf027",
+        "ss58": "5HRGT2aUSAZjkczr62dh22Ny4H57iakVBatkkyaEFoK9tzoZ",
+        "source": "Sudo.Key"
+      },
+      "key": "0x26aa394eea5630e07c48ae0c9558cef7b99d880ec681799c0cf30e8886371da9b62f9f818ac7a3cfc3b20713563409adecdbca89116f9f6ca40dd9a3f84bec7472b86ea0e26cac8caeb0c5164b1bf027",
+      "at": {
+        "number": 2727324,
+        "hash": "0x9ea54e07a1f9ba5f5ed53526893291b7b4911a56c0325ee8cd6ae33917bbdbcc"
+      },
+      "stateRoot": "0x21f763263853c7908c3bb5e55026bd26601a334e6f98f70d234f9434fe24ee7e",
+      "nodes": 8,
+      "bytes": 2576,
+      "runtimeStateVersion": null,
+      "hashedValueNodes": 0,
+      "itemsThatAreNotNodes": 0,
+      "trieVersion": 0,
+      "verified": true,
+      "itemsUsed": 8,
+      "hashedValuesInWalk": 0,
+      "value": {
+        "bytes": 80,
+        "scale": "0xf60000000000000001000000000000005bd89dddf8c8966f4700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "tamperedRootRejected": true,
+      "free": "1317759664389290317915"
+    },
+    "childReadProof": {
+      "listedInRpcMethods": true,
+      "probeCall": "answered with 4 proof items for an absent child trie",
+      "routed": true
+    }
+  },
+  "evm": null,
+  "gates": [
+    {
+      "gate": "GRANDPA proofs served",
+      "status": "PASS",
+      "detail": "grandpa_proveFinality(#2,727,324) returned a decodable proof"
+    },
+    {
+      "gate": "Justification verifies",
+      "status": "PASS",
+      "detail": "7/7 valid, 7 of 10 needed, set 3897, round 4927"
+    },
+    {
+      "gate": "Threshold met",
+      "status": "PASS",
+      "detail": "7 valid of 10 authorities, 7 required (N - floor((N-1)/3))"
+    },
+    {
+      "gate": "Read proofs served and verified",
+      "status": "PASS",
+      "detail": "8 nodes, 2,576 B, value 80 B, trie V0, walked from the state_root of #2,727,324"
+    },
+    {
+      "gate": "Child read proofs served",
+      "status": "PASS",
+      "detail": "listed in rpc_methods; answered with 4 proof items for an absent child trie"
+    },
+    {
+      "gate": "Finality lag under 10 blocks",
+      "status": "PASS",
+      "detail": "best #2,727,326, finalized #2,727,324: 2 blocks behind"
+    },
+    {
+      "gate": "Real or development validators",
+      "status": "PASS",
+      "detail": "10 GRANDPA authorities, none is //Alice; chainType Live"
+    }
+  ],
+  "verdict": "PASS",
+  "errors": {},
+  "elapsedMs": 8095
+}
