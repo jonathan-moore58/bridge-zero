@@ -4,6 +4,10 @@ Measured on Oct 15, 2026, before the light client is written, to settle two ques
 Portaldot mainnet import (7 of 10 GRANDPA signatures, the header, a storage proof) fit in one
 Sepolia transaction, and which vendored ed25519 library to keep.
 
+The light client itself is measured in [Measured light client](#measured-light-client), also on
+a Sepolia node. Sepolia no longer runs Osaka: since Oct 6, 2026 it runs newer rules that price
+new state much higher, which the forge numbers in this file do not include.
+
 ## Result
 
 - **One transaction.** A stand-in for the full mainnet import (7 signatures, header hash, state
@@ -163,6 +167,72 @@ signatures, so a set of up to 29 authorities (threshold 20) still fits. Mainnet 
    (`FarcasterEd25519Bench` and the chengwenxi tests in `Ed25519Bench.t.sol`,
    `FarcasterImportBench` in `ImportBench.t.sol`, and `test/bench/legacy/`). The commit that
    added this file still has the full comparison.
+
+## Measured light client
+
+Measured on Oct 15, 2026 with the contracts as committed (`GrandpaLightClient`,
+`ProvenBalance`) and the fixtures in `fixtures/mainnet/` (set change 3894 to 3895 at
+#2,725,771, head #2,726,202). Every call is sent with the EIP-7825 cap, 16,777,216, as its gas
+limit. Three settings:
+
+- **forge, Osaka**: the unit tests (`isolate`, so each call is a transaction with its 21,000
+  base and calldata).
+- **Sepolia fork, Osaka**: `test/fork/SepoliaFork.t.sol` forks Sepolia at its latest block
+  (#11,921,071), deploys both contracts there and runs the sequence below. The fork reads
+  Sepolia's state but executes in forge's EVM under `evm_version = "osaka"`, so its gas equals
+  the unit tests' to the unit. It also checks that BLAKE2F (0x09) gives the RFC 7693
+  blake2b-512("abc") answer, on the fork and by `eth_call` to a Sepolia node.
+- **Sepolia node**: `test/fork/simulate-sepolia.mjs` has a Sepolia node (reth 2.7.0 behind the
+  public endpoint) execute the same sequence with `eth_simulateV1` on top of block #11,921,066,
+  with validation on. Nothing is signed or sent; the sender's balance and nonce are state
+  overrides. This is the gas Sepolia charges today. Its `eth_config` reports a fork activated at
+  timestamp 1791294816 (Oct 6, 2026, 13:53:36 UTC, fork id `0x6c1d9423`), after Osaka; headers
+  now carry `blockAccessListHash`. Under it a plain call costs 15,000 gas, not 21,000, and new
+  code and new storage slots cost far more.
+
+| Transaction (gas, share of 16,777,216) | forge, Osaka | Sepolia fork, Osaka | Sepolia node |
+|---|---:|---:|---:|
+| `initialize`, 10 keys | 1,186,600 (7.1%) | 1,186,600 (7.1%) | 4,793,020 (28.6%) |
+| Set-change import, 7 of 10 (`importHeader`, same keys) | 5,711,271 (34.0%) | 5,711,271 (34.0%) | 6,254,891 (37.3%) |
+| Head import, 7 of 10 (`importFinalityProof`) | 5,573,245 (33.2%) | | |
+| Head re-import, nothing written | 5,519,766 (32.9%) | | |
+| `importAndProve`, 7 of 10 + System.Account | 6,040,801 (36.0%) | 6,040,801 (36.0%) | 6,225,841 (37.1%) |
+| `importAndProve` again (re-verification) | 5,989,322 (35.7%) | | 5,984,122 (35.7%) |
+| Worst case: `initialize`, 25 keys | | | 10,108,398 (60.3%) |
+| **Worst case: 25 authorities (17 signatures) changing to 25 new keys** | 15,813,587 (94.3%) | | **23,127,247 (137.8%), above the cap** |
+| Deploy `SCL_EIP6565` (linked library) | | | 14,593,979 (87.0%) |
+| Deploy `GrandpaLightClient` | | 3,424,923 (20.4%) | **24,258,847 (144.6%), above the cap** |
+| Deploy `ProvenBalance` | | 2,246,644 (13.4%) | 15,884,014 (94.7%) |
+
+- **The mainnet path fits on Sepolia today.** `initialize`, the set change and `importAndProve`
+  succeed on the node with the cap as gas limit, and `importAndProve` returns and emits the
+  captured AccountInfo (free 1,317,759,664,389,290,317,915, nonce 246) for the head. A flipped
+  byte in the first counted signature makes it revert with `InvalidSignature(0, 0)` on the fork
+  and on the node.
+- **Two transactions need more than 16,777,216 gas on the node**: deploying
+  `GrandpaLightClient` (15,480 bytes of code) and the 25-to-25 set change (75 new key slots).
+  Both run out of gas with the cap as gas limit, and both succeed with a gas limit of 33,554,432,
+  which the node accepted under validation. Whether the public mempool takes a transaction with
+  a gas limit above 16,777,216 is not checked here; nothing was sent.
+- The mainnet set has 10 authorities, and the change measured above kept the same keys. A
+  change to 10 new keys writes 30 new slots, the part the new rules price up most (`initialize`
+  with 10 keys went from 1.19M to 4.79M), so it is the next case to run on the node.
+
+Reproduce, from `contracts/` (the `--offline --use` flags as in [Reproduce](#reproduce)):
+
+```sh
+# forge, Osaka: the gas is in the logs
+forge test --match-path "test/unit/*" -vv
+
+# Sepolia fork: skipped unless SEPOLIA_FORK=1; skipped as well when the RPC cannot be reached.
+# The RPC is SEPOLIA_RPC_URL, or https://ethereum-sepolia-rpc.publicnode.com.
+SEPOLIA_FORK=1 forge test --match-path "test/fork/*" -vv
+
+# Sepolia node (Node.js 24, after forge build; exit code 2 when the RPC cannot be reached)
+node test/fork/simulate-sepolia.mjs
+forge test --match-test test_gas_maxSetChange_withinCap -vvvv > cache/worst-case-trace.txt
+node test/fork/simulate-sepolia.mjs --worst-case cache/worst-case-trace.txt
+```
 
 ## Reproduce
 
