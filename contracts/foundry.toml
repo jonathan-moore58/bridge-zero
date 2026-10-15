@@ -36,7 +36,10 @@ remappings = [
 ]
 
 # Tests read the captured chain data (vm.readFile).
-fs_permissions = [{ access = "read", path = "../fixtures/mainnet" }]
+fs_permissions = [
+    { access = "read", path = "../fixtures/mainnet" },
+    { access = "read", path = "../fixtures/mainnet-pre-v3" },
+]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
 
