@@ -26,3 +26,8 @@ listed here as each part goes on chain.
 
 Every third-party library is listed in [NOTICE.md](NOTICE.md) with its source,
 pinned commit and licence. Commits that add third-party code start with `vendor:`.
+
+## Licence
+
+The project licence (Apache-2.0) will be added with the final submission. Third-party
+code keeps its own licence, listed in [NOTICE.md](NOTICE.md).
