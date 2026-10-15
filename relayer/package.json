@@ -11,6 +11,7 @@
   "scripts": {
     "capture": "tsx src/capture.ts",
     "check": "tsx src/check.ts",
+    "probe": "tsx src/probe.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
