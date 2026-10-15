@@ -241,6 +241,12 @@ DELEGATECALL:
 - `importAndProve` returns and emits the captured AccountInfo (free
   1,317,759,664,389,290,317,915, nonce 246) for the head on the fork and on the node. A flipped
   byte in the first counted signature makes it revert with `InvalidSignature(0, 0)` on both.
+- **More precommits than the threshold** (forge, Osaka; synthetic keys, 10 authorities, threshold
+  7; `test_gas_sevenEightAndTenSignatures`): a header import with 8 precommits costs 5,594,485
+  (33.3%) when 7 are counted and 6,361,511 (37.9%) when all 8 are, and 10 of 10 costs 7,924,683
+  (47.2%). Each extra signature counted adds about 0.77M; with the System.Account read (about
+  0.47M) the 10-of-10 case matches the 8.4M projection above. Precommits left out of the signers
+  hint are not read, so the relayer counts exactly the threshold.
 
 ### Set changes to new keys, and MAX_AUTHORITIES
 
