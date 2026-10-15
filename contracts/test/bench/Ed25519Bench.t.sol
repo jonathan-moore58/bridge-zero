@@ -2,7 +2,6 @@
 pragma solidity 0.8.27;
 
 import {console} from "forge-std/Test.sol";
-import {Ed25519} from "farcaster-solidity/libraries/Ed25519.sol";
 import {SCL_EIP6565} from "crypto-lib/lib/libSCL_EIP6565.sol";
 import {SCL_sha512} from "crypto-lib/hash/SCL_sha512.sol";
 import {ModInv} from "crypto-lib/modular/SCL_modular.sol";
@@ -12,35 +11,6 @@ import {BenchFixtures} from "./BenchFixtures.sol";
 
 // Each harness measures the library call alone with gasleft() inside a fresh call frame, so the
 // numbers do not depend on what the test contract has already put in memory.
-
-/// pavlovdog/farcaster-solidity: Ed25519, Sha512 and Ed25519_pow are linked (external) libraries.
-contract FarcasterEd25519Bench {
-    function verify(bytes32 k, bytes32 r, bytes32 s, bytes calldata m)
-        external
-        view
-        returns (bool ok, uint256 gasUsed)
-    {
-        bytes memory message = m;
-        uint256 before = gasleft();
-        ok = Ed25519.verify(k, r, s, message);
-        gasUsed = before - gasleft();
-    }
-
-    /// Several signatures over one message in one call: the first call pays the cold access to
-    /// the three library accounts, the rest find them warm, as in a light client import.
-    function verifyBatch(bytes32[] calldata k, bytes32[] calldata r, bytes32[] calldata s, bytes calldata m)
-        external
-        view
-        returns (uint256 valid, uint256 gasUsed)
-    {
-        bytes memory message = m;
-        uint256 before = gasleft();
-        for (uint256 i = 0; i < k.length; i++) {
-            if (Ed25519.verify(k[i], r[i], s[i], message)) valid++;
-        }
-        gasUsed = before - gasleft();
-    }
-}
 
 /// get-smooth/crypto-lib (SCL), SCL_EIP6565: a linked (public) library. It verifies against an
 /// "extended" key [Wx, Wy, -, -, A] (Weierstrass coordinates of the key, then the 32-byte key),
@@ -98,36 +68,13 @@ contract SclEd25519Bench {
     }
 }
 
-/// chengwenxi/Ed25519 is Solidity 0.6 and is reached through a wrapper built on its own with
-/// solc 0.6.12 (test/bench/legacy). The wrapper has the same verify/verifyBatch functions.
-interface IEd25519Bench {
-    function verify(bytes32 k, bytes32 r, bytes32 s, bytes calldata m) external view returns (bool ok, uint256 gasUsed);
-
-    function verifyBatch(bytes32[] calldata k, bytes32[] calldata r, bytes32[] calldata s, bytes calldata m)
-        external
-        view
-        returns (uint256 valid, uint256 gasUsed);
-}
-
 contract Ed25519BenchTest is BenchFixtures {
-    /// The solc 0.6.12 wrapper, built on its own (single local compiler) or in the same run.
-    string internal constant LEGACY_ARTIFACT = "out/legacy/ChengwenxiEd25519Bench.sol/ChengwenxiEd25519Bench.json";
-    string internal constant SAME_RUN_ARTIFACT = "out/ChengwenxiEd25519Bench.sol/ChengwenxiEd25519Bench.json";
-
-    FarcasterEd25519Bench internal farcaster;
     SclEd25519Bench internal scl;
-    IEd25519Bench internal chengwenxi;
 
     Justified internal head;
 
     function setUp() public {
-        farcaster = new FarcasterEd25519Bench();
         scl = new SclEd25519Bench();
-        if (vm.exists(LEGACY_ARTIFACT)) {
-            chengwenxi = IEd25519Bench(vm.deployCode(LEGACY_ARTIFACT));
-        } else if (vm.exists(SAME_RUN_ARTIFACT)) {
-            chengwenxi = IEd25519Bench(vm.deployCode(SAME_RUN_ARTIFACT));
-        }
         Justified memory j = _loadHead();
         head.blockHash = j.blockHash;
         head.number = j.number;
@@ -137,39 +84,6 @@ contract Ed25519BenchTest is BenchFixtures {
         for (uint256 i = 0; i < j.precommits.length; i++) {
             head.precommits.push(j.precommits[i]);
         }
-    }
-
-    // ---------------------------------------------------------------- farcaster-solidity
-
-    function test_farcaster_rfc8032() public view {
-        _requireOsaka();
-        (Precommit memory v, bytes memory m) = _rfc8032ShaAbc();
-        (bool ok, uint256 gasUsed) = farcaster.verify(v.key, v.r, v.s, m);
-        assertTrue(ok, "RFC 8032 vector verifies");
-        (bool bad,) = farcaster.verify(v.key, v.r, v.s, _flipBit(m, 0, 0));
-        assertFalse(bad, "flipped message bit is rejected");
-        console.log("farcaster  verify RFC 8032 TEST SHA(abc), cold libraries:", gasUsed);
-    }
-
-    function test_farcaster_mainnetPrecommit() public view {
-        _requireOsaka();
-        Precommit memory pc = head.precommits[0];
-        (bool ok, uint256 gasUsed) = farcaster.verify(pc.key, pc.r, pc.s, head.payload);
-        assertTrue(ok, "mainnet precommit verifies");
-        (bool badMsg,) = farcaster.verify(pc.key, pc.r, pc.s, _flipBit(head.payload, 0, 0));
-        assertFalse(badMsg, "flipped payload bit is rejected");
-        (bool badSig,) = farcaster.verify(pc.key, _flipBit(pc.r, 0, 0), pc.s, head.payload);
-        assertFalse(badSig, "flipped signature bit is rejected");
-        console.log("farcaster  verify mainnet precommit, cold libraries:", gasUsed);
-    }
-
-    function test_farcaster_sevenPrecommits() public view {
-        _requireOsaka();
-        (bytes32[] memory k, bytes32[] memory r, bytes32[] memory s) = _columns();
-        (uint256 valid, uint256 gasUsed) = farcaster.verifyBatch(k, r, s, head.payload);
-        assertEq(valid, 7, "all 7 mainnet precommits verify");
-        console.log("farcaster  7 mainnet precommits in one call:", gasUsed);
-        console.log("farcaster  per signature (average of 7):", gasUsed / 7);
     }
 
     // ---------------------------------------------------------------- crypto-lib (SCL)
@@ -263,50 +177,7 @@ contract Ed25519BenchTest is BenchFixtures {
         assertFalse(accepted, "the point derived from the key rejects that signature");
     }
 
-    // ---------------------------------------------------------------- chengwenxi/Ed25519 (0.6)
-
-    function test_chengwenxi_rfc8032() public {
-        _requireLegacy();
-        _requireOsaka();
-        (Precommit memory v, bytes memory m) = _rfc8032ShaAbc();
-        (bool ok, uint256 gasUsed) = chengwenxi.verify(v.key, v.r, v.s, m);
-        assertTrue(ok, "RFC 8032 vector verifies");
-        (bool bad,) = chengwenxi.verify(v.key, v.r, v.s, _flipBit(m, 0, 0));
-        assertFalse(bad, "flipped message bit is rejected");
-        console.log("chengwenxi verify RFC 8032 TEST SHA(abc):", gasUsed);
-    }
-
-    function test_chengwenxi_mainnetPrecommit() public {
-        _requireLegacy();
-        _requireOsaka();
-        Precommit memory pc = head.precommits[0];
-        (bool ok, uint256 gasUsed) = chengwenxi.verify(pc.key, pc.r, pc.s, head.payload);
-        assertTrue(ok, "mainnet precommit verifies");
-        (bool badMsg,) = chengwenxi.verify(pc.key, pc.r, pc.s, _flipBit(head.payload, 0, 0));
-        assertFalse(badMsg, "flipped payload bit is rejected");
-        (bool badSig,) = chengwenxi.verify(pc.key, _flipBit(pc.r, 0, 0), pc.s, head.payload);
-        assertFalse(badSig, "flipped signature bit is rejected");
-        console.log("chengwenxi verify mainnet precommit:", gasUsed);
-    }
-
-    function test_chengwenxi_sevenPrecommits() public {
-        _requireLegacy();
-        _requireOsaka();
-        (bytes32[] memory k, bytes32[] memory r, bytes32[] memory s) = _columns();
-        (uint256 valid, uint256 gasUsed) = chengwenxi.verifyBatch(k, r, s, head.payload);
-        assertEq(valid, 7, "all 7 mainnet precommits verify");
-        console.log("chengwenxi 7 mainnet precommits in one call:", gasUsed);
-        console.log("chengwenxi per signature (average of 7):", gasUsed / 7);
-    }
-
     // ---------------------------------------------------------------- helpers
-
-    function _requireLegacy() internal {
-        if (address(chengwenxi) == address(0)) {
-            console.log("skipped: build the solc 0.6.12 wrapper first (see docs/GAS.md)");
-            vm.skip(true);
-        }
-    }
 
     /// [secret]B in SCL's extended-key layout, with the 32-byte key slot (ext[4]) left empty.
     function _sclPoint(uint256 secret) internal view returns (uint256[5] memory ext) {

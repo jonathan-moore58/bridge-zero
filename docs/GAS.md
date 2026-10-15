@@ -157,50 +157,49 @@ signatures, so a set of up to 29 authorities (threshold 20) still fits. Mainnet 
      about 0.66M more than storing 32-byte keys (270,971). The light client can skip the rewrite
      when the key list is unchanged, as it was at the last mainnet set change (3894 to 3895). The
      expansion runs on chain, never from a caller's input (see the ed25519 notes above).
-3. **Remove farcaster-solidity and chengwenxi-ed25519**: their submodules, NOTICE rows and
-   remappings, the chengwenxi note and the `./out` read permission in `contracts/foundry.toml`,
-   and their benchmark code (`FarcasterEd25519Bench` and the chengwenxi tests in
-   `Ed25519Bench.t.sol`, `FarcasterImportBench` in `ImportBench.t.sol`, and
-   `test/bench/legacy/`). The commit that adds this file keeps the full comparison reproducible.
+3. **Remove farcaster-solidity and chengwenxi-ed25519.** Done in the commit after the one that
+   added this file: their submodules, NOTICE rows and remappings, the chengwenxi note and the
+   `./out` read permission in `contracts/foundry.toml`, and their benchmark code
+   (`FarcasterEd25519Bench` and the chengwenxi tests in `Ed25519Bench.t.sol`,
+   `FarcasterImportBench` in `ImportBench.t.sol`, and `test/bench/legacy/`). The commit that
+   added this file still has the full comparison.
 
 ## Reproduce
 
-From `contracts/`, with the submodules checked out (`git submodule update --init`). On the
-development machine neither compiler is in Foundry's compiler cache, so both are used from the
-git-ignored `contracts/cache/` by path: the Windows builds from the Solidity GitHub releases
-(v0.8.27 `solc-windows.exe`, sha256
-`8474166f631caa0c51618fddb89ca149080f69c27db06f94bd323eb69f87ffd8`; v0.6.12
-`solidity-windows.zip`, sha256
-`7a1874cff4cae30b9ee0509631ddae34a8aa573cb2a6104f25e4a6a63ab3ad5f`, from which `solc.exe` and
-its three `msvcp140*.dll` files are extracted), both matching the official solc-bin list.
-`forge clean` deletes them.
+From `contracts/`, with the submodules checked out (`git submodule update --init`). The
+development machine has no solc 0.8.27 in Foundry's compiler cache, so it is used from the
+git-ignored `contracts/cache/` by path: the Windows build from the Solidity GitHub release
+v0.8.27 (`solc-windows.exe`, sha256
+`8474166f631caa0c51618fddb89ca149080f69c27db06f94bd323eb69f87ffd8`, matching the official
+solc-bin list). `forge clean` deletes it. With network access, leave out `--offline --use ...`
+and forge installs 0.8.27 itself.
 
 ```sh
 cd contracts
 
-# 1. The Solidity 0.6 wrapper for chengwenxi/Ed25519, built on its own with solc 0.6.12
-forge build --offline --use cache/solc-0.6.12/solc.exe \
-  --out out/legacy --cache-path cache/legacy test/bench/legacy/ChengwenxiEd25519Bench.sol
+# The benchmarks; the numbers are in the logs
+forge test --offline --use cache/solc-0.8.27/solc-0.8.27.exe --match-path "test/bench/*" -vv
 
-# 2. The benchmarks; the numbers are in the logs
-forge test --offline --use cache/solc-0.8.27/solc-0.8.27.exe \
-  --skip "test/bench/legacy/**" --match-path "test/bench/*" -vv
-
-# 3. The gas report
-forge test --offline --use cache/solc-0.8.27/solc-0.8.27.exe \
-  --skip "test/bench/legacy/**" --match-path "test/bench/*" --gas-report
+# The gas report
+forge test --offline --use cache/solc-0.8.27/solc-0.8.27.exe --match-path "test/bench/*" --gas-report
 ```
 
-- With solc 0.8.27 and 0.6.12 installed by Foundry, a plain
-  `forge test --match-path "test/bench/*" -vv` should build the wrapper in the same run, and the
-  test then uses that artifact (not tried on the development machine). Without the wrapper the
-  three chengwenxi tests are skipped, not failed. `forge build --force` and `forge clean` delete
-  `out/legacy`; run step 1 again after them.
 - In the gas report, rows of `view` functions are the gas of that call. Rows of
   `importAndRead`, `setAuthorities` and `expandKey` are whole transactions (isolate), so
-  `expandKey` shows about 42,500 there against 20,071 for the expansion itself. The
-  chengwenxi wrapper is deployed from its artifact and does not appear in the report.
+  `expandKey` shows about 42,500 there against 20,071 for the expansion itself.
+- The farcaster-solidity and chengwenxi rows need the commit that added this file
+  (`git log --diff-filter=A --format=%h -- docs/GAS.md`). There, chengwenxi/Ed25519 (Solidity
+  0.6) is reached through `test/bench/legacy/ChengwenxiEd25519Bench.sol`, built first with solc
+  0.6.12 (v0.6.12 `solidity-windows.zip`, sha256
+  `7a1874cff4cae30b9ee0509631ddae34a8aa573cb2a6104f25e4a6a63ab3ad5f`, from which `solc.exe` and
+  its three `msvcp140*.dll` files are extracted):
+
+  ```sh
+  forge build --offline --use cache/solc-0.6.12/solc.exe \
+    --out out/legacy --cache-path cache/legacy test/bench/legacy/ChengwenxiEd25519Bench.sol
+  forge test --offline --use cache/solc-0.8.27/solc-0.8.27.exe \
+    --skip "test/bench/legacy/**" --match-path "test/bench/*" -vv
+  ```
 
 Files: `contracts/test/bench/` (`BenchFixtures.sol`, `Ed25519Bench.t.sol`, `Blake2bBench.t.sol`,
-`TrieBench.t.sol`, `ImportBench.t.sol`, `legacy/ChengwenxiEd25519Bench.sol`) and
-`contracts/src/trie/vendor/PolkadotTrie.sol`.
+`TrieBench.t.sol`, `ImportBench.t.sol`) and `contracts/src/trie/vendor/PolkadotTrie.sol`.

@@ -7,8 +7,7 @@ script = "script"
 
 # Compiler. Our code is Solidity 0.8.27: blake2b-solidity declares `pragma solidity 0.8.27;`
 # (exact) and every other 0.8 library accepts 0.8.27. Files under src/ are held to it by the
-# restriction below; tests and scripts declare `pragma solidity 0.8.27;` as well. There is no
-# global solc pin, so a 0.6 wrapper can be built in the same run (see the note at the end).
+# restriction below; tests and scripts declare `pragma solidity 0.8.27;` as well.
 compilation_restrictions = [{ paths = "src/**", version = "=0.8.27" }]
 optimizer = true
 optimizer_runs = 200
@@ -29,26 +28,15 @@ remappings = [
     "forge-std/=lib/forge-std/src/",
     "blake2b-solidity/=lib/blake2b-solidity/contracts/",
     "solidity-merkle-trees/=lib/solidity-merkle-trees/src/",
-    "farcaster-solidity/=lib/farcaster-solidity/contracts/",
     "crypto-lib/=lib/crypto-lib/src/",
     # crypto-lib imports its own files as "@solidity/...". A context-scoped remapping
     # ("lib/crypto-lib/:@solidity/=...") would put this machine's absolute path into the
     # contract metadata, so the prefix is mapped globally. Nothing else uses "@solidity/".
     "@solidity/=lib/crypto-lib/src/",
-    "chengwenxi-ed25519/=lib/chengwenxi-ed25519/contracts/",
 ]
 
-# lib/chengwenxi-ed25519 is Solidity ^0.6.8 and cannot be imported by 0.8 code. The gas
-# benchmark reaches it through test/bench/legacy/ChengwenxiEd25519Bench.sol, a wrapper with
-# `pragma solidity 0.6.12;`. With both compilers installed it can build in the same run; with
-# a single local compiler (`--use <path>`) it is built on its own into out/legacy and the 0.8
-# build skips it (commands in docs/GAS.md). The 0.8.27 test deploys it from its artifact.
-
-# Tests read the captured chain data and build artifacts (vm.readFile, vm.deployCode).
-fs_permissions = [
-    { access = "read", path = "../fixtures/mainnet" },
-    { access = "read", path = "./out" },
-]
+# Tests read the captured chain data (vm.readFile).
+fs_permissions = [{ access = "read", path = "../fixtures/mainnet" }]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
 

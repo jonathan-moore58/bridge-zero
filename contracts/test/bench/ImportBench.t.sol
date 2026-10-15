@@ -3,7 +3,6 @@ pragma solidity 0.8.27;
 
 import {console} from "forge-std/Test.sol";
 import {BLAKE2b} from "blake2b-solidity/BLAKE2b.sol";
-import {Ed25519} from "farcaster-solidity/libraries/Ed25519.sol";
 import {SCL_EIP6565} from "crypto-lib/lib/libSCL_EIP6565.sol";
 import {PolkadotTrie} from "../../src/trie/vendor/PolkadotTrie.sol";
 import {BenchFixtures, GrandpaPayload} from "./BenchFixtures.sol";
@@ -99,27 +98,9 @@ contract SclImportBench is ImportBenchBase {
     }
 }
 
-/// farcaster-solidity: each authority is stored as its 32-byte key (1 slot).
-contract FarcasterImportBench is ImportBenchBase {
-    bytes32[] internal authorities;
-
-    function setAuthorities(bytes32[] calldata keys) external {
-        authorities = keys;
-    }
-
-    function _authorityCount() internal view override returns (uint256) {
-        return authorities.length;
-    }
-
-    function _verify(uint256 index, bytes32 r, bytes32 s, bytes memory payload) internal view override returns (bool) {
-        return Ed25519.verify(authorities[index], r, s, payload);
-    }
-}
-
 contract ImportBenchTest is BenchFixtures {
     SclEd25519Bench internal expander;
     SclImportBench internal scl;
-    FarcasterImportBench internal farcaster;
 
     bytes32[] internal setKeys; // the 10 keys of set 3895, in :grandpa_authorities order
     bytes internal header;
@@ -130,7 +111,6 @@ contract ImportBenchTest is BenchFixtures {
     function setUp() public {
         expander = new SclEd25519Bench();
         scl = new SclImportBench();
-        farcaster = new FarcasterImportBench();
         string memory json = vm.readFile(HEAD);
         setKeys = _signingSetKeys(json);
         assertEq(setKeys.length, 10, "set 3895 has 10 authorities");
@@ -149,14 +129,6 @@ contract ImportBenchTest is BenchFixtures {
         _requireOsaka();
         _setScl(setKeys);
         _report("SCL, mainnet 7 of 10", address(scl), _justification(type(uint256).max));
-    }
-
-    /// Mainnet, 7 of 10, farcaster-solidity: the same call for comparison.
-    function test_import_farcaster_7of10() public {
-        _requireOsaka();
-        farcaster.setAuthorities(setKeys);
-        console.log("farcaster keys stored, transaction gas (1 slot per key):", vm.lastFrameGas().gasTotalUsed);
-        _report("farcaster, mainnet 7 of 10", address(farcaster), _justification(type(uint256).max));
     }
 
     /// One authority, one signature (the shape of a V3 dev-chain import), with mainnet data:
