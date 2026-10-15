@@ -2,5 +2,57 @@
 src = "src"
 out = "out"
 libs = ["lib"]
+test = "test"
+script = "script"
+
+# Compiler. Our code is Solidity 0.8.27: blake2b-solidity declares `pragma solidity 0.8.27;`
+# (exact) and every other 0.8 library accepts 0.8.27. Files under src/ are held to it by the
+# restriction below; tests and scripts declare `pragma solidity 0.8.27;` as well. There is no
+# global solc pin, so a 0.6 wrapper can be built in the same run (see the note at the end).
+compilation_restrictions = [{ paths = "src/**", version = "=0.8.27" }]
+optimizer = true
+optimizer_runs = 200
+# Sepolia runs the Osaka rules (EIP-7883 MODEXP pricing, EIP-7825 gas cap per transaction).
+# Tests execute under them; solc 0.8.27 has no osaka target, so the bytecode is compiled for
+# prague. forge does not enforce the per-transaction cap here (enable_tx_gas_limit is off),
+# so the import benchmark sends its call with the cap as the gas limit.
+evm_version = "osaka"
+# Each top-level call in a test runs as its own transaction (cold accounts and storage, and
+# the gas used includes the 21,000 base and calldata). The numbers in docs/GAS.md rely on it.
+isolate = true
+
+# Remappings are listed by hand. Auto-detection would also import the libraries' own
+# settings, including an `@openzeppelin/` entry pointing at a node_modules folder that
+# is not vendored.
+auto_detect_remappings = false
+remappings = [
+    "forge-std/=lib/forge-std/src/",
+    "blake2b-solidity/=lib/blake2b-solidity/contracts/",
+    "solidity-merkle-trees/=lib/solidity-merkle-trees/src/",
+    "farcaster-solidity/=lib/farcaster-solidity/contracts/",
+    "crypto-lib/=lib/crypto-lib/src/",
+    # crypto-lib imports its own files as "@solidity/...". A context-scoped remapping
+    # ("lib/crypto-lib/:@solidity/=...") would put this machine's absolute path into the
+    # contract metadata, so the prefix is mapped globally. Nothing else uses "@solidity/".
+    "@solidity/=lib/crypto-lib/src/",
+    "chengwenxi-ed25519/=lib/chengwenxi-ed25519/contracts/",
+]
+
+# lib/chengwenxi-ed25519 is Solidity ^0.6.8 and cannot be imported by 0.8 code. The gas
+# benchmark reaches it through test/bench/legacy/ChengwenxiEd25519Bench.sol, a wrapper with
+# `pragma solidity 0.6.12;`. With both compilers installed it can build in the same run; with
+# a single local compiler (`--use <path>`) it is built on its own into out/legacy and the 0.8
+# build skips it (commands in docs/GAS.md). The 0.8.27 test deploys it from its artifact.
+
+# Tests read the captured chain data and build artifacts (vm.readFile, vm.deployCode).
+fs_permissions = [
+    { access = "read", path = "../fixtures/mainnet" },
+    { access = "read", path = "./out" },
+]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+
+[fmt]
+# Modified third-party copies keep their upstream formatting, so the diff against the
+# original stays limited to the documented changes.
+ignore = ["src/**/vendor/**"]
