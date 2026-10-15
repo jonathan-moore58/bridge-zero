@@ -2,6 +2,7 @@
 pragma solidity 0.8.27;
 
 import {IFinalizedStateRoots} from "../grandpa/GrandpaLightClient.sol";
+import {StorageProofs} from "../trie/StorageProofs.sol";
 import {SubstrateProofs} from "../trie/SubstrateProofs.sol";
 
 /// A finalized-state-roots source that imports GRANDPA finality proofs (GrandpaLightClient).
@@ -16,7 +17,8 @@ interface IGrandpaImporter is IFinalizedStateRoots {
 /// @title ProvenBalance
 /// @notice Example consumer of the light client: proves the System.Account entry (and so the
 /// free balance) of a Portaldot account at a finalized block. Holds no funds, keeps no state
-/// and has no admin. What it emits is as trustworthy as the light client it reads.
+/// and has no admin. What it emits is as trustworthy as the light client it reads. Deployed
+/// linked to the StorageProofs library, which holds the trie walk.
 contract ProvenBalance {
     /// frame_system AccountInfo with pallet_balances AccountData, 80 bytes. Runtimes on the newer
     /// AccountData layout store `frozen` and `flags` in the last two fields.
@@ -71,7 +73,7 @@ contract ProvenBalance {
         bytes32 stateRoot;
         (stateRoot, number) = lightClient.stateRootOf(blockHash);
         bytes memory value =
-            SubstrateProofs.verifyMain(stateRoot, proofNodes, SubstrateProofs.systemAccountKey(accountId));
+            StorageProofs.verifyMain(stateRoot, proofNodes, SubstrateProofs.systemAccountKey(accountId));
         info = decodeAccountInfo(value);
     }
 
