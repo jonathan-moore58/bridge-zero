@@ -170,53 +170,103 @@ signatures, so a set of up to 29 authorities (threshold 20) still fits. Mainnet 
 
 ## Measured light client
 
-Measured on Oct 15, 2026 with the contracts as committed (`GrandpaLightClient`,
-`ProvenBalance`) and the fixtures in `fixtures/mainnet/` (set change 3894 to 3895 at
-#2,725,771, head #2,726,202). Every call is sent with the EIP-7825 cap, 16,777,216, as its gas
-limit. Three settings:
+Measured on Oct 15, 2026 with the fixtures in `fixtures/mainnet/` (set change 3894 to 3895 at
+#2,725,771, head #2,726,202). Every transaction, deployments included, is sent with the EIP-7825
+cap, 16,777,216, as its gas limit. Three settings:
 
 - **forge, Osaka**: the unit tests (`isolate`, so each call is a transaction with its 21,000
   base and calldata).
 - **Sepolia fork, Osaka**: `test/fork/SepoliaFork.t.sol` forks Sepolia at its latest block
-  (#11,921,071), deploys both contracts there and runs the sequence below. The fork reads
-  Sepolia's state but executes in forge's EVM under `evm_version = "osaka"`, so its gas equals
-  the unit tests' to the unit. It also checks that BLAKE2F (0x09) gives the RFC 7693
-  blake2b-512("abc") answer, on the fork and by `eth_call` to a Sepolia node.
+  (#11,921,273), deploys the contracts there (forge deploys and links the libraries) and runs the
+  sequence below. The fork reads Sepolia's state but executes in forge's EVM under
+  `evm_version = "osaka"`, so its gas equals the unit tests' to the unit. It also checks that
+  BLAKE2F (0x09) gives the RFC 7693 blake2b-512("abc") answer, on the fork and by `eth_call` to a
+  Sepolia node.
 - **Sepolia node**: `test/fork/simulate-sepolia.mjs` has a Sepolia node (reth 2.7.0 behind the
-  public endpoint) execute the same sequence with `eth_simulateV1` on top of block #11,921,066,
-  with validation on. Nothing is signed or sent; the sender's balance and nonce are state
-  overrides. This is the gas Sepolia charges today. Its `eth_config` reports a fork activated at
-  timestamp 1791294816 (Oct 6, 2026, 13:53:36 UTC, fork id `0x6c1d9423`), after Osaka; headers
-  now carry `blockAccessListHash`. Under it a plain call costs 15,000 gas, not 21,000, and new
-  code and new storage slots cost far more.
+  public endpoint) deploy every library and contract, linked, and execute the same sequence with
+  `eth_simulateV1` on top of block #11,921,275, with validation on. Nothing is signed or sent;
+  the sender's balance and nonce are state overrides. This is the gas Sepolia charges today. Its
+  `eth_config` reports a fork activated at timestamp 1791294816 (Oct 6, 2026, 13:53:36 UTC, fork
+  id `0x6c1d9423`), after Osaka; headers now carry `blockAccessListHash`. Under it a plain call
+  costs 15,000 gas, not 21,000, and new code and new storage slots cost far more: a deployment
+  costs about 1,565 gas per byte of runtime code.
 
-| Transaction (gas, share of 16,777,216) | forge, Osaka | Sepolia fork, Osaka | Sepolia node |
-|---|---:|---:|---:|
-| `initialize`, 10 keys | 1,186,600 (7.1%) | 1,186,600 (7.1%) | 4,793,020 (28.6%) |
-| Set-change import, 7 of 10 (`importHeader`, same keys) | 5,711,271 (34.0%) | 5,711,271 (34.0%) | 6,254,891 (37.3%) |
-| Head import, 7 of 10 (`importFinalityProof`) | 5,573,245 (33.2%) | | |
-| Head re-import, nothing written | 5,519,766 (32.9%) | | |
-| `importAndProve`, 7 of 10 + System.Account | 6,040,801 (36.0%) | 6,040,801 (36.0%) | 6,225,841 (37.1%) |
-| `importAndProve` again (re-verification) | 5,989,322 (35.7%) | | 5,984,122 (35.7%) |
-| Worst case: `initialize`, 25 keys | | | 10,108,398 (60.3%) |
-| **Worst case: 25 authorities (17 signatures) changing to 25 new keys** | 15,813,587 (94.3%) | | **23,127,247 (137.8%), above the cap** |
-| Deploy `SCL_EIP6565` (linked library) | | | 14,593,979 (87.0%) |
-| Deploy `GrandpaLightClient` | | 3,424,923 (20.4%) | **24,258,847 (144.6%), above the cap** |
-| Deploy `ProvenBalance` | | 2,246,644 (13.4%) | 15,884,014 (94.7%) |
+### Deployment: six pieces, each under the cap
 
-- **The mainnet path fits on Sepolia today.** `initialize`, the set change and `importAndProve`
-  succeed on the node with the cap as gas limit, and `importAndProve` returns and emits the
-  captured AccountInfo (free 1,317,759,664,389,290,317,915, nonce 246) for the head. A flipped
-  byte in the first counted signature makes it revert with `InvalidSignature(0, 0)` on the fork
-  and on the node.
-- **Two transactions need more than 16,777,216 gas on the node**: deploying
-  `GrandpaLightClient` (15,480 bytes of code) and the 25-to-25 set change (75 new key slots).
-  Both run out of gas with the cap as gas limit, and both succeed with a gas limit of 33,554,432,
-  which the node accepted under validation. Whether the public mempool takes a transaction with
-  a gas limit above 16,777,216 is not checked here; nothing was sent.
-- The mainnet set has 10 authorities, and the change measured above kept the same keys. A
-  change to 10 new keys writes 30 new slots, the part the new rules price up most (`initialize`
-  with 10 keys went from 1.19M to 4.79M), so it is the next case to run on the node.
+Deployed as one contract, `GrandpaLightClient` (15,480 bytes of code) needed 24,258,847 gas on
+the node, 144.6% of the cap. It is now split into linked libraries, which the contracts reach with
+DELEGATECALL:
+
+| Piece (deployment order) | What it holds | Code | Sepolia node (share of cap) |
+|---|---|---:|---:|
+| `SCL_EIP6565` (crypto-lib, unchanged) | ed25519 verification | 9,303 B | 14,593,979 (87.0%) |
+| `GrandpaCodec` | SCALE decoding: `Header`, `Justification`, `Scale`; classifies the header's FRNK authority change; locates the precommits in the justification | 6,384 B | 10,080,008 (60.1%) |
+| `AuthoritySets` (links SCL, GrandpaCodec) | key checks and on-chain point derivation, key-list storage, set install, checkpoints, the set-id probe of a rejected signature; runs on the light client's storage | 5,662 B | 8,963,376 (53.4%) |
+| `GrandpaLightClient` (links the three above) | storage, the signature loop, imports, admin, views | 9,518 B | **15,039,331 (89.6%)** |
+| `StorageProofs` | `SubstrateProofs.verifyMain` and the trie walk (`vendor/PolkadotTrie.sol`, unchanged) | 8,125 B | 12,772,438 (76.1%) |
+| `ProvenBalance` (links StorageProofs) | `importAndProve`, the System.Account key, AccountInfo decoding | 4,156 B | 6,636,465 (39.6%) |
+| **All six** | | | **68,085,597** |
+
+- Every deployment succeeds with the cap as gas limit. Before the split, `ProvenBalance` (10,136
+  bytes) needed 15,884,014 (94.7%).
+- The public interface is unchanged: every function, event, error and view of
+  `GrandpaLightClient` and `ProvenBalance` has the same signature, and the storage layout of the
+  light client is the same (it now sits in one struct, `AuthoritySets.Store`, at slot 0).
+  `admin`, `halted`, `paused` and `genesisHash` are explicit view functions instead of public
+  variables, with the same selectors and return types.
+- Two pieces stay above 12M: `SCL_EIP6565` (third-party code, not modified) and
+  `GrandpaLightClient`. The light client keeps the signature loop and the storage; moving the loop
+  into a library as well would bring it to about 7.5 KB (about 11.8M gas), at the cost of one more
+  DELEGATECALL per import.
+
+### Runtime
+
+| Transaction (gas, share of 16,777,216) | forge, Osaka | Sepolia fork, Osaka | Sepolia node, one contract (before) | Sepolia node, split (now) |
+|---|---:|---:|---:|---:|
+| `initialize`, 10 keys | 1,196,176 (7.1%) | 1,196,176 (7.1%) | 4,793,020 (28.6%) | 4,803,396 (28.6%) |
+| Set-change import, 7 of 10 (`importHeader`, same keys) | 5,778,325 (34.4%) | 5,778,325 (34.4%) | 6,254,891 (37.3%) | 6,322,745 (37.7%) |
+| Head import, 7 of 10 (`importFinalityProof`) | 5,593,948 (33.3%) | | | |
+| Head re-import, nothing written | 5,540,652 (33.0%) | | | |
+| `importAndProve`, 7 of 10 + System.Account | 6,068,563 (36.2%) | 6,068,563 (36.2%) | 6,225,841 (37.1%) | **6,254,403 (37.3%)** |
+| `importAndProve` again (re-verification) | 6,017,267 (35.9%) | | 5,984,122 (35.7%) | 6,012,867 (35.8%) |
+| `importAndProve`, one signature byte flipped (reverts) | | | | 2,466,177 |
+| Deploy `GrandpaLightClient` | | 2,136,007 (12.7%) | 24,258,847 (144.6%) | 15,039,331 (89.6%) |
+| Deploy `ProvenBalance` | | 953,593 (5.7%) | 15,884,014 (94.7%) | 6,636,465 (39.6%) |
+
+- **The library calls cost about 29,000 gas per `importAndProve`** (6,225,841 to 6,254,403 on
+  the node, +0.46%; 6,040,801 to 6,068,563 under Osaka): a cold account and a DELEGATECALL for
+  `GrandpaCodec` and `StorageProofs`, and the ABI copies of their arguments and results.
+- A set-change import costs about 68,000 more (+1.1%): `AuthoritySets.enactChange` decodes the
+  header a second time (36,337 gas for the set-change header) instead of receiving the key list.
+- `importAndProve` returns and emits the captured AccountInfo (free
+  1,317,759,664,389,290,317,915, nonce 246) for the head on the fork and on the node. A flipped
+  byte in the first counted signature makes it revert with `InvalidSignature(0, 0)` on both.
+
+### Set changes to new keys, and MAX_AUTHORITIES
+
+The mainnet set change above kept the same 10 keys, so it stored nothing new. A change to new keys
+derives and stores 3 slots per key, the part the new rules price up most. `simulate-sepolia.mjs
+--set-change N` measures the heaviest change for a set of N on the node: N authorities,
+threshold(N) = N - floor((N - 1) / 3) signatures, and N new keys (generated ed25519 keys, a
+header with a FRNK ScheduledChange, precommits signed with `node:crypto`).
+
+| N | Signatures | `initialize`, N keys | Set change to N new keys |
+|---:|---:|---:|---:|
+| 10 | 7 | 4,793,043 (28.6%) | 10,033,649 (59.8%) |
+| 13 | 9 | 5,855,453 (34.9%) | 12,668,512 (75.5%) |
+| 15 | 11 | 6,564,697 (39.1%) | 14,950,722 (89.1%) |
+| 16 | 11 | 6,919,224 (41.2%) | 15,303,427 (91.2%) |
+| 17 | 12 | 7,274,445 (43.4%) | 16,450,727 (98.1%) |
+| 18 | 13 | 7,629,152 (45.5%) | **17,579,515 (104.8%), does not fit** |
+| 25 | 17 | 10,119,545 (60.3%) | **23,226,929 (138.4%), does not fit** |
+
+- Each new key adds about 0.36M and each signature about 0.77M. Under Osaka the 25-to-25 change
+  is 15,910,288 (94.8%), which is what `MAX_AUTHORITIES = 25` was sized for.
+- **`MAX_AUTHORITIES = 25` is not safe under Sepolia's current rules**: from 18 authorities up, a
+  change to a new key list cannot be imported in one transaction, and the client would be stuck
+  on it. The largest set that fits is 17 (98.1%, no margin); **16 is the largest safe value**
+  (91.2%, 1.47M of headroom). Not changed yet: the Portaldot Mainnet V3.0 validator count decides
+  it. A change that keeps the same keys (as on mainnet so far) costs about 6.3M whatever N is.
 
 Reproduce, from `contracts/` (the `--offline --use` flags as in [Reproduce](#reproduce)):
 
@@ -230,8 +280,7 @@ SEPOLIA_FORK=1 forge test --match-path "test/fork/*" -vv
 
 # Sepolia node (Node.js 24, after forge build; exit code 2 when the RPC cannot be reached)
 node test/fork/simulate-sepolia.mjs
-forge test --match-test test_gas_maxSetChange_withinCap -vvvv > cache/worst-case-trace.txt
-node test/fork/simulate-sepolia.mjs --worst-case cache/worst-case-trace.txt
+node test/fork/simulate-sepolia.mjs --set-change 10 13 15 16 17 18 25
 ```
 
 ## Reproduce
