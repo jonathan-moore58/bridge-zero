@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity 0.8.27;
 
+import {Vm} from "forge-std/Test.sol";
 import {SCL_EIP6565} from "crypto-lib/lib/libSCL_EIP6565.sol";
 import {SCL_sha512} from "crypto-lib/hash/SCL_sha512.sol";
 import {ModInv} from "crypto-lib/modular/SCL_modular.sol";
@@ -22,6 +23,8 @@ contract LightClientSecurityTest is LightClientBase {
     uint64 internal constant SET_ID = 40;
     uint32 internal constant START = 1000;
     uint64 internal constant ROUND = 9;
+    /// _hintFor: leave no precommit out.
+    uint256 internal constant NOBODY = type(uint256).max;
 
     /// The ed25519 points of order 4 and 8, as 32-byte keys (the identity and the point of
     /// order 2 have x = 0 and were already rejected).
@@ -168,6 +171,51 @@ contract LightClientSecurityTest is LightClientBase {
         );
     }
 
+    // ------------------------------------------------------------------ more precommits than the threshold
+
+    /// Mainnet's 10 authorities need 7 signatures, and a justification can carry 8. Any 7 of the
+    /// 8 import the header, and so do all 8; positions follow the justification's order, not the
+    /// authority order.
+    function test_eightPrecommits_anySevenOrAllEightImport() public {
+        lc.initialize(GENESIS, SET_ID, _keys(0, 10), checkpoint);
+        assertEq(lc.threshold(), 7);
+        bytes memory h1 = _next(0);
+        uint256[] memory who = _eightOfTen();
+        bytes memory j = _justify(h1, START + 1, SET_ID, who);
+
+        vm.recordLogs();
+        lc.importHeader(h1, j, _hintFor(who, 4));
+        assertEq(_counted(vm.getRecordedLogs()), 7, "7 counted, authority 4 left out");
+        // each other precommit left out, then none: verified again, nothing written
+        for (uint256 p = 0; p < who.length; p++) {
+            lc.importHeader(h1, j, _hintFor(who, who[p]));
+        }
+        lc.importHeader(h1, j, _hintFor(who, NOBODY));
+        assertEq(vm.getRecordedLogs().length, 0, "re-imports write nothing");
+        (bytes32 latest, uint32 number) = lc.latestFinalized();
+        assertEq(latest, _hash(h1));
+        assertEq(number, START + 1);
+    }
+
+    /// A precommit left out of the hint is not read: with authority 7's signature broken, the
+    /// other 7 still import the header, and counting the broken one reverts. Substrate rejects
+    /// such a justification as a whole; the client only needs 7 distinct valid signatures on the
+    /// target, so its safety rests on the counted precommits alone.
+    function test_uncountedPrecommit_isNotRead() public {
+        lc.initialize(GENESIS, SET_ID, _keys(0, 10), checkpoint);
+        bytes memory h1 = _next(0);
+        uint256[] memory who = _eightOfTen();
+        // round 8 + hash 32 + number 4 + compact(8) 1 = 45 bytes before the precommits; authority
+        // 7 is at position 7, and s starts 68 bytes into its precommit
+        bytes memory broken = _flip(_justify(h1, START + 1, SET_ID, who), 45 + 7 * 132 + 68);
+        _expectFail(
+            _importCall(h1, broken, _hintFor(who, NOBODY)),
+            abi.encodeWithSelector(GrandpaLightClient.InvalidSignature.selector, 6, 7)
+        );
+        lc.importHeader(h1, broken, _hintFor(who, 7));
+        assertTrue(lc.isImported(_hash(h1)));
+    }
+
     // ------------------------------------------------------------------ payload binding
 
     function test_payload_boundToSetIdRoundAndHeader() public {
@@ -292,6 +340,30 @@ contract LightClientSecurityTest is LightClientBase {
         assertEq(lc.currentSetId(), SET_ID + 1);
     }
 
+    /// Each extra precommit counted adds one signature check. The relayer counts exactly the
+    /// threshold, but even all 10 of mainnet's authorities fit in one transaction.
+    function test_gas_sevenEightAndTenSignatures() public {
+        lc.initialize(GENESIS, SET_ID, _keys(0, 10), checkpoint);
+        uint256[] memory who = _eightOfTen();
+        bytes memory h1 = _next(0);
+        uint256 seven = _send(
+            "10 authorities, 8 precommits, 7 counted",
+            _importCall(h1, _justify(h1, START + 1, SET_ID, who), _hintFor(who, 4))
+        );
+        bytes memory h2 = _header(_hash(h1), START + 2, new bytes[](0), 0);
+        uint256 eight = _send(
+            "10 authorities, 8 precommits, 8 counted",
+            _importCall(h2, _justify(h2, START + 2, SET_ID, who), _hintFor(who, NOBODY))
+        );
+        bytes memory h3 = _header(_hash(h2), START + 3, new bytes[](0), 0);
+        uint256 ten = _send(
+            "10 authorities, 10 precommits, 10 counted",
+            _importCall(h3, _justify(h3, START + 3, SET_ID, _range(0, 10)), _seq(10))
+        );
+        assertGt(eight, seven);
+        assertGt(ten, eight);
+    }
+
     // ------------------------------------------------------------------ helpers
 
     function _initFour() internal {
@@ -349,6 +421,37 @@ contract LightClientSecurityTest is LightClientBase {
             out[2 * i] = bytes1(uint8(i));
             out[2 * i + 1] = bytes1(uint8(i));
         }
+    }
+
+    /// 8 of 10 authorities in a scrambled order, as mainnet lists them (6 and 8 did not vote).
+    function _eightOfTen() internal pure returns (uint256[] memory who) {
+        uint256[8] memory order = [uint256(5), 3, 0, 4, 9, 2, 1, 7];
+        who = new uint256[](8);
+        for (uint256 i = 0; i < 8; i++) {
+            who[i] = order[i];
+        }
+    }
+
+    /// The hint for precommits by `who` (one authority per position), leaving out authority
+    /// `leaveOut`: (position, authority) pairs in increasing authority order.
+    function _hintFor(uint256[] memory who, uint256 leaveOut) internal pure returns (bytes memory out) {
+        for (uint256 a = 0; a < 256; a++) {
+            if (a == leaveOut) continue;
+            for (uint256 p = 0; p < who.length; p++) {
+                if (who[p] == a) out = bytes.concat(out, abi.encodePacked(uint8(p), uint8(a)));
+            }
+        }
+    }
+
+    /// The signature count of the HeaderImported event in `logs`.
+    function _counted(Vm.Log[] memory logs) internal pure returns (uint256 signatures) {
+        for (uint256 i = 0; i < logs.length; i++) {
+            if (logs[i].topics[0] == GrandpaLightClient.HeaderImported.selector) {
+                (,, signatures) = abi.decode(logs[i].data, (bytes32, uint64, uint256));
+                return signatures;
+            }
+        }
+        revert("no HeaderImported event");
     }
 
     /// One encoded precommit by synthetic authority `who` on (hash, number) under `setId`.
