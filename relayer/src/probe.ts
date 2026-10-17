@@ -630,7 +630,7 @@ async function probe(rpcUrl: string, evmUrl: string | undefined, accountArg: Uin
     else if (readOutcome.verified) gate("Read proofs served and verified", "PASS", readOutcome.detail);
     else gate("Read proofs served and verified", readOutcome.v1 ? "WARN" : "FAIL", readOutcome.detail);
     if (readOutcome.verified && readOutcome.v1) {
-      gate("Trie V1 on chain", "WARN", "trie V1 proof verified off-chain by trie.ts; the Solidity walker has not run a V1 proof yet");
+      gate("Trie V1 on chain", "PASS", "trie V1 proof verified off-chain by trie.ts; the Solidity walker is tested on captured V3 testnet trie V1 proofs (contracts/test/unit/V3Testnet.t.sol)");
     }
     gate(
       "Child read proofs served",
