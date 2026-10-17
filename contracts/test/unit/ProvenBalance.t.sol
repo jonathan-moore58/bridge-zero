@@ -213,8 +213,9 @@ abstract contract ProvenBalanceSnapshotTest is UnitFixtures {
 
     function _expectFail(bytes memory data, bytes memory reason) internal {
         vm.expectRevert(reason);
+        // Under expectRevert a low-level call returns true only when the expected revert happened.
         (bool ok,) = address(pb).call{gas: TX_GAS_CAP}(data);
-        ok;
+        assertTrue(ok, "the expected revert did not happen");
     }
 
     function _label(string memory what) internal pure returns (string memory) {

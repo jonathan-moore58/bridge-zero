@@ -40,8 +40,9 @@ abstract contract LightClientBase is UnitFixtures {
     /// Expects `data` to revert with exactly `reason`, sent with the per-transaction cap.
     function _expectFail(bytes memory data, bytes memory reason) internal {
         vm.expectRevert(reason);
+        // Under expectRevert a low-level call returns true only when the expected revert happened.
         (bool ok,) = address(lc).call{gas: TX_GAS_CAP}(data);
-        ok;
+        assertTrue(ok, "the expected revert did not happen");
     }
 
     function _flip(bytes memory data, uint256 at) internal pure returns (bytes memory out) {

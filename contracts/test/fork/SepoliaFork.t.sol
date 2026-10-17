@@ -210,8 +210,9 @@ contract SepoliaForkTest is Test {
         bytes memory bad = bytes.concat(head.finalityProof);
         bad[at] ^= 0x01;
         vm.expectRevert(abi.encodeWithSelector(GrandpaLightClient.InvalidSignature.selector, 0, head.firstIdx));
+        // Under expectRevert a low-level call returns true only when the expected revert happened.
         (bool ok,) = address(pb).call{gas: TX_GAS_CAP}(_proveCall(bad));
-        ok;
+        assertTrue(ok, "the expected revert did not happen");
         console.log("Sepolia fork: one flipped signature byte reverts with InvalidSignature");
     }
 
