@@ -1,0 +1,151 @@
+{
+  "provenance": {
+    "chain": "PortaldotV3 Test",
+    "rpc": "wss://test-node-v3.portaldot.dev",
+    "genesisHash": "0xd4f9acbcf7f52388d8b095abe3c198d19fc510e0343e643e87cfbccb155283bd",
+    "runtime": {
+      "specName": "portaldot-v3",
+      "specVersion": 3002,
+      "implName": "portaldot-v3-node",
+      "implVersion": 0,
+      "transactionVersion": 2,
+      "stateVersion": 1
+    },
+    "block": {
+      "number": 71745,
+      "hash": "0x547882883a90fa526b14dd725ec67ee1be131c365b6f37a4084814a0020de6bf"
+    },
+    "setId": 20,
+    "capturedAt": "2026-10-17T08:15:08.104Z",
+    "tool": {
+      "name": "@bridge-zero/relayer",
+      "version": "0.1.0",
+      "script": "src/capture.ts",
+      "gitCommit": "a2433378997733f2af968918df0aa2884709e6a7",
+      "gitDirty": false
+    }
+  },
+  "kind": "index",
+  "about": "Index of one capture run: the files written, the justifications seen on the subscription, and notes.",
+  "node": {
+    "version": "3.0.0-dev-fddd43141f2"
+  },
+  "chainProperties": {
+    "ss58Format": 42,
+    "tokenDecimals": 14,
+    "tokenSymbol": "tPOT"
+  },
+  "files": [
+    {
+      "file": "finality-proof-head.json",
+      "kind": "finality-proof",
+      "block": 71745,
+      "setId": 20,
+      "summary": "round 935, 2 precommits, justification 310 B, header 327 B, finality proof 345 B"
+    },
+    {
+      "file": "authority-set.json",
+      "kind": "authority-set",
+      "block": 71745,
+      "setId": 20,
+      "summary": "set 20, 2 authorities, threshold 2"
+    },
+    {
+      "file": "set-change.json",
+      "kind": "set-change",
+      "block": 71539,
+      "setId": 19,
+      "summary": "ScheduledChange (delay 0) to set 20, round 16178, 2 precommits, justification 310 B, header 527 B, FRNK log 86 B"
+    },
+    {
+      "file": "stored-justification-512.json",
+      "kind": "stored-justification",
+      "block": 71680,
+      "setId": 20,
+      "summary": "round 638, 2 precommits, justification 310 B, header 230 B"
+    },
+    {
+      "file": "account-proof.json",
+      "kind": "storage-proof",
+      "block": 71745,
+      "setId": 20,
+      "summary": "8 nodes, 2198 B, value 80 B"
+    }
+  ],
+  "watch": {
+    "method": "grandpa_subscribeJustifications",
+    "seconds": 0,
+    "minPrecommits": 8,
+    "seen": [
+      {
+        "number": 71745,
+        "hash": "0x547882883a90fa526b14dd725ec67ee1be131c365b6f37a4084814a0020de6bf",
+        "round": 935,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-17T08:15:08.161Z"
+      },
+      {
+        "number": 71746,
+        "hash": "0x34f4323897b211bf60b8a1b212f4a54b2cb3cf0ccfdd980645957fe74853ea39",
+        "round": 939,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-17T08:15:13.501Z"
+      },
+      {
+        "number": 71747,
+        "hash": "0x75a3ec764dba4accb5c3a6ed01b9a8ce8040f48a703bc4720d488e4d912cce81",
+        "round": 944,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-17T08:15:20.173Z"
+      },
+      {
+        "number": 71748,
+        "hash": "0x7d9fda189583806b4a209beb3b7b790999226cde2104beee41abbe7eba374744",
+        "round": 948,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-17T08:15:25.514Z"
+      },
+      {
+        "number": 71749,
+        "hash": "0x0a7e0fd5a27f72c919aa3d39d653fd5edba880b8611fd426240ae4efb067ac96",
+        "round": 953,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-17T08:15:32.207Z"
+      },
+      {
+        "number": 71750,
+        "hash": "0x3ad95f3509e25d27a2892f7b43b886d4320d71870ea1eb07252b76ba2664cab6",
+        "round": 957,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-17T08:15:37.575Z"
+      },
+      {
+        "number": 71751,
+        "hash": "0x7713531e3d958fde5a54f27251d9db8a3ed99945ce773180addbcc793339642b",
+        "round": 962,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-17T08:15:44.202Z"
+      },
+      {
+        "number": 71752,
+        "hash": "0x09bfb02909ccc4917ae016fc48358a8565d24d5e35eb41d98f1f551da38ba733",
+        "round": 966,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-17T08:15:49.547Z"
+      }
+    ]
+  },
+  "notes": [
+    "Set changes found by scanning 3788 headers, #71745 back to #67958: #71539 (ScheduledChange, delay 0, 2 keys, weights {1}), #67958 (ScheduledChange, delay 0, 2 keys, weights {1}).",
+    "The head's set has 2 authorities, so no justification carries 8 or more precommits; the watch did not wait for one.",
+    "These files chain together: a light client initialized with set-change.json's signing set (checkpoint: its parentHeader, or signingSet.announced.header, the change that started that set) can import set-change.json's header (moving to the next set), then finality-proof-head.json, then check account-proof.json against that header's state_root."
+  ]
+}

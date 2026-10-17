@@ -39,6 +39,7 @@ remappings = [
 fs_permissions = [
     { access = "read", path = "../fixtures/mainnet" },
     { access = "read", path = "../fixtures/mainnet-pre-v3" },
+    { access = "read", path = "../fixtures/v3-testnet" },
 ]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
