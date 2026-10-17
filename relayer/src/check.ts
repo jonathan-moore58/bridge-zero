@@ -7,6 +7,8 @@
 //     flip in any proof node makes the walk fail;
 //   - tampered inputs fail: a signature byte, set_id +/- 1, round + 1, too few or duplicated
 //     precommits, a header byte;
+//   - a signing set known only from the change log that started it (captures from nodes that
+//     discard old state) is that log's list, in a header that hashes to its block hash;
 //   - the files fit together the way a light client would use them.
 //
 //   npm run check -- [--dir <fixtures dir>]
@@ -17,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { bytesToHex, equalBytes, flipByte, hexToBytes, leToBigInt, shortHex } from "./bytes.js";
 import type {
+  AnnouncedJson,
   AuthorityJson,
   AuthoritySetFixture,
   AuthoritySetJson,
@@ -54,6 +57,7 @@ function assert(condition: unknown, message: string): asserts condition {
 class Report {
   passed = 0;
   failed = 0;
+  skipped = 0;
 
   heading(text: string): void {
     console.log(`\n${text}`);
@@ -70,6 +74,12 @@ class Report {
       this.failed += 1;
       return false;
     }
+  }
+
+  /** A check that does not apply to this snapshot: printed, and not counted as a pass. */
+  skip(label: string, why: string): void {
+    console.log(`  skip  ${label}: ${why}`);
+    this.skipped += 1;
   }
 }
 
@@ -99,7 +109,13 @@ function checkProvenance(f: Fixture): void {
     assert(Number.isInteger(p.setId), "set_id missing");
     assert(/Z$/.test(p.capturedAt) && !Number.isNaN(Date.parse(p.capturedAt)), "capture time is not a UTC timestamp");
     assert(p.tool?.name && p.tool.version, "tool version missing");
-    return `${p.chain}, ${p.runtime.specName} ${p.runtime.specVersion}, #${fmt(p.block.number)}, set ${p.setId}, ${p.capturedAt}, ${p.tool.name} ${p.tool.version}`;
+    const readAt = p.runtime.readAt;
+    if (readAt) assert(readAt.number >= p.block.number && hexToBytes(readAt.hash).length === 32, "runtime readAt is not a later block");
+    const upgraded = p.runtime.upgradedAfter;
+    if (upgraded !== undefined) assert(readAt !== undefined && upgraded > p.block.number && upgraded <= readAt.number, "upgradedAfter is not between the block and readAt");
+    const where = readAt ? ` (read at #${fmt(readAt.number)}${upgraded !== undefined ? `, after an upgrade at #${fmt(upgraded)}` : ""})` : "";
+    return `${p.chain}, ${p.runtime.specName} ${p.runtime.specVersion}${where}, ` +
+      `#${fmt(p.block.number)}, set ${p.setId}, ${p.capturedAt}, ${p.tool.name} ${p.tool.version}`;
   });
 }
 
@@ -132,20 +148,64 @@ function sameAuthorities(a: AuthorityJson[], b: AuthorityJson[]): boolean {
   return a.length === b.length && a.every((x, i) => x.id === b[i].id && x.weight === b[i].weight);
 }
 
+/**
+ * A set read from state (setIdStorage and runtimeCall), known from the change log that started
+ * it (announced), or both, in which case both give the listed authorities.
+ */
 function checkAuthoritySet(s: AuthoritySetJson, label: string): CheckedSet | undefined {
-  return step(`${label}: authority list and set id`, () => {
-    const list = decodeAuthorityList(hexToBytes(s.runtimeCall.scale));
-    const decoded: AuthorityJson[] = list.map((a) => ({ id: bytesToHex(a.id), weight: Number(a.weight) }));
-    assert(sameAuthorities(decoded, s.authorities), "decoded runtime-call list differs from the listed authorities");
-    assert(s.setIdStorage.key === bytesToHex(storageKey("Grandpa", "CurrentSetId")), "set id storage key is not twox128(Grandpa) ++ twox128(CurrentSetId)");
-    const setId = decodeU64(hexToBytes(s.setIdStorage.scale), "Grandpa.CurrentSetId");
-    assert(setId === BigInt(s.setId), `stored set id ${setId} != ${s.setId}`);
-    assert(new Set(decoded.map((a) => a.id)).size === decoded.length, "duplicate authority keys");
-    assert(decoded.every((a) => a.weight === 1), "an authority weight is not 1");
+  let set: CheckedSet | undefined;
+  if (s.setIdStorage !== undefined || s.runtimeCall !== undefined || s.announced === undefined) {
+    set = step(`${label}: authority list and set id`, () => {
+      assert(s.runtimeCall !== undefined || s.setIdStorage !== undefined, "neither read from state (setIdStorage, runtimeCall) nor announced by a change log");
+      assert(s.runtimeCall && s.setIdStorage, "only one of setIdStorage and runtimeCall is present");
+      const list = decodeAuthorityList(hexToBytes(s.runtimeCall.scale));
+      const decoded: AuthorityJson[] = list.map((a) => ({ id: bytesToHex(a.id), weight: Number(a.weight) }));
+      assert(sameAuthorities(decoded, s.authorities), "decoded runtime-call list differs from the listed authorities");
+      assert(s.setIdStorage.key === bytesToHex(storageKey("Grandpa", "CurrentSetId")), "set id storage key is not twox128(Grandpa) ++ twox128(CurrentSetId)");
+      const setId = decodeU64(hexToBytes(s.setIdStorage.scale), "Grandpa.CurrentSetId");
+      assert(setId === BigInt(s.setId), `stored set id ${setId} != ${s.setId}`);
+      assert(new Set(decoded.map((a) => a.id)).size === decoded.length, "duplicate authority keys");
+      assert(decoded.every((a) => a.weight === 1), "an authority weight is not 1");
+      assert(s.count === decoded.length && s.threshold === threshold(decoded.length), "count or threshold field is wrong");
+      return {
+        value: { setId, ids: list.map((a) => a.id), authorities: decoded },
+        detail: `set ${setId} at #${fmt(s.at.number)}, ${decoded.length} authorities of weight 1, threshold ${threshold(decoded.length)}`,
+      };
+    });
+    if (!set) return undefined;
+  }
+  if (s.announced !== undefined) {
+    const announced = checkAnnounced(s, s.announced, label);
+    if (!announced) return undefined;
+    set ??= announced;
+  }
+  return set;
+}
+
+/** A set as announced by the FRNK ScheduledChange (or ForcedChange) that started it. */
+function checkAnnounced(s: AuthoritySetJson, a: AnnouncedJson, label: string): CheckedSet | undefined {
+  const header = checkHeader(a.header, `${label}: header of the change that started it`);
+  if (!header) return undefined;
+  return step(`${label}: authority list from that change log`, () => {
+    const changes = grandpaLogs(header).filter((l) => l.log.kind === "ScheduledChange" || l.log.kind === "ForcedChange");
+    assert(changes.length === 1, `${changes.length} FRNK set changes in that header`);
+    const { item, log } = changes[0];
+    assert(log.kind === "ScheduledChange" || log.kind === "ForcedChange", `a ${log.kind} log`);
+    assert(bytesToHex(item.payload) === a.scheduledChange.scale, "scheduledChange.scale is not the digest payload");
+    assert(log.kind === a.scheduledChange.kind && log.delay === a.scheduledChange.delay, "kind or delay differs from the decoded log");
+    if (s.setIdStorage === undefined) assert(log.kind === "ScheduledChange" && log.delay === 0, "a set known only from its change log must start with a ScheduledChange of delay 0");
+    const decoded: AuthorityJson[] = log.nextAuthorities.map((x) => ({ id: bytesToHex(x.id), weight: Number(x.weight) }));
+    assert(sameAuthorities(decoded, a.scheduledChange.nextAuthorities ?? []), "nextAuthorities differ from the decoded log");
+    assert(sameAuthorities(decoded, s.authorities), "the listed authorities are not the ones the log announces");
+    if (s.setIdStorage === undefined) assert(s.at.hash === a.header.hash && s.at.number === header.number, "`at` is not the block that carries the log");
+    assert(new Set(decoded.map((x) => x.id)).size === decoded.length, "duplicate authority keys");
+    assert(decoded.every((x) => x.weight === 1), "an authority weight is not 1");
     assert(s.count === decoded.length && s.threshold === threshold(decoded.length), "count or threshold field is wrong");
     return {
-      value: { setId, ids: list.map((a) => a.id), authorities: decoded },
-      detail: `set ${setId} at #${fmt(s.at.number)}, ${decoded.length} authorities of weight 1, threshold ${threshold(decoded.length)}`,
+      value: { setId: BigInt(s.setId), ids: log.nextAuthorities.map((x) => x.id), authorities: decoded },
+      detail:
+        `${log.kind} (delay ${log.delay}) at #${fmt(header.number)}: ${decoded.length} authorities of weight 1, threshold ${threshold(decoded.length)}; ` +
+        `set ${s.setId}, an id the log does not carry (the signatures fix it)`,
     };
   });
 }
@@ -173,8 +233,13 @@ function checkJustifiedHeader(f: JustifiedHeaderFixture): { header: Header; just
   report.check("provenance matches the header and the signing set", () => {
     assert(f.provenance.block.hash === f.header.hash && f.provenance.block.number === header.number, "provenance block is not this header");
     assert(BigInt(f.provenance.setId) === set.setId, `provenance set_id ${f.provenance.setId} != signing set ${set.setId}`);
+    const announced = f.signingSet.announced;
+    if (announced) assert(announced.header.number < header.number, "the signing set was announced at or after this block");
+    const started = announced ? `; announced at #${fmt(announced.header.number)}, ${fmt(header.number - announced.header.number)} blocks earlier` : "";
+    // Without the state, the set is known from its change log only (checked with the set above).
+    if (f.signingSet.setIdStorage === undefined) return `signing set from the change log${started}`;
     assert(f.signingSet.at.hash === bytesToHex(header.parentHash) && f.signingSet.at.number === header.number - 1, "signing set was not read at the parent block");
-    return "signing set read at the parent block";
+    return `signing set read at the parent block${started}`;
   });
 
   const justification = step("justification decodes", () => {
@@ -273,7 +338,7 @@ function checkSetChange(f: SetChangeFixture): ReturnType<typeof checkJustifiedHe
   if (parent) {
     report.check("parent header is the set-change block's parent", () => {
       assert(f.parentHeader.hash === bytesToHex(checked.header.parentHash), "parentHeader is not the parent");
-      assert(f.signingSet.at.hash === f.parentHeader.hash, "signing set was not read at this parent");
+      if (f.signingSet.setIdStorage !== undefined) assert(f.signingSet.at.hash === f.parentHeader.hash, "signing set was not read at this parent");
       return `#${fmt(parent.number)} ${shortHex(f.parentHeader.hash)}`;
     });
   }
@@ -286,7 +351,10 @@ function checkAuthoritySetFixture(f: AuthoritySetFixture): CheckedSet | undefine
     assert(f.provenance.block.hash === f.authoritySet.at.hash && f.provenance.block.number === f.authoritySet.at.number, "provenance block differs");
     assert(f.provenance.setId === f.authoritySet.setId, "provenance set_id differs");
   });
-  report.check(":grandpa_authorities matches the runtime call", () => {
+  // Older runtimes keep the list under the well-known key, newer ones in Grandpa.Authorities.
+  const inPallet = f.palletStorage?.scale ?? null;
+  if (f.wellKnownKey.scale === null && inPallet !== null) report.skip(":grandpa_authorities matches the runtime call", "not set by this runtime, which keeps the list in Grandpa.Authorities");
+  else report.check(":grandpa_authorities matches the runtime call", () => {
     assert(f.wellKnownKey.key === bytesToHex(GRANDPA_AUTHORITIES_KEY), "key is not :grandpa_authorities");
     assert(f.wellKnownKey.scale, "value missing");
     const { version, authorities } = decodeVersionedAuthorityList(hexToBytes(f.wellKnownKey.scale));
@@ -294,6 +362,17 @@ function checkAuthoritySetFixture(f: AuthoritySetFixture): CheckedSet | undefine
     assert(sameAuthorities(list, f.authoritySet.authorities), "lists differ");
     return `version ${version}, same ${list.length} keys in the same order`;
   });
+  if (f.palletStorage && inPallet === null) report.skip("Grandpa.Authorities matches the runtime call", "not set by this runtime, which keeps the list under :grandpa_authorities");
+  else if (f.palletStorage) {
+    report.check("Grandpa.Authorities matches the runtime call", () => {
+      assert(f.palletStorage?.key === bytesToHex(storageKey("Grandpa", "Authorities")), "key is not twox128(Grandpa) ++ twox128(Authorities)");
+      assert(inPallet !== null, "value missing");
+      const list: AuthorityJson[] = decodeAuthorityList(hexToBytes(inPallet)).map((a) => ({ id: bytesToHex(a.id), weight: Number(a.weight) }));
+      assert(sameAuthorities(list, f.authoritySet.authorities), "lists differ");
+      assert(inPallet === f.authoritySet.runtimeCall.scale, "not the same bytes as the runtime call");
+      return `same ${list.length} keys in the same order, same bytes as the runtime call`;
+    });
+  }
   return set;
 }
 
@@ -322,7 +401,9 @@ function checkStorageProof(f: StorageProofFixture): void {
     assert(equalBytes(read.value, value), "the proof leads to a different value");
     assert(read.itemsUsed === nodes.length, `${nodes.length - read.itemsUsed} proof nodes were not needed`);
     if (f.trieVersion === 0) assert(read.hashedValues === 0, "a hashed value node in a V0 trie");
-    return `${nodes.length} nodes (${sizes.join(", ")} B; ${fmt(f.proof.bytes)} B total), all used, root ${shortHex(header.stateRoot)}`;
+    // Trie V1 keeps values over 32 bytes out of their leaf, behind their hash, as a proof item of their own.
+    const where = f.trieVersion === 1 ? `; value ${read.hashedValues > 0 ? "behind its hash (a proof item of its own)" : "inline in its node"}` : "";
+    return `${nodes.length} nodes (${sizes.join(", ")} B; ${fmt(f.proof.bytes)} B total), all used, root ${shortHex(header.stateRoot)}${where}`;
   });
   report.check("value decodes as AccountInfo", () => {
     const info = decodeAccountInfo(value);
@@ -421,7 +502,7 @@ function main(): void {
 
   checkTogether(loaded, results);
 
-  console.log(`\n${report.failed === 0 ? "All checks passed" : "Some checks FAILED"}: ${report.passed} passed, ${report.failed} failed.`);
+  console.log(`\n${report.failed === 0 ? "All checks passed" : "Some checks FAILED"}: ${report.passed} passed, ${report.failed} failed${report.skipped ? `, ${report.skipped} skipped` : ""}.`);
   process.exitCode = report.failed === 0 ? 0 : 1;
 }
 
@@ -485,7 +566,8 @@ function checkTogether(loaded: Map<string, Fixture>, r: CaptureResults): void {
       assert(sc.header.number <= head.header.number, "set change is after the head");
       const result = verifyJustification(head.justification, next, BigInt(sc.newSetId));
       assert(result.ok, `head justification fails under the announced set: ${result.problems.join("; ")}`);
-      return `set ${sc.signingSet.setId} (checkpoint #${fmt(sc.parentHeader.number)}) -> #${fmt(sc.header.number)} -> set ${sc.newSetId} -> head #${fmt(head.header.number)} (${result.valid}/${result.required})`;
+      const checkpoints = `#${fmt(sc.parentHeader.number)}${sc.signingSet.announced ? ` or #${fmt(sc.signingSet.announced.header.number)}` : ""}`;
+      return `set ${sc.signingSet.setId} (checkpoint ${checkpoints}) -> #${fmt(sc.header.number)} -> set ${sc.newSetId} -> head #${fmt(head.header.number)} (${result.valid}/${result.required})`;
     });
   }
 }

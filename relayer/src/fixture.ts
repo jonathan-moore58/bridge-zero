@@ -20,6 +20,14 @@ export interface RuntimeInfo {
   transactionVersion: number;
   /** Reported only by runtimes new enough to have state versions; older ones use trie V0. */
   stateVersion?: number;
+  /**
+   * Set when the node no longer had the state of the block this describes: the version was read
+   * at this later block instead. Unless upgradedAfter is set, no header after the block up to it
+   * carries RuntimeEnvironmentUpdated, so this is the block's version.
+   */
+  readAt?: BlockRef;
+  /** The first block after this one that upgraded the runtime: the version read at readAt is newer than the block's. */
+  upgradedAfter?: number;
 }
 
 export interface ToolInfo {
@@ -86,18 +94,38 @@ export interface AuthorityJson {
   weight: number;
 }
 
+/** The FRNK change log that started an authority set, and the header that carries it. */
+export interface AnnouncedJson {
+  header: HeaderJson;
+  scheduledChange: GrandpaLogJson;
+}
+
 export interface AuthoritySetJson {
   setId: number;
-  /** The block whose state holds this set. */
+  /**
+   * The block whose state holds this set: where it was read, or, for a set known only from its
+   * change log (no setIdStorage), the block that carries that log.
+   */
   at: BlockRef;
   count: number;
   threshold: number;
   authorities: AuthorityJson[];
-  /** Grandpa.CurrentSetId at `at`: storage key and raw u64 value. */
-  setIdStorage: { key: Hex; scale: Hex };
-  /** state_call GrandpaApi_grandpa_authorities at `at`: raw Vec<(AuthorityId, u64)>. */
-  runtimeCall: { method: string; scale: Hex };
+  /** Grandpa.CurrentSetId at `at`: storage key and raw u64 value. Absent if the node no longer had that state. */
+  setIdStorage?: { key: Hex; scale: Hex };
+  /** state_call GrandpaApi_grandpa_authorities at `at`: raw Vec<(AuthorityId, u64)>. Absent if the node no longer had that state. */
+  runtimeCall?: { method: string; scale: Hex };
+  /**
+   * The change that started this set. The keys are in its log; the set id is not, and comes from
+   * counting change logs back from a block whose state was read; the signatures checked under
+   * the set confirm both. The header is a checkpoint for a light client that starts with this
+   * set. Present in set-change captures whenever the scan of headers reached that change, and
+   * wherever the state was gone.
+   */
+  announced?: AnnouncedJson;
 }
+
+/** An authority set read from chain state. */
+export type StateAuthoritySetJson = AuthoritySetJson & Required<Pick<AuthoritySetJson, "setIdStorage" | "runtimeCall">>;
 
 export type FixtureKind =
   | "index"
@@ -142,15 +170,23 @@ export interface SetChangeFixture extends JustifiedHeaderFixture {
   kind: "set-change";
   newSetId: number;
   scheduledChange: GrandpaLogJson;
-  /** The block before the change: a checkpoint header inside the outgoing set. */
+  /**
+   * The block before the change: a checkpoint header inside the outgoing set. signingSet.announced,
+   * when present, holds another one: the change before this one, where the outgoing set starts.
+   */
   parentHeader: HeaderJson;
 }
 
 export interface AuthoritySetFixture extends FixtureBase {
   kind: "authority-set";
-  authoritySet: AuthoritySetJson;
+  authoritySet: StateAuthoritySetJson;
   /** The same list under the well-known storage key, as a cross-check. */
   wellKnownKey: { key: Hex; scale: Hex | null };
+  /**
+   * The same list in Grandpa.Authorities (no version byte), where newer runtimes keep it instead
+   * of under the well-known key. Not in captures made before it was added.
+   */
+  palletStorage?: { key: Hex; scale: Hex | null };
 }
 
 export interface StorageProofFixture extends FixtureBase {
@@ -250,7 +286,7 @@ export function authoritySetJson(args: {
   setIdKey: Uint8Array;
   setIdScale: Uint8Array;
   runtimeCallScale: Uint8Array;
-}): AuthoritySetJson {
+}): StateAuthoritySetJson {
   return {
     setId: toSafeNumber(args.setId, "set id"),
     at: args.at,
@@ -259,6 +295,26 @@ export function authoritySetJson(args: {
     authorities: authoritiesJson(args.authorities),
     setIdStorage: { key: bytesToHex(args.setIdKey), scale: bytesToHex(args.setIdScale) },
     runtimeCall: { method: "GrandpaApi_grandpa_authorities", scale: bytesToHex(args.runtimeCallScale) },
+  };
+}
+
+/** The change log `log` (payload `payload`) in `header` (hash `hash`), which starts a set. */
+export function announcedJson(header: Header, hash: Uint8Array, log: GrandpaLog, payload: Uint8Array): AnnouncedJson {
+  if (log.kind !== "ScheduledChange" && log.kind !== "ForcedChange") throw new Error(`a ${log.kind} log does not start a set`);
+  return { header: headerJson(header, hash), scheduledChange: grandpaLogJson(log, payload) };
+}
+
+/** A set known only from the change log that started it (see AuthoritySetJson.announced). */
+export function announcedSetJson(setId: bigint, header: Header, hash: Uint8Array, log: GrandpaLog, payload: Uint8Array): AuthoritySetJson {
+  const announced = announcedJson(header, hash, log, payload);
+  const authorities = announced.scheduledChange.nextAuthorities ?? [];
+  return {
+    setId: toSafeNumber(setId, "set id"),
+    at: { number: header.number, hash: bytesToHex(hash) },
+    count: authorities.length,
+    threshold: threshold(authorities.length),
+    authorities,
+    announced,
   };
 }
 
