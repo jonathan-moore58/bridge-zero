@@ -375,14 +375,6 @@ contract LightClientSecurityTest is LightClientBase {
         return _header(_hash(checkpoint), START + 1, new bytes[](0), salt);
     }
 
-    function _importCall(bytes memory header, bytes memory justification, bytes memory signers)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        return abi.encodeCall(GrandpaLightClient.importHeader, (header, justification, signers));
-    }
-
     function _smallOrder() internal pure returns (bytes32[6] memory) {
         return [ORDER4_A, ORDER4_B, ORDER8_A, ORDER8_B, ORDER8_C, ORDER8_D];
     }

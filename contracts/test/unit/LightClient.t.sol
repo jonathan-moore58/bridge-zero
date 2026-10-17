@@ -10,10 +10,20 @@ import {Header} from "../../src/grandpa/Header.sol";
 import {Justification} from "../../src/grandpa/Justification.sol";
 import {UnitFixtures} from "./UnitFixtures.sol";
 
-/// Helpers shared by the snapshot and synthetic light-client tests.
+/// Helpers shared by the light-client tests: mainnet snapshots, V3 testnet and synthetic chains.
 abstract contract LightClientBase is UnitFixtures {
     /// EIP-7825 transaction gas limit cap (Osaka; live on Sepolia).
     uint256 internal constant TX_GAS_CAP = 16_777_216;
+
+    /// A captured header with the justification that finalizes it.
+    struct Signed {
+        bytes header;
+        bytes justification;
+        bytes signers; // 2 bytes per precommit: position, authority index; sorted by index
+        bytes32 hash;
+        uint32 number;
+        bytes32 stateRoot;
+    }
 
     GrandpaLightClient internal lc;
 
@@ -25,8 +35,17 @@ abstract contract LightClientBase is UnitFixtures {
     /// Sends `data` to the client as its own transaction (isolate mode) with the per-transaction
     /// cap as gas limit; requires success and returns the transaction's gas.
     function _send(string memory label, bytes memory data) internal returns (uint256 txGas) {
+        (, txGas) = _sendTo(address(lc), label, data);
+    }
+
+    /// _send() to another contract; also returns what the call returned.
+    function _sendTo(address to, string memory label, bytes memory data)
+        internal
+        returns (bytes memory ret, uint256 txGas)
+    {
         assertTrue(vm.isIsolateMode(), "run with isolate, so each call is measured as a transaction");
-        (bool ok, bytes memory ret) = address(lc).call{gas: TX_GAS_CAP}(data);
+        bool ok;
+        (ok, ret) = to.call{gas: TX_GAS_CAP}(data);
         txGas = vm.lastFrameGas().gasTotalUsed;
         if (!ok) {
             assembly {
@@ -75,19 +94,73 @@ abstract contract LightClientBase is UnitFixtures {
             assertEq(_keyOf(ext), keys[i], "derived point compresses back to the key");
         }
     }
+
+    // ------------------------------------------------------------------ fixture loaders
+
+    function _importCall(Signed storage s) internal view returns (bytes memory) {
+        return _importCall(s.header, s.justification, s.signers);
+    }
+
+    function _importCall(bytes memory header, bytes memory justification, bytes memory signers)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeCall(GrandpaLightClient.importHeader, (header, justification, signers));
+    }
+
+    function _proofCall(bytes memory header, bytes memory proof, bytes memory signers)
+        internal
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodeCall(GrandpaLightClient.importFinalityProof, (header, proof, signers));
+    }
+
+    function _keys(string memory json, string memory path, bytes32[] storage out) internal {
+        uint256 count = _count(json, path);
+        for (uint256 i = 0; i < count; i++) {
+            assertEq(vm.parseJsonUint(json, _at(path, i, ".weight")), 1, "weight 1");
+            out.push(vm.parseJsonBytes32(json, _at(path, i, ".id")));
+        }
+    }
+
+    function _signed(string memory json, Signed storage s) internal {
+        s.header = vm.parseJsonBytes(json, ".header.scale");
+        s.justification = vm.parseJsonBytes(json, ".justification.scale");
+        s.hash = vm.parseJsonBytes32(json, ".header.hash");
+        s.number = uint32(vm.parseJsonUint(json, ".header.number"));
+        s.stateRoot = vm.parseJsonBytes32(json, ".header.stateRoot");
+        assertEq(_hash(s.header), s.hash, "fixture header hash");
+        (uint256[] memory p, uint256[] memory a) = _sorted(json);
+        s.signers = new bytes(2 * p.length);
+        for (uint256 i = 0; i < p.length; i++) {
+            s.signers[2 * i] = bytes1(uint8(p[i]));
+            s.signers[2 * i + 1] = bytes1(uint8(a[i]));
+        }
+    }
+
+    /// Precommit positions and their authority indices, sorted by authority index.
+    function _sorted(string memory json) internal view returns (uint256[] memory p, uint256[] memory a) {
+        string memory path = ".justification.precommits";
+        uint256 count = _count(json, path);
+        p = new uint256[](count);
+        a = new uint256[](count);
+        for (uint256 i = 0; i < count; i++) {
+            p[i] = i;
+            a[i] = vm.parseJsonUint(json, _at(path, i, ".authorityIndex"));
+        }
+        for (uint256 i = 1; i < count; i++) {
+            for (uint256 k = i; k > 0 && a[k - 1] > a[k]; k--) {
+                (a[k - 1], a[k]) = (a[k], a[k - 1]);
+                (p[k - 1], p[k]) = (p[k], p[k - 1]);
+            }
+        }
+    }
 }
 
 /// One captured snapshot of Portaldot mainnet: a set change and three justified headers after it.
 abstract contract LightClientSnapshotTest is LightClientBase {
-    struct Signed {
-        bytes header;
-        bytes justification;
-        bytes signers; // 2 bytes per precommit: position, authority index; sorted by index
-        bytes32 hash;
-        uint32 number;
-        bytes32 stateRoot;
-    }
-
     bytes32 internal genesis;
     uint64 internal oldSetId; // signs the set-change header
     uint64 internal newSetId; // enacted by it, signs the head and the stored justification
@@ -431,67 +504,6 @@ abstract contract LightClientSnapshotTest is LightClientBase {
 
     function _initCall(uint64 setId, bytes32[] memory keys, bytes memory header) internal view returns (bytes memory) {
         return abi.encodeCall(GrandpaLightClient.initialize, (genesis, setId, keys, header));
-    }
-
-    function _importCall(Signed storage s) internal view returns (bytes memory) {
-        return _importCall(s.header, s.justification, s.signers);
-    }
-
-    function _importCall(bytes memory header, bytes memory justification, bytes memory signers)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        return abi.encodeCall(GrandpaLightClient.importHeader, (header, justification, signers));
-    }
-
-    function _proofCall(bytes memory header, bytes memory proof, bytes memory signers)
-        internal
-        pure
-        returns (bytes memory)
-    {
-        return abi.encodeCall(GrandpaLightClient.importFinalityProof, (header, proof, signers));
-    }
-
-    function _keys(string memory json, string memory path, bytes32[] storage out) internal {
-        uint256 count = _count(json, path);
-        for (uint256 i = 0; i < count; i++) {
-            assertEq(vm.parseJsonUint(json, _at(path, i, ".weight")), 1, "weight 1");
-            out.push(vm.parseJsonBytes32(json, _at(path, i, ".id")));
-        }
-    }
-
-    function _signed(string memory json, Signed storage s) internal {
-        s.header = vm.parseJsonBytes(json, ".header.scale");
-        s.justification = vm.parseJsonBytes(json, ".justification.scale");
-        s.hash = vm.parseJsonBytes32(json, ".header.hash");
-        s.number = uint32(vm.parseJsonUint(json, ".header.number"));
-        s.stateRoot = vm.parseJsonBytes32(json, ".header.stateRoot");
-        assertEq(_hash(s.header), s.hash, "fixture header hash");
-        (uint256[] memory p, uint256[] memory a) = _sorted(json);
-        s.signers = new bytes(2 * p.length);
-        for (uint256 i = 0; i < p.length; i++) {
-            s.signers[2 * i] = bytes1(uint8(p[i]));
-            s.signers[2 * i + 1] = bytes1(uint8(a[i]));
-        }
-    }
-
-    /// Precommit positions and their authority indices, sorted by authority index.
-    function _sorted(string memory json) internal view returns (uint256[] memory p, uint256[] memory a) {
-        string memory path = ".justification.precommits";
-        uint256 count = _count(json, path);
-        p = new uint256[](count);
-        a = new uint256[](count);
-        for (uint256 i = 0; i < count; i++) {
-            p[i] = i;
-            a[i] = vm.parseJsonUint(json, _at(path, i, ".authorityIndex"));
-        }
-        for (uint256 i = 1; i < count; i++) {
-            for (uint256 k = i; k > 0 && a[k - 1] > a[k]; k--) {
-                (a[k - 1], a[k]) = (a[k], a[k - 1]);
-                (p[k - 1], p[k]) = (p[k], p[k - 1]);
-            }
-        }
     }
 }
 
