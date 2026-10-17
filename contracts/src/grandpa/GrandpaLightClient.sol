@@ -76,9 +76,10 @@ contract GrandpaLightClient is IFinalizedStateRoots {
 
     // ------------------------------------------------------------------ constants
 
-    /// Largest set accepted. threshold(25) = 17 signatures plus a full key derivation for a new
-    /// list stay within the 16,777,216 gas per-transaction cap.
-    uint256 public constant MAX_AUTHORITIES = 25;
+    /// Largest set accepted. Under Sepolia's gas rules a change from 16 authorities (threshold 11)
+    /// to 16 new keys, derived and stored in the same transaction, costs about 15.3M of the
+    /// 16,777,216 per-transaction cap; from 18 up it does not fit (docs/GAS.md).
+    uint256 public constant MAX_AUTHORITIES = 16;
 
     // ------------------------------------------------------------------ state
 

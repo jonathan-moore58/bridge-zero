@@ -570,8 +570,8 @@ contract LightClientSyntheticTest is LightClientBase {
         vm.expectRevert(GrandpaLightClient.EmptyAuthoritySet.selector);
         lc.initialize(GENESIS, SET_ID, new bytes32[](0), checkpoint);
 
-        vm.expectRevert(abi.encodeWithSelector(GrandpaLightClient.TooManyAuthorities.selector, 26));
-        lc.initialize(GENESIS, SET_ID, new bytes32[](26), checkpoint);
+        vm.expectRevert(abi.encodeWithSelector(GrandpaLightClient.TooManyAuthorities.selector, 17));
+        lc.initialize(GENESIS, SET_ID, new bytes32[](17), checkpoint);
 
         vm.prank(address(0xBEEF));
         vm.expectRevert(GrandpaLightClient.NotAdmin.selector);
@@ -658,6 +658,16 @@ contract LightClientSyntheticTest is LightClientBase {
         _initOne();
         bytes32[] memory next = _keys(1, 2);
         next[1] = _notAPoint();
+        bytes memory h1 = _header(_hash(checkpoint), START + 1, _items(_scheduled(next, 1, 0)));
+        _expectHalt(h1, GrandpaLightClient.HaltReason.UnusableAuthoritySet);
+        assertEq(lc.currentSetId(), SET_ID);
+    }
+
+    /// A change to one key more than MAX_AUTHORITIES halts instead of reverting, so the client
+    /// is not left retrying an import that cannot fit.
+    function test_tooManyNextKeys_halts() public {
+        _initOne();
+        bytes32[] memory next = _keys(1, lc.MAX_AUTHORITIES() + 1);
         bytes memory h1 = _header(_hash(checkpoint), START + 1, _items(_scheduled(next, 1, 0)));
         _expectHalt(h1, GrandpaLightClient.HaltReason.UnusableAuthoritySet);
         assertEq(lc.currentSetId(), SET_ID);

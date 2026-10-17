@@ -82,7 +82,7 @@ const SET_ID_KEY = storageKey("Grandpa", "CurrentSetId");
 const AUTHORITIES_KEY = storageKey("Grandpa", "Authorities");
 const SUDO_KEY = storageKey("Sudo", "Key");
 /** GrandpaLightClient.MAX_AUTHORITIES: the client halts on a change to a larger set. Keep the two equal. */
-const MAX_AUTHORITIES = 25;
+const MAX_AUTHORITIES = 16;
 
 const log = (message: string) => console.log(message);
 const now = () => new Date().toISOString();

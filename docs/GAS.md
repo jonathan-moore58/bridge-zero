@@ -266,13 +266,15 @@ header with a FRNK ScheduledChange, precommits signed with `node:crypto`).
 | 18 | 13 | 7,629,152 (45.5%) | **17,579,515 (104.8%), does not fit** |
 | 25 | 17 | 10,119,545 (60.3%) | **23,226,929 (138.4%), does not fit** |
 
-- Each new key adds about 0.36M and each signature about 0.77M. Under Osaka the 25-to-25 change
-  is 15,910,288 (94.8%), which is what `MAX_AUTHORITIES = 25` was sized for.
-- **`MAX_AUTHORITIES = 25` is not safe under Sepolia's current rules**: from 18 authorities up, a
-  change to a new key list cannot be imported in one transaction, and the client would be stuck
-  on it. The largest set that fits is 17 (98.1%, no margin); **16 is the largest safe value**
-  (91.2%, 1.47M of headroom). Not changed yet: the Portaldot Mainnet V3.0 validator count decides
-  it. A change that keeps the same keys (as on mainnet so far) costs about 6.3M whatever N is.
+- Each new key adds about 0.36M and each signature about 0.77M. Under Osaka the 16-to-16 change
+  is 10,353,813 (61.7%). The first limit, 25, was sized on Osaka's 25-to-25 change, 15,910,288
+  (94.8%).
+- **`MAX_AUTHORITIES` is 16.** Under Sepolia's current rules a change to a new key list from 18
+  authorities up cannot be imported in one transaction, and the client would be stuck on it. The
+  largest set that fits is 17 (98.1%, no margin); 16 leaves 1.47M of headroom (91.2%). A change
+  to more keys halts the client instead (`test_tooManyNextKeys_halts`). The V3 testnet has 2
+  authorities and the old mainnet 10. A change that keeps the same keys, as on both so far, stores
+  nothing new: about 6.3M for mainnet's 7 signatures.
 
 Reproduce, from `contracts/` (the `--offline --use` flags as in [Reproduce](#reproduce)):
 

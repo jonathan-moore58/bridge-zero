@@ -327,15 +327,16 @@ contract LightClientSecurityTest is LightClientBase {
 
     // ------------------------------------------------------------------ gas bound
 
-    /// The heaviest import the bounds allow: a 25-authority set (17 signatures) finalizing a
-    /// change to 25 new keys, all derived in the same transaction.
+    /// The heaviest import the bounds allow: a 16-authority set (11 signatures) finalizing a
+    /// change to 16 new keys, all derived in the same transaction.
     function test_gas_maxSetChange_withinCap() public {
-        lc.initialize(GENESIS, SET_ID, _keys(0, 25), checkpoint);
-        assertEq(lc.threshold(), 17);
-        bytes memory h1 = _header(_hash(checkpoint), START + 1, _items(_scheduled(_keys(100, 25), 0)), 0);
+        lc.initialize(GENESIS, SET_ID, _keys(0, 16), checkpoint);
+        assertEq(lc.MAX_AUTHORITIES(), 16);
+        assertEq(lc.threshold(), 11);
+        bytes memory h1 = _header(_hash(checkpoint), START + 1, _items(_scheduled(_keys(100, 16), 0)), 0);
         _send(
-            "25 authorities, 17 signatures, change to 25 new keys",
-            _importCall(h1, _justify(h1, START + 1, SET_ID, _range(0, 17)), _seq(17))
+            "16 authorities, 11 signatures, change to 16 new keys",
+            _importCall(h1, _justify(h1, START + 1, SET_ID, _range(0, 11)), _seq(11))
         );
         assertEq(lc.currentSetId(), SET_ID + 1);
     }
