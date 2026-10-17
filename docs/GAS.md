@@ -289,6 +289,33 @@ node test/fork/simulate-sepolia.mjs
 node test/fork/simulate-sepolia.mjs --set-change 10 13 15 16 17 18 25
 ```
 
+### V3 testnet
+
+Measured on Oct 17, 2026 with the fixtures in `fixtures/v3-testnet/` (Portaldot V3 testnet,
+runtime `portaldot-v3` 3002, trie V1) by `test/unit/V3Testnet.t.sol`: forge, Osaka, each call a
+transaction. The testnet has 2 authorities of weight 1, so every import counts 2 signatures (2 of
+2). Its node discards state older than about 256 blocks, so the client starts at the set change
+before the latest one (#67,958, set 19, with the keys that block's FRNK log lists), imports the
+change to set 20 at #71,539 with its stored justification, then the head #71,745.
+
+| Transaction (gas, share of 16,777,216) | V3 testnet, 2 of 2 | Mainnet, 7 of 10 |
+|---|---:|---:|
+| `initialize` (2 keys; mainnet 10) | 502,762 (3.0%) | 1,196,176 (7.1%) |
+| Set-change import (`importHeader`, same keys) | 1,849,669 (11.0%) | 5,778,325 (34.4%) |
+| Stored justification import (`importHeader`) | 1,688,973 (10.1%) | 5,593,021 (33.3%) |
+| Head import (`importFinalityProof`) | 1,697,753 (10.1%) | 5,593,948 (33.3%) |
+| `importAndProve` + System.Account | **2,113,016 (12.6%)** | 6,068,563 (36.2%) |
+
+- Each import costs about 3.9M less than on mainnet: 5 fewer signatures (2 against 7), about
+  0.78M each.
+- The System.Account proof has 8 trie V1 items (2,198 B). One of them is the 80-byte AccountInfo,
+  which trie V1 keeps behind its hash instead of inline in its leaf. `verifyMain` walks it for
+  326,033 gas inside the call, against 379,109 for mainnet's 8 trie V0 nodes (2,576 B).
+- The set change keeps the same 2 keys, so its import stores no new key list.
+
+Reproduce from `contracts/` with `forge test --match-path test/unit/V3Testnet.t.sol -vv` (the
+`--offline --use` flags as in [Reproduce](#reproduce)).
+
 ## Reproduce
 
 From `contracts/`, with the submodules checked out (`git submodule update --init`). The
