@@ -1,0 +1,405 @@
+{
+  "provenance": {
+    "chain": "PortaldotV3 Test",
+    "rpc": "wss://test-node-v3.portaldot.dev",
+    "genesisHash": "0xd4f9acbcf7f52388d8b095abe3c198d19fc510e0343e643e87cfbccb155283bd",
+    "runtime": {
+      "specName": "portaldot-v3",
+      "specVersion": 3002,
+      "implName": "portaldot-v3-node",
+      "implVersion": 0,
+      "transactionVersion": 2,
+      "stateVersion": 1
+    },
+    "block": {
+      "number": 71774,
+      "hash": "0xdc8537013375266f416321a140bb15deb64591358cb39fcc53b04827d0490a9d"
+    },
+    "setId": 20,
+    "capturedAt": "2026-10-17T08:17:59.964Z",
+    "tool": {
+      "name": "@bridge-zero/relayer",
+      "version": "0.1.0",
+      "script": "src/probe.ts",
+      "gitCommit": "17e533c962624e2d3e147829d5c36f2e60a67927",
+      "gitDirty": false
+    }
+  },
+  "kind": "probe",
+  "about": "Read-only probe of one node: can it serve what a GRANDPA light client on Ethereum needs (finality proofs that verify, read proofs that walk from the finalized state_root, child read proofs, timely finality, non-development validators)?",
+  "connection": {
+    "ok": true,
+    "elapsedMs": 1931
+  },
+  "identity": {
+    "genesisHash": "0xd4f9acbcf7f52388d8b095abe3c198d19fc510e0343e643e87cfbccb155283bd",
+    "chain": "PortaldotV3 Test",
+    "name": "PortaldotV3 Node",
+    "version": "3.0.0-dev-fddd43141f2",
+    "chainType": "Live",
+    "properties": {
+      "ss58Format": 42,
+      "tokenDecimals": 14,
+      "tokenSymbol": "tPOT"
+    }
+  },
+  "runtimeApis": {
+    "flags": {
+      "Core": {
+        "id": "0xdf6acb689907609b",
+        "present": true,
+        "version": 5
+      },
+      "GrandpaApi": {
+        "id": "0xed99c5acb25eedf5",
+        "present": true,
+        "version": 3
+      },
+      "BeefyApi": {
+        "id": "0x49eaaf1b548a0cb0",
+        "present": true,
+        "version": 6
+      },
+      "MmrApi": {
+        "id": "0x91d5df18b0d2cf58",
+        "present": true,
+        "version": 3
+      },
+      "ReviveApi": {
+        "id": "0x8c403e5c4a9fd442",
+        "present": true,
+        "version": 2
+      },
+      "EthereumRuntimeRPCApi": {
+        "id": "0x582211f65bb14b89",
+        "present": false,
+        "version": null
+      },
+      "BabeApi": {
+        "id": "0xcbca25e39f142387",
+        "present": true,
+        "version": 2
+      },
+      "AuraApi": {
+        "id": "0xdd718d5cc53262d4",
+        "present": false,
+        "version": null
+      }
+    },
+    "all": [
+      {
+        "id": "0x17a6bc0d0062aeb3",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x18ef58a3b67ba770",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0xcbca25e39f142387",
+        "version": 2,
+        "name": "BabeApi"
+      },
+      {
+        "id": "0x687ad44ad37f03c2",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x6ef953004ba30e59",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0xbc9d89904f5b923f",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x8453b50b22293977",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x68b66ba122c93fa7",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0x37c8bb1350a9a2a8",
+        "version": 4,
+        "name": null
+      },
+      {
+        "id": "0x8a8047a53a8277ec",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0xf3ff14d5ab527059",
+        "version": 3,
+        "name": null
+      },
+      {
+        "id": "0x899a250cbe84f250",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x49eaaf1b548a0cb0",
+        "version": 6,
+        "name": "BeefyApi"
+      },
+      {
+        "id": "0x91d5df18b0d2cf58",
+        "version": 3,
+        "name": "MmrApi"
+      },
+      {
+        "id": "0x6fd7c327202e4a8d",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0xab3c0572291feb8b",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0x3b1cfc440dd23f49",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0xfbc577b9d747efd6",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x8c403e5c4a9fd442",
+        "version": 2,
+        "name": "ReviveApi"
+      },
+      {
+        "id": "0xdf6acb689907609b",
+        "version": 5,
+        "name": "Core"
+      },
+      {
+        "id": "0x37e397fc7c91f5e4",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0xccd9de6396c899ca",
+        "version": 1,
+        "name": null
+      },
+      {
+        "id": "0x40fe3ad401f8959a",
+        "version": 6,
+        "name": null
+      },
+      {
+        "id": "0xd2bc9897eed08f15",
+        "version": 3,
+        "name": null
+      },
+      {
+        "id": "0xf78b278be53f454c",
+        "version": 2,
+        "name": null
+      },
+      {
+        "id": "0xed99c5acb25eedf5",
+        "version": 3,
+        "name": "GrandpaApi"
+      }
+    ]
+  },
+  "rpcSurface": {
+    "methodCount": 125,
+    "flags": {
+      "grandpa_proveFinality": true,
+      "grandpa_subscribeJustifications": true,
+      "state_getReadProof": true,
+      "state_getChildReadProof": true,
+      "beefy_getFinalizedHead": true,
+      "mmr_generateProof": true
+    },
+    "ethMethods": []
+  },
+  "finality": {
+    "best": 71776,
+    "finalized": {
+      "number": 71774,
+      "hash": "0xdc8537013375266f416321a140bb15deb64591358cb39fcc53b04827d0490a9d"
+    },
+    "lagBlocks": 2,
+    "blockTimeMs": 5999,
+    "blockTimeAvgMs": 6000,
+    "blockTimeSpan": 10,
+    "blockTimeDeltasMs": [
+      5999,
+      6001,
+      6000,
+      6000,
+      6000,
+      5999,
+      6001,
+      5997,
+      6003,
+      6000
+    ],
+    "headTimestamp": "2026-10-17T08:17:48.000Z",
+    "authoritySet": {
+      "at": {
+        "number": 71774,
+        "hash": "0xdc8537013375266f416321a140bb15deb64591358cb39fcc53b04827d0490a9d"
+      },
+      "setId": 20,
+      "count": 2,
+      "threshold": 2,
+      "weights": [
+        "1"
+      ],
+      "aliceIsAuthority": false,
+      "authorities": [
+        "0xe64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090",
+        "0x71fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0"
+      ]
+    },
+    "proof": {
+      "requested": 71774,
+      "target": {
+        "number": 71774,
+        "hash": "0xdc8537013375266f416321a140bb15deb64591358cb39fcc53b04827d0490a9d"
+      },
+      "signingSetReadAt": {
+        "number": 71773,
+        "hash": "0xa1dffc9ae870f0de342a216c6f55dc21587694edac24eb63333f555029573cea"
+      },
+      "setId": 20,
+      "round": "1065",
+      "authorities": 2,
+      "weights": [
+        "1"
+      ],
+      "precommits": 2,
+      "validSignatures": 2,
+      "required": 2,
+      "thresholdMet": true,
+      "verified": true,
+      "problems": [],
+      "votesAncestries": 0,
+      "unknownHeaders": 0,
+      "proofBytes": 345,
+      "justificationBytes": 310,
+      "targetHeaderBytes": 230,
+      "negativeControls": {
+        "wrongSetIdRejected": true,
+        "flippedSignatureRejected": true
+      },
+      "aliceSigned": false
+    },
+    "sudoKey": {
+      "id": "0x1660e96293ad7db90c1ba20770288c110419f2cb547baa238906378be816014a",
+      "ss58": "5Ca3hX34TqdyiwDu6kL1TqyQuo4aHvBSXYhWSCbyH8N1Xc5J"
+    },
+    "beefyFinalizedHead": "0x6a655ffea882ba8562ca39d6087cc00ce9a1e0701680b758a9d321f8f94e1099"
+  },
+  "stateProofs": {
+    "readProof": {
+      "account": {
+        "id": "0x1660e96293ad7db90c1ba20770288c110419f2cb547baa238906378be816014a",
+        "ss58": "5Ca3hX34TqdyiwDu6kL1TqyQuo4aHvBSXYhWSCbyH8N1Xc5J",
+        "source": "Sudo.Key"
+      },
+      "key": "0x26aa394eea5630e07c48ae0c9558cef7b99d880ec681799c0cf30e8886371da9b7c1fb80b6adc5f465750d3466613d9c1660e96293ad7db90c1ba20770288c110419f2cb547baa238906378be816014a",
+      "at": {
+        "number": 71774,
+        "hash": "0xdc8537013375266f416321a140bb15deb64591358cb39fcc53b04827d0490a9d"
+      },
+      "stateRoot": "0x17bb3ea07c36b582ccf957710ceac4fb47c9904f1c859c84789ca98521fb15bb",
+      "nodes": 8,
+      "bytes": 2198,
+      "runtimeStateVersion": 1,
+      "hashedValueNodes": 1,
+      "itemsThatAreNotNodes": 1,
+      "trieVersion": 1,
+      "verified": true,
+      "itemsUsed": 8,
+      "hashedValuesInWalk": 1,
+      "value": {
+        "bytes": 80,
+        "scale": "0x06000000000000000100000000000000ae5deb48164463010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000080"
+      },
+      "tamperedRootRejected": true,
+      "free": "99998479235636654"
+    },
+    "childReadProof": {
+      "listedInRpcMethods": true,
+      "probeCall": "answered with 4 proof items for an absent child trie",
+      "routed": true
+    }
+  },
+  "evm": {
+    "url": "https://test-evm-rpc-v3.portaldot.dev",
+    "eth_chainId": "0x190f1ca9",
+    "net_version": "420420777",
+    "eth_blockNumber": "0x11860",
+    "web3_clientVersion": "eth-rpc/main-fddd431/x86_64-unknown-linux-gnu/rustc1.98.0"
+  },
+  "gates": [
+    {
+      "gate": "GRANDPA proofs served",
+      "status": "PASS",
+      "detail": "grandpa_proveFinality(#71,774) returned a decodable proof"
+    },
+    {
+      "gate": "Justification verifies",
+      "status": "PASS",
+      "detail": "2/2 valid, 2 of 2 needed, set 20, round 1065"
+    },
+    {
+      "gate": "Threshold met",
+      "status": "PASS",
+      "detail": "2 valid of 2 authorities, 2 required (N - floor((N-1)/3))"
+    },
+    {
+      "gate": "Read proofs served and verified",
+      "status": "PASS",
+      "detail": "8 nodes, 2,198 B, value 80 B, trie V1 (1 hashed value), walked from the state_root of #71,774"
+    },
+    {
+      "gate": "Trie V1 on chain",
+      "status": "PASS",
+      "detail": "trie V1 proof verified off-chain by trie.ts; the Solidity walker is tested on captured V3 testnet trie V1 proofs (contracts/test/unit/V3Testnet.t.sol)"
+    },
+    {
+      "gate": "Child read proofs served",
+      "status": "PASS",
+      "detail": "listed in rpc_methods; answered with 4 proof items for an absent child trie"
+    },
+    {
+      "gate": "Finality lag under 10 blocks",
+      "status": "PASS",
+      "detail": "best #71,776, finalized #71,774: 2 blocks behind"
+    },
+    {
+      "gate": "Real or development validators",
+      "status": "WARN",
+      "detail": "only 2 GRANDPA authorities (none is //Alice)"
+    },
+    {
+      "gate": "EVM endpoint answers",
+      "status": "PASS",
+      "detail": "4/4 methods answered; chainId 420420777, net_version 420420777"
+    }
+  ],
+  "verdict": "WARN",
+  "errors": {},
+  "elapsedMs": 7888
+}
