@@ -42,6 +42,19 @@ fs_permissions = [
     { access = "read", path = "../fixtures/v3-testnet" },
 ]
 
+# The Sepolia deployment build (script/deploy-sepolia.mjs). The libraries are linked at compile time,
+# at the addresses the deployer 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 creates with its nonces 0
+# to 3, so every contract carries the metadata forge verify-contract compiles for Etherscan.
+# Build: FOUNDRY_PROFILE=sepolia forge build --skip test --skip script
+[profile.sepolia]
+out = "out-sepolia"
+libraries = [
+    "lib/crypto-lib/src/lib/libSCL_EIP6565.sol:SCL_EIP6565:0x51da20bE3e6E23296f2c435b16445aAe7A18b77E",
+    "src/grandpa/GrandpaCodec.sol:GrandpaCodec:0x482a1c993e169E962539c38eFdB26E9e0621dFD2",
+    "src/grandpa/AuthoritySets.sol:AuthoritySets:0xf2Cd69bC5fF06F98E4dd0d4DE42565d3338ce6D2",
+    "src/trie/StorageProofs.sol:StorageProofs:0x5DA053Bc5659ba9f725E4b1B5083545B933EF2a3",
+]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
 
 [fmt]

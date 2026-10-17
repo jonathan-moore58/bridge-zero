@@ -10,3 +10,7 @@ out/
 cache/
 broadcast/*/*/dry-run/
 dist/
+
+# Sepolia deployment build (FOUNDRY_PROFILE=sepolia) and an interrupted record write
+out-sepolia/
+deployments/*.tmp
