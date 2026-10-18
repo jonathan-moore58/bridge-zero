@@ -40,6 +40,7 @@ fs_permissions = [
     { access = "read", path = "../fixtures/mainnet" },
     { access = "read", path = "../fixtures/mainnet-pre-v3" },
     { access = "read", path = "../fixtures/v3-testnet" },
+    { access = "read", path = "../fixtures/westend-asset-hub-revive" },
 ]
 
 # The Sepolia deployment build (script/deploy-sepolia.mjs). The libraries are linked at compile time,
