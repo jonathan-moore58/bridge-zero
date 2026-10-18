@@ -30,6 +30,8 @@ export interface ChangeScan {
   changes: FoundChange[];
   /** Every block from `lowest` up to the start block was examined, each the parent of the next. */
   lowest: number;
+  /** The parent hash in the header of block `lowest`: the block below what was examined. */
+  lowestParentHash: Hex;
   /** Headers examined, the start block included. */
   examined: number;
   /** Other FRNK logs (OnDisabled, Pause, Resume) in the examined blocks, newest first. */
@@ -70,7 +72,14 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, in
 export async function scanSetChanges(source: HeaderSource, start: { header: Header; hash: Uint8Array }, options: ScanOptions): Promise<ChangeScan> {
   if (!Number.isInteger(options.want) || options.want < 1) throw new RangeError(`want must be a positive integer, got ${options.want}`);
   if (!Number.isInteger(options.limit) || options.limit < 0) throw new RangeError(`limit must be a non-negative integer, got ${options.limit}`);
-  const scan: ChangeScan = { changes: [], lowest: start.header.number, examined: 0, otherLogs: [], runtimeUpdates: [] };
+  const scan: ChangeScan = {
+    changes: [],
+    lowest: start.header.number,
+    lowestParentHash: bytesToHex(start.header.parentHash),
+    examined: 0,
+    otherLogs: [],
+    runtimeUpdates: [],
+  };
 
   /** Records what `header` carries; true once `want` changes are found. */
   const examine = (header: Header, hash: Uint8Array): boolean => {
@@ -82,6 +91,7 @@ export async function scanSetChanges(source: HeaderSource, start: { header: Head
     if (header.digest.some((d) => d.kind === "RuntimeEnvironmentUpdated")) scan.runtimeUpdates.push(header.number);
     if (changes.length > 0) scan.changes.push({ number: header.number, hash: bytesToHex(hash), header, logs: changes });
     scan.lowest = header.number;
+    scan.lowestParentHash = bytesToHex(header.parentHash);
     scan.examined += 1;
     return scan.changes.length >= options.want;
   };
