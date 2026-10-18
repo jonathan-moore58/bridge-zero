@@ -9,6 +9,17 @@
 //     precommits, a header byte;
 //   - a signing set known only from the change log that started it (captures from nodes that
 //     discard old state) is that log's list, in a header that hashes to its block hash;
+//   - a pallet-revive contract slot (capture-contract.ts): Revive.AccountInfoOf walks from the
+//     state_root and names the trie id and code hash, Revive.CodeInfoOf of that hash walks from
+//     the state_root and its code_len and code_type are the code's length and kind, keccak-256 of
+//     the code is that hash, the child root walks from the state_root under
+//     ":child_storage:default:" ++ trie id, the slot walks from the child root under
+//     blake2_256(slot), Revive.BlockHash(B) and Revive.BlockHash(B - 1) walk from the state_root
+//     and tie the EVM RPC's block to B, and eth_getStorageAt's word at that block is the slot's
+//     value; flipped bytes, another contract, code hash, trie id, slot or block number, and a
+//     flipped root all fail, and the AccountInfo and CodeInfo decoders reject other variants,
+//     trailing and missing bytes; the set id, which the capture reads without a proof, is null on
+//     a chain without GRANDPA of its own;
 //   - the files fit together the way a light client would use them.
 //
 //   npm run check -- [--dir <fixtures dir>]
@@ -17,23 +28,40 @@ import { existsSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { bytesToHex, equalBytes, flipByte, hexToBytes, leToBigInt, shortHex } from "./bytes.js";
+import { keccak_256 } from "@noble/hashes/sha3.js";
+import { bytesToHex, concatBytes, equalBytes, flipByte, hexToBytes, leToBigInt, shortHex, type Hex } from "./bytes.js";
 import type {
   AnnouncedJson,
   AuthorityJson,
   AuthoritySetFixture,
   AuthoritySetJson,
+  ContractStorageFixture,
+  EvmBlockParam,
   FinalityProofFixture,
   Fixture,
   HeaderJson,
   IndexFixture,
   JustifiedHeaderFixture,
+  ProofJson,
   SetChangeFixture,
+  StorageKeyJson,
   StorageProofFixture,
 } from "./fixture.js";
 import { readJson } from "./fixture.js";
 import { precommitPayload, threshold, verifyJustification } from "./grandpa.js";
-import { blake2_256, GRANDPA_AUTHORITIES_KEY, storageKey, systemAccountKey } from "./hash.js";
+import { blake2_256, CHILD_STORAGE_DEFAULT_PREFIX, childRootKey, GRANDPA_AUTHORITIES_KEY, storageKey, systemAccountKey } from "./hash.js";
+import {
+  CODE_TYPE_OF_KIND,
+  codeKind,
+  decodeReviveAccountInfo,
+  decodeReviveCodeInfo,
+  EMPTY_TRIE_ROOT,
+  isUnsetStorageWord,
+  reviveAccountInfoKey,
+  reviveBlockHashKey,
+  reviveCodeInfoKey,
+  reviveSlotKey,
+} from "./revive.js";
 import {
   decodeAccountInfo,
   decodeAuthorityList,
@@ -43,6 +71,7 @@ import {
   decodeU64,
   decodeVersionedAuthorityList,
   grandpaLogs,
+  ScaleError,
   type Header,
   type Justification,
 } from "./scale.js";
@@ -99,6 +128,22 @@ function step<T>(label: string, run: () => { value: T; detail?: string }): T | u
 // ---------------------------------------------------------------------------------------
 // Pieces shared by several fixture kinds
 
+/** What a walk proves: the value it reaches, or null if it fails or shows the key absent. */
+function proven(root: Uint8Array, proof: Uint8Array[], key: Uint8Array): Uint8Array | null {
+  try {
+    return readProof(root, proof, key).value;
+  } catch {
+    return null;
+  }
+}
+
+/** The set a file records. A contract-storage capture reads it without a proof (capture-contract.ts). */
+function setIdText(f: Fixture): string {
+  const setId = f.provenance?.setId;
+  if (setId === null) return "no GRANDPA set";
+  return f.kind === "contract-storage" ? `set ${setId} (not proven)` : `set ${setId}`;
+}
+
 function checkProvenance(f: Fixture): void {
   report.check("provenance header", () => {
     const p = f.provenance;
@@ -106,7 +151,8 @@ function checkProvenance(f: Fixture): void {
     assert(hexToBytes(p.genesisHash).length === 32, "genesis hash is not 32 bytes");
     assert(Number.isInteger(p.runtime?.specVersion), "runtime spec version missing");
     assert(Number.isInteger(p.block?.number) && hexToBytes(p.block.hash).length === 32, "block number or hash missing");
-    assert(Number.isInteger(p.setId), "set_id missing");
+    // A contract-storage capture on a chain without GRANDPA of its own (a parachain) has no set.
+    assert(Number.isInteger(p.setId) || (f.kind === "contract-storage" && p.setId === null), "set_id missing");
     assert(/Z$/.test(p.capturedAt) && !Number.isNaN(Date.parse(p.capturedAt)), "capture time is not a UTC timestamp");
     assert(p.tool?.name && p.tool.version, "tool version missing");
     const readAt = p.runtime.readAt;
@@ -115,7 +161,7 @@ function checkProvenance(f: Fixture): void {
     if (upgraded !== undefined) assert(readAt !== undefined && upgraded > p.block.number && upgraded <= readAt.number, "upgradedAfter is not between the block and readAt");
     const where = readAt ? ` (read at #${fmt(readAt.number)}${upgraded !== undefined ? `, after an upgrade at #${fmt(upgraded)}` : ""})` : "";
     return `${p.chain}, ${p.runtime.specName} ${p.runtime.specVersion}${where}, ` +
-      `#${fmt(p.block.number)}, set ${p.setId}, ${p.capturedAt}, ${p.tool.name} ${p.tool.version}`;
+      `#${fmt(p.block.number)}, ${setIdText(f)}, ${p.capturedAt}, ${p.tool.name} ${p.tool.version}`;
   });
 }
 
@@ -413,14 +459,6 @@ function checkStorageProof(f: StorageProofFixture): void {
     return `nonce ${info.nonce}, providers ${info.providers}, free ${info.free} (base units)`;
   });
   report.check("one-byte flips in the proof are rejected", () => {
-    // What a walk proves: the value it reaches, or null if it fails or shows the key absent.
-    const proven = (root: Uint8Array, proof: Uint8Array[], k: Uint8Array): Uint8Array | null => {
-      try {
-        return readProof(root, proof, k).value;
-      } catch {
-        return null;
-      }
-    };
     nodes.forEach((node, i) => {
       const tampered = nodes.map((n, k) => (k === i ? flipByte(n, Math.floor(n.length / 2)) : n));
       const v = proven(header.stateRoot, tampered, key);
@@ -430,6 +468,416 @@ function checkStorageProof(f: StorageProofFixture): void {
     assert(proven(flipByte(header.stateRoot, 0), nodes, key) === null, "a flipped state_root still reaches the value");
     return `${nodes.length}/${nodes.length} single-node flips fail; another account's key and a flipped state_root fail too`;
   });
+}
+
+/**
+ * The proof came from `method`, its items match their recorded sizes, and the walk from `root`
+ * along `key` reaches `value` using every one.
+ */
+function checkWalk(label: string, root: Uint8Array, proof: ProofJson, method: string, key: Uint8Array, value: Uint8Array, trieVersion: 0 | 1): Uint8Array[] | undefined {
+  return step(label, () => {
+    assert(proof.method === method, `the proof is from ${proof.method}, not ${method}`);
+    const nodes = proof.nodes.map((n) => hexToBytes(n));
+    assert(nodes.length === proof.count, "item count differs");
+    const sizes = nodes.map((n) => n.length);
+    assert(sizes.length === proof.nodeBytes.length && sizes.every((s, i) => s === proof.nodeBytes[i]), "item sizes differ");
+    assert(sizes.reduce((a, b) => a + b, 0) === proof.bytes, "total size differs");
+    const read = readProof(root, nodes, key);
+    assert(read.value, "the proof shows the key as absent");
+    assert(equalBytes(read.value, value), "the proof leads to a different value");
+    assert(read.itemsUsed === nodes.length, `${nodes.length - read.itemsUsed} proof items were not needed`);
+    if (trieVersion === 0) assert(read.hashedValues === 0, "a hashed value in a V0 trie");
+    // Trie V1 keeps values over 32 bytes out of their leaf, behind their hash, as a proof item of their own.
+    const where = trieVersion === 1 ? `; value ${read.hashedValues > 0 ? "behind its hash (a proof item of its own)" : "inline in its node"}` : "";
+    return { value: nodes, detail: `${nodes.length} items (${fmt(proof.bytes)} B), all used, from ${shortHex(root)}${where}` };
+  });
+}
+
+/** A one-byte flip in any item, a flipped root, and each of `others` fail to prove `value`. */
+function checkTampers(label: string, root: Uint8Array, nodes: Uint8Array[], key: Uint8Array, value: Uint8Array, others: { what: string; key: Uint8Array }[]): void {
+  report.check(label, () => {
+    nodes.forEach((node, i) => {
+      const tampered = nodes.map((n, k) => (k === i ? flipByte(n, Math.floor(n.length / 2)) : n));
+      const v = proven(root, tampered, key);
+      assert(v === null || !equalBytes(v, value), `a flip in item ${i} (${node.length} B) still proves the value`);
+    });
+    assert(proven(flipByte(root, 0), nodes, key) === null, "a flipped root still reaches the value");
+    for (const o of others) assert(proven(root, nodes, o.key) === null, `the proof also proves a value for ${o.what}`);
+    return `${nodes.length}/${nodes.length} single-item flips fail; a flipped root${others.map((o) => `, ${o.what}`).join("")} fail too`;
+  });
+}
+
+/** The 32-byte big-endian slot `delta` away from `slot`, modulo 2^256. */
+function otherSlot(slot: Uint8Array, delta: bigint): Uint8Array {
+  const n = (BigInt(bytesToHex(slot)) + delta) & ((1n << 256n) - 1n);
+  return hexToBytes(n.toString(16).padStart(64, "0"));
+}
+
+/**
+ * pallet-revive's ChainId (a runtime constant, and what eth_chainId returns) of each chain with a
+ * contract-storage capture, by genesis hash, with the chain's name as system_chain gives it. Read
+ * from each chain's runtime metadata and its EVM RPC. `grandpa` says whether the chain runs GRANDPA
+ * of its own; a parachain does not (its relay chain finalizes it), so its captures record no set.
+ */
+const EVM_CHAINS: Record<string, { chain: string; chainId: Hex; grandpa: boolean }> = {
+  // 420,420,421; parachain 1000 of Westend
+  "0x67f9723393ef76214df0118c34bbbd3dbebc8ed46a10973a8c969d48fe7598c9": { chain: "Westend Asset Hub", chainId: "0x190f1b45", grandpa: false },
+  // 420,420,777; GRANDPA (fixtures/v3-testnet)
+  "0xd4f9acbcf7f52388d8b095abe3c198d19fc510e0343e643e87cfbccb155283bd": { chain: "PortaldotV3 Test", chainId: "0x190f1ca9", grandpa: true },
+};
+
+/** An Ethereum JSON-RPC QUANTITY: 0x and hex digits, without leading zeros. */
+const QUANTITY = /^0x(0|[1-9a-f][0-9a-f]*)$/;
+
+/** The value at a dotted path of a parsed file, or undefined where the path ends early. */
+function field(json: unknown, path: string): unknown {
+  let x = json;
+  for (const key of path.split(".")) x = x !== null && typeof x === "object" ? (x as Record<string, unknown>)[key] : undefined;
+  return x;
+}
+
+/** The objects of a contract-storage file that its checks read. */
+const CONTRACT_SECTIONS = [
+  "header",
+  "account.key",
+  "account.value.decoded",
+  "account.proof",
+  "codeInfo.key",
+  "codeInfo.value.decoded",
+  "codeInfo.proof",
+  "code",
+  "childRoot.key",
+  "childRoot.proof",
+  "slot.key",
+  "slot.value",
+  "slot.proof.served",
+  "evm.reviveBlockHash.key",
+  "evm.reviveBlockHash.proof",
+  "evm.reviveParentBlockHash.key",
+  "evm.reviveParentBlockHash.proof",
+  "evm.block",
+  "evm.storageAt",
+];
+/** Its hex fields that are parsed before the check that uses them. */
+const CONTRACT_HEX_FIELDS = [
+  "account.address",
+  "account.key.hex",
+  "account.value.scale",
+  "codeInfo.key.hex",
+  "codeInfo.value.scale",
+  "childRoot.key.hex",
+  "childRoot.root",
+  "slot.index",
+  "slot.key.hex",
+  "slot.value.hex",
+  "evm.reviveBlockHash.key.hex",
+  "evm.reviveBlockHash.value",
+  "evm.reviveParentBlockHash.key.hex",
+  "evm.reviveParentBlockHash.value",
+];
+
+/** The key names `pallet`.`item` with `hasher`, and holds exactly the bytes `expected`. */
+function checkKeyFields(key: StorageKeyJson, pallet: string, item: string, hasher: string, expected: Uint8Array): void {
+  assert(key.pallet === pallet && key.item === item && key.hasher === hasher, `the key says ${key.pallet}.${key.item} (${key.hasher}), not ${pallet}.${item} (${hasher})`);
+  assert(key.hex === bytesToHex(expected), `the key is not twox128(${pallet}) ++ twox128(${item}) ++ the ${hasher} map key`);
+  assert(key.bytes === expected.length, `key size ${key.bytes}, the key has ${expected.length} B`);
+}
+
+/** `run` throws a ScaleError whose message matches `reason`. */
+function rejects(what: string, reason: RegExp, run: () => unknown): void {
+  try {
+    run();
+  } catch (error) {
+    assert(error instanceof ScaleError && reason.test(error.message), `${what}: rejected for another reason (${error instanceof Error ? error.message : String(error)})`);
+    return;
+  }
+  throw new Error(`${what} is accepted`);
+}
+
+/** The block parameter of an EVM RPC call names the EVM block: its hash (EIP-1898) or its number (a QUANTITY). */
+function namesEvmBlock(at: EvmBlockParam | undefined, hash: Hex, number: number): boolean {
+  if (at !== null && typeof at === "object") return Object.keys(at).length === 1 && at.blockHash === hash;
+  return typeof at === "string" && QUANTITY.test(at) && BigInt(at) === BigInt(number);
+}
+
+/** A pallet-revive contract slot proven from the state_root (capture-contract.ts). */
+function checkContractStorage(f: ContractStorageFixture): void {
+  // A file without one of its sections fails here, before any check reads it.
+  const complete = report.check("every section is present", () => {
+    const missing = CONTRACT_SECTIONS.filter((path) => {
+      const value = field(f, path);
+      return value === null || typeof value !== "object";
+    });
+    assert(missing.length === 0, `no ${missing.join(", ")}`);
+    const notHex = CONTRACT_HEX_FIELDS.filter((path) => {
+      const value = field(f, path);
+      return typeof value !== "string" || !/^0x([0-9a-fA-F]{2})*$/.test(value);
+    });
+    assert(notHex.length === 0, `not 0x hex: ${notHex.join(", ")}`);
+    assert(Array.isArray(f.notes), "no notes");
+    return "header, account, codeInfo, code, childRoot, slot, evm (reviveBlockHash, reviveParentBlockHash, block, storageAt), notes";
+  });
+  if (!complete) return;
+  const header = checkHeader(f.header, "header");
+  if (!header) return;
+  report.check("provenance matches the header", () => {
+    assert(f.provenance.block.hash === f.header.hash && f.provenance.block.number === header.number, "provenance block is not this header");
+    assert(typeof f.provenance.evmRpc === "string" && /^https?:\/\//.test(f.provenance.evmRpc), "EVM RPC url missing");
+    assert(f.provenance.tool.script === "src/capture-contract.ts", `written by ${f.provenance.tool.script}, not src/capture-contract.ts`);
+    assert(f.trieVersion === (f.provenance.runtime.stateVersion === 1 ? 1 : 0), `trie V${f.trieVersion}, runtime stateVersion ${f.provenance.runtime.stateVersion}`);
+    // The set id is read without a proof; whether there is one at all is a property of the chain.
+    const known = EVM_CHAINS[f.provenance.genesisHash];
+    assert(known, `no record of genesis ${f.provenance.genesisHash}: whether it runs GRANDPA is not known`);
+    const setId = f.provenance.setId;
+    if (!known.grandpa) {
+      assert(setId === null, `${known.chain} has no GRANDPA of its own, yet the file records set ${setId}`);
+      return "no GRANDPA set at this block: the header is trusted input (see the notes)";
+    }
+    assert(typeof setId === "number" && Number.isSafeInteger(setId) && setId >= 0, `${known.chain} runs GRANDPA, yet the file records no set id (${setId})`);
+    return `GRANDPA set ${setId} at this block, as state_getStorage returned it (not proven)`;
+  });
+
+  // Revive.AccountInfoOf(address), from the state_root.
+  const address = hexToBytes(f.account.address);
+  const accountKey = hexToBytes(f.account.key.hex);
+  const accountValue = hexToBytes(f.account.value.scale);
+  report.check("account key = twox128(Revive) ++ twox128(AccountInfoOf) ++ address", () => {
+    assert(address.length === 20, `address is ${address.length} B`);
+    checkKeyFields(f.account.key, "Revive", "AccountInfoOf", "Identity", reviveAccountInfoKey(address));
+    return `${accountKey.length} B (Identity hasher), contract ${f.account.address}`;
+  });
+  const accountNodes = checkWalk(
+    `AccountInfoOf proof walks from state_root to the value (trie V${f.trieVersion})`,
+    header.stateRoot,
+    f.account.proof,
+    "state_getReadProof",
+    accountKey,
+    accountValue,
+    f.trieVersion,
+  );
+  const contract = step("value decodes as a contract's AccountInfo", () => {
+    assert(accountValue.length === f.account.value.bytes, `value is ${accountValue.length} B, file says ${f.account.value.bytes}`);
+    const info = decodeReviveAccountInfo(accountValue);
+    assert(info.kind === "Contract", "an externally owned account, not a contract");
+    const c = info.contract;
+    const d = f.account.value.decoded;
+    assert(d.kind === info.kind && d.trieId === bytesToHex(c.trieId) && d.codeHash === bytesToHex(c.codeHash), "kind, trie id or code hash differs from the decoded one");
+    assert(d.storageBytes === c.storageBytes && d.storageItems === c.storageItems && d.immutableDataLen === c.immutableDataLen && d.dust === info.dust, "sizes differ from the decoded ones");
+    assert(
+      d.storageByteDeposit === c.storageByteDeposit.toString() && d.storageItemDeposit === c.storageItemDeposit.toString() && d.storageBaseDeposit === c.storageBaseDeposit.toString(),
+      "deposits differ from the decoded ones",
+    );
+    return { value: c, detail: `trie id ${shortHex(c.trieId)} (${c.trieId.length} B), code hash ${shortHex(c.codeHash)}, ${c.storageItems} storage items` };
+  });
+  report.check("AccountInfo decoder: an EOA value is an EOA; another variant, an added byte and a missing byte are rejected", () => {
+    const eoa = decodeReviveAccountInfo(Uint8Array.of(1, 0, 0, 0, 0));
+    assert(eoa.kind === "EOA" && eoa.dust === 0, "variant 1 with dust 0 does not decode as an EOA");
+    rejects("variant 2", /unknown AccountType variant 2$/, () => decodeReviveAccountInfo(Uint8Array.of(2, 0, 0, 0, 0)));
+    rejects("the value with a byte added", /trailing bytes/, () => decodeReviveAccountInfo(concatBytes(accountValue, Uint8Array.of(0))));
+    rejects("the value without its last byte", /^need \d+ bytes/, () => decodeReviveAccountInfo(accountValue.subarray(0, accountValue.length - 1)));
+    return "0x0100000000 decodes as an EOA; variant 2, the contract's value plus one byte and minus one byte all throw";
+  });
+  if (!contract) return;
+
+  // Revive.CodeInfoOf(code hash), from the state_root, and the code eth_getCode returned.
+  const codeInfoKey = hexToBytes(f.codeInfo.key.hex);
+  const codeInfoValue = hexToBytes(f.codeInfo.value.scale);
+  report.check("code-info key = twox128(Revive) ++ twox128(CodeInfoOf) ++ code hash", () => {
+    checkKeyFields(f.codeInfo.key, "Revive", "CodeInfoOf", "Identity", reviveCodeInfoKey(contract.codeHash));
+    return `${codeInfoKey.length} B (Identity hasher), the code hash from AccountInfoOf`;
+  });
+  const codeInfoNodes = checkWalk(
+    `CodeInfoOf proof walks from state_root to the value (trie V${f.trieVersion})`,
+    header.stateRoot,
+    f.codeInfo.proof,
+    "state_getReadProof",
+    codeInfoKey,
+    codeInfoValue,
+    f.trieVersion,
+  );
+  report.check("code: keccak-256 = code hash, length = code_len, kind = code_type", () => {
+    const code = hexToBytes(f.code.hex);
+    assert(f.code.method === "eth_getCode", `code from ${f.code.method}`);
+    assert(
+      f.code.params.length === 2 && f.code.params[0] === f.account.address && namesEvmBlock(f.code.params[1], f.evm.block.hash, header.number),
+      "eth_getCode was not asked for this contract at the EVM block",
+    );
+    assert(code.length === f.code.bytes, `code is ${code.length} B, file says ${f.code.bytes}`);
+    assert(bytesToHex(keccak_256(code)) === f.code.keccak256, "keccak256 field differs");
+    assert(equalBytes(keccak_256(code), contract.codeHash), "the code's keccak-256 is not the code hash in AccountInfoOf");
+    const kind = codeKind(code);
+    assert(kind === f.code.kind, `the code is ${kind}, file says ${f.code.kind}`);
+    assert(codeInfoValue.length === f.codeInfo.value.bytes, `CodeInfo is ${codeInfoValue.length} B, file says ${f.codeInfo.value.bytes}`);
+    const info = decodeReviveCodeInfo(codeInfoValue);
+    const d = f.codeInfo.value.decoded;
+    assert(d.owner === bytesToHex(info.owner) && d.deposit === info.deposit.toString() && d.refcount === info.refcount.toString(), "owner, deposit or refcount differs from the decoded one");
+    assert(d.codeLen === info.codeLen && d.codeType === info.codeType && d.behaviourVersion === info.behaviourVersion, "code_len, code_type or behaviour_version differs from the decoded one");
+    assert(info.codeLen === code.length, `CodeInfoOf says code_len ${info.codeLen}, the code is ${code.length} B`);
+    assert(info.codeType === CODE_TYPE_OF_KIND[kind], `CodeInfoOf says code_type ${info.codeType}, the code is ${kind === "evm" ? "EVM bytecode" : "a PolkaVM program"}`);
+    return `${fmt(code.length)} B from ${f.code.method}, ${kind === "evm" ? "EVM bytecode" : "a PolkaVM program"} (starts ${bytesToHex(code.subarray(0, 4))}); ` +
+      `CodeInfoOf: code_type ${info.codeType}, code_len ${fmt(info.codeLen)}`;
+  });
+  report.check("CodeInfo decoder: the other code_type decodes as such; code_type 2, an added byte and a missing byte are rejected", () => {
+    const at = codeInfoValue.length - 5; // code_type (u8), then behaviour_version (u32)
+    const decoded = decodeReviveCodeInfo(codeInfoValue).codeType;
+    const other = decodeReviveCodeInfo(flipByte(codeInfoValue, at)).codeType;
+    assert(other !== decoded, "code_type is not the fifth byte from the end");
+    rejects("code_type 2", /unknown BytecodeType variant 2$/, () => decodeReviveCodeInfo(Uint8Array.from(codeInfoValue, (b, i) => (i === at ? 2 : b))));
+    rejects("the value with a byte added", /trailing bytes/, () => decodeReviveCodeInfo(concatBytes(codeInfoValue, Uint8Array.of(0))));
+    rejects("the value without its last byte", /^need \d+ bytes/, () => decodeReviveCodeInfo(codeInfoValue.subarray(0, codeInfoValue.length - 1)));
+    return `code_type ${decoded} flipped reads as ${other}; code_type 2, one byte added and one byte removed all throw`;
+  });
+
+  // The child trie's root, from the state_root.
+  const rootKey = hexToBytes(f.childRoot.key.hex);
+  const childRoot = hexToBytes(f.childRoot.root);
+  report.check('child-root key = ":child_storage:default:" ++ trie id', () => {
+    assert(equalBytes(childRootKey(contract.trieId), rootKey), "key is not the prefix and the decoded trie id");
+    assert(f.childRoot.key.prefix === new TextDecoder().decode(CHILD_STORAGE_DEFAULT_PREFIX) && rootKey.length === f.childRoot.key.bytes, "prefix or key size differs");
+    assert(childRoot.length === 32 && childRoot.some((b) => b !== 0), "the child root is not 32 non-zero bytes");
+    return `${rootKey.length} B`;
+  });
+  const rootNodes = checkWalk(
+    `child-root proof walks from state_root to the child root (trie V${f.trieVersion})`,
+    header.stateRoot,
+    f.childRoot.proof,
+    "state_getReadProof",
+    rootKey,
+    childRoot,
+    f.trieVersion,
+  );
+
+  // The slot, from the child root.
+  const index = hexToBytes(f.slot.index);
+  const slotKey = hexToBytes(f.slot.key.hex);
+  const value = hexToBytes(f.slot.value.hex);
+  report.check("slot key = blake2_256(slot)", () => {
+    assert(index.length === 32, `slot is ${index.length} B`);
+    assert(f.slot.key.hasher === "Blake2_256", `the key says hasher ${f.slot.key.hasher}, not Blake2_256`);
+    assert(equalBytes(reviveSlotKey(index), slotKey), "key is not blake2_256 of the slot");
+    assert(value.length > 0 && value.length === f.slot.value.bytes, "value is empty or its size differs");
+    if (f.slot.label) assert(f.slot.label.source === "command line (--label)", `label source ${f.slot.label.source}`);
+    return `slot ${shortHex(index)}${f.slot.label ? ` (${f.slot.label.text})` : ""} -> ${shortHex(slotKey)}`;
+  });
+  const slotNodes = checkWalk("slot proof walks from the child root to the value", childRoot, f.slot.proof, "state_getChildReadProof", slotKey, value, f.trieVersion);
+  report.check("served child proof = these items + the items of the child-root proof", () => {
+    const s = f.slot.proof.served;
+    assert(s.mainTrieItems === f.childRoot.proof.count, `${s.mainTrieItems} main-trie items served, the child-root proof has ${f.childRoot.proof.count}`);
+    assert(s.count === f.slot.proof.count + s.mainTrieItems, `served ${s.count} items, not ${f.slot.proof.count} kept + ${s.mainTrieItems} main-trie items`);
+    assert(s.bytes === f.slot.proof.bytes + f.childRoot.proof.bytes, `served ${s.bytes} B, not ${f.slot.proof.bytes} + ${f.childRoot.proof.bytes}`);
+    return `${s.count} served (${fmt(s.bytes)} B): the ${s.mainTrieItems} child-root proof items + ${f.slot.proof.count} child-trie items`;
+  });
+
+  // The EVM RPC's block: B itself, or the Ethereum block whose hash Revive.BlockHash(B) holds and
+  // whose parent hash Revive.BlockHash(B - 1) holds.
+  const blockHashKey = hexToBytes(f.evm.reviveBlockHash.key.hex);
+  const blockHashValue = hexToBytes(f.evm.reviveBlockHash.value);
+  report.check("block-hash key = twox128(Revive) ++ twox128(BlockHash) ++ u32le(block number)", () => {
+    checkKeyFields(f.evm.reviveBlockHash.key, "Revive", "BlockHash", "Identity", reviveBlockHashKey(header.number));
+    assert(blockHashValue.length === 32 && blockHashValue.some((b) => b !== 0), "the value is not 32 non-zero bytes");
+    return `${blockHashKey.length} B (Identity hasher, u32 key ${header.number})`;
+  });
+  const blockHashNodes = checkWalk(
+    `Revive.BlockHash(B) proof walks from state_root to the value (trie V${f.trieVersion})`,
+    header.stateRoot,
+    f.evm.reviveBlockHash.proof,
+    "state_getReadProof",
+    blockHashKey,
+    blockHashValue,
+    f.trieVersion,
+  );
+  const parentKey = hexToBytes(f.evm.reviveParentBlockHash.key.hex);
+  const parentValue = hexToBytes(f.evm.reviveParentBlockHash.value);
+  report.check("parent block-hash key = twox128(Revive) ++ twox128(BlockHash) ++ u32le(block number - 1)", () => {
+    checkKeyFields(f.evm.reviveParentBlockHash.key, "Revive", "BlockHash", "Identity", reviveBlockHashKey(header.number - 1));
+    assert(parentValue.length === 32 && parentValue.some((b) => b !== 0), "the value is not 32 non-zero bytes");
+    return `${parentKey.length} B (Identity hasher, u32 key ${header.number - 1})`;
+  });
+  const parentNodes = checkWalk(
+    `Revive.BlockHash(B - 1) proof walks from state_root to the value (trie V${f.trieVersion})`,
+    header.stateRoot,
+    f.evm.reviveParentBlockHash.proof,
+    "state_getReadProof",
+    parentKey,
+    parentValue,
+    f.trieVersion,
+  );
+  report.check("EVM chain id = pallet-revive's ChainId of this chain", () => {
+    const known = EVM_CHAINS[f.provenance.genesisHash];
+    assert(known, `no EVM chain id on record for genesis ${f.provenance.genesisHash}`);
+    assert(f.provenance.chain === known.chain, `chain ${f.provenance.chain}, this genesis is ${known.chain}`);
+    assert(f.evm.chainId === known.chainId, `EVM chain id ${f.evm.chainId}, ${known.chain} has ${known.chainId}`);
+    return `${BigInt(f.evm.chainId)} (${f.evm.chainId}), ${known.chain}`;
+  });
+  report.check("EVM block is B, by its relation", () => {
+    const b = f.evm.block;
+    assert(b.method === "eth_getBlockByNumber", `block from ${b.method}`);
+    assert(b.number === header.number, `EVM block ${b.number}, header #${header.number}`);
+    if (f.evm.relation === "substrate-block") {
+      assert(b.hash === f.header.hash, "relation substrate-block, but the EVM block's hash is not the header's");
+      assert(b.parentHash === f.header.parentHash, "relation substrate-block, but the EVM block's parent hash is not the header's");
+      assert(b.stateRoot === f.header.stateRoot, "relation substrate-block, but the EVM block's state root is not the header's");
+      return `substrate-block: same hash, parent hash and state root as the header (Revive.BlockHash(B) and (B - 1) are ${shortHex(blockHashValue)} and ${shortHex(parentValue)})`;
+    }
+    assert(f.evm.relation === "revive-block-hash", `unknown relation ${f.evm.relation}`);
+    assert(blockHashNodes && parentNodes, "Revive.BlockHash(B) or Revive.BlockHash(B - 1) is not proven");
+    assert(b.hash === f.evm.reviveBlockHash.value, "relation revive-block-hash, but the EVM block's hash is not Revive.BlockHash(B)");
+    assert(b.parentHash === f.evm.reviveParentBlockHash.value, "relation revive-block-hash, but the EVM block's parent hash is not Revive.BlockHash(B - 1)");
+    assert(b.stateRoot === bytesToHex(EMPTY_TRIE_ROOT), `relation revive-block-hash, but the EVM block's state root ${b.stateRoot} is not the empty-trie root`);
+    return `revive-block-hash: its hash and parent hash are Revive.BlockHash(B) ${shortHex(blockHashValue)} and Revive.BlockHash(B - 1) ${shortHex(parentValue)}, ` +
+      `proven at B; its state root is the empty-trie root ${shortHex(EMPTY_TRIE_ROOT)}, a placeholder`;
+  });
+  report.check("eth_getStorageAt's word at the EVM block is the proven value", () => {
+    const s = f.evm.storageAt;
+    assert(s.method === "eth_getStorageAt", `word from ${s.method}`);
+    assert(s.params.length === 3, `eth_getStorageAt with ${s.params.length} parameters`);
+    assert(typeof s.params[1] === "string" && QUANTITY.test(s.params[1]), `the slot parameter ${JSON.stringify(s.params[1])} is not a QUANTITY (0x hex without leading zeros)`);
+    assert(
+      s.params[0] === f.account.address && BigInt(s.params[1]) === BigInt(f.slot.index) && namesEvmBlock(s.params[2], f.evm.block.hash, header.number),
+      "eth_getStorageAt was not asked for this contract and slot at the EVM block",
+    );
+    assert(isUnsetStorageWord(new Uint8Array(0)) && isUnsetStorageWord(new Uint8Array(32)) && !isUnsetStorageWord(flipByte(new Uint8Array(32), 31)), '"0x" and 32 zero bytes are not both read as unset');
+    const word = hexToBytes(s.result);
+    // A stored value of fewer than 32 zero bytes, left-padded, is 32 zero bytes too: `matches` tells it from an unset slot.
+    assert(!isUnsetStorageWord(word) || equalBytes(word, value) || s.matches === "left-padded", `the word ${s.result} means unset, the proof shows a value`);
+    if (s.matches === "equal") {
+      assert(equalBytes(word, value), "the word differs from the proven value");
+    } else {
+      assert(s.matches === "left-padded" && word.length === 32 && value.length < 32, `not a known relation: ${s.matches}`);
+      assert(equalBytes(word.subarray(32 - value.length), value) && word.subarray(0, 32 - value.length).every((x) => x === 0), "the word is not the value left-padded");
+    }
+    const at = typeof s.params[2] === "object" ? "the EVM block's hash (EIP-1898)" : `block ${s.params[2]}`;
+    return `asked at ${at}; word ${shortHex(word)} = value${s.matches === "equal" ? ", byte for byte" : ", left-padded"}`;
+  });
+
+  // Tampering: each step is bound to its root and its key.
+  if (accountNodes && address.length === 20) {
+    const other = reviveAccountInfoKey(flipByte(address, address.length - 1));
+    checkTampers("AccountInfoOf proof: one-byte flips, a flipped state_root, another address", header.stateRoot, accountNodes, accountKey, accountValue, [{ what: "another address", key: other }]);
+  }
+  if (codeInfoNodes) {
+    const other = reviveCodeInfoKey(flipByte(contract.codeHash, contract.codeHash.length - 1));
+    checkTampers("CodeInfoOf proof: one-byte flips, a flipped state_root, another code hash", header.stateRoot, codeInfoNodes, codeInfoKey, codeInfoValue, [{ what: "another code hash", key: other }]);
+  }
+  if (rootNodes) {
+    const other = childRootKey(flipByte(contract.trieId, contract.trieId.length - 1));
+    checkTampers("child-root proof: one-byte flips, a flipped state_root, another trie id", header.stateRoot, rootNodes, rootKey, childRoot, [{ what: "another trie id", key: other }]);
+  }
+  if (slotNodes && index.length === 32) {
+    const others = [1n, -1n].map((d) => ({ what: `slot ${d > 0n ? "+" : "-"} 1`, key: reviveSlotKey(otherSlot(index, d)) }));
+    checkTampers("slot proof: one-byte flips, a flipped child root, the neighbouring slots", childRoot, slotNodes, slotKey, value, others);
+  }
+  // The neighbouring block numbers that exist (a u32 key is not negative).
+  const blocks = (deltas: number[], what: (d: number) => string) =>
+    deltas.filter((d) => header.number + d >= 0).map((d) => ({ what: what(d), key: reviveBlockHashKey(header.number + d) }));
+  if (blockHashNodes) {
+    const others = blocks([1, -1], (d) => `block B ${d > 0 ? "+" : "-"} 1`);
+    checkTampers("Revive.BlockHash(B) proof: one-byte flips, a flipped state_root, the neighbouring block numbers", header.stateRoot, blockHashNodes, blockHashKey, blockHashValue, others);
+  }
+  if (parentNodes) {
+    const others = blocks([0, -2], (d) => (d === 0 ? "block B" : "block B - 2"));
+    checkTampers("Revive.BlockHash(B - 1) proof: one-byte flips, a flipped state_root, the neighbouring block numbers", header.stateRoot, parentNodes, parentKey, parentValue, others);
+  }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -466,7 +914,7 @@ function main(): void {
 
   for (const [file, f] of ordered) {
     const p = f.provenance;
-    report.heading(`${file}  [${f.kind}]  #${fmt(p?.block?.number ?? 0)} ${shortHex(p?.block?.hash ?? "0x")}  set ${p?.setId}`);
+    report.heading(`${file}  [${f.kind}]  #${fmt(p?.block?.number ?? 0)} ${shortHex(typeof p?.block?.hash === "string" ? p.block.hash : "0x")}  ${setIdText(f)}`);
     checkProvenance(f);
     switch (f.kind) {
       case "finality-proof":
@@ -491,6 +939,10 @@ function main(): void {
       case "storage-proof":
         checkStorageProof(f);
         results.storage = keep(file, { file, fixture: f }) ?? results.storage;
+        break;
+      case "contract-storage":
+        checkContractStorage(f);
+        for (const note of Array.isArray(f.notes) ? f.notes : []) console.log(`        note: ${note}`);
         break;
       case "index":
         checkIndex(f, loaded);

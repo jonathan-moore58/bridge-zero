@@ -3,7 +3,10 @@
 //
 // Trie V0 keeps every value inline in its node. Trie V1 moves values of 33 bytes or more
 // into a separate proof item referenced by its hash; the node headers say which form a node
-// uses, so one walk handles both. Only V0 has been run against a live chain so far.
+// uses, so one walk handles both. Both have run against live chains: V0 on Portaldot mainnet
+// (fixtures/mainnet), V1 on the Portaldot V3 testnet (fixtures/v3-testnet, a System.Account
+// value behind its hash) and on Westend Asset Hub (fixtures/westend-asset-hub-revive, main-trie
+// and child-trie proofs of a pallet-revive contract).
 
 import { bytesToHex, shortHex } from "./bytes.js";
 import { blake2_256 } from "./hash.js";

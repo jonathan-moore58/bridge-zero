@@ -110,3 +110,15 @@ export function systemAccountKey(accountId: Uint8Array): Uint8Array {
 
 /** Well-known key holding the GRANDPA authority list in runtimes of this age. */
 export const GRANDPA_AUTHORITIES_KEY = utf8(":grandpa_authorities");
+
+/** Prefix of the main-trie keys that hold the roots of default child tries. */
+export const CHILD_STORAGE_DEFAULT_PREFIX = utf8(":child_storage:default:");
+
+/**
+ * Main-trie key of a default child trie's root: ":child_storage:default:" ‖ childInfo (for a
+ * contract, its trie id). The child-state RPCs take the same bytes as the child storage key.
+ */
+export function childRootKey(childInfo: Uint8Array): Uint8Array {
+  if (childInfo.length === 0) throw new Error("child info must not be empty");
+  return concatBytes(CHILD_STORAGE_DEFAULT_PREFIX, childInfo);
+}

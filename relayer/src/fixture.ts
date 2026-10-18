@@ -1,6 +1,6 @@
-// The JSON fixture format written by capture.ts and read by check.ts. Every file starts
-// with a provenance header. Every chain item keeps its raw SCALE bytes as hex ("scale")
-// next to the decoded fields, so tests can feed the exact bytes a relayer would submit.
+// The JSON fixture format written by capture.ts and capture-contract.ts and read by check.ts.
+// Every file starts with a provenance header. Every chain item keeps its raw SCALE bytes as hex
+// ("scale") next to the decoded fields, so tests can feed the exact bytes a relayer would submit.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { bytesToHex, toSafeNumber, type Hex } from "./bytes.js";
@@ -134,7 +134,8 @@ export type FixtureKind =
   | "stored-justification"
   | "set-change"
   | "authority-set"
-  | "storage-proof";
+  | "storage-proof"
+  | "contract-storage";
 
 export interface FixtureBase {
   provenance: Provenance;
@@ -201,6 +202,115 @@ export interface StorageProofFixture extends FixtureBase {
   proof: { count: number; bytes: number; nodeBytes: number[]; nodes: Hex[] };
 }
 
+/** Proof items in the order the node served them. */
+export interface ProofJson {
+  method: string;
+  count: number;
+  bytes: number;
+  nodeBytes: number[];
+  nodes: Hex[];
+}
+
+/**
+ * Provenance of a contract-storage capture, which also reads an EVM RPC. setId is
+ * Grandpa.CurrentSetId at the block as state_getStorage returned it, without a proof (check.ts
+ * prints it as not proven), or null on a chain without GRANDPA of its own (a parachain), where
+ * check.ts requires null.
+ */
+export interface ContractProvenance extends Omit<Provenance, "setId"> {
+  evmRpc: string;
+  setId: number | null;
+}
+
+/** The key of a pallet storage item: twox128(pallet) ++ twox128(item) ++ the hashed map key. */
+export interface StorageKeyJson {
+  pallet: string;
+  item: string;
+  hasher: string;
+  bytes: number;
+  hex: Hex;
+}
+
+/**
+ * The block an EVM RPC call was asked at: the EVM block's hash (EIP-1898), or its number (a
+ * QUANTITY, hex without leading zeros) where the RPC refused the hash.
+ */
+export type EvmBlockParam = Hex | { blockHash: Hex };
+
+/**
+ * How the EVM RPC's block is B. "substrate-block": its hash, parent hash and state root are B's (an
+ * eth-rpc that serves Substrate blocks). "revive-block-hash": it is the Ethereum block the runtime
+ * built for B (an eth-rpc that serves those blocks): its hash is Revive.BlockHash(B) and its parent
+ * hash Revive.BlockHash(B - 1), both proven at B, and its state root is the empty-trie root, a
+ * placeholder (revive.ts, EMPTY_TRIE_ROOT).
+ */
+export type EvmBlockRelation = "substrate-block" | "revive-block-hash";
+
+/**
+ * One storage slot of a pallet-revive contract (see revive.ts), proven from a block's state_root
+ * (Revive.AccountInfoOf, Revive.CodeInfoOf, the child trie's root, the slot in the child trie), and
+ * the EVM RPC's eth_getCode and eth_getStorageAt at the same block, which Revive.BlockHash ties to it.
+ */
+export interface ContractStorageFixture {
+  provenance: ContractProvenance;
+  kind: "contract-storage";
+  about: string;
+  node: { version: string };
+  /** The block every proof was read at; they start from its state_root. */
+  header: HeaderJson;
+  trieVersion: 0 | 1;
+  /** Revive.AccountInfoOf(address): makes the address a contract and names its trie id and code hash. */
+  account: {
+    address: Hex;
+    key: StorageKeyJson;
+    value: { bytes: number; scale: Hex; decoded: Record<string, string | number> };
+    proof: ProofJson;
+  };
+  /** Revive.CodeInfoOf(code hash): the code's type (EVM or PolkaVM) and length. */
+  codeInfo: {
+    key: StorageKeyJson;
+    value: { bytes: number; scale: Hex; decoded: Record<string, string | number> };
+    proof: ProofJson;
+  };
+  /**
+   * The code eth_getCode returns at the EVM block. Its keccak-256 is the code hash in the account
+   * entry; its length and kind are the code_len and code_type of the CodeInfoOf entry.
+   */
+  code: { method: string; params: [Hex, EvmBlockParam]; kind: "evm" | "pvm"; bytes: number; keccak256: Hex; hex: Hex };
+  /** The root of the contract's child trie, in the main trie under ":child_storage:default:" ++ trie id. */
+  childRoot: { key: { prefix: string; bytes: number; hex: Hex }; root: Hex; proof: ProofJson };
+  slot: {
+    /** The 32-byte storage key: the slot number, big-endian. */
+    index: Hex;
+    /** What the slot holds, as given on the command line (--label). Not checked. */
+    label?: { text: string; source: string };
+    key: { hasher: string; hex: Hex };
+    value: { bytes: number; hex: Hex };
+    /**
+     * The child-trie items of state_getChildReadProof. The node also serves the main-trie items
+     * that lead to the child root: served.mainTrieItems of them, exactly the items of childRoot.proof.
+     */
+    proof: ProofJson & { served: { count: number; bytes: number; mainTrieItems: number } };
+  };
+  evm: {
+    chainId: Hex;
+    clientVersion: string | null;
+    relation: EvmBlockRelation;
+    /** Revive.BlockHash(B) at B: the hash of the Ethereum block the runtime built for B. */
+    reviveBlockHash: { key: StorageKeyJson; value: Hex; proof: ProofJson };
+    /** Revive.BlockHash(B - 1) at B: the hash of the Ethereum block before it, its parent hash. */
+    reviveParentBlockHash: { key: StorageKeyJson; value: Hex; proof: ProofJson };
+    /** The EVM RPC's block with the header's number; `relation` says how it is B. */
+    block: { method: string; number: number; hash: Hex; parentHash: Hex; stateRoot: Hex };
+    /**
+     * eth_getStorageAt(address, slot as a QUANTITY, EVM block) and how its word relates to the
+     * proven value. A value of fewer than 32 zero bytes, left-padded, reads like an unset slot.
+     */
+    storageAt: { method: string; params: [Hex, Hex, EvmBlockParam]; result: Hex; matches: "equal" | "left-padded" };
+  };
+  notes: string[];
+}
+
 export interface IndexEntry {
   file: string;
   kind: FixtureKind;
@@ -233,7 +343,8 @@ export type Fixture =
   | SetChangeFixture
   | (JustifiedHeaderFixture & { kind: "justification" | "stored-justification" })
   | AuthoritySetFixture
-  | StorageProofFixture;
+  | StorageProofFixture
+  | ContractStorageFixture;
 
 // ---------------------------------------------------------------------------------------
 // Builders

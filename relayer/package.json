@@ -10,6 +10,7 @@
   },
   "scripts": {
     "capture": "tsx src/capture.ts",
+    "capture-contract": "tsx src/capture-contract.ts",
     "check": "tsx src/check.ts",
     "probe": "tsx src/probe.ts",
     "typecheck": "tsc --noEmit"
