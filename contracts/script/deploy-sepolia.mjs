@@ -31,13 +31,15 @@
 // RPC is SEPOLIA_RPC_URL when set, else the public endpoint. Exit code 0 on success, 1 when a
 // check fails, 2 when the RPC cannot be reached, 3 when a sent transaction is still pending.
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   RPC,
   CAP,
   SEPOLIA_CHAIN_ID,
+  REQUEST_GAS,
+  RECEIPT_TIMEOUT,
   CONTRACTS,
   FIXTURES,
   keccak256,
@@ -53,41 +55,45 @@ import {
   failed,
   fmt,
   share,
+  qty,
+  gasOf,
+  withHeadroom,
+  eth,
+  findLog,
+  dataWord,
+  PROBE,
+  PROBE_SENDER,
+  PROBE_CODE,
+  PROBE_GAS,
   artifact,
   contractId,
   linkedLibraries,
   linkedCode,
   topic,
   fixtureCalls,
+  parseGwei,
+  feesAt,
+  redactAlso,
+  redact,
+  toolEnv,
+  retry,
+  nonces,
+  nextNonceIs,
+  receiptOf,
+  signerIs,
+  mktxArgs,
+  signAndPublish,
+  writeJsonAtomic,
 } from "./lib/sepolia.mjs";
 
 const DEPLOYER = "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071";
 const deployer = DEPLOYER.toLowerCase();
 const RECORD = join(CONTRACTS, "..", "deployments", "sepolia.json");
-const REQUEST_GAS = 50_000_000; // what public RPCs let one eth_simulateV1 request use
-const RECEIPT_TIMEOUT = 20 * 60_000;
 // The deployment build: FOUNDRY_PROFILE=sepolia forge build --skip test --skip script.
 const SEPOLIA_OUT = join(CONTRACTS, "out-sepolia");
 
-// The probe answers, for each 32-byte word of its calldata (an address), EXTCODEHASH and BALANCE.
-// Its own sender calls it last in every simulated block: where the deployments landed, and what
-// is left of the deployer's balance.
-const PROBE = "0x00000000000000000000000000000000b21dc0de";
-const PROBE_SENDER = "0x00000000000000000000000000000000b21d6e01";
-const PROBE_CODE = "0x5f5b80361115601f578035803f8280015231818001602001526020016001565b3680015ff3";
-const PROBE_GAS = 100_000;
-
-const qty = (n) => "0x" + BigInt(n).toString(16);
-const gasOf = (r) => Number(BigInt(r.gasUsed));
-const withHeadroom = (used) => Math.min(CAP, used + Math.ceil(used / 10));
 const tag = (s) => `[${String(s.index).padStart(2)}]`;
 const short = (h) => `${h.slice(0, 10)}…`;
-const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
-const eth = (wei) => {
-  const s = wei.toString().padStart(19, "0");
-  const frac = s.slice(-18).replace(/0+$/, "");
-  return `${s.slice(0, -18)}${frac ? "." + frac : ""} ETH`;
-};
 
 // ------------------------------------------------------------------ arguments
 
@@ -116,28 +122,23 @@ if (modes.length > 1) usage("choose one of --dry-run, --send and --verify");
 const MODE = modes[0] ?? "--dry-run";
 if (MODE === "--send" && !(opts["--account"] && opts["--password-file"]))
   usage("--send needs --account <keystore name> and --password-file <path>");
-// cast runs in contracts/: the path is made absolute here (the file is never opened by this script).
+// cast runs in a directory of its own: the path is made absolute here (the file is never opened by this script).
 if (opts["--password-file"]) opts["--password-file"] = resolve(opts["--password-file"]);
 if (MODE === "--send" && !existsSync(opts["--password-file"])) usage("--password-file: no such file");
 
 // An amount in gwei ("0.001") in wei.
 function gwei(s) {
-  const m = /^(\d+)(?:\.(\d{1,9}))?$/.exec(s);
-  if (!m) usage(`not an amount in gwei: ${s}`);
-  const wei = BigInt(m[1]) * 10n ** 9n + BigInt((m[2] ?? "").padEnd(9, "0"));
-  if (wei < 1n) usage(`${s} gwei is less than 1 wei`);
-  return wei;
+  try {
+    return parseGwei(s);
+  } catch (err) {
+    usage(err.message);
+  }
 }
 const PRIORITY_FEE = opts["--priority-fee"] && gwei(opts["--priority-fee"]);
 const MAX_FEE = opts["--max-fee"] && gwei(opts["--max-fee"]);
 
-// Tool and RPC messages without a custom RPC URL (it can hold a key) or the password file's path
-// (also as Foundry prints it, with doubled backslashes).
-const redact = (text) =>
-  [process.env.SEPOLIA_RPC_URL, opts["--password-file"], opts["--password-file"]?.replaceAll("\\", "\\\\")]
-    .filter(Boolean)
-    .reduce((t, s) => t.split(s).join("<redacted>"), String(text ?? ""))
-    .trim();
+// Tool and RPC messages leave out the password file's path (redact, in lib/sepolia.mjs).
+redactAlso(opts["--password-file"]);
 
 // ------------------------------------------------------------------ the plan
 
@@ -155,9 +156,6 @@ const T = {
   halted: topic("Halted(uint32,bytes32,uint8)"),
   proven: topic("BalanceProven(bytes32,uint32,bytes32,uint128)"),
 };
-const findLog = (logs, address, t, first) =>
-  (logs ?? []).find((l) => l.address.toLowerCase() === address && l.topics[0] === t && (!first || l.topics[1] === first));
-const dataWord = (log, i) => BigInt(hex(bytes(log.data).slice(32 * i, 32 * i + 32)));
 
 // The creation code a deployment sends: the sepolia build's, which links the libraries at compile
 // time. It must hold the plan's library addresses where the default build has its placeholders.
@@ -377,19 +375,6 @@ function judge(s, r, limit) {
   return lines;
 }
 
-// Fees for the plan, fixed for the whole run: a priority fee of 1,000 wei (above what most Sepolia
-// blocks pay) and a max fee of ten times the next base fee plus it, at least 0.01 gwei, so a rising
-// base fee cannot stall the run and the plan costs at most about 0.0012 ETH at today's base fee;
-// --priority-fee and --max-fee replace them.
-async function feesAt(block) {
-  const history = await rpc("eth_feeHistory", ["0x1", block.number, []]);
-  const base = BigInt(history.baseFeePerGas.at(-1));
-  const tip = PRIORITY_FEE ?? 1_000n;
-  const floor = 10n * base + tip;
-  const maxFee = MAX_FEE ?? (floor > 10_000_000n ? floor : 10_000_000n);
-  return { base, tip, maxFee, gasPrice: BigInt(await rpc("eth_gasPrice", [])) };
-}
-
 // Proves `steps` (what is left of the plan) on the node. Returns, per step, the gas limit it is
 // sent with, its simulated gas and, for a deployment, the hash of the code it leaves; null when a
 // check fails.
@@ -511,17 +496,7 @@ function newRecord(steps) {
 function save(record) {
   record.contracts = {};
   for (const s of record.steps) if (s.kind === "deploy" && s.ok) record.contracts[s.name] = s.address;
-  mkdirSync(dirname(RECORD), { recursive: true });
-  writeFileSync(RECORD + ".tmp", JSON.stringify(record, null, 2) + "\n");
-  for (let i = 1; ; i++) {
-    try {
-      renameSync(RECORD + ".tmp", RECORD);
-      return;
-    } catch (err) {
-      if (i === 20 || !/EPERM|EBUSY|EACCES/.test(err.code ?? "")) throw err;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
-    }
-  }
+  writeJsonAtomic(RECORD, record);
 }
 
 // The record against the plan rebuilt from its start nonce: same names, nonces, addresses and
@@ -546,59 +521,6 @@ function matchRecord(record, steps) {
 }
 
 // ------------------------------------------------------------------ send
-
-// cast and forge run without the environment variables that would add a sender, a key, a gas
-// setting or libraries to what is passed to them here.
-function toolEnv(keep = {}) {
-  const env = {};
-  for (const [k, v] of Object.entries(process.env))
-    if (!/^(ETH|CAST|TEMPO|FOUNDRY|ETHERSCAN|VERIFIER|DAPP)_/i.test(k) && k.toUpperCase() !== "CHAIN") env[k] = v;
-  return { ...env, ...keep };
-}
-const cast = (args) =>
-  spawnSync("cast", args, { cwd: CONTRACTS, env: toolEnv(), encoding: "utf8", windowsHide: true, maxBuffer: 1 << 26 });
-
-// A read that a load-balanced RPC can briefly fail on a block it has not seen yet.
-async function retry(what, fn) {
-  for (let i = 1; ; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (i === 10) throw err;
-      console.log(`     (${what}: ${redact(err.message)}; retrying)`);
-      await sleep(3_000);
-    }
-  }
-}
-
-async function nonces() {
-  const count = async (which) => Number(BigInt(await rpc("eth_getTransactionCount", [deployer, which])));
-  return { latest: await count("latest"), pending: await count("pending") };
-}
-
-// Waits until `nonce` is the deployer's next nonce, mined and pending, after the previous step's
-// receipt (an RPC behind a load balancer can lag a block). False if it was used by something else.
-async function nextNonceIs(nonce) {
-  const until = Date.now() + 60_000;
-  for (;;) {
-    const n = await retry("nonce", nonces);
-    if (n.latest === nonce && n.pending === nonce) return true;
-    if (n.latest > nonce || Date.now() > until) {
-      check(false, `nonce ${nonce} is next (on chain: ${n.latest}, pending: ${n.pending})`);
-      return false;
-    }
-    await sleep(3_000);
-  }
-}
-
-async function receiptOf(hash, wait) {
-  const until = Date.now() + (wait ? RECEIPT_TIMEOUT : 0);
-  for (;;) {
-    const r = await retry("receipt", () => rpc("eth_getTransactionReceipt", [hash]));
-    if (r || Date.now() >= until) return r;
-    await sleep(4_000);
-  }
-}
 
 // Checks a mined step against the dry run and writes it into the record. A deployment must be
 // at its CREATE address with the simulated code, a call must emit the expected events, and a
@@ -650,49 +572,30 @@ async function recordReceipt(record, s, receipt) {
 // hash goes into the record, and only then cast publish broadcasts it, so a crash at any point
 // leaves a record that --resume can reconcile.
 async function send(record, plan, from, planned, fees) {
-  if (cast(["--version"]).status !== 0) {
-    console.log("FAIL cast is not on PATH");
-    process.exit(1);
-  }
-  // The keystore unlocks to the deployer: cast reads the password file, this script never does.
-  const who = cast(["wallet", "address", "--account", opts["--account"], "--password-file", opts["--password-file"]]);
-  const unlocked = /0x[0-9a-fA-F]{40}/.exec(who.stdout ?? "")?.[0];
-  if (who.status !== 0 || !unlocked) {
-    console.log(`FAIL cast wallet address could not open keystore ${opts["--account"]} with the password file`);
-    process.exit(1);
-  }
-  if (!check(unlocked.toLowerCase() === deployer, `keystore ${opts["--account"]} is the deployer (${unlocked})`)) process.exit(1);
+  if (!signerIs(deployer, opts["--account"], opts["--password-file"])) process.exit(1);
 
   save(record);
   for (const s of plan.slice(from)) {
     const p = planned[s.index - from];
     const entry = record.steps[s.index];
-    if (!(await nextNonceIs(s.nonce))) process.exit(1);
-    const common = [
-      "--rpc-url", RPC, "--chain", String(SEPOLIA_CHAIN_ID),
-      "--account", opts["--account"], "--password-file", opts["--password-file"],
-      "--nonce", String(s.nonce), "--gas-limit", String(p.limit),
-      "--gas-price", String(fees.maxFee), "--priority-gas-price", String(fees.tip),
-    ];
-    // The options come before --create, which is a subcommand; a call's raw calldata is the SIG argument.
-    const args = s.kind === "deploy" ? ["mktx", ...common, "--create", s.data] : ["mktx", s.to, s.data, ...common];
-    if (args.join(" ").length > 30_000) throw new Error(`${s.name}: the cast command line is longer than Windows accepts`);
+    if (!(await nextNonceIs(deployer, s.nonce))) process.exit(1);
+    const args = mktxArgs(s.name, {
+      to: s.kind === "deploy" ? null : s.to,
+      data: s.data,
+      nonce: s.nonce,
+      gasLimit: p.limit,
+      fees,
+      account: opts["--account"],
+      passwordFile: opts["--password-file"],
+    });
     Object.assign(entry, { gasLimit: p.limit, simulatedGas: p.simulatedGas, codeHash: p.codeHash });
     save(record);
-    const signed = cast(args);
-    const raw = /0x[0-9a-fA-F]+/.exec(signed.stdout ?? "")?.[0];
-    if (signed.status !== 0 || !raw) {
-      console.log(`FAIL ${tag(s)} ${s.name}: cast mktx failed\n${redact(signed.stderr || signed.stdout)}`);
-      process.exit(1);
-    }
-    const hash = hex(keccak256(bytes(raw)));
-    console.log(`     ${tag(s)} ${s.name}: signed ${hash}, gas limit ${fmt(p.limit)}`);
-    entry.txHash = hash;
-    save(record);
-    const out = cast(["publish", raw, "--rpc-url", RPC, "--async"]);
-    const sent = /0x[0-9a-fA-F]{64}/.exec(out.stdout ?? "")?.[0]?.toLowerCase();
-    if (out.status !== 0 || sent !== hash)
-      console.log(`     (cast publish: ${redact(out.stderr || out.stdout) || "no hash"}; waiting for ${hash} anyway)`);
+    const hash = signAndPublish(args, `${tag(s)} ${s.name}`, (signed) => {
+      console.log(`     ${tag(s)} ${s.name}: signed ${signed}, gas limit ${fmt(p.limit)}`);
+      entry.txHash = signed;
+      save(record);
+    });
+    if (!hash) process.exit(1);
     const receipt = await receiptOf(hash, true);
     if (!receipt) {
       console.log(`     ${hash} is not mined after ${RECEIPT_TIMEOUT / 60_000} minutes; run again with --resume`);
@@ -717,7 +620,7 @@ async function reconcile(record, plan, from) {
     if (!(await recordReceipt(record, plan[from], receipt))) process.exit(1);
     return reconcile(record, plan, from + 1);
   }
-  const n = await nonces();
+  const n = await nonces(deployer);
   if (n.latest > entry.nonce) {
     console.log(`FAIL nonce ${entry.nonce} is used on chain, but not by ${entry.txHash}; look at the deployer's transactions`);
     process.exit(1);
@@ -798,10 +701,11 @@ const ctx = {};
 let n;
 try {
   ctx.block = await rpc("eth_getBlockByNumber", ["latest", false]);
-  ctx.fees = await feesAt(ctx.block);
+  // The fees are fixed for the run: the plan costs at most about 0.0012 ETH at today's base fee.
+  ctx.fees = await feesAt(ctx.block, { priorityFee: PRIORITY_FEE, maxFee: MAX_FEE });
   ctx.balance = BigInt(await rpc("eth_getBalance", [deployer, ctx.block.number]));
   ctx.nonce = Number(BigInt(await rpc("eth_getTransactionCount", [deployer, ctx.block.number])));
-  n = await nonces();
+  n = await nonces(deployer);
 } catch (err) {
   unreachable(err);
 }

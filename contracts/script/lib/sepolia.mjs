@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: UNLICENSED
 //
-// What the Sepolia scripts share (test/fork/simulate-sepolia.mjs and script/deploy-sepolia.mjs):
-// keccak-256 and blake2b, ABI encoding, SCALE compact, CREATE addresses, the JSON-RPC client, the
-// forge artifacts with their libraries linked, and the light client and ProvenBalance calls built
-// from one fixtures directory. Plain Node, no dependencies.
+// What the Sepolia scripts share (test/fork/simulate-sepolia.mjs, script/deploy-sepolia.mjs and
+// relayer/src/relay.ts): keccak-256 and blake2b, ABI encoding, SCALE compact, CREATE addresses,
+// the JSON-RPC client, the forge artifacts with their libraries linked, the light client and
+// ProvenBalance calls built from one fixtures directory, and the way a transaction is priced,
+// signed, sent and followed to its receipt. Plain Node, no dependencies.
 
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 export const RPC = process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com";
 export const CAP = 16_777_216;
 export const SEPOLIA_CHAIN_ID = 11_155_111n;
+export const REQUEST_GAS = 50_000_000; // what public RPCs let one eth_simulateV1 request use
+export const RECEIPT_TIMEOUT = 20 * 60_000;
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const CONTRACTS = join(here, "..", "..");
@@ -225,6 +230,28 @@ export function check(ok, what) {
 }
 export const fmt = (n) => n.toLocaleString("en-US");
 export const share = (used) => `${fmt(used)} gas, ${((100 * used) / CAP).toFixed(1)}% of the 16,777,216 cap`;
+export const qty = (n) => "0x" + BigInt(n).toString(16);
+export const gasOf = (r) => Number(BigInt(r.gasUsed));
+export const withHeadroom = (used) => Math.min(CAP, used + Math.ceil(used / 10));
+export const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+export const eth = (wei) => {
+  const s = wei.toString().padStart(19, "0");
+  const frac = s.slice(-18).replace(/0+$/, "");
+  return `${s.slice(0, -18)}${frac ? "." + frac : ""} ETH`;
+};
+
+// The first log of `address` with topic0 `t` (and topic1 `first`, when given).
+export const findLog = (logs, address, t, first) =>
+  (logs ?? []).find((l) => l.address.toLowerCase() === address && l.topics[0] === t && (!first || l.topics[1] === first));
+export const dataWord = (log, i) => BigInt(hex(bytes(log.data).slice(32 * i, 32 * i + 32)));
+
+// The probe answers, for each 32-byte word of its calldata (an address), EXTCODEHASH and BALANCE.
+// A simulation gives it this code and its own sender a balance, and calls it last in a simulated
+// block: where deployments landed, and what is left of a sender's balance.
+export const PROBE = "0x00000000000000000000000000000000b21dc0de";
+export const PROBE_SENDER = "0x00000000000000000000000000000000b21d6e01";
+export const PROBE_CODE = "0x5f5b80361115601f578035803f8280015231818001602001526020016001565b3680015ff3";
+export const PROBE_GAS = 100_000;
 
 // ------------------------------------------------------------------ artifacts
 
@@ -336,4 +363,177 @@ export function fixtureCalls(dir, { checkpoint = "parent" } = {}) {
     concat(errorSelector("InvalidSignature(uint256,uint256)"), word(0), word(head.first[1])),
   );
   return { sc, fp, ap, checkpoint: at, initData, changeData, head, proveData, finalityProof, tampered, invalidSignature };
+}
+
+// ------------------------------------------------------------------ fees
+
+// An amount in gwei ("0.001") in wei. Throws on anything else, and on less than 1 wei.
+export function parseGwei(s) {
+  const m = /^(\d+)(?:\.(\d{1,9}))?$/.exec(s);
+  if (!m) throw new Error(`not an amount in gwei: ${s}`);
+  const wei = BigInt(m[1]) * 10n ** 9n + BigInt((m[2] ?? "").padEnd(9, "0"));
+  if (wei < 1n) throw new Error(`${s} gwei is less than 1 wei`);
+  return wei;
+}
+
+// Fees fixed for a whole run: a priority fee of 1,000 wei (above what most Sepolia blocks pay)
+// and a max fee of ten times the next base fee plus it, at least 0.01 gwei, so a rising base fee
+// cannot stall the run; `priorityFee` and `maxFee` (wei) replace them.
+export async function feesAt(block, { priorityFee, maxFee } = {}) {
+  const history = await rpc("eth_feeHistory", ["0x1", block.number, []]);
+  const base = BigInt(history.baseFeePerGas.at(-1));
+  const tip = priorityFee ?? 1_000n;
+  const floor = 10n * base + tip;
+  const max = maxFee ?? (floor > 10_000_000n ? floor : 10_000_000n);
+  return { base, tip, maxFee: max, gasPrice: BigInt(await rpc("eth_gasPrice", [])) };
+}
+
+// ------------------------------------------------------------------ send
+
+// Tool and RPC messages without a custom RPC URL (it can hold a key) or what redactAlso was given,
+// such as the password file's path (also as Foundry prints it, with doubled backslashes).
+const secrets = [];
+export function redactAlso(...values) {
+  for (const v of values) if (v) secrets.push(v, v.replaceAll("\\", "\\\\"));
+}
+export const redact = (text) =>
+  [process.env.SEPOLIA_RPC_URL, ...secrets]
+    .filter(Boolean)
+    .reduce((t, s) => t.split(s).join("<redacted>"), String(text ?? ""))
+    .trim();
+
+// cast and forge run without the environment variables that would add a sender, a key, a gas
+// setting or libraries to what is passed to them here.
+export function toolEnv(keep = {}) {
+  const env = {};
+  for (const [k, v] of Object.entries(process.env))
+    if (!/^(ETH|CAST|TEMPO|FOUNDRY|ETHERSCAN|VERIFIER|DAPP)_/i.test(k) && k.toUpperCase() !== "CHAIN") env[k] = v;
+  return { ...env, ...keep };
+}
+// cast runs in an empty directory of its own, removed on exit: Foundry loads the .env file of the
+// directory it runs in and of the project root above it (contracts/ would be one), which would
+// put back what toolEnv leaves out.
+let castDir;
+export function cast(args) {
+  if (!castDir) {
+    castDir = mkdtempSync(join(tmpdir(), "bz-cast-"));
+    process.on("exit", () => rmSync(castDir, { recursive: true, force: true }));
+  }
+  return spawnSync("cast", args, { cwd: castDir, env: toolEnv(), encoding: "utf8", windowsHide: true, maxBuffer: 1 << 26 });
+}
+
+// A read that a load-balanced RPC can briefly fail on a block it has not seen yet.
+export async function retry(what, fn) {
+  for (let i = 1; ; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (i === 10) throw err;
+      console.log(`     (${what}: ${redact(err.message)}; retrying)`);
+      await sleep(3_000);
+    }
+  }
+}
+
+export async function nonces(address) {
+  const count = async (which) => Number(BigInt(await rpc("eth_getTransactionCount", [address, which])));
+  return { latest: await count("latest"), pending: await count("pending") };
+}
+
+// Waits until `nonce` is the next nonce of `address`, mined and pending, after the previous
+// transaction's receipt (an RPC behind a load balancer can lag a block). False if it was used by
+// something else.
+export async function nextNonceIs(address, nonce) {
+  const until = Date.now() + 60_000;
+  for (;;) {
+    const n = await retry("nonce", () => nonces(address));
+    if (n.latest === nonce && n.pending === nonce) return true;
+    if (n.latest > nonce || Date.now() > until) {
+      check(false, `nonce ${nonce} is next (on chain: ${n.latest}, pending: ${n.pending})`);
+      return false;
+    }
+    await sleep(3_000);
+  }
+}
+
+export async function receiptOf(hash, wait) {
+  const until = Date.now() + (wait ? RECEIPT_TIMEOUT : 0);
+  for (;;) {
+    const r = await retry("receipt", () => rpc("eth_getTransactionReceipt", [hash]));
+    if (r || Date.now() >= until) return r;
+    await sleep(4_000);
+  }
+}
+
+// The address keystore `account` unlocks to with the password file, with cast on PATH; null, with
+// what failed printed, otherwise. cast reads the password file; these scripts never do.
+export function keystoreAddress(account, passwordFile) {
+  if (cast(["--version"]).status !== 0) {
+    console.log("FAIL cast is not on PATH");
+    return null;
+  }
+  const who = cast(["wallet", "address", "--account", account, "--password-file", passwordFile]);
+  const unlocked = /0x[0-9a-fA-F]{40}/.exec(who.stdout ?? "")?.[0];
+  if (who.status !== 0 || !unlocked) {
+    console.log(`FAIL cast wallet address could not open keystore ${account} with the password file`);
+    return null;
+  }
+  return unlocked;
+}
+
+// Keystore `account` unlocks with the password file to `address` (the deployer). Prints what fails.
+export function signerIs(address, account, passwordFile) {
+  const unlocked = keystoreAddress(account, passwordFile);
+  if (!unlocked) return false;
+  return check(unlocked.toLowerCase() === address.toLowerCase(), `keystore ${account} is the deployer (${unlocked})`);
+}
+
+// The cast mktx arguments that sign transaction `name` with the keystore: explicit nonce, gas
+// limit and fees, on Sepolia's chain id. Without `to`, `data` is creation code.
+export function mktxArgs(name, { to, data, nonce, gasLimit, fees, account, passwordFile }) {
+  const common = [
+    "--rpc-url", RPC, "--chain", String(SEPOLIA_CHAIN_ID),
+    "--account", account, "--password-file", passwordFile,
+    "--nonce", String(nonce), "--gas-limit", String(gasLimit),
+    "--gas-price", String(fees.maxFee), "--priority-gas-price", String(fees.tip),
+  ];
+  // The options come before --create, which is a subcommand; a call's raw calldata is the SIG argument.
+  const args = to ? ["mktx", to, data, ...common] : ["mktx", ...common, "--create", data];
+  if (args.join(" ").length > 30_000) throw new Error(`${name}: the cast command line is longer than Windows accepts`);
+  return args;
+}
+
+// cast mktx signs (`args` from mktxArgs), `signed(hash)` records the hash, and only then cast
+// publish broadcasts the transaction, so a crash at any point leaves a record the next run can
+// reconcile. Returns the hash; null when cast mktx failed (printed under `label`).
+export function signAndPublish(args, label, signed) {
+  const out = cast(args);
+  const raw = /0x[0-9a-fA-F]+/.exec(out.stdout ?? "")?.[0];
+  if (out.status !== 0 || !raw) {
+    console.log(`FAIL ${label}: cast mktx failed\n${redact(out.stderr || out.stdout)}`);
+    return null;
+  }
+  const hash = hex(keccak256(bytes(raw)));
+  signed(hash);
+  const published = cast(["publish", raw, "--rpc-url", RPC, "--async"]);
+  const sent = /0x[0-9a-fA-F]{64}/.exec(published.stdout ?? "")?.[0]?.toLowerCase();
+  if (published.status !== 0 || sent !== hash)
+    console.log(`     (cast publish: ${redact(published.stderr || published.stdout) || "no hash"}; waiting for ${hash} anyway)`);
+  return hash;
+}
+
+// Writes a record as JSON through a temporary file, so an interrupted write never leaves half of
+// it. Renaming over the old file can fail for a moment on Windows while something reads it.
+export function writeJsonAtomic(path, value) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path + ".tmp", JSON.stringify(value, null, 2) + "\n");
+  for (let i = 1; ; i++) {
+    try {
+      renameSync(path + ".tmp", path);
+      return;
+    } catch (err) {
+      if (i === 20 || !/EPERM|EBUSY|EACCES/.test(err.code ?? "")) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
+  }
 }
