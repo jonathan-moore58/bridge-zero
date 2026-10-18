@@ -2,7 +2,7 @@
   "name": "@bridge-zero/relayer",
   "version": "0.1.0",
   "private": true,
-  "description": "Fetches Portaldot finality and storage proofs, and captures and re-verifies chain fixtures.",
+  "description": "Fetches Portaldot finality and storage proofs, captures and re-verifies chain fixtures, and relays finality to the Sepolia light clients.",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
@@ -13,6 +13,7 @@
     "capture-contract": "tsx src/capture-contract.ts",
     "check": "tsx src/check.ts",
     "probe": "tsx src/probe.ts",
+    "relay": "tsx src/relay.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
