@@ -523,17 +523,20 @@ export function signAndPublish(args, label, signed) {
 }
 
 // Writes a record as JSON through a temporary file, so an interrupted write never leaves half of
-// it. Renaming over the old file can fail for a moment on Windows while something reads it.
+// it. Writing the temporary file and renaming it over the old one can fail for a moment on Windows
+// while something reads either: both are tried again.
 export function writeJsonAtomic(path, value) {
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path + ".tmp", JSON.stringify(value, null, 2) + "\n");
-  for (let i = 1; ; i++) {
-    try {
-      renameSync(path + ".tmp", path);
-      return;
-    } catch (err) {
-      if (i === 20 || !/EPERM|EBUSY|EACCES/.test(err.code ?? "")) throw err;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+  const text = JSON.stringify(value, null, 2) + "\n";
+  for (const step of [() => writeFileSync(path + ".tmp", text), () => renameSync(path + ".tmp", path)]) {
+    for (let i = 1; ; i++) {
+      try {
+        step();
+        break;
+      } catch (err) {
+        if (i === 20 || !/EPERM|EBUSY|EACCES/.test(err.code ?? "")) throw err;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+      }
     }
   }
 }

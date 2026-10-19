@@ -22,6 +22,7 @@ export function word(n: bigint | number): Uint8Array;
 export type AbiParam = { word: Uint8Array } | { bytes: Uint8Array } | { words: Uint8Array[] } | { list: Uint8Array[] };
 export function encode(params: AbiParam[]): Uint8Array;
 
+export function rpcBody(method: string, params: unknown[]): Promise<{ result?: unknown; error?: { code?: number; message?: string; data?: string } }>;
 export function rpc<T = unknown>(method: string, params: unknown[]): Promise<T>;
 export function fmt(n: number | bigint): string;
 export function share(used: number): string;

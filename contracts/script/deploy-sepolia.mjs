@@ -95,6 +95,21 @@ const SEPOLIA_OUT = join(CONTRACTS, "out-sepolia");
 const tag = (s) => `[${String(s.index).padStart(2)}]`;
 const short = (h) => `${h.slice(0, 10)}…`;
 
+// Ends the script with `code`. Exiting at once while a request's socket closes can fail an
+// assertion in libuv on Windows (exit code 127 instead), so once the main sequence below has
+// started, the script ends by throwing Exit, which that sequence turns into process.exitCode.
+class Exit extends Error {
+  constructor(code) {
+    super(`exit ${code}`);
+    this.code = code;
+  }
+}
+let started = false;
+function exit(code) {
+  if (!started) process.exit(code);
+  throw new Exit(code);
+}
+
 // ------------------------------------------------------------------ arguments
 
 const VALUED = ["--account", "--password-file", "--priority-fee", "--max-fee"];
@@ -106,7 +121,7 @@ usage (from contracts/):
   node script/deploy-sepolia.mjs [--dry-run] [--resume] [--priority-fee <gwei>] [--max-fee <gwei>]
   node script/deploy-sepolia.mjs --send --account <keystore> --password-file <path> [--resume] [fees]
   node script/deploy-sepolia.mjs --verify`);
-  process.exit(1);
+  exit(1);
 }
 for (let i = 2; i < process.argv.length; i++) {
   const a = process.argv[i];
@@ -504,7 +519,7 @@ function save(record) {
 function matchRecord(record, steps) {
   const fail = (why) => {
     console.log(`FAIL ${RECORD} does not match this plan: ${why}`);
-    process.exit(1);
+    exit(1);
   };
   if (record.chainId !== Number(SEPOLIA_CHAIN_ID) || record.deployer.toLowerCase() !== deployer) fail("network or deployer");
   const hashes = artifactHashes();
@@ -572,13 +587,13 @@ async function recordReceipt(record, s, receipt) {
 // hash goes into the record, and only then cast publish broadcasts it, so a crash at any point
 // leaves a record that --resume can reconcile.
 async function send(record, plan, from, planned, fees) {
-  if (!signerIs(deployer, opts["--account"], opts["--password-file"])) process.exit(1);
+  if (!signerIs(deployer, opts["--account"], opts["--password-file"])) exit(1);
 
   save(record);
   for (const s of plan.slice(from)) {
     const p = planned[s.index - from];
     const entry = record.steps[s.index];
-    if (!(await nextNonceIs(deployer, s.nonce))) process.exit(1);
+    if (!(await nextNonceIs(deployer, s.nonce))) exit(1);
     const args = mktxArgs(s.name, {
       to: s.kind === "deploy" ? null : s.to,
       data: s.data,
@@ -595,13 +610,13 @@ async function send(record, plan, from, planned, fees) {
       entry.txHash = signed;
       save(record);
     });
-    if (!hash) process.exit(1);
+    if (!hash) exit(1);
     const receipt = await receiptOf(hash, true);
     if (!receipt) {
       console.log(`     ${hash} is not mined after ${RECEIPT_TIMEOUT / 60_000} minutes; run again with --resume`);
-      process.exit(3);
+      exit(3);
     }
-    if (!(await recordReceipt(record, s, receipt))) process.exit(1);
+    if (!(await recordReceipt(record, s, receipt))) exit(1);
   }
 }
 
@@ -615,19 +630,19 @@ async function reconcile(record, plan, from) {
   if (receipt) {
     if (MODE !== "--send") {
       console.log(`     ${entry.name} was mined (tx ${entry.txHash}); --send --resume records it and goes on`);
-      process.exit(0);
+      exit(0);
     }
-    if (!(await recordReceipt(record, plan[from], receipt))) process.exit(1);
+    if (!(await recordReceipt(record, plan[from], receipt))) exit(1);
     return reconcile(record, plan, from + 1);
   }
   const n = await nonces(deployer);
   if (n.latest > entry.nonce) {
     console.log(`FAIL nonce ${entry.nonce} is used on chain, but not by ${entry.txHash}; look at the deployer's transactions`);
-    process.exit(1);
+    exit(1);
   }
   if (n.pending > n.latest) {
     console.log(`     ${entry.txHash} (${entry.name}) is still pending; run again with --resume once it is mined`);
-    process.exit(3);
+    exit(3);
   }
   console.log(`     ${entry.txHash} (${entry.name}) was dropped; ${MODE === "--send" ? "it is sent again" : "--send --resume sends it again"}`);
   Object.assign(entry, { dropped: [...(entry.dropped ?? []), entry.txHash], txHash: null });
@@ -665,86 +680,93 @@ function verify() {
     const r = spawnSync("forge", args, { cwd: CONTRACTS, env, stdio: "inherit", windowsHide: true });
     check(r.status === 0, `forge verify-contract ${s.name} at ${s.address}`);
   }
-  process.exit(failed ? 1 : 0);
+  exit(failed ? 1 : 0);
 }
 
 // ------------------------------------------------------------------ main
 
-if (MODE === "--verify") verify();
-
-const unreachable = (err) => {
-  console.log(`Sepolia RPC unreachable (${redact(err.message)})`);
-  process.exit(2);
-};
-const chainId = await rpc("eth_chainId", []).catch(unreachable);
-if (!check(BigInt(chainId) === SEPOLIA_CHAIN_ID, `chain id ${BigInt(chainId)} is Sepolia`)) process.exit(1);
-
-// With --resume, the record's first unmined step, after reconciling a step sent before the run
-// stopped; then the chain as it is now.
-let record;
-let plan;
-let from = 0;
-if (opts["--resume"]) {
-  if (!existsSync(RECORD)) usage(`--resume: there is no ${RECORD}`);
-  record = JSON.parse(readFileSync(RECORD, "utf8"));
-  plan = buildPlan(record.startNonce);
-  from = await reconcile(record, plan, matchRecord(record, plan)).catch(unreachable);
-  if (from === plan.length) {
-    console.log(`Every step in ${RECORD} is mined and checked.`);
-    process.exit(0);
-  }
-} else if (existsSync(RECORD)) {
-  if (MODE === "--send") usage(`${RECORD} exists: continue it with --resume, or move it away to start a new deployment`);
-  console.log(`(${RECORD} exists; --resume dry-runs what is left of it)`);
-}
-const ctx = {};
-let n;
+started = true;
 try {
-  ctx.block = await rpc("eth_getBlockByNumber", ["latest", false]);
-  // The fees are fixed for the run: the plan costs at most about 0.0012 ETH at today's base fee.
-  ctx.fees = await feesAt(ctx.block, { priorityFee: PRIORITY_FEE, maxFee: MAX_FEE });
-  ctx.balance = BigInt(await rpc("eth_getBalance", [deployer, ctx.block.number]));
-  ctx.nonce = Number(BigInt(await rpc("eth_getTransactionCount", [deployer, ctx.block.number])));
-  n = await nonces(deployer);
-} catch (err) {
-  unreachable(err);
-}
-console.log(`Sepolia block ${fmt(Number(BigInt(ctx.block.number)))} (${ctx.block.hash}), simulated on top of it via ${new URL(RPC).host}`);
-console.log(`Deployer ${DEPLOYER}: nonce ${ctx.nonce}, balance ${eth(ctx.balance)}`);
-if (n.pending !== n.latest) {
-  const what = `the deployer has pending transactions (nonce ${n.latest}, pending ${n.pending})`;
-  if (MODE === "--send") {
-    check(false, `${what}: wait until they are mined`);
-    process.exit(1);
-  }
-  console.log(`     (${what}: the plan starts at the mined nonce)`);
-}
-if (record) console.log(`Resuming ${RECORD} at step ${from} (${plan[from].name}), nonce ${plan[from].nonce}`);
-plan ??= buildPlan(ctx.nonce);
-if (!check(ctx.nonce === plan[from].nonce, `the deployer's next nonce is the plan's, ${plan[from].nonce}`)) {
-  if (record && ctx.nonce > plan[from].nonce)
-    console.log(
-      `     nonce ${plan[from].nonce} is used on chain but the record has no transaction for ${plan[from].name}:` +
-        ` find it on a block explorer, put its hash in that step's txHash, and resume`,
-    );
-  process.exit(1);
-}
+  if (MODE === "--verify") verify();
 
-let planned = null;
-try {
-  planned = await dryRun(plan.slice(from), ctx);
+  const unreachable = (err) => {
+    if (err instanceof Exit) throw err;
+    console.log(`Sepolia RPC unreachable (${redact(err.message)})`);
+    exit(2);
+  };
+  const chainId = await rpc("eth_chainId", []).catch(unreachable);
+  if (!check(BigInt(chainId) === SEPOLIA_CHAIN_ID, `chain id ${BigInt(chainId)} is Sepolia`)) exit(1);
+
+  // With --resume, the record's first unmined step, after reconciling a step sent before the run
+  // stopped; then the chain as it is now.
+  let record;
+  let plan;
+  let from = 0;
+  if (opts["--resume"]) {
+    if (!existsSync(RECORD)) usage(`--resume: there is no ${RECORD}`);
+    record = JSON.parse(readFileSync(RECORD, "utf8"));
+    plan = buildPlan(record.startNonce);
+    from = await reconcile(record, plan, matchRecord(record, plan)).catch(unreachable);
+    if (from === plan.length) {
+      console.log(`Every step in ${RECORD} is mined and checked.`);
+      exit(0);
+    }
+  } else if (existsSync(RECORD)) {
+    if (MODE === "--send") usage(`${RECORD} exists: continue it with --resume, or move it away to start a new deployment`);
+    console.log(`(${RECORD} exists; --resume dry-runs what is left of it)`);
+  }
+  const ctx = {};
+  let n;
+  try {
+    ctx.block = await rpc("eth_getBlockByNumber", ["latest", false]);
+    // The fees are fixed for the run: the plan costs at most about 0.0012 ETH at today's base fee.
+    ctx.fees = await feesAt(ctx.block, { priorityFee: PRIORITY_FEE, maxFee: MAX_FEE });
+    ctx.balance = BigInt(await rpc("eth_getBalance", [deployer, ctx.block.number]));
+    ctx.nonce = Number(BigInt(await rpc("eth_getTransactionCount", [deployer, ctx.block.number])));
+    n = await nonces(deployer);
+  } catch (err) {
+    unreachable(err);
+  }
+  console.log(`Sepolia block ${fmt(Number(BigInt(ctx.block.number)))} (${ctx.block.hash}), simulated on top of it via ${new URL(RPC).host}`);
+  console.log(`Deployer ${DEPLOYER}: nonce ${ctx.nonce}, balance ${eth(ctx.balance)}`);
+  if (n.pending !== n.latest) {
+    const what = `the deployer has pending transactions (nonce ${n.latest}, pending ${n.pending})`;
+    if (MODE === "--send") {
+      check(false, `${what}: wait until they are mined`);
+      exit(1);
+    }
+    console.log(`     (${what}: the plan starts at the mined nonce)`);
+  }
+  if (record) console.log(`Resuming ${RECORD} at step ${from} (${plan[from].name}), nonce ${plan[from].nonce}`);
+  plan ??= buildPlan(ctx.nonce);
+  if (!check(ctx.nonce === plan[from].nonce, `the deployer's next nonce is the plan's, ${plan[from].nonce}`)) {
+    if (record && ctx.nonce > plan[from].nonce)
+      console.log(
+        `     nonce ${plan[from].nonce} is used on chain but the record has no transaction for ${plan[from].name}:` +
+          ` find it on a block explorer, put its hash in that step's txHash, and resume`,
+      );
+    exit(1);
+  }
+
+  let planned = null;
+  try {
+    planned = await dryRun(plan.slice(from), ctx);
+  } catch (err) {
+    check(false, redact(err.message));
+  }
+  if (!planned) {
+    console.log("\nThe dry run failed: nothing can be sent.");
+    exit(1);
+  }
+  if (MODE !== "--send") {
+    console.log("\nThe dry run passed. Nothing was signed or sent.");
+    exit(0);
+  }
+  console.log("\nThe dry run passed. Sending:");
+  await send(record ?? newRecord(plan), plan, from, planned, ctx.fees);
+  console.log(`\nEvery step is mined and checked; the record is ${RECORD}.`);
+  exit(failed ? 1 : 0);
 } catch (err) {
-  check(false, redact(err.message));
+  if (!(err instanceof Exit)) throw err;
+  process.exitCode = err.code;
 }
-if (!planned) {
-  console.log("\nThe dry run failed: nothing can be sent.");
-  process.exit(1);
-}
-if (MODE !== "--send") {
-  console.log("\nThe dry run passed. Nothing was signed or sent.");
-  process.exit(0);
-}
-console.log("\nThe dry run passed. Sending:");
-await send(record ?? newRecord(plan), plan, from, planned, ctx.fees);
-console.log(`\nEvery step is mined and checked; the record is ${RECORD}.`);
-process.exit(failed ? 1 : 0);
