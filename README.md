@@ -15,8 +15,12 @@ chains, the old Portaldot mainnet (10 validators, 7 signatures needed) and the P
 (2 validators, both needed), and proved an account balance from each verified block's state root.
 On Oct 18 the relayer brought both light clients up to the chains' live finalized heads: every
 validator-set change since their checkpoints, each with its validators' signatures, then the head.
-On Oct 19 the bridge's vault went live on the V3 testnet. Next: the minter on Sepolia, which proves
-a lock in the vault against a V3 state root the light client verified, and mints.
+On Oct 19 the bridge's vault went live on the V3 testnet, and on Oct 20 the bridge ran end to end:
+1 tPOT locked in the vault on the V3 testnet became 1 wtPOT on Sepolia in one transaction that
+verified V3's finality (both validators' signatures), proved the lock from the vault's storage
+against that block's state root, and minted. Tampered and replayed copies of it revert on chain.
+Next: the return path (burn on Sepolia, release on V3 by a trusted 2-of-3 committee), a status
+page, and the proof kit.
 
 ## Evidence
 
@@ -102,6 +106,52 @@ the design.
 
 Check it: `cast code 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd --rpc-url https://test-evm-rpc-v3.portaldot.dev`
 returns the code, and `npm run v3-vault -- status` reads the vault.
+
+Lock 0, Oct 19: 1 tPOT from `0xD983…1071` for the same address on Sepolia, naming the minter
+`0x8287…cB9E`. V3 transaction `0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051`,
+block #101,009; the vault stores its commitment `0x9eba08c9…41e23435` in `commitments[0]`.
+
+### The bridge: a lock on V3 becomes wtPOT on Sepolia
+
+[`BridgeMinter`](contracts/src/bridge/BridgeMinter.sol) mints wtPOT for a lock only after proving
+it: in one transaction it imports the V3 block through the light client (GRANDPA signatures), binds
+the vault from its `Revive.AccountInfoOf` entry the first time, reads `commitments[nonce]` from the
+vault's child trie against that block's state root, recomputes the commitment, and mints to the
+recipient it names. Nobody is trusted to report the lock. [`docs/BRIDGE.md`](docs/BRIDGE.md) explains
+the proofs and the runbook; `npm run mint` (in [`relayer/`](relayer)) captures the bundle, dry-runs
+every transaction on a Sepolia node first, and sends. The record is
+[`deployments/sepolia-bridge.json`](deployments/sepolia-bridge.json); the bundle the mint used is
+[`fixtures/v3-testnet-hero`](fixtures/v3-testnet-hero).
+
+| Contract (Sepolia, source-verified) | Address |
+|---|---|
+| `BridgeMinter` | [`0x8287…cB9E`](https://sepolia.etherscan.io/address/0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E) |
+| `WrappedTPOT` (wtPOT, 14 decimals) | [`0x1fcB…Cb14`](https://sepolia.etherscan.io/address/0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14) |
+
+Sepolia blocks 11,950,851 to 11,950,922, Oct 20:
+
+| # | What it shows | Transaction | Block | Result |
+|---|---|---|---|---|
+| 24 | BridgeMinter created (the deployer's nonce 31, the address lock 0 names) | [`0x29a5a698…`](https://sepolia.etherscan.io/tx/0x29a5a6989d2c37564bcabe36b111ff0c194a8981318bb18f509adcff4b27982a) | 11,950,851 | success, 9,806,643 gas |
+| 25 | WrappedTPOT created, the minter its only minter | [`0xbf017d71…`](https://sepolia.etherscan.io/tx/0xbf017d7114cfaef9ef4e947e5403c12188743723542e7927a8f95af6bb789f5c) | 11,950,852 | success, 3,183,649 gas |
+| 26 | V3 testnet set change 25 → 26 at #93,035: 2 of 2 signatures | [`0xea5cdc9f…`](https://sepolia.etherscan.io/tx/0xea5cdc9f43e57d77820c6f520dfd84d6baa93517196d3bb5f9d62470e6917a69) | 11,950,889 | success, 2,387,559 gas |
+| 27 | V3 testnet set change 26 → 27 at #96,612 | [`0x08fccf25…`](https://sepolia.etherscan.io/tx/0x08fccf25941c269a1041ab2bad349008bcfdc5248819e2d9c2a7c0877364ec83) | 11,950,890 | success, 2,391,165 gas |
+| 28 | V3 testnet set change 27 → 28 at #100,199 | [`0x1a6139a2…`](https://sepolia.etherscan.io/tx/0x1a6139a28d0018c2f8c0a98655bc4715534747574bfa74a33cd1d4a440792793) | 11,950,891 | success, 2,396,029 gas |
+| 29 | V3 testnet set change 28 → 29 at #103,784 | [`0x08980606…`](https://sepolia.etherscan.io/tx/0x0898060684e65f2e50f4ef048cc49fa6431d3f0ce376128406f140959dd2aaca) | 11,950,893 | success, 2,396,053 gas |
+| 30 | V3 testnet set change 29 → 30 at #107,359 | [`0xd8d6c745…`](https://sepolia.etherscan.io/tx/0xd8d6c7458518ee3c2d3902f6272ca72a1170e118351094a2895cd63615581eac) | 11,950,895 | success, 2,390,572 gas |
+| 31 | V3 testnet block #108,379 verified: the light client at the live head | [`0xf7a9aaa7…`](https://sepolia.etherscan.io/tx/0xf7a9aaa79baf0bd47732d7c43a44f9e1a7571903eebccb3b88aefe6c16de81a7) | 11,950,896 | success, 1,869,963 gas |
+| **32** | **Lock 0 minted: V3 block #108,424 verified (2 of 2), the vault bound, `commitments[0]` proven, 1 wtPOT to `0xD983…1071`** | [`0x91714c84…`](https://sepolia.etherscan.io/tx/0x91714c8422a7058c161f5592ff7c59eb62399bc99d5f02d6a9ebc1506c955cba) | 11,950,902 | **success, 2,952,838 gas** |
+| 33 | Row 32 with one byte of a precommit's signature flipped | [`0xa3f00f83…`](https://sepolia.etherscan.io/tx/0xa3f00f83afd3a739fb627723ea10d11cdba0c1eb5f7c5e28f303913cc4ee32cf) | 11,950,910 | reverted: `InvalidSignature(0, 0)` |
+| 34 | Row 32 with one byte of the header's state root flipped | [`0x3e6ba7c8…`](https://sepolia.etherscan.io/tx/0x3e6ba7c8b5779f1c58b6be650c69f823698b68524c5ab74a9762e9d02d3229ba) | 11,950,912 | reverted: `FinalityProofBlockMismatch` |
+| 35 | Row 32 with one byte of the storage proof flipped | [`0x3ae2c269…`](https://sepolia.etherscan.io/tx/0x3ae2c26931f1d153e2d3a2fbadb7fb6a0e85ce24ef14e82b8708b8a0f3dd1fe7) | 11,950,915 | reverted: `Incomplete Proof!` |
+| 36 | Row 32 claiming 1,000 wtPOT instead of 1 | [`0x3d3f5130…`](https://sepolia.etherscan.io/tx/0x3d3f513077619fbd7df5c5f5dc9a4a9c8c13a1deb8ff520c8828421fade3fd96) | 11,950,917 | reverted: `CommitmentMismatch` |
+| 37 | Row 32 for another recipient | [`0xa2b9691f…`](https://sepolia.etherscan.io/tx/0xa2b9691fdcf111d74c52a0306742a746a3bdfb1a91a425ac01c5734d7836af32) | 11,950,920 | reverted: `CommitmentMismatch` |
+| 38 | Row 32 sent again | [`0x3dab3abc…`](https://sepolia.etherscan.io/tx/0x3dab3abc4ab21fd40c9342f05377a4cf63f092648d54d7327f31c5dfd7be3e37) | 11,950,922 | reverted: `NonceAlreadyUsed(0)` |
+
+- The V3 testnet's 2 validators are probably development keys, so this path shows the mechanics;
+  rows 2 to 4 and 9 to 17 show the same checks against the old mainnet's real 10-validator set.
+- The return path is trusted: wtPOT burned on Sepolia is released on V3 by the committee's 2-of-3
+  multisig, which the vault takes as its only releaser.
 
 ## Layout
 
