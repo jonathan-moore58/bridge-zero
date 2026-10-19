@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: UNLICENSED
 //
-// Types of what relayer/src/relay.ts imports from sepolia.mjs (the TypeScript relayer shares the
-// Sepolia send flow with script/deploy-sepolia.mjs). Keep them in step with sepolia.mjs.
+// Types of what the relayer imports from sepolia.mjs: relay.ts shares the Sepolia send flow with
+// script/deploy-sepolia.mjs, and v3-vault.ts runs cast and writes its record the same way. Keep them
+// in step with sepolia.mjs.
+
+import type { SpawnSyncReturns } from "node:child_process";
 
 type Hex = `0x${string}`;
 
@@ -53,6 +56,8 @@ export function feesAt(block: { number: string }, options?: { priorityFee?: bigi
 
 export function redactAlso(...values: (string | undefined)[]): void;
 export function redact(text: unknown): string;
+/** cast with `args`, run in an empty directory of its own and with the environment of toolEnv(). */
+export function cast(args: string[]): SpawnSyncReturns<string>;
 export function retry<T>(what: string, fn: () => Promise<T>): Promise<T>;
 export function nonces(address: string): Promise<{ latest: number; pending: number }>;
 export function nextNonceIs(address: string, nonce: number): Promise<boolean>;
