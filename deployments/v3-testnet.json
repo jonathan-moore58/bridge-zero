@@ -1,0 +1,64 @@
+{
+  "network": "portaldot-v3-testnet",
+  "genesisHash": "0xd4f9acbcf7f52388d8b095abe3c198d19fc510e0343e643e87cfbccb155283bd",
+  "chainId": 420420777,
+  "vault": {
+    "status": "deployed",
+    "address": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+    "deployer": {
+      "ss58": "5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7",
+      "address": "0xb621f9a9dd96ba88681c40b04657cef602854e24",
+      "nonce": 1
+    },
+    "extrinsicHash": "0xd10c71ba51591c42706b98ec853cc5d584135485f0a104178ecb5eb87033dff9",
+    "signedAt": "2026-10-19T09:10:12.400Z",
+    "block": {
+      "number": 100955,
+      "hash": "0x2c488560817c16865811aacda1b3df666c54b551f10d0b0def245f55d1035251"
+    },
+    "codeHash": "0xa72553f50cdf645fb343b2cf089e431a1b26fb07e80f4e2236d55bf9811c663f",
+    "runtimeBytes": 899,
+    "deposit": {
+      "dryRun": "8323200000000000",
+      "limit": "8489664000000000",
+      "charged": "8323200000000000"
+    },
+    "fee": "12851229432989",
+    "weightLimit": {
+      "refTime": "5036495",
+      "proofSize": "0"
+    },
+    "nativeToEthRatio": "10000",
+    "releaser": "0xa08a7f7ded49cc81f901fb42fec00edfc48c0fc1",
+    "committee": {
+      "multisig": "5FTrjzEPPdxo3WP1RcQGTzUX1y1udD7tAkaETV1iLH24xPk3",
+      "accountId": "0x965d40eafb701a82cb344dc54fd7b89ec8b328c4fcd922b9c728ed782c646af8",
+      "members": [
+        "5DLnLMAsR3kkHnHndC4eRWhMFXPjCU8bGiSugCjUmGJaBism",
+        "5F99Y91UgQ4EDTubPWWPvWKc3ghhVA77nc7HjRhsTyXn38z9",
+        "5EJJYKuM5aaKwgegKGinAbnL7dK3m3QziyqusPotTQ3S7w1E"
+      ],
+      "threshold": 2,
+      "trust": "trusted: any 2 of the 3 members can release up to the vault's outstanding amount"
+    },
+    "build": {
+      "artifact": "contracts/out-v3/PortaldotVault.sol/PortaldotVault.json",
+      "compiler": "0.8.27+commit.40a35a09",
+      "evmVersion": "cancun",
+      "viaIR": true,
+      "optimizer": {
+        "enabled": true,
+        "runs": 200
+      },
+      "appendCBOR": false,
+      "source": "contracts/src/bridge/PortaldotVault.sol",
+      "sourceKeccak": "0x568db647ac4b3e06ac5f0fd1808a6d6659516a1698cd6ff4e2e53793de8f870b",
+      "initcodeHash": "0xd3d8e4d6f43de6859b289b6110e22e7ef34430344bc41681bbec2b19ea555f7a"
+    },
+    "git": {
+      "commit": "0446c1d3fd0a00e95eae8c137ad108a05e05ae6e",
+      "dirty": false
+    }
+  },
+  "locks": []
+}
