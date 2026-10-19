@@ -32,18 +32,9 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex, equalBytes, hexToBytes, leToBigInt, shortHex, toSafeNumber, type Hex } from "./bytes.js";
-import {
-  headerJson,
-  writeJson,
-  type BlockRef,
-  type ContractStorageFixture,
-  type EvmBlockParam,
-  type EvmBlockRelation,
-  type ProofJson,
-  type RuntimeInfo,
-  type ToolInfo,
-} from "./fixture.js";
-import { blake2_256, CHILD_STORAGE_DEFAULT_PREFIX, childRootKey, storageKey } from "./hash.js";
+import { Chain, childItems, type ProvenValue } from "./chain.js";
+import { headerJson, proofJson, writeJson, type BlockRef, type ContractStorageFixture, type EvmBlockParam, type EvmBlockRelation, type ToolInfo } from "./fixture.js";
+import { CHILD_STORAGE_DEFAULT_PREFIX, childRootKey, storageKey } from "./hash.js";
 import {
   CODE_TYPE_OF_KIND,
   codeKind,
@@ -56,8 +47,8 @@ import {
   reviveCodeInfoKey,
   reviveSlotKey,
 } from "./revive.js";
-import { RpcClient, RpcError } from "./rpc.js";
-import { decodeHeader, decodeU64, encodeRpcHeader, type Header, type RpcHeader } from "./scale.js";
+import { RpcClient } from "./rpc.js";
+import { decodeU64 } from "./scale.js";
 import { readProof } from "./trie.js";
 
 const FILE = "contract-storage.json";
@@ -85,11 +76,6 @@ function parseAddress(text: string): Uint8Array {
   const address = text.startsWith("0x") ? hexToBytes(text) : new Uint8Array(0);
   if (address.length !== 20) throw new Error(`--contract: expected a 0x-prefixed 20-byte address, got ${text}`);
   return address;
-}
-
-function proofJson(method: string, nodes: Uint8Array[]): ProofJson {
-  const nodeBytes = nodes.map((n) => n.length);
-  return { method, count: nodes.length, bytes: nodeBytes.reduce((a, b) => a + b, 0), nodeBytes, nodes: nodes.map((n) => bytesToHex(n)) };
 }
 
 function toolInfo(): ToolInfo {
@@ -142,83 +128,6 @@ interface EvmBlock {
   hash: Hex;
   parentHash: Hex;
   stateRoot: Hex;
-}
-
-/** A value proven from a state root, the proof items that prove it, and how many values the walk found behind their hash. */
-interface ProvenValue {
-  value: Uint8Array;
-  nodes: Uint8Array[];
-  hashedValues: number;
-}
-
-class Chain {
-  constructor(readonly rpc: RpcClient) {}
-
-  /** chain_getHeader, re-encoded to SCALE; refuses it unless blake2_256 of the bytes is the block hash. */
-  async header(hash: Hex): Promise<Header> {
-    const json = await this.rpc.request<RpcHeader | null>("chain_getHeader", [hash]);
-    if (!json) throw new Error(`no header for ${hash}`);
-    const header = decodeHeader(encodeRpcHeader(json));
-    const computed = bytesToHex(blake2_256(header.encoded));
-    if (computed !== hash.toLowerCase()) throw new Error(`header ${hash} re-encodes to a different hash ${computed}`);
-    return header;
-  }
-
-  async runtime(at: Hex): Promise<RuntimeInfo> {
-    const v = await this.rpc.request<Record<string, unknown>>("state_getRuntimeVersion", [at]);
-    return {
-      specName: String(v.specName),
-      specVersion: Number(v.specVersion),
-      implName: String(v.implName),
-      implVersion: Number(v.implVersion),
-      transactionVersion: Number(v.transactionVersion),
-      ...(v.stateVersion === undefined ? {} : { stateVersion: Number(v.stateVersion) }),
-    };
-  }
-
-  async storage(key: Uint8Array, at: Hex): Promise<Uint8Array | null> {
-    const value = await this.rpc.request<Hex | null>("state_getStorage", [bytesToHex(key), at]);
-    return value === null ? null : hexToBytes(value);
-  }
-
-  async readProof(key: Uint8Array, at: Hex): Promise<Uint8Array[]> {
-    const result = await this.rpc.request<{ at: Hex; proof: Hex[] }>("state_getReadProof", [[bytesToHex(key)], at]);
-    return result.proof.map((n) => hexToBytes(n));
-  }
-
-  /**
-   * state_getReadProof of `key` at `at`, walked from `root` (the state root of `at`): the value,
-   * which must be state_getStorage's, and the items, which the walk must all use. Null when the
-   * key has no value, which the proof must show too.
-   */
-  async provenRead(root: Uint8Array, key: Uint8Array, at: Hex, what: string): Promise<ProvenValue | null> {
-    const stored = await this.storage(key, at);
-    const nodes = await this.readProof(key, at);
-    const read = readProof(root, nodes, key);
-    if (stored === null) {
-      if (read.value !== null) throw new Error(`${what}: state_getStorage has no value, the proof shows ${shortHex(read.value)}`);
-      return null;
-    }
-    if (!read.value || !equalBytes(read.value, stored)) throw new Error(`the ${what} proof does not lead to the value from state_getStorage`);
-    if (read.itemsUsed !== nodes.length) throw new Error(`the ${what} proof has ${nodes.length - read.itemsUsed} items the walk does not need`);
-    return { value: read.value, nodes, hashedValues: read.hashedValues };
-  }
-
-  async childReadProof(childStorageKey: Uint8Array, key: Uint8Array, at: Hex): Promise<Uint8Array[]> {
-    const result = await this.rpc.request<{ at: Hex; proof: Hex[] }>("state_getChildReadProof", [bytesToHex(childStorageKey), [bytesToHex(key)], at]);
-    return result.proof.map((n) => hexToBytes(n));
-  }
-
-  /** childstate_getStorage, or undefined if the node does not expose it. */
-  async childStorage(childStorageKey: Uint8Array, key: Uint8Array, at: Hex): Promise<Uint8Array | null | undefined> {
-    try {
-      const value = await this.rpc.request<Hex | null>("childstate_getStorage", [bytesToHex(childStorageKey), bytesToHex(key), at]);
-      return value === null ? null : hexToBytes(value);
-    } catch (error) {
-      if (error instanceof RpcError && error.code === -32601) return undefined;
-      throw error;
-    }
-  }
 }
 
 /**
@@ -384,13 +293,7 @@ async function main(): Promise<void> {
     const slotKey = reviveSlotKey(slot);
     const served = await chain.childReadProof(rootKey, slotKey, B.hash);
     const direct = await chain.childStorage(rootKey, slotKey, B.hash);
-    const inRootProof = new Set(rootNodes.map((n) => bytesToHex(n)));
-    const inServed = new Set(served.map((n) => bytesToHex(n)));
-    const childNodes = served.filter((n) => !inRootProof.has(bytesToHex(n)));
-    const mainTrieItems = served.length - childNodes.length;
-    if (mainTrieItems !== rootNodes.length || rootNodes.some((n) => !inServed.has(bytesToHex(n)))) {
-      throw new Error(`state_getChildReadProof served ${mainTrieItems} main-trie items, not the ${rootNodes.length} items of the child-root proof`);
-    }
+    const { nodes: childNodes, mainTrieItems } = childItems(served, rootNodes);
     const slotRead = readProof(childRoot, childNodes, slotKey);
     // The position is a QUANTITY in the Ethereum JSON-RPC: hex without leading zeros.
     const storageCall = await atEvmBlock<Hex, [Hex, Hex]>(evm, "eth_getStorageAt", [addressHex, `0x${BigInt(bytesToHex(slot)).toString(16)}`], at, notes);
