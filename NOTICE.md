@@ -33,6 +33,14 @@ Installed from npm at the exact versions in `relayer/package.json` (resolved in
 |---|---|---|---|---|---|
 | @noble/hashes | https://github.com/paulmillr/noble-hashes | 2.4.0 | MIT | BLAKE2b hashing | none |
 | @noble/curves | https://github.com/paulmillr/noble-curves | 2.4.0 | MIT | ed25519 signature checks | none |
+| @polkadot/api | https://github.com/polkadot-js/api | 17.0.2 | Apache-2.0 | the V3 vault tool (`relayer/src/v3-vault.ts`): reviveApi dry runs, the sr25519 key and signing of `revive.instantiateWithCode`, extrinsic status and events | none |
 | tsx (dev) | https://github.com/privatenumber/tsx | 4.23.15 | MIT | runs the TypeScript sources | none |
 | typescript (dev) | https://github.com/microsoft/TypeScript | 6.0.3 | Apache-2.0 | type checking | none |
 | @types/node (dev) | https://github.com/DefinitelyTyped/DefinitelyTyped | 24.19.0 | MIT | Node.js type definitions | none |
+
+@polkadot/api brings the rest of polkadot-js with it (`@polkadot/*`, Apache-2.0) and their own
+dependencies (rxjs, Apache-2.0; tslib, 0BSD; bn.js, ws, @scure/*, @noble/* 1.x and others, MIT), at
+the versions `relayer/package-lock.json` resolves. `@polkadot/rpc-provider` also lists
+`@substrate/connect` 0.8.11 as an optional dependency, which npm installs with two packages of its
+own (GPL-3.0-only): it serves only `ScProvider`, a light client the caller has to pass it to, and no
+code here loads it.

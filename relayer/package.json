@@ -2,7 +2,7 @@
   "name": "@bridge-zero/relayer",
   "version": "0.1.0",
   "private": true,
-  "description": "Fetches Portaldot finality and storage proofs, captures and re-verifies chain fixtures, and relays finality to the Sepolia light clients.",
+  "description": "Fetches Portaldot finality and storage proofs, captures and re-verifies chain fixtures, relays finality to the Sepolia light clients, and deploys and uses the vault on the V3 testnet.",
   "license": "UNLICENSED",
   "type": "module",
   "engines": {
@@ -14,11 +14,14 @@
     "check": "tsx src/check.ts",
     "probe": "tsx src/probe.ts",
     "relay": "tsx src/relay.ts",
-    "typecheck": "tsc --noEmit"
+    "test": "tsx --test src/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "v3-vault": "tsx src/v3-vault.ts"
   },
   "dependencies": {
     "@noble/curves": "2.4.0",
-    "@noble/hashes": "2.4.0"
+    "@noble/hashes": "2.4.0",
+    "@polkadot/api": "17.0.2"
   },
   "devDependencies": {
     "@types/node": "24.19.0",
