@@ -35,12 +35,15 @@ remappings = [
     "@solidity/=lib/crypto-lib/src/",
 ]
 
-# Tests read the captured chain data (vm.readFile).
+# Tests read the captured chain data (vm.readFile). The vault tests also run against the V3 build
+# (out-v3, profile v3 below) and check that it was compiled from the current source.
 fs_permissions = [
     { access = "read", path = "../fixtures/mainnet" },
     { access = "read", path = "../fixtures/mainnet-pre-v3" },
     { access = "read", path = "../fixtures/v3-testnet" },
     { access = "read", path = "../fixtures/westend-asset-hub-revive" },
+    { access = "read", path = "out-v3" },
+    { access = "read", path = "src/bridge" },
 ]
 
 # The Sepolia deployment build (script/deploy-sepolia.mjs). The libraries are linked at compile time,
@@ -54,6 +57,27 @@ libraries = [
     "src/grandpa/GrandpaCodec.sol:GrandpaCodec:0x482a1c993e169E962539c38eFdB26E9e0621dFD2",
     "src/grandpa/AuthoritySets.sol:AuthoritySets:0xf2Cd69bC5fF06F98E4dd0d4DE42565d3338ce6D2",
     "src/trie/StorageProofs.sol:StorageProofs:0x5DA053Bc5659ba9f725E4b1B5083545B933EF2a3",
+]
+
+# The Portaldot V3 testnet build: pallet-revive runs EVM bytecode with REVM, and solc 0.8.27 code
+# compiled for cancun (PUSH0 included) runs there unchanged. relayer/src/v3-vault.ts deploys
+# out-v3/PortaldotVault.sol/PortaldotVault.json. The Sepolia side keeps osaka (above).
+# Every byte of code costs a storage deposit on V3 (about 0.078 tPOT), so the bytecode carries no
+# CBOR metadata (V3 has no explorer that reads it) and the vault is compiled with the IR pipeline:
+# 899 bytes of runtime code, against 1,370 with the legacy pipeline. The other sources keep the
+# legacy pipeline, as the ed25519 library does not compile with the IR one (stack too deep). The
+# artifacts keep their AST, which names the immutables v3-vault.ts fills in to check deployed code.
+# Build: FOUNDRY_PROFILE=v3 forge build --skip test --skip script
+[profile.v3]
+out = "out-v3"
+evm_version = "cancun"
+cbor_metadata = false
+bytecode_hash = "none"
+ast = true
+additional_compiler_profiles = [{ name = "via-ir", via_ir = true }]
+compilation_restrictions = [
+    { paths = "src/**", version = "=0.8.27" },
+    { paths = "src/bridge/**", via_ir = true },
 ]
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

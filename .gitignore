@@ -14,3 +14,6 @@ dist/
 # Sepolia deployment build (FOUNDRY_PROFILE=sepolia) and an interrupted record write
 out-sepolia/
 deployments/*.tmp
+
+# V3 testnet build (FOUNDRY_PROFILE=v3)
+out-v3/
