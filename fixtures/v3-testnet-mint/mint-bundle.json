@@ -1,0 +1,291 @@
+{
+  "provenance": {
+    "chain": "PortaldotV3 Test",
+    "rpc": "wss://test-node-v3.portaldot.dev",
+    "genesisHash": "0xd4f9acbcf7f52388d8b095abe3c198d19fc510e0343e643e87cfbccb155283bd",
+    "runtime": {
+      "specName": "portaldot-v3",
+      "specVersion": 3002,
+      "implName": "portaldot-v3-node",
+      "implVersion": 0,
+      "transactionVersion": 2,
+      "stateVersion": 1
+    },
+    "block": {
+      "number": 104587,
+      "hash": "0xf6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c"
+    },
+    "setId": 29,
+    "capturedAt": "2026-10-19T15:14:57.056Z",
+    "tool": {
+      "name": "@bridge-zero/relayer",
+      "version": "0.1.0",
+      "script": "src/mint.ts",
+      "gitCommit": "c1960b45fda24971fa6621229e07153269b8e454",
+      "gitDirty": true
+    }
+  },
+  "kind": "mint-bundle",
+  "about": "Everything BridgeMinter.importAndMint needs for one lock of PortaldotVault, read at one finalized block B: B's header with grandpa_proveFinality(B) and the set that signs it (read at B's parent), the signers hint the light client takes, B's parent header (the checkpoint a fresh client imports B from), and, under B's state_root, the proofs of Revive.AccountInfoOf(vault) (its trie id and code hash), of the vault's child-trie root, and of commitments[nonce] in the child trie, whose value is the lock's commitment.",
+  "source": {
+    "method": "grandpa_proveFinality",
+    "params": [
+      104587
+    ],
+    "lock": "deployments/v3-testnet.json"
+  },
+  "node": {
+    "version": "3.0.0-dev-fddd43141f2"
+  },
+  "header": {
+    "hash": "0xf6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c",
+    "number": 104587,
+    "parentHash": "0x5dcc1aa714639e39fb6c8d476023620e54122663f779d21bbfa25ceee486a59b",
+    "stateRoot": "0x90c493e82e5a72f9953f17baf34756c4bdfb1e086cd2f05c174521e6608336bb",
+    "extrinsicsRoot": "0x198adad0061af5629f23aa9278ee28d2956ab7e361e2cbade573c02fe25f04b0",
+    "digest": [
+      {
+        "kind": "PreRuntime",
+        "engine": "BABE",
+        "bytes": 19,
+        "scale": "0x0642414245340200000000fb5dce1100000000"
+      },
+      {
+        "kind": "Consensus",
+        "engine": "BEEF",
+        "bytes": 39,
+        "scale": "0x04424545468403a50a778fc1bb982c5492560843e457f199fc67cb057e44293c364d789d7b5cfd"
+      },
+      {
+        "kind": "Seal",
+        "engine": "BABE",
+        "bytes": 71,
+        "scale": "0x0542414245010158cf36fdab6f1ed6e518110b15f141e1b7b346b09d40ed91d95b7a80d4ba10049b37805c8da1d08efe8280e8e3c365cde44baaaeeef97bb9645b3a77ab80be8f"
+      }
+    ],
+    "bytes": 230,
+    "scale": "0x5dcc1aa714639e39fb6c8d476023620e54122663f779d21bbfa25ceee486a59b2e62060090c493e82e5a72f9953f17baf34756c4bdfb1e086cd2f05c174521e6608336bb198adad0061af5629f23aa9278ee28d2956ab7e361e2cbade573c02fe25f04b00c0642414245340200000000fb5dce110000000004424545468403a50a778fc1bb982c5492560843e457f199fc67cb057e44293c364d789d7b5cfd0542414245010158cf36fdab6f1ed6e518110b15f141e1b7b346b09d40ed91d95b7a80d4ba10049b37805c8da1d08efe8280e8e3c365cde44baaaeeef97bb9645b3a77ab80be8f"
+  },
+  "justification": {
+    "round": 3622,
+    "targetHash": "0xf6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c",
+    "targetNumber": 104587,
+    "precommits": [
+      {
+        "authorityIndex": 1,
+        "authorityId": "0x71fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0",
+        "targetHash": "0xf6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c",
+        "targetNumber": 104587,
+        "signature": "0xbaa3cfba9ba55c391d94c6374c502a91ee7f4d94c493043539febad3eaace17dea351562c8454ef6787f0e3180e903c89915682f928710777018526b7e717a0c"
+      },
+      {
+        "authorityIndex": 0,
+        "authorityId": "0xe64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090",
+        "targetHash": "0xf6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c",
+        "targetNumber": 104587,
+        "signature": "0x697e6ca794f884aa0e4e5e691e6b2842e295ff4407d18b543f3cc92d232fb653b114cf04a1a2ed92dc5d66e7177d9b130e9555dd7153ae3ee277f566cd143105"
+      }
+    ],
+    "votesAncestries": 0,
+    "bytes": 310,
+    "scale": "0x260e000000000000f6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c8b98010008f6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c8b980100baa3cfba9ba55c391d94c6374c502a91ee7f4d94c493043539febad3eaace17dea351562c8454ef6787f0e3180e903c89915682f928710777018526b7e717a0c71fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0f6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c8b980100697e6ca794f884aa0e4e5e691e6b2842e295ff4407d18b543f3cc92d232fb653b114cf04a1a2ed92dc5d66e7177d9b130e9555dd7153ae3ee277f566cd143105e64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d09000"
+  },
+  "signingSet": {
+    "setId": 29,
+    "at": {
+      "number": 104586,
+      "hash": "0x5dcc1aa714639e39fb6c8d476023620e54122663f779d21bbfa25ceee486a59b"
+    },
+    "count": 2,
+    "threshold": 2,
+    "authorities": [
+      {
+        "id": "0xe64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090",
+        "weight": 1
+      },
+      {
+        "id": "0x71fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0",
+        "weight": 1
+      }
+    ],
+    "setIdStorage": {
+      "key": "0x5f9cc45b7a00c5899361e1c6099678dc8a2d09463effcc78a22d75b9cb87dffc",
+      "scale": "0x1d00000000000000"
+    },
+    "runtimeCall": {
+      "method": "GrandpaApi_grandpa_authorities",
+      "scale": "0x08e64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090010000000000000071fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f00100000000000000"
+    }
+  },
+  "finalityProof": {
+    "block": "0xf6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c",
+    "justificationBytes": 310,
+    "unknownHeaders": 0,
+    "bytes": 345,
+    "scale": "0xf6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5cd904260e000000000000f6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c8b98010008f6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c8b980100baa3cfba9ba55c391d94c6374c502a91ee7f4d94c493043539febad3eaace17dea351562c8454ef6787f0e3180e903c89915682f928710777018526b7e717a0c71fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0f6b3e34f7f04988fdbd3bc8cde5e866241aec833c577b18109888d8aabe21c5c8b980100697e6ca794f884aa0e4e5e691e6b2842e295ff4407d18b543f3cc92d232fb653b114cf04a1a2ed92dc5d66e7177d9b130e9555dd7153ae3ee277f566cd143105e64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d0900000"
+  },
+  "signers": {
+    "hint": "0x01000001",
+    "count": 2,
+    "threshold": 2
+  },
+  "parentHeader": {
+    "hash": "0x5dcc1aa714639e39fb6c8d476023620e54122663f779d21bbfa25ceee486a59b",
+    "number": 104586,
+    "parentHash": "0x23f676db7398d0ecc10686f7877bc2c493383e6061e6f592af48232bf9c73533",
+    "stateRoot": "0xc5ff5c18074f1e0ae43d56576ef95ff37cf08b57c286f693a2bfebc91fbd83c5",
+    "extrinsicsRoot": "0xc6ba98bf135e6697e0f81530703a78607297afce3fd1d4b1070f35ddeef9db68",
+    "digest": [
+      {
+        "kind": "PreRuntime",
+        "engine": "BABE",
+        "bytes": 19,
+        "scale": "0x0642414245340200000000fa5dce1100000000"
+      },
+      {
+        "kind": "Consensus",
+        "engine": "BEEF",
+        "bytes": 39,
+        "scale": "0x0442454546840313912cf2ab41db0677ee2f5096847f1a2e77725de153f13f7a65ee21ec6f4f30"
+      },
+      {
+        "kind": "Seal",
+        "engine": "BABE",
+        "bytes": 71,
+        "scale": "0x054241424501019c0347f9a33e7941c0ae31e1dc551e404a52386a063af1191fc673f6f69a52782854ace35ec3514098c12800d351082d3f36c6da3dcf96311eef4080b83c3886"
+      }
+    ],
+    "bytes": 230,
+    "scale": "0x23f676db7398d0ecc10686f7877bc2c493383e6061e6f592af48232bf9c735332a620600c5ff5c18074f1e0ae43d56576ef95ff37cf08b57c286f693a2bfebc91fbd83c5c6ba98bf135e6697e0f81530703a78607297afce3fd1d4b1070f35ddeef9db680c0642414245340200000000fa5dce11000000000442454546840313912cf2ab41db0677ee2f5096847f1a2e77725de153f13f7a65ee21ec6f4f30054241424501019c0347f9a33e7941c0ae31e1dc551e404a52386a063af1191fc673f6f69a52782854ace35ec3514098c12800d351082d3f36c6da3dcf96311eef4080b83c3886"
+  },
+  "trieVersion": 1,
+  "vault": {
+    "address": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+    "chainId": 420420777,
+    "codeHash": "0xa72553f50cdf645fb343b2cf089e431a1b26fb07e80f4e2236d55bf9811c663f",
+    "trieId": "0xbe307c2d11dbc9391cda93d17e9772542d1300c9af14e7431918fb49e2f47c3a"
+  },
+  "lock": {
+    "nonce": 0,
+    "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+    "amountNative": "100000000000000",
+    "dstChainId": "11155111",
+    "dstMinter": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+    "commitment": "0x9eba08c90e4527bdb00da438eb8f15ad244cbb202e8886d929b0e12941e23435",
+    "source": "deployments/v3-testnet.json",
+    "txHash": "0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051"
+  },
+  "account": {
+    "key": {
+      "pallet": "Revive",
+      "item": "AccountInfoOf",
+      "hasher": "Identity",
+      "bytes": 52,
+      "hex": "0x735f040a5d490f1107ad9c56f5ca00d2ae37ff0591fdbbcd9c2406df7147a9dca02ee16eb03d2cf1aef199f7658fb8c8e3188ffd"
+    },
+    "value": {
+      "bytes": 130,
+      "scale": "0x0080be307c2d11dbc9391cda93d17e9772542d1300c9af14e7431918fb49e2f47c3aa72553f50cdf645fb343b2cf089e431a1b26fb07e80f4e2236d55bf9811c663fc0000000030000000000c8e6bc1704000000000000000000001417c668000000000000000000000000a0aba61aea080000000000000000000000000000000000",
+      "decoded": {
+        "kind": "Contract",
+        "trieId": "0xbe307c2d11dbc9391cda93d17e9772542d1300c9af14e7431918fb49e2f47c3a",
+        "codeHash": "0xa72553f50cdf645fb343b2cf089e431a1b26fb07e80f4e2236d55bf9811c663f",
+        "storageBytes": 192,
+        "storageItems": 3,
+        "storageByteDeposit": "1152000000000000",
+        "storageItemDeposit": "450000000000",
+        "storageBaseDeposit": "2509200000000000",
+        "immutableDataLen": 0,
+        "dust": 0
+      }
+    },
+    "proof": {
+      "method": "state_getReadProof",
+      "count": 7,
+      "bytes": 1468,
+      "nodeBytes": [
+        130,
+        54,
+        69,
+        102,
+        498,
+        432,
+        183
+      ],
+      "nodes": [
+        "0x0080be307c2d11dbc9391cda93d17e9772542d1300c9af14e7431918fb49e2f47c3aa72553f50cdf645fb343b2cf089e431a1b26fb07e80f4e2236d55bf9811c663fc0000000030000000000c8e6bc1704000000000000000000001417c668000000000000000000000000a0aba61aea080000000000000000000000000000000000",
+        "0x3f08002ee16eb03d2cf1aef199f7658fb8c8e3188ffdda6689513d6247688cca5d1c1ca27c0444a527dd0591bea2825a9c3b633d8a8d",
+        "0x80104080fb00a537830df0d93c15d8a42bae9514adfc8b0747a8c20b9ca22925d109a1f580b65fa37ccb5ae971251d7f849b0fd7e279da88118efc2446173c75ce9afa578f",
+        "0x8018048086c2c49b4d3c47d15fbcd87d5dadaafe040eba8e8a9e5c17d179e3cd3901d76e80df75a16a5c233ea9e6db67435d44e498abdaf1ee3c42facfbbc7e3231d0e0aa2800fed3c6d4997e771f1f5a0eed1a26d176f1c675d98ed888f46df708281170b33",
+        "0x80fffd80e8e2d18184c3fac531a5f03d714c2529ee80e1a24c28639279182758a33e5f6b80a6187d724692669c0e87e77f0f9fd59443ecc741c61bdf979d56b4a22438df3480513134e963cafa2c991e932b877becc33ee4fec711c44ed99a196367ce87adf5804f72d409ae06be51d888317f1494565cca51aba8a57c73a18ad8461d186156b7807c49955f861f22ddbf67682ed4949aa431671fe2c1dc105b68d1b00bc0e175ad80169ae35b51ca50471be27333840bd94f5857f7feb2cb7c9106e5987be266956a80fa46235917ba58a893b5a28e321df3b1179d6d816e354c06f24b247a0e28525080544d28ec0ec373dc73143bd452c923ce3b835b045be803985d784fecfccc0695803994dff6b9c80e121e449d06f83cafef5d6c7948908a086d3ec54f2ad16e589080ef376d73a8451fa6605675f52c3bf7ee5b23419c764361fafb645228e257db2b80034205856c039823a38d038190dde62617a7d90b8a0c29b6d6d8cc4d6408406e8000bfa4ff6c26a4b8e610917f75f893dd940da374f2b9f42a2ed4216b5749b5ef80ac41700aa22f1ca4eabf0e771a24c3bb8b65b41a1bec5596751aa5768af2b1e380c67631533c5b791840dcd9f93b37263abef2b318165f916bf97c988edd6473cc80dab41781341f06b89b7fb7ae3171f0794f4454f11860f6d8ee42bc31efc092c7",
+        "0x9e37ff0591fdbbcd9c2406df7147a9dc5bff6c67001f79c06e2f58bd9861e4a8592b90dacc1a82ab1401fc1c00008077dd66cd955671a54b0e820ced3d6e8b06d99e0567152c955ac69c54d68d515280a8e6c6fbf73e97235058a249dcabd8d8c449aba38b37a3122c4393131727469c6c670de2308d558e01b0aa1b5371a4d0b26d2e2988d11401b400000080d9112e9235fcae76e110737784c1b86c7bd71b64d6b87a8d6af809d7fb4329f7804da01abb875de15f496bd0919a677c2cddcf6e4ba9af5e539023422c9ccd63fd6c670c0e1f786b38923519df2cec05464f95ccd290091401a01e000080d804bae072d7d80c03476944f9279d8c77d6d768d6621084f13e1a92a7f6710080d724193f9d2559c870ed4b64792718968acdd9b179916cb50316834ddc38a26580a119f476c15d72141fb3cb9e4bcdda38d4dbb00a3c8fa44f9e0d8656fffb4c2080a1240f00fecc40aac1075ff141c7f95a7b4219c7ffd9f02605c03c946ed5b1c280746b6b0180377a9bd8a8ec895578ebb2bfb1b6fe9152fc5fd0133df4abee92d480d10991993efee7c4902046295ce81098d7b16b28bdc674dd09d9a385ebecbde9",
+        "0x9e5f040a5d490f1107ad9c56f5ca00d2311480680ea4ebb4f985deaa4cbd86f25ea24cf8c1f2a7056327b42130915803ec764280ab6d42229357aefb32dbf5793d96a1e8df1aac05f2ecbc6c7e51d592a48af9548099019859329b4269b9008898d8d65f8f8453f6fa3b6098273ea203b1d8abcde280e7d386cecc274848dbe62510e80e73165382936708060f24166ac74f0eab969e80a260ed808b433157447335d55ceca56fdb22d7b8b23c8b91b81ebc979c53434c"
+      ]
+    }
+  },
+  "childRoot": {
+    "key": {
+      "prefix": ":child_storage:default:",
+      "bytes": 55,
+      "hex": "0x3a6368696c645f73746f726167653a64656661756c743abe307c2d11dbc9391cda93d17e9772542d1300c9af14e7431918fb49e2f47c3a"
+    },
+    "root": "0xcf8a27079fefa362c1c52227a00603ffc8bca7adebd0bad448d974ecaad5ec71",
+    "proof": {
+      "method": "state_getReadProof",
+      "count": 6,
+      "bytes": 1258,
+      "nodeBytes": [
+        67,
+        201,
+        102,
+        498,
+        70,
+        320
+      ],
+      "nodes": [
+        "0x7f000e307c2d11dbc9391cda93d17e9772542d1300c9af14e7431918fb49e2f47c3a80cf8a27079fefa362c1c52227a00603ffc8bca7adebd0bad448d974ecaad5ec71",
+        "0x8020a780414e4c0757a9b61d099bb4ea9ccc83f9c9e9a8d4b82f01dd4c03ded32258395680c16c3d2b780fbdedbbbd46d05fb69377e982fdd840531c1600701efe5eaca26480a4da9a488ca29cb1a550989ff8b17439bca10fe0238d2efeca7be1da1d1e2e938021ceccae9adc8e8d42ada2a3da2a73faf5cc8507aed4c74955ae437edea05887801b83a2c51f7d61460e7d4951ba282e227073929e0d7797df5f7a627ee70f6aab808a8e20d7cbb23fa4069702247f2dffdf4d3e5fdb2385f6fc9d835d0d0bcc2f23",
+        "0x80450080a3a0eebf407bd018f9f31e91a23e409006ce2d019d2d11656c35e395af50aff0802a685131ac3cfad9148509581b21bd88a2235858ef4258af99cdc6ef25341a8680c9bece3bfaf2dd2c2915ebde5af195225add70b4406ccb484809456f786173e8",
+        "0x80fffd80e8e2d18184c3fac531a5f03d714c2529ee80e1a24c28639279182758a33e5f6b80a6187d724692669c0e87e77f0f9fd59443ecc741c61bdf979d56b4a22438df3480513134e963cafa2c991e932b877becc33ee4fec711c44ed99a196367ce87adf5804f72d409ae06be51d888317f1494565cca51aba8a57c73a18ad8461d186156b7807c49955f861f22ddbf67682ed4949aa431671fe2c1dc105b68d1b00bc0e175ad80169ae35b51ca50471be27333840bd94f5857f7feb2cb7c9106e5987be266956a80fa46235917ba58a893b5a28e321df3b1179d6d816e354c06f24b247a0e28525080544d28ec0ec373dc73143bd452c923ce3b835b045be803985d784fecfccc0695803994dff6b9c80e121e449d06f83cafef5d6c7948908a086d3ec54f2ad16e589080ef376d73a8451fa6605675f52c3bf7ee5b23419c764361fafb645228e257db2b80034205856c039823a38d038190dde62617a7d90b8a0c29b6d6d8cc4d6408406e8000bfa4ff6c26a4b8e610917f75f893dd940da374f2b9f42a2ed4216b5749b5ef80ac41700aa22f1ca4eabf0e771a24c3bb8b65b41a1bec5596751aa5768af2b1e380c67631533c5b791840dcd9f93b37263abef2b318165f916bf97c988edd6473cc80dab41781341f06b89b7fb7ae3171f0794f4454f11860f6d8ee42bc31efc092c7",
+        "0x8236008180a398f66c4e6a041267273dfd8f9cc51bf430bac8959ce038cd5c76c441bd2d6180092107a8386c7fdbe48a1b384b2bcd118e9d2dbb640ad6804af4f107fd19e7dd",
+        "0xa8696c645f73746f726167653a64656661756c743a653e80f2617514632376110ecc92256eb6c86236aa396a137b4c284a9a9a04b8bba898804af4231e85f7f72ec2057866ea46d0a272899c2f3332df3455955a5c805e2a74801ba5df6d7058a3b2fe69cc6f44a9b97c2ee87197dfe8da0d83965234be26f74c808cfecc1f31d5be4ea46269ec286f5c0fe414eea2939390394cca8c0f4be7599b80e692d5f0213829af45dceffcaac4ddff0dde50dcb60d94794f2cdb52c5b6509b80cb1f70d347f4e06cab2d9d8189cfbb409b9b4b50a00cfa3cc0b697b638f82c0680199e2f185dfc340c74f03f9b2e0d88f7fc5f5cd7fed27621c7512afec97798d780e345f5ad1b9dcee00cebfa107c2fb4596fc0228389b51a0b1b1701a4a7d402ae80cd8cce69e4b6b669751ec1ce2abcd5b42bc142d0b9f63b5007142c677e2fc5a2"
+      ]
+    }
+  },
+  "slot": {
+    "index": "0xad3228b676f7d3cd4284a5443f17f1962b36e491b30a40b2405849e597ba5fb5",
+    "key": {
+      "hasher": "Blake2_256",
+      "hex": "0x7f08edf42e13695b8054232044588049c0cd595be561c26fa160bb0550c0c174"
+    },
+    "value": {
+      "bytes": 32,
+      "hex": "0x9eba08c90e4527bdb00da438eb8f15ad244cbb202e8886d929b0e12941e23435"
+    },
+    "proof": {
+      "method": "state_getChildReadProof",
+      "count": 2,
+      "bytes": 169,
+      "nodeBytes": [
+        67,
+        102
+      ],
+      "nodes": [
+        "0x7f000f08edf42e13695b8054232044588049c0cd595be561c26fa160bb0550c0c174809eba08c90e4527bdb00da438eb8f15ad244cbb202e8886d929b0e12941e23435",
+        "0x808a008033c12467150fe89a8ea0c8b18ae87fb87a2e1209bead7ed66d1a34b632cd88fa8009e97761b252c68bcdff055020b4cd9aa72cdc954ae71dec7bb3e4bd090855d7802df3173f369a26dc340742f5b3f870ecf80658433a8a005c3fb079716b81ce80"
+      ],
+      "served": {
+        "count": 8,
+        "bytes": 1427,
+        "mainTrieItems": 6
+      }
+    }
+  },
+  "notes": [
+    "The signing set is Grandpa.CurrentSetId and GrandpaApi_grandpa_authorities at #104,586, B's parent; Grandpa.CurrentSetId at B is the same set, as B changes none.",
+    "The signers hint names precommit 1 (key 0) and precommit 0 (key 1), each signature checked with the light client's own check (grandpa.ts clientVerifies).",
+    "childstate_getStorage returns the same word as the child proof. state_getChildReadProof served 8 items: the 6 main-trie items of childRoot.proof and the 2 child-trie items in slot.proof.",
+    "The lock is the one deployments/v3-testnet.json records; the slot holds the commitment recomputed from its fields.",
+    "A light client at the signing set whose latest header is below B imports B with this finality proof (B's parent is such a checkpoint); one that holds B already verifies it again and writes nothing."
+  ]
+}
