@@ -42,6 +42,8 @@ fs_permissions = [
     { access = "read", path = "../fixtures/mainnet-pre-v3" },
     { access = "read", path = "../fixtures/v3-testnet" },
     { access = "read", path = "../fixtures/westend-asset-hub-revive" },
+    { access = "read", path = "../fixtures/v3-testnet-vault" },
+    { access = "read", path = "../fixtures/v3-testnet-mint" },
     { access = "read", path = "out-v3" },
     { access = "read", path = "src/bridge" },
 ]
