@@ -1,0 +1,337 @@
+{
+  "network": "sepolia",
+  "chainId": 11155111,
+  "deployer": "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071",
+  "lightClient": {
+    "name": "GrandpaLightClient #2",
+    "address": "0x447171c4885ad725ee4772e8e3c228adee50dcb0"
+  },
+  "vault": {
+    "network": "portaldot-v3-testnet",
+    "chainId": 420420777,
+    "address": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+    "codeHash": "0xa72553f50cdf645fb343b2cf089e431a1b26fb07e80f4e2236d55bf9811c663f"
+  },
+  "artifacts": {
+    "BridgeMinter": "0x41eb5506e8ae46303504b347a9b91598e07b958ae06a394eee4953e917709992",
+    "WrappedTPOT": "0xa5735203f0757a857f66866626a8719f49f1fa858387df0cbd50f5cdbc1a43f0"
+  },
+  "contracts": {
+    "BridgeMinter": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+    "WrappedTPOT": "0x1fcbbd66922ac5aa20219a5c16c2591a76b4cb14"
+  },
+  "steps": [
+    {
+      "name": "BridgeMinter",
+      "kind": "deploy",
+      "nonce": 31,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/BridgeMinter.sol:BridgeMinter",
+      "address": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "libraries": {
+        "src/trie/StorageProofs.sol:StorageProofs": "0x5da053bc5659ba9f725e4b1b5083545b933ef2a3"
+      },
+      "constructorArgs": "0x000000000000000000000000447171c4885ad725ee4772e8e3c228adee50dcb0000000000000000000000000a02ee16eb03d2cf1aef199f7658fb8c8e3188ffd00000000000000000000000000000000000000000000000000000000190f1ca9a72553f50cdf645fb343b2cf089e431a1b26fb07e80f4e2236d55bf9811c663f0000000000000000000000001fcbbd66922ac5aa20219a5c16c2591a76b4cb14",
+      "dataHash": "0x64875dd1aace1ec06b09907f17f1df11884bd5e470b2961b6df1718c340c8c36",
+      "gasLimit": 10787308,
+      "simulatedGas": 9806643,
+      "codeHash": "0xedc36f2bc840b93652c46b2082f26b53d37af2f1c9eca125f7c18f1b6d2fbb9d",
+      "txHash": "0x29a5a6989d2c37564bcabe36b111ff0c194a8981318bb18f509adcff4b27982a",
+      "signedAt": "2026-10-19T21:31:46.270Z",
+      "block": 11950851,
+      "gasUsed": 9806643,
+      "effectiveGasPrice": "1015",
+      "status": 1,
+      "ok": true
+    },
+    {
+      "name": "WrappedTPOT",
+      "kind": "deploy",
+      "nonce": 32,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/WrappedTPOT.sol:WrappedTPOT",
+      "address": "0x1fcbbd66922ac5aa20219a5c16c2591a76b4cb14",
+      "libraries": {},
+      "constructorArgs": "0x0000000000000000000000008287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "dataHash": "0x9e3b3c5e1ffa6664a8731d256d273e35a6e4ee069824f31547c0b96e6de283ae",
+      "gasLimit": 3502014,
+      "simulatedGas": 3183649,
+      "codeHash": "0xf2e73a71bbc36648f2737a7c3821c5df6017062c0b7ef44a58c3fbd20629cffd",
+      "txHash": "0xbf017d7114cfaef9ef4e947e5403c12188743723542e7927a8f95af6bb789f5c",
+      "signedAt": "2026-10-19T21:31:51.914Z",
+      "block": 11950852,
+      "gasUsed": 3183649,
+      "effectiveGasPrice": "1015",
+      "status": 1,
+      "ok": true
+    },
+    {
+      "name": "importAndMint lock 0",
+      "kind": "mint",
+      "nonce": 39,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/BridgeMinter.sol:BridgeMinter",
+      "address": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "lock": {
+        "nonce": 0,
+        "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "amountNative": "100000000000000"
+      },
+      "bundle": {
+        "file": "fixtures/v3-testnet-hero/mint-bundle.json",
+        "block": {
+          "number": 108424,
+          "hash": "0xc89b7e6c5d7596897e677d464a9cc5ca373a69412f810d3f003d7aa8761e4e6d"
+        },
+        "setId": 30
+      },
+      "dataHash": "0xba95b7db068b3277eb8fe01fb79afa30e577fa750300859e5bd12f1336bce6a8",
+      "gasLimit": 3248122,
+      "simulatedGas": 2952838,
+      "codeHash": null,
+      "txHash": "0x91714c8422a7058c161f5592ff7c59eb62399bc99d5f02d6a9ebc1506c955cba",
+      "signedAt": "2026-10-19T21:41:44.578Z",
+      "block": 11950902,
+      "gasUsed": 2952838,
+      "effectiveGasPrice": "1015",
+      "status": 1,
+      "ok": true
+    },
+    {
+      "name": "tampered importAndMint lock 0 (signature)",
+      "kind": "tamper",
+      "nonce": 40,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/BridgeMinter.sol:BridgeMinter",
+      "address": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "lock": {
+        "nonce": 0,
+        "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "amountNative": "100000000000000"
+      },
+      "bundle": {
+        "file": "fixtures/v3-testnet-hero/mint-bundle.json",
+        "block": {
+          "number": 108424,
+          "hash": "0xc89b7e6c5d7596897e677d464a9cc5ca373a69412f810d3f003d7aa8761e4e6d"
+        },
+        "setId": 30
+      },
+      "tamper": {
+        "part": "signature",
+        "what": "byte 0 of R in precommit 1, signed by key 0, flipped in the finality proof"
+      },
+      "expectedRevert": {
+        "name": "InvalidSignature(0, 0)",
+        "data": "0xbac98aeb00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "dataHash": "0x13434566b5d971603038314d0bf05d1175cb12005f6225f4910a49594480f4ff",
+      "gasLimit": 5000000,
+      "simulatedGas": 2456445,
+      "codeHash": null,
+      "txHash": "0xa3f00f83afd3a739fb627723ea10d11cdba0c1eb5f7c5e28f303913cc4ee32cf",
+      "signedAt": "2026-10-19T21:43:26.905Z",
+      "block": 11950910,
+      "gasUsed": 2456445,
+      "effectiveGasPrice": "1015",
+      "status": 0,
+      "ok": true
+    },
+    {
+      "name": "tampered importAndMint lock 0 (header)",
+      "kind": "tamper",
+      "nonce": 41,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/BridgeMinter.sol:BridgeMinter",
+      "address": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "lock": {
+        "nonce": 0,
+        "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "amountNative": "100000000000000"
+      },
+      "bundle": {
+        "file": "fixtures/v3-testnet-hero/mint-bundle.json",
+        "block": {
+          "number": 108424,
+          "hash": "0xc89b7e6c5d7596897e677d464a9cc5ca373a69412f810d3f003d7aa8761e4e6d"
+        },
+        "setId": 30
+      },
+      "tamper": {
+        "part": "header",
+        "what": "byte 0 of B's state root flipped in the header"
+      },
+      "expectedRevert": {
+        "name": "FinalityProofBlockMismatch(0xc89b7e6c…761e4e6d, 0xe26f5666…6626a17f)",
+        "data": "0x928e4216c89b7e6c5d7596897e677d464a9cc5ca373a69412f810d3f003d7aa8761e4e6de26f5666d8ab3f9fc39b19b8101a4ca8b8eeddc5ddddaf185dae51c36626a17f"
+      },
+      "dataHash": "0x511d570498e2b7d9f5ffc01b3c390d23d4390d099e4f6db3ee7974c2f2c7a790",
+      "gasLimit": 5000000,
+      "simulatedGas": 359320,
+      "codeHash": null,
+      "txHash": "0x3e6ba7c8b5779f1c58b6be650c69f823698b68524c5ab74a9762e9d02d3229ba",
+      "signedAt": "2026-10-19T21:43:51.591Z",
+      "block": 11950912,
+      "gasUsed": 359320,
+      "effectiveGasPrice": "1015",
+      "status": 0,
+      "ok": true
+    },
+    {
+      "name": "tampered importAndMint lock 0 (proof)",
+      "kind": "tamper",
+      "nonce": 42,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/BridgeMinter.sol:BridgeMinter",
+      "address": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "lock": {
+        "nonce": 0,
+        "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "amountNative": "100000000000000"
+      },
+      "bundle": {
+        "file": "fixtures/v3-testnet-hero/mint-bundle.json",
+        "block": {
+          "number": 108424,
+          "hash": "0xc89b7e6c5d7596897e677d464a9cc5ca373a69412f810d3f003d7aa8761e4e6d"
+        },
+        "setId": 30
+      },
+      "tamper": {
+        "part": "proof",
+        "what": "byte 33 of the slot proof's first item flipped"
+      },
+      "expectedRevert": {
+        "name": "Error(\"Incomplete Proof!\")",
+        "data": "0x08c379a000000000000000000000000000000000000000000000000000000000000000200000000000000000000000000000000000000000000000000000000000000011496e636f6d706c6574652050726f6f6621000000000000000000000000000000"
+      },
+      "dataHash": "0x2b4b189f4da2b9eb2315479ef43690a6207300793e1bf74ea8b969e50b9f5167",
+      "gasLimit": 5000000,
+      "simulatedGas": 1988086,
+      "codeHash": null,
+      "txHash": "0x3ae2c26931f1d153e2d3a2fbadb7fb6a0e85ce24ef14e82b8708b8a0f3dd1fe7",
+      "signedAt": "2026-10-19T21:44:15.418Z",
+      "block": 11950915,
+      "gasUsed": 1988086,
+      "effectiveGasPrice": "1015",
+      "status": 0,
+      "ok": true
+    },
+    {
+      "name": "tampered importAndMint lock 0 (amount)",
+      "kind": "tamper",
+      "nonce": 43,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/BridgeMinter.sol:BridgeMinter",
+      "address": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "lock": {
+        "nonce": 0,
+        "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "amountNative": "100000000000000"
+      },
+      "bundle": {
+        "file": "fixtures/v3-testnet-hero/mint-bundle.json",
+        "block": {
+          "number": 108424,
+          "hash": "0xc89b7e6c5d7596897e677d464a9cc5ca373a69412f810d3f003d7aa8761e4e6d"
+        },
+        "setId": 30
+      },
+      "tamper": {
+        "part": "amount",
+        "what": "the amount 1 wtPOT made 1,000 wtPOT"
+      },
+      "expectedRevert": {
+        "name": "CommitmentMismatch(0xcd0e66fe…1248e426, 0x9eba08c9…41e23435)",
+        "data": "0xc9e0e757cd0e66fe6e45be87c791413e90c0756508c5a565cb903bb1aebbed651248e4269eba08c90e4527bdb00da438eb8f15ad244cbb202e8886d929b0e12941e23435"
+      },
+      "dataHash": "0x830b219448daa97d03b5fa5066dbdb5f39c98c73c6c463f02be90a29115c337c",
+      "gasLimit": 5000000,
+      "simulatedGas": 2007377,
+      "codeHash": null,
+      "txHash": "0x3d3f513077619fbd7df5c5f5dc9a4a9c8c13a1deb8ff520c8828421fade3fd96",
+      "signedAt": "2026-10-19T21:44:55.892Z",
+      "block": 11950917,
+      "gasUsed": 2007377,
+      "effectiveGasPrice": "1016",
+      "status": 0,
+      "ok": true
+    },
+    {
+      "name": "tampered importAndMint lock 0 (recipient)",
+      "kind": "tamper",
+      "nonce": 44,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/BridgeMinter.sol:BridgeMinter",
+      "address": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "lock": {
+        "nonce": 0,
+        "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "amountNative": "100000000000000"
+      },
+      "bundle": {
+        "file": "fixtures/v3-testnet-hero/mint-bundle.json",
+        "block": {
+          "number": 108424,
+          "hash": "0xc89b7e6c5d7596897e677d464a9cc5ca373a69412f810d3f003d7aa8761e4e6d"
+        },
+        "setId": 30
+      },
+      "tamper": {
+        "part": "recipient",
+        "what": "the recipient's last byte flipped (0xd9838a86cf83c28ee486544060d1ca4ca2971070)"
+      },
+      "expectedRevert": {
+        "name": "CommitmentMismatch(0xd0c88e8b…9eb88781, 0x9eba08c9…41e23435)",
+        "data": "0xc9e0e757d0c88e8b7feef54ed5d5bc223a088e1511fd6c0c5c90576c117c87409eb887819eba08c90e4527bdb00da438eb8f15ad244cbb202e8886d929b0e12941e23435"
+      },
+      "dataHash": "0x1f68e1b15c7ac174bd80647b0783773fcae1478b1295d36ed042efe66cb2a598",
+      "gasLimit": 5000000,
+      "simulatedGas": 2007365,
+      "codeHash": null,
+      "txHash": "0xa2b9691fdcf111d74c52a0306742a746a3bdfb1a91a425ac01c5734d7836af32",
+      "signedAt": "2026-10-19T21:45:15.029Z",
+      "block": 11950920,
+      "gasUsed": 2007365,
+      "effectiveGasPrice": "1016",
+      "status": 0,
+      "ok": true
+    },
+    {
+      "name": "replayed importAndMint lock 0",
+      "kind": "replay",
+      "nonce": 45,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/BridgeMinter.sol:BridgeMinter",
+      "address": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "lock": {
+        "nonce": 0,
+        "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "amountNative": "100000000000000"
+      },
+      "bundle": {
+        "file": "fixtures/v3-testnet-hero/mint-bundle.json",
+        "block": {
+          "number": 108424,
+          "hash": "0xc89b7e6c5d7596897e677d464a9cc5ca373a69412f810d3f003d7aa8761e4e6d"
+        },
+        "setId": 30
+      },
+      "expectedRevert": {
+        "name": "NonceAlreadyUsed(0)",
+        "data": "0x91cab5040000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "dataHash": "0xba95b7db068b3277eb8fe01fb79afa30e577fa750300859e5bd12f1336bce6a8",
+      "gasLimit": 5000000,
+      "simulatedGas": 2009556,
+      "codeHash": null,
+      "txHash": "0x3dab3abc4ab21fd40c9342f05377a4cf63f092648d54d7327f31c5dfd7be3e37",
+      "signedAt": "2026-10-19T21:45:51.685Z",
+      "block": 11950922,
+      "gasUsed": 2009556,
+      "effectiveGasPrice": "1016",
+      "status": 0,
+      "ok": true
+    }
+  ]
+}
