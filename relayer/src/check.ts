@@ -20,6 +20,14 @@
 //     flipped root all fail, and the AccountInfo and CodeInfo decoders reject other variants,
 //     trailing and missing bytes; the set id, which the capture reads without a proof, is null on
 //     a chain without GRANDPA of its own;
+//   - a mint bundle (mint.ts): B's header and finality proof as above, every signature also
+//     under the light client's own check (grandpa.ts clientVerifies), the signers hint as the
+//     client reads it (exactly the threshold, in increasing signer index) and as relay.ts builds
+//     it, B's parent as a checkpoint in the signing set, Revive.AccountInfoOf(vault) as the
+//     130-byte Contract entry BridgeMinter reads (trie id and code hash at their offsets), the child
+//     root under ":child_storage:default:" ++ trie id, and commitments[nonce] under
+//     blake2_256(keccak256(abi.encode(nonce, 0))) holding the commitment recomputed from the lock;
+//     flipped bytes, another vault, trie id or nonce, a flipped root, and any other lock field fail;
 //   - the files fit together the way a light client would use them.
 //
 //   npm run check -- [--dir <fixtures dir>]
@@ -38,17 +46,19 @@ import type {
   ContractStorageFixture,
   EvmBlockParam,
   FinalityProofFixture,
+  FinalityProofJson,
   Fixture,
   HeaderJson,
   IndexFixture,
   JustifiedHeaderFixture,
+  MintBundleFixture,
   ProofJson,
   SetChangeFixture,
   StorageKeyJson,
   StorageProofFixture,
 } from "./fixture.js";
 import { readJson } from "./fixture.js";
-import { precommitPayload, threshold, verifyJustification } from "./grandpa.js";
+import { clientVerifies, precommitPayload, threshold, verifyJustification } from "./grandpa.js";
 import { blake2_256, CHILD_STORAGE_DEFAULT_PREFIX, childRootKey, GRANDPA_AUTHORITIES_KEY, storageKey, systemAccountKey } from "./hash.js";
 import {
   CODE_TYPE_OF_KIND,
@@ -76,6 +86,7 @@ import {
   type Justification,
 } from "./scale.js";
 import { readProof } from "./trie.js";
+import { commitmentSlot, lockCommitment, type Lock } from "./vault.js";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 
@@ -350,7 +361,7 @@ function checkJustifiedHeader(f: JustifiedHeaderFixture): { header: Header; just
 // ---------------------------------------------------------------------------------------
 // Fixture kinds
 
-function checkFinalityProof(f: FinalityProofFixture): ReturnType<typeof checkJustifiedHeader> {
+function checkFinalityProof(f: JustifiedHeaderFixture & { finalityProof: FinalityProofJson }): ReturnType<typeof checkJustifiedHeader> {
   const checked = checkJustifiedHeader(f);
   report.check("finality proof (grandpa_proveFinality)", () => {
     const scale = hexToBytes(f.finalityProof.scale);
@@ -880,6 +891,228 @@ function checkContractStorage(f: ContractStorageFixture): void {
   }
 }
 
+/** The objects of a mint bundle that its checks read, and its hex fields parsed before the check that uses them. */
+const BUNDLE_SECTIONS = [
+  "header",
+  "justification",
+  "signingSet",
+  "finalityProof",
+  "signers",
+  "parentHeader",
+  "vault",
+  "lock",
+  "account.key",
+  "account.value.decoded",
+  "account.proof",
+  "childRoot.key",
+  "childRoot.proof",
+  "slot.key",
+  "slot.value",
+  "slot.proof.served",
+];
+const BUNDLE_HEX_FIELDS = [
+  "signers.hint",
+  "vault.address",
+  "vault.codeHash",
+  "vault.trieId",
+  "lock.recipient",
+  "lock.dstMinter",
+  "lock.commitment",
+  "account.key.hex",
+  "account.value.scale",
+  "childRoot.key.hex",
+  "childRoot.root",
+  "slot.index",
+  "slot.key.hex",
+  "slot.value.hex",
+];
+
+/**
+ * A mint bundle (mint.ts): B finalized by the recorded set as the light client checks it, the
+ * signers hint it takes, B's parent as a checkpoint, and the three proofs BridgeMinter walks from
+ * B's state_root to the lock's commitment.
+ */
+function checkMintBundle(f: MintBundleFixture): void {
+  const complete = report.check("every section is present", () => {
+    const missing = BUNDLE_SECTIONS.filter((path) => {
+      const value = field(f, path);
+      return value === null || typeof value !== "object";
+    });
+    assert(missing.length === 0, `no ${missing.join(", ")}`);
+    const notHex = BUNDLE_HEX_FIELDS.filter((path) => {
+      const value = field(f, path);
+      return typeof value !== "string" || !/^0x([0-9a-fA-F]{2})*$/.test(value);
+    });
+    assert(notHex.length === 0, `not 0x hex: ${notHex.join(", ")}`);
+    assert(Array.isArray(f.notes), "no notes");
+    return "header, justification, signingSet, finalityProof, signers, parentHeader, vault, lock, account, childRoot, slot, notes";
+  });
+  if (!complete) return;
+  const checked = checkFinalityProof(f);
+  if (!checked) return;
+  const { header, justification: j, set } = checked;
+
+  report.check("provenance: a mint bundle of mint.ts, trie version the runtime's", () => {
+    assert(f.provenance.tool.script === "src/mint.ts", `written by ${f.provenance.tool.script}, not src/mint.ts`);
+    assert(f.trieVersion === (f.provenance.runtime.stateVersion === 1 ? 1 : 0), `trie V${f.trieVersion}, runtime stateVersion ${f.provenance.runtime.stateVersion}`);
+    return `trie V${f.trieVersion}`;
+  });
+  report.check("B changes no set (a bundle is taken at such a block)", () => {
+    const changes = grandpaLogs(header).filter((l) => l.log.kind === "ScheduledChange" || l.log.kind === "ForcedChange");
+    assert(changes.length === 0, `B carries a ${changes[0]?.log.kind}`);
+    return `digest [${header.digest.map((d) => `${d.kind}${d.engine ? ` ${d.engine}` : ""}`).join(", ")}]`;
+  });
+
+  // The light client's own signature check, and the signers hint it takes.
+  report.check("every precommit verifies with the light client's own check (SCL Verify_LE, no cofactor)", () => {
+    const result = verifyJustification(j, set.ids, set.setId, clientVerifies);
+    assert(result.ok, result.problems.join("; "));
+    return `${result.valid}/${j.precommits.length} under set ${set.setId} (grandpa.ts clientVerifies)`;
+  });
+  const hint = hexToBytes(f.signers.hint);
+  const required = threshold(set.ids.length);
+  report.check("signers hint: exactly the threshold, increasing signer index, each named precommit by its signer and valid", () => {
+    assert(hint.length % 2 === 0, `${hint.length} bytes, not 2 per counted precommit`);
+    const count = hint.length / 2;
+    assert(count === required && f.signers.count === count && f.signers.threshold === required, `${count} entries, threshold ${required} (the file says ${f.signers.count} of ${f.signers.threshold})`);
+    const positions = new Set<number>();
+    let previous = -1;
+    for (let i = 0; i < count; i++) {
+      const [position, index] = [hint[2 * i], hint[2 * i + 1]];
+      assert(position < j.precommits.length && !positions.has(position), `entry ${i}: precommit ${position} is out of range or named twice`);
+      assert(index < set.ids.length && index > previous, `entry ${i}: signer index ${index} is out of range or not above ${previous}`);
+      const p = j.precommits[position];
+      assert(equalBytes(p.id, set.ids[index]), `entry ${i}: precommit ${position} is not signed by key ${index}`);
+      assert(clientVerifies(p.signature, precommitPayload(p.targetHash, p.targetNumber, j.round, set.setId), p.id), `entry ${i}: the signature of precommit ${position} fails the client's check`);
+      positions.add(position);
+      previous = index;
+    }
+    return `${f.signers.hint}: ${Array.from({ length: count }, (_, i) => `precommit ${hint[2 * i]} by key ${hint[2 * i + 1]}`).join(", ")}`;
+  });
+  report.check("signers hint is the one relay.ts builds: the valid precommits of the lowest signer indexes", () => {
+    const valid = j.precommits
+      .map((p, position) => ({ position, index: set.ids.findIndex((id) => equalBytes(id, p.id)), p }))
+      .filter((x) => x.index >= 0 && x.position < 256 && clientVerifies(x.p.signature, precommitPayload(x.p.targetHash, x.p.targetNumber, j.round, set.setId), x.p.id))
+      .sort((a, b) => a.index - b.index);
+    const expected = Uint8Array.from(valid.slice(0, required).flatMap((x) => [x.position, x.index]));
+    assert(equalBytes(expected, hint), `relay.ts would build ${bytesToHex(expected)}`);
+  });
+
+  // B's parent: the checkpoint a fresh client starts from to import B.
+  const parent = checkHeader(f.parentHeader, "parent header (checkpoint)");
+  if (parent) {
+    report.check("parent header is B's parent, where the signing set was read", () => {
+      assert(f.parentHeader.hash === bytesToHex(header.parentHash) && parent.number === header.number - 1, "parentHeader is not B's parent");
+      assert(f.signingSet.at.hash === f.parentHeader.hash, "the signing set was not read at this parent");
+      return `#${fmt(parent.number)} ${shortHex(f.parentHeader.hash)}`;
+    });
+  }
+
+  // Revive.AccountInfoOf(vault), from B's state_root, as BridgeMinter reads it.
+  const vault = hexToBytes(f.vault.address);
+  const accountKey = hexToBytes(f.account.key.hex);
+  const accountValue = hexToBytes(f.account.value.scale);
+  report.check("account key = twox128(Revive) ++ twox128(AccountInfoOf) ++ vault", () => {
+    assert(vault.length === 20, `vault address is ${vault.length} B`);
+    checkKeyFields(f.account.key, "Revive", "AccountInfoOf", "Identity", reviveAccountInfoKey(vault));
+    return `${accountKey.length} B (Identity hasher), vault ${f.vault.address}`;
+  });
+  const accountNodes = checkWalk(`AccountInfoOf proof walks from B's state_root to the value (trie V${f.trieVersion})`, header.stateRoot, f.account.proof, "state_getReadProof", accountKey, accountValue, f.trieVersion);
+  report.check("value is the 130-byte Contract entry the minter takes: trie id at bytes 2..33, code hash at 34..65", () => {
+    assert(accountValue.length === 130 && f.account.value.bytes === 130, `value is ${accountValue.length} B`);
+    assert(accountValue[0] === 0 && accountValue[1] === 0x80, `variant ${accountValue[0]}, trie id length byte 0x${accountValue[1].toString(16)}: not a contract with a 32-byte trie id`);
+    const info = decodeReviveAccountInfo(accountValue);
+    assert(info.kind === "Contract", "not a contract");
+    const c = info.contract;
+    const d = f.account.value.decoded;
+    assert(equalBytes(c.trieId, accountValue.subarray(2, 34)) && bytesToHex(c.trieId) === f.vault.trieId && d.trieId === f.vault.trieId, "the trie id differs");
+    assert(equalBytes(c.codeHash, accountValue.subarray(34, 66)) && bytesToHex(c.codeHash) === f.vault.codeHash && d.codeHash === f.vault.codeHash, "the code hash differs");
+    assert(d.kind === "Contract" && d.storageItems === c.storageItems && d.storageBytes === c.storageBytes && d.dust === info.dust, "decoded fields differ");
+    return `trie id ${shortHex(c.trieId)}, code hash ${shortHex(c.codeHash)}, ${c.storageItems} storage items`;
+  });
+
+  // The vault's child-trie root, from B's state_root.
+  const trieId = hexToBytes(f.vault.trieId);
+  const rootKey = hexToBytes(f.childRoot.key.hex);
+  const childRoot = hexToBytes(f.childRoot.root);
+  report.check('child-root key = ":child_storage:default:" ++ trie id', () => {
+    assert(equalBytes(childRootKey(trieId), rootKey), "key is not the prefix and the trie id");
+    assert(f.childRoot.key.prefix === new TextDecoder().decode(CHILD_STORAGE_DEFAULT_PREFIX) && rootKey.length === f.childRoot.key.bytes, "prefix or key size differs");
+    assert(childRoot.length === 32 && childRoot.some((b) => b !== 0), "the child root is not 32 non-zero bytes");
+    return `${rootKey.length} B`;
+  });
+  const rootNodes = checkWalk(`child-root proof walks from B's state_root to the child root (trie V${f.trieVersion})`, header.stateRoot, f.childRoot.proof, "state_getReadProof", rootKey, childRoot, f.trieVersion);
+
+  // commitments[nonce], from the child root.
+  const nonce = BigInt(f.lock.nonce);
+  const index = hexToBytes(f.slot.index);
+  const slotKey = hexToBytes(f.slot.key.hex);
+  const value = hexToBytes(f.slot.value.hex);
+  report.check("slot = keccak256(abi.encode(nonce, 0)) (commitments[nonce]), key = blake2_256(slot)", () => {
+    assert(Number.isSafeInteger(f.lock.nonce) && f.lock.nonce >= 0, `nonce ${f.lock.nonce}`);
+    assert(equalBytes(commitmentSlot(nonce), index), `the slot is not commitments[${nonce}]'s`);
+    assert(f.slot.key.hasher === "Blake2_256" && equalBytes(reviveSlotKey(index), slotKey), "key is not blake2_256 of the slot");
+    assert(value.length === 32 && f.slot.value.bytes === 32, `value is ${value.length} B, not a word`);
+    return `nonce ${nonce}: slot ${shortHex(index)} -> ${shortHex(slotKey)}`;
+  });
+  const slotNodes = checkWalk("slot proof walks from the child root to the value", childRoot, f.slot.proof, "state_getChildReadProof", slotKey, value, f.trieVersion);
+  report.check("served child proof = these items + the items of the child-root proof", () => {
+    const s = f.slot.proof.served;
+    assert(s.mainTrieItems === f.childRoot.proof.count, `${s.mainTrieItems} main-trie items served, the child-root proof has ${f.childRoot.proof.count}`);
+    assert(s.count === f.slot.proof.count + s.mainTrieItems && s.bytes === f.slot.proof.bytes + f.childRoot.proof.bytes, "served counts or sizes do not add up");
+    return `${s.count} served (${fmt(s.bytes)} B): the ${s.mainTrieItems} child-root proof items + ${f.slot.proof.count} child-trie items`;
+  });
+
+  // The word is the lock's commitment.
+  const known = EVM_CHAINS[f.provenance.genesisHash];
+  const lock: Lock = {
+    v3ChainId: BigInt(f.vault.chainId),
+    vault,
+    dstChainId: BigInt(f.lock.dstChainId),
+    dstMinter: hexToBytes(f.lock.dstMinter),
+    recipient: hexToBytes(f.lock.recipient),
+    amountNative: BigInt(f.lock.amountNative),
+    nonce,
+  };
+  report.check("the proven word is the commitment recomputed from the lock, on this chain's id", () => {
+    assert(known && BigInt(known.chainId) === lock.v3ChainId, `vault chain id ${f.vault.chainId}, this genesis is ${known ? `${known.chain}'s ${BigInt(known.chainId)}` : "not on record"}`);
+    const commitment = lockCommitment(lock);
+    assert(bytesToHex(commitment) === f.lock.commitment, `the lock's fields give ${bytesToHex(commitment)}, the file says ${f.lock.commitment}`);
+    assert(equalBytes(commitment, value), "the proven word is another commitment");
+    assert(lock.amountNative > 0n && lock.recipient.some((b) => b !== 0), "a zero amount or recipient");
+    return `${shortHex(commitment)}: ${f.lock.amountNative} base units for ${f.lock.recipient} on chain ${f.lock.dstChainId}, minter ${f.lock.dstMinter}`;
+  });
+  report.check("another recipient, amount, nonce, minter, destination chain, vault or source chain gives another commitment", () => {
+    const variants: [string, Lock][] = [
+      ["recipient", { ...lock, recipient: flipByte(lock.recipient, 19) }],
+      ["amount", { ...lock, amountNative: lock.amountNative + 1n }],
+      ["nonce", { ...lock, nonce: lock.nonce + 1n }],
+      ["minter", { ...lock, dstMinter: flipByte(lock.dstMinter, 19) }],
+      ["destination chain", { ...lock, dstChainId: lock.dstChainId + 1n }],
+      ["vault", { ...lock, vault: flipByte(lock.vault, 19) }],
+      ["source chain", { ...lock, v3ChainId: lock.v3ChainId + 1n }],
+    ];
+    for (const [what, l] of variants) assert(!equalBytes(lockCommitment(l), value), `another ${what} gives the same commitment`);
+    return `${variants.length} variants, ${variants.length} other commitments`;
+  });
+
+  // Tampering: each proof is bound to its root and its key.
+  if (accountNodes) {
+    checkTampers("AccountInfoOf proof: one-byte flips, a flipped state_root, another vault", header.stateRoot, accountNodes, accountKey, accountValue, [
+      { what: "another vault", key: reviveAccountInfoKey(flipByte(vault, 19)) },
+    ]);
+  }
+  if (rootNodes) {
+    checkTampers("child-root proof: one-byte flips, a flipped state_root, another trie id", header.stateRoot, rootNodes, rootKey, childRoot, [
+      { what: "another trie id", key: childRootKey(flipByte(trieId, 31)) },
+    ]);
+  }
+  if (slotNodes) {
+    const others = [nonce + 1n, ...(nonce > 0n ? [nonce - 1n] : [])].map((n) => ({ what: `commitments[${n}]`, key: reviveSlotKey(commitmentSlot(n)) }));
+    checkTampers("slot proof: one-byte flips, a flipped child root, the neighbouring nonces", childRoot, slotNodes, slotKey, value, others);
+  }
+}
+
 // ---------------------------------------------------------------------------------------
 // Main
 
@@ -942,6 +1175,10 @@ function main(): void {
         break;
       case "contract-storage":
         checkContractStorage(f);
+        for (const note of Array.isArray(f.notes) ? f.notes : []) console.log(`        note: ${note}`);
+        break;
+      case "mint-bundle":
+        checkMintBundle(f);
         for (const note of Array.isArray(f.notes) ? f.notes : []) console.log(`        note: ${note}`);
         break;
       case "index":

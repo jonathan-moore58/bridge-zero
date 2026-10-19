@@ -1,6 +1,7 @@
-// The JSON fixture format written by capture.ts and capture-contract.ts and read by check.ts.
-// Every file starts with a provenance header. Every chain item keeps its raw SCALE bytes as hex
-// ("scale") next to the decoded fields, so tests can feed the exact bytes a relayer would submit.
+// The JSON fixture format written by capture.ts, capture-contract.ts and mint.ts (a mint bundle)
+// and read by check.ts. Every file starts with a provenance header. Every chain item keeps its raw
+// SCALE bytes as hex ("scale") next to the decoded fields, so tests can feed the exact bytes a
+// relayer would submit.
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { bytesToHex, toSafeNumber, type Hex } from "./bytes.js";
@@ -135,7 +136,8 @@ export type FixtureKind =
   | "set-change"
   | "authority-set"
   | "storage-proof"
-  | "contract-storage";
+  | "contract-storage"
+  | "mint-bundle";
 
 export interface FixtureBase {
   provenance: Provenance;
@@ -145,16 +147,25 @@ export interface FixtureBase {
 
 /** A header with the justification that finalizes it and the set that signed it. */
 export interface JustifiedHeaderFixture extends FixtureBase {
-  kind: "finality-proof" | "justification" | "stored-justification" | "set-change";
+  kind: "finality-proof" | "justification" | "stored-justification" | "set-change" | "mint-bundle";
   source: Record<string, unknown>;
   header: HeaderJson;
   justification: JustificationJson;
   signingSet: AuthoritySetJson;
 }
 
+/** grandpa_proveFinality's FinalityProof for the header: the block, the justification as Vec<u8>, and unknown headers. */
+export interface FinalityProofJson {
+  block: Hex;
+  justificationBytes: number;
+  unknownHeaders: number;
+  bytes: number;
+  scale: Hex;
+}
+
 export interface FinalityProofFixture extends JustifiedHeaderFixture {
   kind: "finality-proof";
-  finalityProof: { block: Hex; justificationBytes: number; unknownHeaders: number; bytes: number; scale: Hex };
+  finalityProof: FinalityProofJson;
 }
 
 export interface GrandpaLogJson {
@@ -311,6 +322,60 @@ export interface ContractStorageFixture {
   notes: string[];
 }
 
+/**
+ * Everything one BridgeMinter.importAndMint needs for one lock of PortaldotVault, read at one
+ * finalized V3 block B (mint.ts): B's header with its finality proof and the set that signed it
+ * (read at the parent block, as a finality-proof capture does), the signers hint the light client
+ * takes, B's parent header (the checkpoint a fresh client starts from to import B), and the three
+ * storage proofs under B's state_root: Revive.AccountInfoOf(vault) in the main trie, the root of
+ * the vault's child trie, and commitments[nonce] in the child trie, whose value is the lock's
+ * commitment recomputed from the lock. check.ts verifies the file again offline.
+ */
+export interface MintBundleFixture extends JustifiedHeaderFixture {
+  kind: "mint-bundle";
+  node: { version: string };
+  finalityProof: FinalityProofJson;
+  /**
+   * The signers hint of the import: 2 bytes per counted precommit (its position in the
+   * justification, the signer's index in the signing set), exactly the threshold, in increasing
+   * index, each signature checked with the client's own check (grandpa.ts clientVerifies).
+   */
+  signers: { hint: Hex; count: number; threshold: number };
+  /** B's parent: a checkpoint header inside the signing set, from which a fresh light client imports B. */
+  parentHeader: HeaderJson;
+  trieVersion: 0 | 1;
+  /** The vault on V3, as its proven AccountInfoOf entry describes it; chainId is V3's, part of every commitment. */
+  vault: { address: Hex; chainId: number; codeHash: Hex; trieId: Hex };
+  /** The lock the bundle proves, as the vault's record or its Locked log describes it. */
+  lock: {
+    nonce: number;
+    recipient: Hex;
+    amountNative: string;
+    dstChainId: string;
+    dstMinter: Hex;
+    commitment: Hex;
+    source: string;
+    txHash?: Hex;
+  };
+  /** Revive.AccountInfoOf(vault): makes the address a contract and names its trie id and code hash. */
+  account: {
+    key: StorageKeyJson;
+    value: { bytes: number; scale: Hex; decoded: Record<string, string | number> };
+    proof: ProofJson;
+  };
+  /** The root of the vault's child trie, in the main trie under ":child_storage:default:" ++ trie id. */
+  childRoot: { key: { prefix: string; bytes: number; hex: Hex }; root: Hex; proof: ProofJson };
+  /** commitments[nonce]: the slot's index, keccak256(abi.encode(nonce, 0)), under blake2_256(index) in the child trie. */
+  slot: {
+    index: Hex;
+    key: { hasher: string; hex: Hex };
+    value: { bytes: number; hex: Hex };
+    /** The child-trie items of state_getChildReadProof; served.mainTrieItems are exactly the items of childRoot.proof. */
+    proof: ProofJson & { served: { count: number; bytes: number; mainTrieItems: number } };
+  };
+  notes: string[];
+}
+
 export interface IndexEntry {
   file: string;
   kind: FixtureKind;
@@ -344,7 +409,8 @@ export type Fixture =
   | (JustifiedHeaderFixture & { kind: "justification" | "stored-justification" })
   | AuthoritySetFixture
   | StorageProofFixture
-  | ContractStorageFixture;
+  | ContractStorageFixture
+  | MintBundleFixture;
 
 // ---------------------------------------------------------------------------------------
 // Builders
@@ -427,6 +493,12 @@ export function announcedSetJson(setId: bigint, header: Header, hash: Uint8Array
     authorities,
     announced,
   };
+}
+
+/** Proof items, as `method` served them. */
+export function proofJson(method: string, nodes: Uint8Array[]): ProofJson {
+  const nodeBytes = nodes.map((n) => n.length);
+  return { method, count: nodes.length, bytes: nodeBytes.reduce((a, b) => a + b, 0), nodeBytes, nodes: nodes.map((n) => bytesToHex(n)) };
 }
 
 export function grandpaLogJson(log: GrandpaLog, payload: Uint8Array): GrandpaLogJson {

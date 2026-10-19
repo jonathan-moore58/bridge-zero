@@ -12,6 +12,7 @@
     "capture": "tsx src/capture.ts",
     "capture-contract": "tsx src/capture-contract.ts",
     "check": "tsx src/check.ts",
+    "mint": "tsx src/mint.ts",
     "probe": "tsx src/probe.ts",
     "relay": "tsx src/relay.ts",
     "test": "tsx --test src/*.test.ts",
