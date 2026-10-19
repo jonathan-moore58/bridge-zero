@@ -15,7 +15,8 @@ chains, the old Portaldot mainnet (10 validators, 7 signatures needed) and the P
 (2 validators, both needed), and proved an account balance from each verified block's state root.
 On Oct 18 the relayer brought both light clients up to the chains' live finalized heads: every
 validator-set change since their checkpoints, each with its validators' signatures, then the head.
-Next: the token bridge (a vault on the V3 testnet, a mint on Sepolia).
+On Oct 19 the bridge's vault went live on the V3 testnet. Next: the minter on Sepolia, which proves
+a lock in the vault against a V3 state root the light client verified, and mints.
 
 ## Evidence
 
@@ -81,6 +82,26 @@ All 15 cost 0.00000007 Sepolia ETH in total.
 The old mainnet changes its validator set every 720 blocks (about 12 hours) and keeps the same
 10 keys; the V3 testnet does so about every 6 hours with its 2 keys. Every change has to be
 imported in order: a client that skips one can no longer verify the next set's signatures.
+
+### The vault on the Portaldot V3 testnet
+
+[`PortaldotVault`](contracts/src/bridge/PortaldotVault.sol) holds tPOT locked for the bridge:
+anyone can lock, naming the chain and minter that may mint for it, and only the committee's 2-of-3
+multisig account can release (the trusted return path). Deployed on Oct 19 by
+`npm run v3-vault -- deploy`; the record is [`deployments/v3-testnet.json`](deployments/v3-testnet.json),
+and [`docs/V3.md`](docs/V3.md) and [`docs/DECISIONS.md`](docs/DECISIONS.md) explain the costs and
+the design.
+
+| | |
+|---|---|
+| Vault | `0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd` (899 bytes of EVM bytecode, solc 0.8.27) |
+| Deployed by | `5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7` through `revive.instantiateWithCode` |
+| Extrinsic | `0xd10c71ba51591c42706b98ec853cc5d584135485f0a104178ecb5eb87033dff9`, block #100,955 `0x2c488560…d1035251` |
+| Cost | storage deposit 83.232 tPOT, fee 0.1285 tPOT |
+| Releaser | `0xA08A7f7DEd49CC81F901Fb42Fec00edFC48c0fc1`, the 2-of-3 multisig `5FTrjz…xPk3` (trusted) |
+
+Check it: `cast code 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd --rpc-url https://test-evm-rpc-v3.portaldot.dev`
+returns the code, and `npm run v3-vault -- status` reads the vault.
 
 ## Layout
 
