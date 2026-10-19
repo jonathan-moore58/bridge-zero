@@ -1,6 +1,11 @@
 // Minimal JSON-RPC 2.0 client over WebSocket (the global WebSocket of Node 24): numbered
 // requests with timeouts, and subscriptions in the Substrate style (the subscribe call
-// returns an id, notifications carry { subscription, result }).
+// returns an id, notifications carry { subscription, result }). Every wait is bounded: the
+// connection, each request, and close(), which cuts the connection when the node does not
+// answer the close frame.
+
+import { subscribe, unsubscribe } from "node:diagnostics_channel";
+import { Socket } from "node:net";
 
 export class RpcError extends Error {
   override name = "RpcError";
@@ -42,6 +47,51 @@ type JsonRpcMessage = {
 
 /** Notifications that arrive before their subscribe call has returned are held, up to this many each. */
 const EARLY_NOTIFICATION_LIMIT = 64;
+/** How long close() waits for the node to answer the close frame before it cuts the connection. */
+const CLOSE_TIMEOUT_MS = 5_000;
+
+/** True when `promise` settles within `ms`; the timer never keeps the process alive. */
+async function settlesWithin(promise: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<false>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+    timer.unref();
+  });
+  try {
+    return await Promise.race([promise.then(() => true as const, () => true as const), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The TCP socket under a WebSocket, which Node's WebSocket (undici) does not expose: undici
+ * publishes each socket it connects on "undici:client:connected", and the local address of a
+ * WebSocket's socket on "undici:websocket:open". Settles with null when either is missing.
+ */
+function socketOf(ws: WebSocket): { socket: Promise<Socket | null>; stop: () => void } {
+  const connected: Socket[] = [];
+  let found: (socket: Socket | null) => void = () => {};
+  const socket = new Promise<Socket | null>((resolve) => (found = resolve));
+  const onConnected = (message: unknown) => {
+    const s = (message as { socket?: unknown } | null)?.socket;
+    if (s instanceof Socket) connected.push(s);
+  };
+  const onOpen = (message: unknown) => {
+    const m = message as { websocket?: unknown; address?: { address?: unknown; port?: unknown } } | null;
+    if (m?.websocket !== ws) return;
+    stop(connected.find((s) => s.localPort === m.address?.port && s.localAddress === m.address?.address) ?? null);
+  };
+  const stop = (s: Socket | null = null) => {
+    unsubscribe("undici:client:connected", onConnected);
+    unsubscribe("undici:websocket:open", onOpen);
+    connected.length = 0;
+    found(s);
+  };
+  subscribe("undici:client:connected", onConnected);
+  subscribe("undici:websocket:open", onOpen);
+  return { socket, stop: () => stop() };
+}
 
 export class RpcClient {
   private nextId = 1;
@@ -57,6 +107,8 @@ export class RpcClient {
     readonly url: string,
     private readonly socket: WebSocket,
     private readonly requestTimeoutMs: number,
+    /** The connection's TCP socket, null when it could not be found. */
+    private readonly tcp: Promise<Socket | null>,
   ) {
     socket.addEventListener("message", (event) => this.onMessage(event.data));
     this.closed = new Promise((resolve) => {
@@ -72,16 +124,21 @@ export class RpcClient {
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(url);
       socket.binaryType = "arraybuffer";
+      const tcp = socketOf(socket);
       const timer = setTimeout(() => {
+        tcp.stop();
         socket.close();
         reject(new Error(`no connection to ${url} after ${connectTimeoutMs} ms`));
       }, connectTimeoutMs);
       const onOpen = () => {
         cleanup();
-        resolve(new RpcClient(url, socket, options.requestTimeoutMs ?? 60_000));
+        // undici publishes the open socket right after this event; whatever it published is in by then.
+        setImmediate(tcp.stop);
+        resolve(new RpcClient(url, socket, options.requestTimeoutMs ?? 60_000, tcp.socket));
       };
       const onFailure = () => {
         cleanup();
+        tcp.stop();
         reject(new Error(`cannot connect to ${url}`));
       };
       const cleanup = () => {
@@ -142,10 +199,18 @@ export class RpcClient {
     return this.closeError;
   }
 
+  /**
+   * Sends the close frame and waits up to CLOSE_TIMEOUT_MS for the node's; a node that stalls
+   * (TCP open, nothing answered) has its connection cut then. Returns in a few seconds at most.
+   */
   async close(): Promise<void> {
     if (this.socket.readyState === WebSocket.CLOSED) return;
     this.socket.close(1000, "done");
-    await this.closed;
+    if (await settlesWithin(this.closed, CLOSE_TIMEOUT_MS)) return;
+    this.fail(new Error(`connection to ${this.url} cut: no answer to the close frame within ${CLOSE_TIMEOUT_MS} ms`));
+    const tcp = await this.tcp;
+    tcp?.destroy();
+    if (tcp) await settlesWithin(this.closed, 1_000);
   }
 
   private onMessage(data: unknown): void {

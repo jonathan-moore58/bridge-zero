@@ -2,8 +2,9 @@
 //
 //   npm run relay -- --chain mainnet|v3 [--dry-run] [--from <address>] [--watch <seconds>]
 //   npm run relay -- --chain mainnet|v3 --send --account <keystore> --password-file <path> [--watch <seconds>]
-//   more options: --rpc <wss url> (the Portaldot node), --scan-limit <blocks>, --head-every <blocks>,
-//   --priority-fee <gwei>, --max-fee <gwei>, --max-base-fee <gwei>, --keep <eth>, --replace-after <minutes>
+//   more options: --rpc <wss url> (the Portaldot node), --state-dir <path>, --scan-limit <blocks>,
+//   --head-every <blocks>, --priority-fee <gwei>, --max-fee <gwei>, --max-base-fee <gwei>,
+//   --max-base-fee-change <gwei>, --keep <eth>, --replace-after <minutes>
 //
 // A run reads the client's state on Sepolia (currentSetId, latestFinalized, authorities, halted,
 // paused), takes a finality proof at the Portaldot finalized head, and scans the headers from
@@ -15,16 +16,19 @@
 // change comes every 12 and every 6 hours). Each justification is verified here first, under the set the
 // client will be in when it is imported and with the client's own signature check (grandpa.ts
 // clientVerifies: SCL's, with no cofactor), and its signers hint counts exactly the threshold, by
-// index in the client's key list. A run plans nothing, and says why, when the client is halted or
-// paused, when a change ahead would halt it (a ForcedChange, a delayed or multiple change, a list
+// index in the client's key list; a head proof the client cannot count leaves the head for a later
+// run, after the set changes before it. A run plans nothing, and says why, when the client is halted
+// or paused, when a change ahead would halt it (a ForcedChange, a delayed or multiple change, a list
 // the client cannot use, such as more than MAX_AUTHORITIES keys), when an import would revert, or
-// when the client is more than --scan-limit blocks behind.
+// when the client is more than --scan-limit blocks behind (by default about a week of the chain's
+// blocks, and at least 30,000: 30,000 on mainnet, 100,800 on V3).
 //
 // The sender is the address the keystore unlocks to with --send, and --from (by default the
 // deployer) in a dry run: its nonce and balance are the ones used and recorded. Imports need no
 // rights on the client, while its admin (the deployer) can pause and reinitialize it, so --watch
-// --send is better run with a key of its own and a small balance; a run warns when the sender is
-// a client's admin.
+// --send is better run with a key of its own and a small balance, one key per chain (a sender's
+// nonce and record serve both chains' runs, and one chain's open transaction holds the other's
+// runs back); a run warns when the sender is a client's admin.
 //
 // --dry-run (the default) has a Sepolia node run the plan with eth_simulateV1 (validation on), on
 // top of its latest block, from the sender with its nonce and balance on chain: every transaction
@@ -32,47 +36,80 @@
 // Every import must emit HeaderImported, a set change also AuthoritySetChanged, and none Halted.
 // Each request stays within the gas a node lets one request use; a request starts from the
 // client's storage as the one before left it (the slots its imports wrote, read back in that
-// simulation), and from the sender's nonce and remaining balance. With every transaction at its
-// max fee, the sender must still keep --keep (default 0.05 ETH).
+// simulation), and from the sender's nonce and remaining balance; one the node fails the way a
+// load-balanced RPC can (an unknown block, a timeout, an HTTP error) is sent again. With every
+// transaction at its max fee, the sender must still keep --keep (default 0.05 ETH); a run whose only
+// failure is the sender's balance counts as blocked (see --watch).
 // --send runs the same dry run, then sends the plan one transaction at a time the way
 // contracts/script/deploy-sepolia.mjs sends its steps (cast mktx with the keystore, the hash
 // recorded, cast publish, the receipt and its events checked), each after checking, at the latest
-// block, that the client is still where the plan expects it and neither paused nor halted. While
-// the next base fee is above --max-base-fee (default 0.05 gwei) nothing is sent, and the run ends
-// OK (or 3 while a transaction of the record is pending). A transaction not mined after
-// --replace-after minutes (default 5) is signed again at its nonce, with its max fee and priority
-// fee raised by at least 1/8, never above the max fee a run would use at --max-base-fee, nor above
-// --max-fee when it is given. All transactions for one import share its nonce, so at most one
-// of them is mined. When another relayer imports the header or a later one first, the
-// transaction is recorded as superseded and the next run plans again.
-// deployments/relay-sepolia-<sender>.json holds the sender's transactions not settled yet (signed,
-// pending, or dropped while their nonce is free), each written before it is broadcast; a settled
-// one (mined and checked, superseded, or replaced by another at its nonce) moves to
-// deployments/relay-sepolia-<sender>.jsonl, a line appended, so the JSON stays small and the
-// history is never rewritten. Before planning, a run settles what the JSON left open. Only one
-// --send run per sender at a time holds the lock bridge-zero-relay-<sender>.lock in the system's
-// temp directory, which every checkout shares.
-// --watch starts the next run <seconds> (at least 10) after each run ends, a failed one too; after
+// block, that the client is still where the plan expects it and neither paused nor halted, and that
+// the next base fee is within the step's gate: --max-base-fee (default 0.05 gwei) for the head,
+// --max-base-fee-change (default 1.5 gwei, and at least --max-base-fee) for a set change. Above it,
+// that step and the rest of the plan are left for a later run, and the run ends OK (or 3 while a
+// transaction of the record is open); a run checks before it scans too, and does not scan while
+// nothing could be sent (Grandpa.CurrentSetId at the node's finalized head tells whether a set
+// change is due). With --watch, a run warns (WARN) once set changes have been held back that way
+// for more than 3 hours. A transaction not mined after --replace-after minutes (default 5) is
+// signed again at its nonce, once the client still reads as the step expects, with its max fee and
+// priority fee raised by at least 1/8, never above the max fee a run would use at the step's gate,
+// nor above --max-fee when it is given (a --priority-fee above --max-base-fee needs --max-fee); one
+// of the record left at the next nonce, pending or dropped, is outbid the same way. All transactions
+// for one import share its nonce, so at most one of them is mined. One mined without importing is
+// superseded (another relayer imported its header or a later one first, and the next run plans
+// again) when the client held the header at its block, or when it reverted and, replayed with
+// eth_call on the state its block left, it reverts with NotNewer; out of gas, or any other revert,
+// fails its checks.
+// The sender's record, history and lock are in the state directory, --state-dir (by default
+// .bridge-zero in the home directory), which every checkout shares: relay-sepolia-<sender>.json holds
+// the sender's transactions not settled yet (signed, pending, or dropped while their nonce is free),
+// each written before it is broadcast; a settled one (mined and checked, superseded, or replaced by
+// another at its nonce) moves to relay-sepolia-<sender>.jsonl, a line appended, so the JSON stays
+// small and the history is never rewritten. Before planning, a run settles what the JSON left open.
+// An earlier version kept them in deployments/ of the checkout: while that record holds open
+// transactions nothing runs (exit code 1), and a run says what to move where.
+// Only one --send run per sender at a time holds relay-sepolia-<sender>.lock: the holder refreshes it
+// every 30 s, a lock whose process is gone or which was not refreshed for 10 minutes is taken over,
+// and a run checks before every signing and record write that the lock still holds its own token
+// (exit code 1 when it does not). takeLock tells the lock's limits.
+// --watch starts the next run <seconds> (10 to 86,400) after each run ends, a failed one too; after
 // runs in a row that stop on something only the client's admin or the operator can clear (a halt,
-// a pause, a ForcedChange, the scan limit, ...), the wait doubles each time, up to an hour.
+// a pause, a ForcedChange, the scan limit, too small a balance, ...), the wait doubles each time, up
+// to an hour.
 //
 // The Sepolia RPC is SEPOLIA_RPC_URL when set, else the public endpoint; of it and of a --rpc URL
-// only the host is printed. Exit code 0 when the client is up to date, the dry run passed, the
-// plan was sent and checked, or the base fee is too high to send; 1 when a check fails or nothing
-// can be relayed; 2 when an RPC cannot be reached or a read keeps failing; 3 when a sent
-// transaction is still pending. With --watch, only a sent transaction that fails its checks, or a
-// signing or record problem, ends the loop.
+// (which has no #fragment) only the host is printed. Exit code 0 when the client is up to date, the
+// dry run passed, the plan was sent and checked, or the base fee is too high to send; 1 when a check
+// fails or nothing can be relayed; 2 when an RPC cannot be reached, a read keeps failing, or the
+// Portaldot node is behind the client; 3 when a sent transaction is still pending, or one of the
+// record is open at the next nonce. With --watch, only a sent transaction that fails its checks, or
+// a signing or record problem, ends the loop.
 
-import { appendFileSync, closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, writeSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
+import {
+  appendFileSync,
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  renameSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { bytesToHex, equalBytes, hexToBytes, shortHex, toSafeNumber, utf8, type Hex } from "./bytes.js";
+import { bytesToHex, equalBytes, hexToBytes, leToBigInt, shortHex, toSafeNumber, utf8, type Hex } from "./bytes.js";
 import { scanSetChanges, type FoundChange, type HeaderSource } from "./changes.js";
 import { clientVerifies, threshold, verifyJustification } from "./grandpa.js";
-import { blake2_256 } from "./hash.js";
+import { blake2_256, storageKey } from "./hash.js";
 import { RpcClient, RpcError } from "./rpc.js";
 import {
   decodeFinalityProof,
@@ -113,6 +150,7 @@ import {
   redactAlso,
   retry,
   rpc,
+  rpcBody,
   share,
   signAndPublish,
   sleep,
@@ -125,24 +163,48 @@ import {
   type Receipt,
 } from "../../contracts/script/lib/sepolia.mjs";
 
-/** headEvery: the default --head-every, about an hour of the chain's blocks (60 s on the old mainnet, 6 s on V3). */
+/**
+ * blockSeconds: the chain's block time (60 s on the old mainnet, 6 s on V3). headEvery: the default
+ * --head-every, about an hour of its blocks. scanLimit: the default --scan-limit, how far below the
+ * head the client's latest header may be: about a week of its blocks, and at least 30,000 (on
+ * mainnet, 30,000 blocks are about 3 weeks; a V3 scan of 100,800 headers takes about 20 minutes).
+ */
 const CHAINS = {
-  mainnet: { title: "the old Portaldot mainnet", rpc: "wss://mainnet.portaldot.io", client: "GrandpaLightClient #1", headEvery: 60 },
-  v3: { title: "the Portaldot V3 testnet", rpc: "wss://test-node-v3.portaldot.dev", client: "GrandpaLightClient #2", headEvery: 600 },
+  mainnet: { title: "the old Portaldot mainnet", rpc: "wss://mainnet.portaldot.io", client: "GrandpaLightClient #1", blockSeconds: 60, headEvery: 60, scanLimit: 30_000 },
+  v3: { title: "the Portaldot V3 testnet", rpc: "wss://test-node-v3.portaldot.dev", client: "GrandpaLightClient #2", blockSeconds: 6, headEvery: 600, scanLimit: 100_800 },
 } as const;
 type ChainName = keyof typeof CHAINS;
 
 const DEPLOYMENT = fileURLToPath(new URL("../../deployments/sepolia.json", import.meta.url));
-/** Where each sender's record and history are written. */
+/** Where an earlier version wrote each sender's record and history (now in the state directory). */
 const DEPLOYMENTS = fileURLToPath(new URL("../../deployments", import.meta.url));
+/** The default --state-dir: each sender's record, history and lock, outside every checkout. */
+const STATE_DIR = join(homedir(), ".bridge-zero");
 
-/** How far below the head the client's latest header may be: about 2 days of 6 s blocks, 3 weeks of 60 s blocks. */
-const DEFAULT_SCAN_LIMIT = 30_000;
 /** Header requests in flight during the scan. */
 const SCAN_CONCURRENCY = 32;
 const MIN_WATCH_SECONDS = 10;
+const MAX_WATCH_SECONDS = 86_400;
 /** The longest --watch waits between runs that stop on something only the admin or the operator can clear. */
 const MAX_BACKOFF_SECONDS = 3_600;
+/**
+ * The default --max-base-fee-change, the gate of a set change (the head's, --max-base-fee, is 0.05
+ * gwei). In the 30 days to 2026-10-18 the next base fee on Sepolia sat near 1 gwei for three weeks
+ * (median 0.98 gwei, 99th percentile 1.30) and was at most 1.5 gwei in 99.7% of blocks, never above
+ * it for more than 40 minutes. Replayed on those blocks, --watch on both chains (a key of its own per
+ * chain, 1 ETH each) imports every set change within the hour and spends at most 0.024 ETH in a day,
+ * 0.43 ETH in the 30 days; at the 0.05 gwei gate alone, set changes waited up to 18 days. Near the
+ * gate a set change needs its gas limit at the max fee (ten times the base fee) on hand above
+ * --keep: about 0.1 ETH on mainnet, 0.04 ETH on V3.
+ */
+const MAX_BASE_FEE_CHANGE = "1.5";
+/** Grandpa.CurrentSetId, read (without a proof) to tell whether a set change is due before a run scans. */
+const SET_ID_KEY = bytesToHex(storageKey("Grandpa", "CurrentSetId"));
+/** With --watch, set changes held back by the base fee for this long make a run warn. */
+const HELD_BACK_WARN_MS = 3 * 3_600_000;
+/** How often the lock's holder refreshes it, and how long a lock whose process runs may go unrefreshed before it counts as stale. */
+const LOCK_REFRESH = 30_000;
+const LOCK_STALE = 10 * 60_000;
 /** How long a nonce used on chain waits for a receipt of the record's transactions at it (an RPC can lag). */
 const NONCE_WAIT = 60_000;
 /** Gas limit of each view of the client read at the end of a simulated request. */
@@ -181,14 +243,22 @@ class Blocked extends Stop {
   override name = "Blocked";
 }
 
+/** A Blocked run whose plan stands, but the sender's balance cannot pay it and keep --keep. */
+class Underfunded extends Blocked {}
+
 /** A problem a later run cannot get past alone: --watch ends. */
 class Fatal extends Error {
   override name = "Fatal";
 }
 
-/** A read from Sepolia or the Portaldot node that failed, after its retries: exit code 2. */
+/** A read from Sepolia or the Portaldot node that failed, after its retries, or a node behind the client: exit code 2. */
 class Unreachable extends Error {
   override name = "Unreachable";
+}
+
+/** The sender's lock no longer holds this run's token (another relayer took it over): the run stops, nothing more signed or written. */
+class LockLost extends Error {
+  override name = "LockLost";
 }
 
 /** A Sepolia read, retried as a load-balanced RPC can lag; Unreachable when it keeps failing. */
@@ -210,6 +280,17 @@ const reached = <R>(what: string, read: Promise<R>): Promise<R> =>
 const offline = (error: unknown) =>
   error instanceof TypeError || error instanceof SyntaxError || (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"));
 
+/**
+ * An error a load-balanced RPC gives for a while: no answer or an HTTP error page (offline), a
+ * block it has not seen yet or a state it does not serve, a timeout, a rate limit, an internal
+ * error. Errors about the request itself, such as insufficient funds, are not.
+ */
+const transient = (error: unknown) =>
+  offline(error) ||
+  /header not found|block not found|unknown block|beyond (the )?(current )?head|missing trie node|not (yet )?available|timeout|timed out|rate limit|too many requests|unavailable|internal error|-32005\b|-32603\b/i.test(
+    errorText(error),
+  );
+
 // ---------------------------------------------------------------------------------------
 // Options
 
@@ -222,11 +303,15 @@ interface Options {
   from?: Hex;
   watch?: number;
   rpc: string;
+  /** Where the sender's record, history and lock are (--state-dir), absolute. */
+  stateDir: string;
   scanLimit: number;
   headEvery: number;
   priorityFee?: bigint;
   maxFee?: bigint;
+  /** The gates: the most the next base fee may be when the head (maxBaseFee) or a set change (maxBaseFeeChange) is sent. */
   maxBaseFee: bigint;
+  maxBaseFeeChange: bigint;
   keep: bigint;
   /** Milliseconds a transaction waits for its receipt before its nonce is signed again with higher fees. */
   replaceAfter: number;
@@ -237,8 +322,9 @@ function usage(problem: string): never {
 usage (from relayer/):
   npm run relay -- --chain mainnet|v3 [--dry-run] [--from <address>] [--watch <seconds>]
   npm run relay -- --chain mainnet|v3 --send --account <keystore> --password-file <path> [--watch <seconds>]
-  more options: --rpc <wss url>, --scan-limit <blocks>, --head-every <blocks>, --priority-fee <gwei>, --max-fee <gwei>,
-    --max-base-fee <gwei> (default 0.05), --keep <eth> (default 0.05), --replace-after <minutes> (default 5)`);
+  more options: --rpc <wss url>, --state-dir <path> (default ~/.bridge-zero), --scan-limit <blocks>, --head-every <blocks>,
+    --priority-fee <gwei>, --max-fee <gwei>, --max-base-fee <gwei> (default 0.05), --max-base-fee-change <gwei> (default ${MAX_BASE_FEE_CHANGE}),
+    --keep <eth> (default 0.05), --replace-after <minutes> (default 5)`);
   process.exit(FAILED);
 }
 
@@ -254,11 +340,13 @@ function parse() {
         from: { type: "string" },
         watch: { type: "string" },
         rpc: { type: "string" },
-        "scan-limit": { type: "string", default: String(DEFAULT_SCAN_LIMIT) },
+        "state-dir": { type: "string" },
+        "scan-limit": { type: "string" },
         "head-every": { type: "string" },
         "priority-fee": { type: "string" },
         "max-fee": { type: "string" },
         "max-base-fee": { type: "string", default: "0.05" },
+        "max-base-fee-change": { type: "string" },
         keep: { type: "string", default: "0.05" },
         "replace-after": { type: "string", default: "5" },
       },
@@ -292,12 +380,17 @@ function options(): Options {
   if (send && !existsSync(passwordFile!)) usage("--password-file: no such file");
   const rpcUrl = values.rpc ?? CHAINS[chain].rpc;
   if (!/^wss?:\/\//i.test(rpcUrl) || !URL.canParse(rpcUrl)) usage("--rpc must be a ws:// or wss:// URL");
+  // The WebSocket constructor refuses a URL with a fragment, which would otherwise show up as an unreachable node.
+  if (rpcUrl.includes("#")) usage("--rpc must not have a #fragment");
+  if (values["state-dir"] === "") usage("--state-dir must be a directory");
   let watch: number | undefined;
   if (values.watch !== undefined) {
     watch = whole(values.watch);
-    if (!Number.isSafeInteger(watch) || watch < MIN_WATCH_SECONDS) usage(`--watch must be a whole number of seconds, at least ${MIN_WATCH_SECONDS}`);
+    if (!Number.isSafeInteger(watch) || watch < MIN_WATCH_SECONDS || watch > MAX_WATCH_SECONDS) {
+      usage(`--watch must be a whole number of seconds, from ${MIN_WATCH_SECONDS} to ${fmt(MAX_WATCH_SECONDS)}`);
+    }
   }
-  const scanLimit = whole(values["scan-limit"]);
+  const scanLimit = values["scan-limit"] === undefined ? CHAINS[chain].scanLimit : whole(values["scan-limit"]);
   if (!Number.isSafeInteger(scanLimit) || scanLimit < 1) usage("--scan-limit must be a positive number of blocks");
   const headEvery = values["head-every"] === undefined ? CHAINS[chain].headEvery : whole(values["head-every"]);
   if (!Number.isSafeInteger(headEvery) || headEvery < 1) usage("--head-every must be a positive number of blocks");
@@ -311,6 +404,17 @@ function options(): Options {
       usage(errorText(error));
     }
   };
+  const priorityFee = amount(values["priority-fee"], parseGwei);
+  const maxFee = amount(values["max-fee"], parseGwei);
+  const maxBaseFee = amount(values["max-base-fee"], parseGwei)!;
+  // Unless given, the set changes' gate is at least the head's.
+  const given = amount(values["max-base-fee-change"], parseGwei);
+  const maxBaseFeeChange = given ?? max(parseGwei(MAX_BASE_FEE_CHANGE), maxBaseFee);
+  if (maxBaseFeeChange < maxBaseFee) usage("--max-base-fee-change must be at least --max-base-fee");
+  // The most a replacement may offer grows with the priority fee: a large one needs a ceiling of its own.
+  if (priorityFee !== undefined && maxFee === undefined && priorityFee > maxBaseFee) {
+    usage("--priority-fee is above --max-base-fee: give --max-fee too, the most a transaction may offer per gas");
+  }
   return {
     chain,
     send,
@@ -319,11 +423,13 @@ function options(): Options {
     from: values.from?.toLowerCase() as Hex | undefined,
     watch,
     rpc: rpcUrl,
+    stateDir: resolve(values["state-dir"] ?? STATE_DIR),
     scanLimit,
     headEvery,
-    priorityFee: amount(values["priority-fee"], parseGwei),
-    maxFee: amount(values["max-fee"], parseGwei),
-    maxBaseFee: amount(values["max-base-fee"], parseGwei)!,
+    priorityFee,
+    maxFee,
+    maxBaseFee,
+    maxBaseFeeChange,
     keep: amount(values.keep, parseEth)!,
     replaceAfter: replaceAfter * 60_000,
   };
@@ -366,7 +472,7 @@ function deployment(chain: ChainName): Deployment {
   };
 }
 
-/** Who signs and pays: the address (lower case), how a run prints it, and its record, history and lock. */
+/** Who signs and pays: the address (lower case), how a run prints it, and its record, history and lock in the state directory. */
 interface Sender {
   address: Hex;
   name: string;
@@ -375,14 +481,39 @@ interface Sender {
   lock: string;
 }
 
-function senderOf(address: Hex, name: string): Sender {
-  return {
-    address,
-    name,
-    record: join(DEPLOYMENTS, `relay-sepolia-${address}.json`),
-    history: join(DEPLOYMENTS, `relay-sepolia-${address}.jsonl`),
-    lock: join(tmpdir(), `bridge-zero-relay-${address}.lock`),
-  };
+function senderOf(address: Hex, name: string, stateDir: string): Sender {
+  const file = join(stateDir, `relay-sepolia-${address}`);
+  return { address, name, record: `${file}.json`, history: `${file}.jsonl`, lock: `${file}.lock` };
+}
+
+/**
+ * An earlier version kept the sender's record and history in deployments/ of the checkout. While
+ * that record holds open transactions, nothing runs: printed is what to move where, so that none
+ * is lost. A record with none open is left alone.
+ */
+function legacyRecordMoved(s: Sender): boolean {
+  const record = join(DEPLOYMENTS, `relay-sepolia-${s.address}.json`);
+  const history = join(DEPLOYMENTS, `relay-sepolia-${s.address}.jsonl`);
+  if (!existsSync(record)) return true;
+  let open: number | null = null;
+  try {
+    const old = JSON.parse(readFileSync(record, "utf8")) as { open?: unknown };
+    open = Array.isArray(old.open) ? old.open.length : null;
+  } catch {
+    // unreadable: it may hold open transactions
+  }
+  if (open === 0) return true;
+  check(
+    false,
+    `${record} is the record of an earlier version of this relayer and ${open === null ? "cannot be read; it may hold" : `holds ${open}`} open ` +
+      `transaction${open === 1 ? "" : "s"} of ${s.address}: nothing runs until it is moved to the state directory ${dirname(s.record)}`,
+  );
+  if (existsSync(s.record)) log(`     ${s.record} exists too: add the entries of "open" in ${record} to its "open" list, then delete ${record}`);
+  else log(`     move ${record} to ${s.record}`);
+  if (existsSync(history)) {
+    log(existsSync(s.history) ? `     and add the lines of ${history} to the end of ${s.history}, then delete ${history}` : `     and move ${history} to ${s.history}`);
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -428,6 +559,19 @@ class Portaldot implements HeaderSource {
     const computed = bytesToHex(blake2_256(header.encoded));
     if (computed !== hash.toLowerCase()) throw new Error(`header ${hash} re-encodes to a different hash ${computed}`);
     return header;
+  }
+
+  /**
+   * The node's finalized head and Grandpa.CurrentSetId there, as the node states them (no proof):
+   * enough to tell, before a scan, whether a set change is due. Null when the node does not say.
+   */
+  async setIdAtHead(): Promise<{ number: number; setId: bigint } | null> {
+    const hash = await this.rpc.request<Hex>("chain_getFinalizedHead");
+    const header = await this.header(hash.toLowerCase() as Hex);
+    const value = await this.rpc.request<Hex | null>("state_getStorage", [SET_ID_KEY, hash]);
+    if (!value) return null;
+    const scale = hexToBytes(value);
+    return scale.length === 8 ? { number: header.number, setId: leToBigInt(scale) } : null;
   }
 
   /** The GRANDPA justification stored with a block (chain_getBlock), or null if it has none. */
@@ -628,7 +772,13 @@ interface Plan {
   notes: string[];
   /** Set, with no steps, when nothing is due: why the client counts as up to date. */
   upToDate?: string;
+  /** The head the plan was made to: the finalized head, or the later block its finality proof is for. */
+  head?: number;
 }
+
+/** A step's gate: the most the next base fee may be when it is sent (--max-base-fee-change for a set change, --max-base-fee for the head). */
+const gateOf = (s: Step, o: Options) => (s.setAfter !== s.setBefore ? o.maxBaseFeeChange : o.maxBaseFee);
+const gateName = (s: Step) => (s.setAfter !== s.setBefore ? "--max-base-fee-change" : "--max-base-fee");
 
 const upToDate = (why: string): Plan => ({ steps: [], notes: [], upToDate: why });
 
@@ -710,6 +860,12 @@ async function makePlan(portaldot: Portaldot, client: ClientState, o: Options): 
   log(`Portaldot: ${chainName} via ${new URL(o.rpc).host}, finalized head #${fmt(finalized.number)} ${finalizedHash}`);
   if (!check(genesis === client.genesis, `the node serves the client's chain (genesis ${shortHex(client.genesis)})`)) {
     throw new Blocked(`the client follows genesis ${client.genesis}, the node serves ${genesis}`);
+  }
+  // The client imports finalized headers only: a node whose finality is below the client's latest lags (an RPC problem).
+  if (finalized.number < client.latestNumber) {
+    throw new Unreachable(
+      `Portaldot node behind: its finalized head #${fmt(finalized.number)} is below the client's latest header #${fmt(client.latestNumber)} (a node still syncing, or one that lost its peers)`,
+    );
   }
   const atLatest = (await portaldot.rpc.request<Hex | null>("chain_getBlockHash", [client.latestNumber]))?.toLowerCase();
   if (!check(atLatest === client.latestHash, `the client's latest header #${fmt(client.latestNumber)} ${shortHex(client.latestHash)} is the node's block there`)) {
@@ -835,10 +991,17 @@ async function makePlan(portaldot: Portaldot, client: ClientState, o: Options): 
   }
   if (headProof && head.number === before.number) notes.push(`the head #${fmt(head.number)} is the last set change`);
   else if (headProof) {
-    checkDigest(head.header, head.hash);
-    const v = verified(headProof.justification, head.hash, head.number, set, "the finality proof's justification");
-    if (!v) notes.push(`the head is left for a later run: its finality proof carries votes_ancestries, which the client does not decode`);
-    else {
+    // A head proof the client cannot count leaves the head for a later run, after the set changes before it.
+    let v: Verified | null | undefined;
+    try {
+      checkDigest(head.header, head.hash);
+      v = verified(headProof.justification, head.hash, head.number, set, "the finality proof's justification");
+    } catch (error) {
+      if (!(error instanceof Stop) || steps.length === 0) throw error;
+      notes.push(`the head is left for a later run: ${error.message}`);
+    }
+    if (v === null) notes.push(`the head is left for a later run: its finality proof carries votes_ancestries, which the client does not decode`);
+    else if (v) {
       check(
         true,
         `head #${fmt(head.number)} ${shortHex(head.hash)}: its finality proof (${v.j.precommits.length} precommits, round ${v.j.round}, no unknown headers) ` +
@@ -847,7 +1010,7 @@ async function makePlan(portaldot: Portaldot, client: ClientState, o: Options): 
       add("importFinalityProof", head.header, head.hash, v, headProof.scale, null);
     }
   }
-  return { steps, notes };
+  return { steps, notes, head: head.number };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -874,6 +1037,8 @@ interface Context {
   client: Hex;
   /** What the sender must keep (--keep), with every transaction at its max fee. */
   keep: bigint;
+  /** The plan's head block on Portaldot, for the warning about set changes held back. */
+  head?: number;
 }
 
 interface Simulated {
@@ -921,6 +1086,23 @@ function requestsOf(steps: Step[], limitOf: (s: Step) => number, boundOf: (s: St
 }
 
 /**
+ * eth_simulateV1, asked again (every 3 s, 10 times) while it fails the way a load-balanced RPC
+ * can (transient); Unreachable when it keeps failing. Any other error is the request's (`what`).
+ */
+async function simulated(params: unknown[], what: string): Promise<SimBlock[]> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await rpc<SimBlock[]>("eth_simulateV1", params);
+    } catch (error) {
+      if (!transient(error)) throw new Error(`${what}: ${errorText(error)}`);
+      if (attempt === 10) throw new Unreachable(`Sepolia RPC unreachable (eth_simulateV1: ${errorText(error)})`);
+      log(`     (eth_simulateV1: ${errorText(error)}; retrying)`);
+      await sleep(3_000);
+    }
+  }
+}
+
+/**
  * Runs `steps` on the node, each with gas limit `limitOf(step)`, on top of ctx.block. The first
  * request runs on the chain's own state; a later one carries, as state overrides, the slots of
  * the client that the earlier ones wrote (read back by the dumper in a second simulated block,
@@ -949,10 +1131,7 @@ async function simulate(steps: Step[], limitOf: (s: Step) => number, boundOf: (s
       const dump = { from: PROBE_SENDER, to: ctx.client, gas: qty(dumpGas(slots.length)), ...fee, data: bytesToHex(concat(...slots.map((s) => word(s)))) };
       blockStateCalls.push({ stateOverrides: { [ctx.client]: { code: DUMPER_CODE } }, calls: [dump] });
     }
-    const blocks = await rpc<SimBlock[]>("eth_simulateV1", [{ blockStateCalls, validation: true }, ctx.block.number]).catch((error: unknown) => {
-      if (offline(error)) throw new Unreachable(`Sepolia RPC unreachable (eth_simulateV1: ${errorText(error)})`);
-      throw new Error(`request [${request.map((s) => s.index).join(",")}]: ${errorText(error)}`);
-    });
+    const blocks = await simulated([{ blockStateCalls, validation: true }, ctx.block.number], `request [${request.map((s) => s.index).join(",")}]`);
 
     const done = [...blocks[0].calls, ...(blocks[1]?.calls ?? [])];
     const limits = [...request.map(limitOf), ...reads.map((x) => x.gas), ...(later ? [dumpGas(slots.length)] : [])];
@@ -1057,8 +1236,8 @@ interface DryRun {
   gas: Map<number, number>;
 }
 
-/** Runs the plan on the node; null when a check fails. */
-async function dryRun(steps: Step[], ctx: Context, title: string): Promise<DryRun | null> {
+/** Runs the plan on the node; null when a check fails, "underfunded" when the cost check is the only one that fails. */
+async function dryRun(steps: Step[], ctx: Context, title: string): Promise<DryRun | "underfunded" | null> {
   const { fees } = ctx;
   log(
     `Fees: next base fee ${fmt(fees.base)} wei, priority fee ${fmt(fees.tip)} wei, max fee ${fmt(fees.maxFee)} wei` +
@@ -1107,12 +1286,14 @@ async function dryRun(steps: Step[], ctx: Context, title: string): Promise<DryRu
     if (upfront > need) need = upfront;
     paid += BigInt(gas.get(s.index)!) * fees.maxFee;
   }
-  check(
+  const othersFailed = failures > 0;
+  const funded = check(
     need + ctx.keep <= ctx.balance,
     `cost at the current fees ${eth(ctx.balance - run.balance)} (base fee ${fmt(run.baseFee)} wei + priority fee, as simulated);` +
       ` at most ${eth(need)} at the max fee, with --keep ${eth(ctx.keep)} left; the sender has ${eth(ctx.balance)}`,
   );
-  return failures === 0 ? { limits, gas } : null;
+  if (failures === 0) return { limits, gas };
+  return funded || othersFailed ? null : "underfunded";
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1162,15 +1343,17 @@ interface RelayRecord {
   open: RelayEntry[];
 }
 
-/** The sender's record (deployments/relay-sepolia-<sender>.json) and the history its settled transactions move to (.jsonl). */
+/** The sender's record (relay-sepolia-<sender>.json in the state directory), the history its settled transactions move to (.jsonl), and the run's lock. */
 interface Ledger {
   path: string;
   history: string;
   record: RelayRecord;
+  /** The sender's lock, checked before every write of the record or the history. */
+  lock: Lock | null;
 }
 
-function openLedger(s: Sender): Ledger {
-  const ledger: Ledger = { path: s.record, history: s.history, record: { network: "sepolia", chainId: Number(SEPOLIA_CHAIN_ID), sender: s.address, open: [] } };
+function openLedger(s: Sender, lock: Lock | null = null): Ledger {
+  const ledger: Ledger = { path: s.record, history: s.history, record: { network: "sepolia", chainId: Number(SEPOLIA_CHAIN_ID), sender: s.address, open: [] }, lock };
   if (!existsSync(s.record)) return ledger;
   let record: RelayRecord;
   try {
@@ -1184,7 +1367,13 @@ function openLedger(s: Sender): Ledger {
   return { ...ledger, record };
 }
 
+/** Stops the run (LockLost) unless the sender's lock still holds this run's token. */
+function fence(l: Ledger, what: string): void {
+  if (l.lock && !l.lock.held()) throw new LockLost(`${l.lock.path} no longer holds this run's token: another relayer took the lock over, and nothing more is ${what}`);
+}
+
 function saveLedger(l: Ledger): void {
+  fence(l, "written");
   try {
     writeJsonAtomic(l.path, l.record);
   } catch (error) {
@@ -1203,11 +1392,52 @@ function remember(l: Ledger, entry: RelayEntry): RelayEntry {
   return same ?? entry;
 }
 
-/** Moves a settled transaction from the record to the history: appended there first, so a crash in between repeats a line instead of losing one. */
+/** Windows reports a file busy (EBUSY, EPERM, EACCES) for a moment while another process reads, scans or deletes it. */
+const busy = (error: unknown) => /^(EBUSY|EPERM|EACCES)$/.test((error as NodeJS.ErrnoException | null)?.code ?? "");
+
+/** `fn`, tried again every 250 ms for up to 5 s while the file it touches is busy. */
+function busyRetry<R>(fn: () => R): R {
+  for (let i = 1; ; i++) {
+    try {
+      return fn();
+    } catch (error) {
+      if (i === 20 || !busy(error)) throw error;
+      pause(250);
+    }
+  }
+}
+
+/** False when `path` holds bytes and the last one is no newline (a line cut short, say by a power cut). */
+function endsLine(path: string): boolean {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    if (size === 0) return true;
+    const last = Buffer.alloc(1);
+    readSync(fd, last, 0, 1, size - 1);
+    return last[0] === 0x0a;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
+ * Moves a settled transaction from the record to the history: appended there first, so a crash in
+ * between repeats a line instead of losing one (whatever reads the history dedupes by txHash). A
+ * history whose last line was cut short gets a newline first, so the new line stays whole.
+ */
 function archive(l: Ledger, entry: RelayEntry): void {
   entry.settledAt = new Date().toISOString();
+  fence(l, "written");
   try {
-    appendFileSync(l.history, JSON.stringify(entry) + "\n");
+    const line = JSON.stringify(entry) + "\n";
+    busyRetry(() => appendFileSync(l.history, endsLine(l.history) ? line : "\n" + line));
   } catch (error) {
     throw new Fatal(`${l.history}: ${errorText(error)}`);
   }
@@ -1215,7 +1445,16 @@ function archive(l: Ledger, entry: RelayEntry): void {
   saveLedger(l);
 }
 
-/** The lock's content and holder (0 when the content is not a lock's, as when half written), or null when there is none. */
+/** The sender's lock, held by one --send run at a time. */
+interface Lock {
+  path: string;
+  /** True while the lock still holds this run's token; it then refreshes the lock's time too. */
+  held(): boolean;
+  /** Stops refreshing and removes the lock if it is still this run's; never throws. */
+  release(): void;
+}
+
+/** The lock's content and holder (0 when the content is not a lock's, as when half written) and the time since it was refreshed, or null when there is none. */
 function readLock(lock: string): { content: string; pid: number; age: number } | null {
   try {
     const content = readFileSync(lock, "utf8");
@@ -1243,68 +1482,134 @@ const ageOf = (path: string) => {
 };
 
 /**
- * Only one --send run at a time per sender: the lock, in the system's temp directory so that every
- * checkout finds the same one, holds the holder's process id. A lock whose process is gone (or this
- * process, whose runs never overlap: an earlier run could not remove it) is taken over by the one
- * process that creates <lock>.takeover: if the lock still holds what it found stale, it renames it
- * aside (renameSync) and removes it, and then every process tries again to create the lock, which
- * only one can. A lock in use is never moved; a takeover file older than 30 s is taken for one whose
- * process died. Returns its release, which never throws, or null while another live relayer holds it.
+ * A lock found in place is stale when its process is gone, when it is this process's own (its runs
+ * never overlap: an earlier one could not remove it), or when it was not refreshed for LOCK_STALE
+ * (its process id now another process's, or a holder suspended that long); a half-written one is
+ * stale after 10 s.
  */
-function takeLock(lock: string): (() => void) | null {
-  const takeover = `${lock}.takeover`;
+function stale(held: { pid: number; age: number }): boolean {
+  if (held.pid === 0) return held.age >= 10_000;
+  return held.pid === process.pid || !alive(held.pid) || held.age > LOCK_STALE;
+}
+
+/**
+ * Only one --send run at a time per sender: the lock, in the state directory, holds the holder's
+ * process id and a token of the run's own, and the holder refreshes its time every LOCK_REFRESH. A
+ * stale lock is taken over by the one process that creates <lock>.takeover: if the lock still holds
+ * what it found, and is still stale, it renames it aside (renameSync) and removes it, and then every
+ * process tries again to create the lock, which only one can. A lock in use is never moved; a
+ * takeover file older than 30 s is taken for one whose process died; a busy file (Windows keeps one
+ * being deleted for a moment) is tried again after 200 ms. Returns the lock, or null while another
+ * live relayer holds it.
+ *
+ * The limits: two runs can hold it at once when a process stalls more than 10 s between creating
+ * the lock and writing it, or more than 30 s inside a takeover; and a holder that refreshes nothing
+ * for LOCK_STALE (a suspended process, or a machine asleep while another relayer of the sender wakes
+ * first) is taken over. Before each signing and each write of the record or the history a run checks
+ * that the lock still holds its token, and stops when it does not, so it then signs and writes
+ * nothing more, apart from a write already under way. The lock works between processes of one
+ * machine on a local disk: not between machines, nor on a network share or a synced folder.
+ */
+function takeLock(path: string): Lock | null {
+  const takeover = `${path}.takeover`;
   for (let attempt = 1; attempt <= 5; attempt++) {
-    const content = JSON.stringify({ pid: process.pid, since: new Date().toISOString() });
+    const content = JSON.stringify({ pid: process.pid, token: randomUUID(), since: new Date().toISOString() });
     try {
-      const fd = openSync(lock, "wx");
+      const fd = openSync(path, "wx");
       try {
         writeSync(fd, content);
       } finally {
         closeSync(fd);
       }
-      return () => {
-        try {
-          if (readLock(lock)?.content === content) rmSync(lock, { force: true });
-        } catch (error) {
-          log(`     (${lock} could not be removed: ${errorText(error)}; the next run of this process takes it over)`);
-        }
-      };
+      return heldLock(path, content);
     } catch (error) {
+      if (busy(error)) {
+        pause(200);
+        continue;
+      }
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    const held = readLock(lock);
+    let held: ReturnType<typeof readLock>;
+    try {
+      held = readLock(path);
+    } catch (error) {
+      if (!busy(error)) throw error;
+      pause(200);
+      continue;
+    }
     if (!held) continue; // released meanwhile
-    if (held.pid > 0 && held.pid !== process.pid && alive(held.pid)) {
-      log(`     another relayer (process ${held.pid}) is sending; ${lock} is its lock`);
+    if (!stale(held)) {
+      log(held.pid === 0 ? `     another relayer is writing ${path}` : `     another relayer (process ${held.pid}) is sending; ${path} is its lock`);
       return null;
     }
-    if (held.pid === 0 && held.age < 10_000) {
-      log(`     another relayer is writing ${lock}`);
-      return null;
+    if (held.pid > 0 && held.pid !== process.pid && alive(held.pid)) {
+      log(`     ${path} names process ${held.pid}, which runs but has not refreshed the lock for ${Math.floor(held.age / 60_000)} minutes: it is taken for stale`);
     }
     let fd: number;
     try {
       fd = openSync(takeover, "wx");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (!busy(error) && (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       // Another process is taking it over; a takeover file this old is from one that died meanwhile.
-      if (ageOf(takeover) > 30_000) rmSync(takeover, { force: true });
+      if (ageOf(takeover) > 30_000) {
+        try {
+          rmSync(takeover, { force: true });
+        } catch (removing) {
+          if (!busy(removing)) throw removing;
+        }
+      }
       pause(200);
       continue;
     }
     closeSync(fd);
     try {
-      if (readLock(lock)?.content === held.content) {
-        const aside = `${lock}.${process.pid}.stale`;
-        renameSync(lock, aside);
-        rmSync(aside, { force: true });
+      const now = readLock(path);
+      if (now?.content === held.content && stale(now)) {
+        const aside = `${path}.${process.pid}.stale`;
+        renameSync(path, aside);
+        busyRetry(() => rmSync(aside, { force: true }));
       }
+    } catch (error) {
+      if (!busy(error)) throw error;
+      pause(200);
     } finally {
-      rmSync(takeover, { force: true });
+      busyRetry(() => rmSync(takeover, { force: true }));
     }
   }
-  log(`     ${lock} could not be taken`);
+  log(`     ${path} could not be taken`);
   return null;
+}
+
+/** The lock this run created with `content`: refreshed every LOCK_REFRESH while held. */
+function heldLock(path: string, content: string): Lock {
+  const held = () => {
+    try {
+      if (busyRetry(() => readFileSync(path, "utf8")) !== content) return false;
+    } catch {
+      return false;
+    }
+    try {
+      const now = new Date();
+      utimesSync(path, now, now);
+    } catch {
+      // refreshed at the next check
+    }
+    return true;
+  };
+  const beat = setInterval(held, LOCK_REFRESH);
+  beat.unref();
+  return {
+    path,
+    held,
+    release: () => {
+      clearInterval(beat);
+      try {
+        if (readLock(path)?.content === content) rmSync(path, { force: true });
+      } catch (error) {
+        log(`     (${path} could not be removed: ${errorText(error)}; the next run of this process takes it over)`);
+      }
+    },
+  };
 }
 
 function alive(pid: number): boolean {
@@ -1319,12 +1624,60 @@ function alive(pid: number): boolean {
 /** What a mined transaction did: imported its header as checked, imported nothing as another relayer came first, or failed its checks. */
 type Outcome = "ok" | "superseded" | "failed";
 
+const NOT_NEWER = bytesToHex(selector("NotNewer(uint32,uint32)"));
+
+/**
+ * Why a mined transaction imported nothing, and whether another relayer imported its header or a
+ * later one first (superseded). Out of gas (status 0 with every gas of its limit used) fails. Status
+ * 1 without HeaderImported is the client verifying again a header it holds (the only way an import
+ * returns without importing): superseded when it holds the header at the receipt's block. Any other
+ * revert: a receipt carries no reason, so the transaction (its own input, sender and gas limit) is
+ * replayed with eth_call on the state its block left, and is superseded when the replay reverts with
+ * NotNewer (the client was at or past the header) or verifies a header the client holds; it fails
+ * on any other revert, or when the header would still import. A revert for another reason in a block
+ * where another relayer's import came after it would read as superseded too.
+ */
+async function importedNothing(entry: RelayEntry, receipt: Receipt, status: number, gasUsed: number): Promise<{ superseded: boolean; why: string }> {
+  if (status === 0 && gasUsed >= entry.gasLimit) return { superseded: false, why: `out of gas, all ${fmt(entry.gasLimit)} of its gas limit used` };
+  const held = async () => {
+    const now = await readLatest(entry.client, receipt.blockNumber, entry.block.hash);
+    return now.imported ? `the client held the header already, at #${fmt(now.number)} ${shortHex(now.hash)}` : null;
+  };
+  if (status === 1) {
+    const why = await held();
+    return why ? { superseded: true, why } : { superseded: false, why: "without HeaderImported" };
+  }
+  const tx = await sepolia("transaction", async () => {
+    const t = await rpc<{ from: Hex; to: Hex; input: Hex; gas: string } | null>("eth_getTransactionByHash", [receipt.transactionHash]);
+    if (!t) throw new Error(`no transaction ${receipt.transactionHash}`);
+    return t;
+  });
+  const replay = await sepolia("replay", async () => {
+    const body = (await rpcBody("eth_call", [{ from: tx.from, to: tx.to, data: tx.input, gas: tx.gas }, receipt.blockNumber])) as {
+      result?: Hex;
+      error?: { message?: string; data?: string };
+    };
+    // An error without revert data can be a node that has not seen the block yet: asked again.
+    if (body.error && body.error.data === undefined && transient(new Error(JSON.stringify(body.error)))) throw new Error(JSON.stringify(body.error));
+    return body;
+  });
+  if (replay.error) {
+    const data = (replay.error.data ?? "").toLowerCase();
+    if (data.startsWith(NOT_NEWER)) {
+      const args = hexToBytes(`0x${data.slice(10)}`);
+      const [number, latest] = [uintAt(args, 0), uintAt(args, 1)];
+      return { superseded: true, why: `replayed on its block it reverts with NotNewer(${number}, ${latest}): the client was at #${fmt(latest)} already` };
+    }
+    return { superseded: false, why: `replayed on its block it ${revertText({ status: "0x0", gasUsed: "0x0", returnData: "0x", error: replay.error })}` };
+  }
+  const why = await held();
+  return why ? { superseded: true, why } : { superseded: false, why: "yet replayed on its block it would import the header" };
+}
+
 /**
  * Checks a mined transaction's receipt and events and moves it, with the other transactions at its
- * nonce (which can no longer be mined), from the record to the history. It is superseded when it
- * imported nothing (a revert such as NotNewer, or the re-verification of a header the client held)
- * because, at the receipt's block, the client held its header (isImported) or was at its block or
- * past it (latestFinalized).
+ * nonce (which can no longer be mined), from the record to the history; superseded or failed, as
+ * importedNothing tells, when it imported nothing.
  */
 async function settle(l: Ledger, entry: RelayEntry, receipt: Receipt, keysAfter?: Uint8Array[]): Promise<Outcome> {
   const status = Number(BigInt(receipt.status));
@@ -1340,15 +1693,12 @@ async function settle(l: Ledger, entry: RelayEntry, receipt: Receipt, keysAfter?
     for (const [k, line] of eventChecks(expected, receipt.logs, entry.client)) ok = check(k, `     ${line}`) && ok;
     if (!ok) outcome = "failed";
   } else {
-    const now = await readLatest(entry.client, receipt.blockNumber, entry.block.hash);
-    if (now.imported || now.number >= entry.block.number) {
+    const nothing = await importedNothing(entry, receipt, status, gasUsed);
+    if (nothing.superseded) {
       outcome = "superseded";
-      log(
-        `     ${what}: superseded, the client ${now.imported ? "held the header" : "was past it"} already, at #${fmt(now.number)} ${shortHex(now.hash)}` +
-          ` (another relayer imported it or a later header first)`,
-      );
+      log(`     ${what}: superseded, ${nothing.why} (another relayer imported it or a later header first)`);
     } else {
-      check(false, `${what}${status === 1 ? ", without HeaderImported" : ""}`);
+      check(false, `${what}: ${nothing.why}`);
       outcome = "failed";
     }
   }
@@ -1389,7 +1739,7 @@ const entryOf = (l: Ledger, receipt: Receipt) => l.record.open.find((e) => e.txH
 /** What reconcile leaves a run: OK or PENDING, and with OK the record's transactions at the sender's next nonce. */
 interface Reconciled {
   code: number;
-  /** Pending ones (old enough to be replaced, with higher fees) or dropped ones (signed again as they come). */
+  /** Pending ones (old enough to be replaced, with higher fees) or dropped ones (signed again, outbid as far as the cap allows). */
   earlier: RelayEntry[];
 }
 
@@ -1397,8 +1747,10 @@ interface Reconciled {
  * Settles what the record left open, before anything is planned. A transaction mined since (one
  * taken for dropped or replaced too) is checked and moves to the history; a nonce used on chain by
  * none of the record's transactions, after a minute's wait for a receipt, is Fatal. What is left
- * is at the sender's next nonce: still pending (PENDING, until it has waited --replace-after), or
- * dropped. Superseded transactions are noted, and planning goes on from the client's state.
+ * is at the sender's next nonce: a transaction of the other chain's runs, which this run never
+ * replaces (PENDING, until that chain's runs settle it), still pending (PENDING, until it has waited
+ * --replace-after), or dropped. Superseded transactions are noted, and planning goes on from the
+ * client's state.
  */
 async function reconcile(l: Ledger, sender: Hex, o: Options): Promise<Reconciled> {
   const open = () => l.record.open;
@@ -1426,6 +1778,16 @@ async function reconcile(l: Ledger, sender: Hex, o: Options): Promise<Reconciled
   }
   const earlier = open();
   if (earlier.length === 0) return { code: OK, earlier };
+  // One sender's record holds both chains' transactions: another client's is left to its own runs.
+  const client = deployment(o.chain).client;
+  const other = earlier.find((e) => e.client !== client);
+  if (other) {
+    log(
+      `     ${other.txHash} (${other.method} #${fmt(other.block.number)} to ${other.client}, of a --chain ${other.chain} run) is open at the sender's ` +
+        `next nonce ${other.nonce}: it is left to that chain's runs, and nothing is sent until one settles it`,
+    );
+    return { code: PENDING, earlier: [] };
+  }
   const last = earlier.at(-1)!;
   const what = `${last.txHash} (${last.method} #${fmt(last.block.number)}, nonce ${last.nonce})`;
   if (n.pending > n.latest) {
@@ -1470,11 +1832,11 @@ function raised(old: { maxFee: bigint; tip: bigint }, now: Fees, cap: bigint): F
 }
 
 /**
- * The most a replacement offers per gas: the max fee a run would use at a base fee of --max-base-fee
- * (ten times it plus the priority fee, at least the run's own at a base fee not above it), or
+ * The most a replacement offers per gas: the max fee a run would use at a base fee of the step's
+ * gate (ten times it plus the priority fee, at least the run's own at a base fee not above it), or
  * --max-fee when it is given, which no transaction passes.
  */
-const feeCap = (o: Options, now: Fees) => o.maxFee ?? max(10n * o.maxBaseFee + now.tip, now.maxFee);
+const feeCap = (o: Options, now: Fees, gate: bigint) => o.maxFee ?? max(10n * gate + now.tip, now.maxFee);
 
 /**
  * Waits, up to a minute for a lagging RPC, until `nonce` is the sender's next nonce and nothing is
@@ -1495,19 +1857,20 @@ async function nonceIsNext(sender: Hex, nonce: number, replacing: boolean): Prom
 
 /**
  * The fees to sign a step again with after it waited --replace-after: null, printed, while the base
- * fee is above --max-base-fee, the raised fees would pass feeCap, or the rest of the plan at the
+ * fee is above the step's gate, the raised fees would pass feeCap, or the rest of the plan at the
  * new max fee would leave the sender less than --keep.
  */
 async function replacement(fees: Fees, rest: Step[], dry: DryRun, ctx: Context, o: Options): Promise<Fees | null> {
+  const gate = gateOf(rest[0], o);
   const block = await sepolia("latest block", () => rpc<{ number: string; hash: string }>("eth_getBlockByNumber", ["latest", false]));
   const now = await sepolia("fees", () => feesAt(block, { priorityFee: o.priorityFee, maxFee: o.maxFee }));
-  if (now.base > o.maxBaseFee) {
-    log(`     (the base fee is ${fmt(now.base)} wei, above --max-base-fee ${fmt(o.maxBaseFee)} wei: not signed again yet)`);
+  if (now.base > gate) {
+    log(`     (the base fee is ${fmt(now.base)} wei, above ${gateName(rest[0])} ${fmt(gate)} wei: not signed again yet)`);
     return null;
   }
-  const next = raised(fees, now, feeCap(o, now));
+  const next = raised(fees, now, feeCap(o, now, gate));
   if (!next) {
-    log(`     (signing again needs a max fee above ${fmt(feeCap(o, now))} wei: not signed again)`);
+    log(`     (signing again needs a max fee above ${fmt(feeCap(o, now, gate))} wei: not signed again)`);
     return null;
   }
   const balance = BigInt(await sepolia("balance", () => rpc<string>("eth_getBalance", [ctx.sender, block.number])));
@@ -1519,14 +1882,30 @@ async function replacement(fees: Fees, rest: Step[], dry: DryRun, ctx: Context, 
   return next;
 }
 
+/** False, printed, when the sender's lock no longer holds this run's token: nothing more is signed. */
+function fenced(l: Ledger): boolean {
+  if (!l.lock || l.lock.held()) return true;
+  check(false, `${l.lock.path} no longer holds this run's token: another relayer took the lock over, and nothing more is signed`);
+  return false;
+}
+
 /**
  * Signs the first of `rest` at its nonce, records it and broadcasts it, then waits for a
  * transaction at that nonce to be mined: this one, one an earlier run left in the record, or the
  * step signed again with higher fees after each --replace-after without a receipt (as replacement
- * allows). Returns PENDING after RECEIPT_TIMEOUT; else the mined transaction, its outcome, and the
- * fees the next step is signed with.
+ * allows), once the client, read at the latest block (from Sepolia block `after` on), still is
+ * where the step expects it. Every signing first checks the sender's lock. Returns PENDING after
+ * RECEIPT_TIMEOUT, FAILED when the client moved or the lock was lost; else the mined transaction,
+ * its outcome, and the fees the next step is signed with.
  */
-async function sendStep(rest: Step[], dry: DryRun, ctx: Context, o: Options, l: Ledger): Promise<number | { entry: RelayEntry; outcome: Outcome; fees: Fees }> {
+async function sendStep(
+  rest: Step[],
+  dry: DryRun,
+  ctx: Context,
+  o: Options,
+  l: Ledger,
+  after: number,
+): Promise<number | { entry: RelayEntry; outcome: Outcome; fees: Fees }> {
   const s = rest[0];
   const limit = dry.limits.get(s.index)!;
   let fees = ctx.fees;
@@ -1556,16 +1935,20 @@ async function sendStep(rest: Step[], dry: DryRun, ctx: Context, o: Options, l: 
     };
     const args = mktxArgs(s.label, { to: ctx.client, data: s.data, nonce: s.nonce, gasLimit: limit, fees, account: o.account!, passwordFile: o.passwordFile! });
     const hash = signAndPublish(args, `${tag(s)} ${s.label}`, (signed) => {
+      // Signed again with the same fees, a transaction keeps its hash: it replaces nothing.
+      const replacing = replaces !== undefined && replaces !== signed ? replaces : undefined;
       log(
         `     ${tag(s)} ${s.label}: signed ${signed}, gas limit ${fmt(limit)}` +
-          (replaces ? `, max fee ${fmt(fees.maxFee)} wei, priority fee ${fmt(fees.tip)} wei, in place of ${replaces}` : ""),
+          (replacing ? `, max fee ${fmt(fees.maxFee)} wei, priority fee ${fmt(fees.tip)} wei, in place of ${replacing}` : ""),
       );
+      if (!replacing) delete entry.replaces;
       Object.assign(entry, { txHash: signed, signedAt: new Date().toISOString() });
       entry = remember(l, entry);
     });
     if (!hash) throw new Fatal("cast mktx could not sign");
     return entry;
   };
+  if (!fenced(l)) return FAILED;
   let last = sign(l.record.open.filter((e) => e.nonce === s.nonce && e.txHash !== "0x").at(-1)?.txHash);
   const started = Date.now();
   let retryAt = started + o.replaceAfter;
@@ -1583,18 +1966,79 @@ async function sendStep(rest: Step[], dry: DryRun, ctx: Context, o: Options, l: 
     }
     retryAt = Date.now() + o.replaceAfter;
     const next = await replacement(fees, rest, dry, ctx, o);
-    if (next) {
-      fees = next;
-      last = sign(last.txHash);
+    if (!next) continue;
+    // Another relayer may have moved the client meanwhile: a replacement would then pay for nothing.
+    const now = await clientNow(ctx.client, after);
+    if (now.hash === s.hash && !now.halted && !now.paused) {
+      log(`     the client holds #${fmt(s.number)} already: ${last.txHash} is not signed again, and its receipt is waited for`);
+      continue;
     }
+    if (now.halted || now.paused || now.hash !== s.before.hash || now.setId !== s.setBefore) {
+      check(
+        false,
+        `the client is ${now.halted ? "halted" : now.paused ? "paused" : `at #${fmt(now.number)} ${shortHex(now.hash)}, set ${now.setId}`} at Sepolia block ${fmt(now.block)}, ` +
+          `not where step ${s.index} expects it: ${last.txHash} is not signed again; the next run settles it and plans again`,
+      );
+      return FAILED;
+    }
+    if (!fenced(l)) return FAILED;
+    fees = next;
+    last = sign(last.txHash);
   }
+}
+
+/** When this process first saw set changes held back by the base fee in a --send run; reset when one is sent or none is due. */
+let heldBackSince: number | undefined;
+
+/**
+ * Notes that the base fee holds back set changes the client needs (at set `setId`, `behind` blocks
+ * below the head); with --watch, once that has lasted HELD_BACK_WARN_MS, every such run warns.
+ */
+function heldBack(base: bigint, o: Options, client: { setId: bigint; behind: number }, chainSetId?: bigint): void {
+  heldBackSince ??= Date.now();
+  const held = Date.now() - heldBackSince;
+  if (held < HELD_BACK_WARN_MS) return;
+  const hours = (blocks: number) => ((blocks * CHAINS[o.chain].blockSeconds) / 3_600).toFixed(1);
+  log(
+    `WARN for ${(held / 3_600_000).toFixed(1)} hours the base fee has held back set changes the client needs: the next base fee ${fmt(base)} wei is above ` +
+      `--max-base-fee-change ${fmt(o.maxBaseFeeChange)} wei. The client is at set ${client.setId}${chainSetId === undefined ? "" : ` (the node's chain at set ${chainSetId})`}, ` +
+      `${fmt(client.behind)} blocks (about ${hours(client.behind)} hours) behind the head, and runs stop when it is --scan-limit ${fmt(o.scanLimit)} blocks behind ` +
+      `(in about ${hours(Math.max(0, o.scanLimit - client.behind))} hours): raise --max-base-fee-change to let the set changes through`,
+  );
+}
+
+/**
+ * Before a send run scans: true, printed, when the next base fee holds back all that could be due,
+ * that is the head when no set change is due (by Grandpa.CurrentSetId at the node's finalized head)
+ * and the set changes too when one is. False when the node does not say: the run then plans.
+ */
+async function heldBackBeforePlan(portaldot: Portaldot, client: ClientState, current: Fees, o: Options): Promise<boolean> {
+  let at: { number: number; setId: bigint } | null = null;
+  try {
+    at = await portaldot.setIdAtHead();
+  } catch (error) {
+    if (error instanceof RpcError && error.code === undefined) throw error;
+    log(`     (the node's Grandpa.CurrentSetId: ${errorText(error)}; the run plans)`);
+  }
+  if (!at) return false;
+  const due = at.setId > client.setId;
+  if (due && current.base <= o.maxBaseFeeChange) return false;
+  if (due) heldBack(current.base, o, { setId: client.setId, behind: at.number - client.latestNumber }, at.setId);
+  else heldBackSince = undefined;
+  log(
+    `     the next base fee is ${fmt(current.base)} wei, above ${due ? `--max-base-fee-change ${fmt(o.maxBaseFeeChange)}` : `--max-base-fee ${fmt(o.maxBaseFee)}`} wei` +
+      `${due ? `, and set changes are due (the node's chain is at set ${at.setId}, the client at ${client.setId})` : ", and no set change is due"}: nothing is sent in this run`,
+  );
+  return true;
 }
 
 /**
  * Sends the plan one transaction at a time. Before each, the client must still be where the plan
  * expects it (another relayer may have moved it) and neither paused nor halted, as read at the
- * latest block once the RPC has the previous receipt's; and the step's nonce must be the sender's
- * next, with nothing pending but what it replaces.
+ * latest block once the RPC has the previous receipt's; the next base fee there must be within the
+ * step's gate (else the rest waits for a later run: OK, or PENDING while the record has an open
+ * transaction); and the step's nonce must be the sender's next, with nothing pending but what it
+ * replaces.
  */
 async function sendPlan(steps: Step[], dry: DryRun, ctx: Context, o: Options, l: Ledger): Promise<number> {
   let after = Number(BigInt(ctx.block.number));
@@ -1609,9 +2053,15 @@ async function sendPlan(steps: Step[], dry: DryRun, ctx: Context, o: Options, l:
       check(false, `the client is at #${fmt(now.number)} ${shortHex(now.hash)}, set ${now.setId}, not where step ${s.index} expects it: the next run plans again`);
       return FAILED;
     }
+    const base = (await sepolia("fees", () => feesAt({ number: qty(now.block) }, { priorityFee: o.priorityFee, maxFee: o.maxFee }))).base;
+    if (base > gateOf(s, o)) {
+      log(`     the next base fee is ${fmt(base)} wei, above ${gateName(s)} ${fmt(gateOf(s, o))} wei: ${i === 0 ? "the plan is" : "the rest of the plan is"} left for a later run`);
+      if (s.setAfter !== s.setBefore) heldBack(base, o, { setId: s.setBefore, behind: (ctx.head ?? s.number) - s.before.number });
+      return l.record.open.length > 0 ? PENDING : OK;
+    }
     const replacing = l.record.open.some((e) => e.nonce === s.nonce && !e.dropped);
     if (!(await nonceIsNext(ctx.sender, s.nonce, replacing))) return FAILED;
-    const sent = await sendStep(steps.slice(i), dry, { ...ctx, fees }, o, l);
+    const sent = await sendStep(steps.slice(i), dry, { ...ctx, fees }, o, l, after);
     if (typeof sent === "number") return sent;
     const { entry, outcome } = sent;
     fees = sent.fees;
@@ -1624,15 +2074,17 @@ async function sendPlan(steps: Step[], dry: DryRun, ctx: Context, o: Options, l:
       check(false, `${entry.txHash}, for ${entry.method} #${fmt(entry.block.number)}, was mined at nonce ${s.nonce} instead of step ${s.index}: the next run plans again`);
       return FAILED;
     }
+    if (s.setAfter !== s.setBefore) heldBackSince = undefined;
     after = entry.sepoliaBlock!;
   }
+  log(`\nEvery transaction is mined and checked; the history is ${l.history}.`);
   return OK;
 }
 
 // ---------------------------------------------------------------------------------------
 // A run
 
-async function relay(o: Options, sender: Sender): Promise<number> {
+async function relay(o: Options, sender: Sender, lock: Lock | null = null): Promise<number> {
   const chain = CHAINS[o.chain];
   const { client: address, codeHash, clients } = deployment(o.chain);
   const title = `${chain.client} ${address}`;
@@ -1645,7 +2097,7 @@ async function relay(o: Options, sender: Sender): Promise<number> {
     throw new Unreachable(`Sepolia RPC unreachable (${errorText(error)})`);
   }
   if (!check(BigInt(chainId) === SEPOLIA_CHAIN_ID, `chain id ${BigInt(chainId)} is Sepolia`)) throw new Blocked("the Sepolia RPC serves another chain");
-  const ledger = o.send ? openLedger(sender) : null;
+  const ledger = o.send ? openLedger(sender, lock) : null;
   // The record's transactions at the sender's next nonce, which this run signs again: still
   // pending after --replace-after (stuck), or dropped.
   let earlier: RelayEntry[] = [];
@@ -1655,6 +2107,8 @@ async function relay(o: Options, sender: Sender): Promise<number> {
     earlier = r.earlier;
   }
   const stuck = earlier.some((e) => !e.dropped);
+  /** How a run that sends nothing ends: PENDING while a transaction of the record is open at the next nonce. */
+  const idle = () => (earlier.length > 0 ? PENDING : OK);
 
   // Everything is read at one block, the one the plan is simulated on; a load-balanced RPC can
   // briefly fail on a block it has not seen yet.
@@ -1665,7 +2119,7 @@ async function relay(o: Options, sender: Sender): Promise<number> {
   const nonce = Number(BigInt(await at<string>("nonce", "eth_getTransactionCount", [sender.address])));
   const n = await sepolia("nonces", () => nonces(sender.address));
   log(`Sepolia block ${fmt(Number(BigInt(block.number)))} (${block.hash}), simulated on top of it via ${new URL(RPC).host}`);
-  log(`Sender ${sender.name}: nonce ${nonce}, balance ${eth(balance)}`);
+  log(`Sender ${sender.name}: nonce ${nonce}, balance ${eth(balance)}${o.send ? `; record ${sender.record}` : ""}`);
   const admins: string[] = [];
   for (const c of clients) {
     const admin = await at<Hex>("admin", "eth_call", [{ to: c.address, data: callData("admin()") }]);
@@ -1676,24 +2130,6 @@ async function relay(o: Options, sender: Sender): Promise<number> {
       `WARN the sender is the admin of ${admins.join(" and ")}, which can pause and reinitialize ${admins.length === 1 ? "it" : "them"}: ` +
         `imports need no rights, so --watch --send is better run with a key of its own`,
     );
-  }
-  if (current.base > o.maxBaseFee) {
-    const what = `the next base fee is ${fmt(current.base)} wei, above --max-base-fee ${fmt(o.maxBaseFee)} wei`;
-    if (o.send) {
-      log(`     ${what}: nothing is sent in this run`);
-      return stuck ? PENDING : OK;
-    }
-    log(`     (${what}: a --send run would send nothing now)`);
-  }
-  // A stuck transaction is replaced with higher fees; a dropped one is simply signed again.
-  let fees = current;
-  if (stuck) {
-    const higher = raised(highest(earlier), current, feeCap(o, current));
-    if (!higher) {
-      log(`     replacing ${earlier.at(-1)!.txHash} needs a max fee above ${fmt(feeCap(o, current))} wei: it is left to be mined`);
-      return PENDING;
-    }
-    fees = higher;
   }
   if (n.pending !== n.latest) {
     const what = `the sender has pending transactions (nonce ${n.latest}, pending ${n.pending})`;
@@ -1723,6 +2159,8 @@ async function relay(o: Options, sender: Sender): Promise<number> {
   }
   let plan: Plan;
   try {
+    // A send run does not scan while the base fee holds back all that could be due.
+    if (o.send && current.base > o.maxBaseFee && (await heldBackBeforePlan(portaldot, client, current, o))) return idle();
     plan = await makePlan(portaldot, client, o);
   } catch (error) {
     // No answer (a timeout, a closed connection), as opposed to an error the node returned.
@@ -1732,12 +2170,43 @@ async function relay(o: Options, sender: Sender): Promise<number> {
     await portaldot.rpc.close();
   }
   if (plan.upToDate) {
+    if (o.send) heldBackSince = undefined;
     check(true, `${chain.client} is up to date: ${plan.upToDate}`);
-    return OK;
+    if (earlier.length > 0) log(`     ${earlier.at(-1)!.txHash} is still open at nonce ${earlier[0].nonce}: the run ends PENDING until it is settled`);
+    return idle();
   }
   for (const note of plan.notes) log(`     note: ${note}`);
   if (plan.steps.length === 0) throw new Stop("nothing can be imported in this run");
+  // A step, and every one after it, waits while the next base fee is above the step's gate.
+  const cut = plan.steps.findIndex((s) => current.base > gateOf(s, o));
+  if (cut >= 0) {
+    const s = plan.steps[cut];
+    const what = `the next base fee is ${fmt(current.base)} wei, above ${gateName(s)} ${fmt(gateOf(s, o))} wei`;
+    if (!o.send) {
+      log(`     (${what}: a --send run would ${cut === 0 ? "send nothing now" : `send the first ${cut} transaction${cut === 1 ? "" : "s"} and leave the rest for a later run`})`);
+    } else if (cut === 0) {
+      if (s.setAfter !== s.setBefore) heldBack(current.base, o, { setId: client.setId, behind: (plan.head ?? s.number) - client.latestNumber });
+      else heldBackSince = undefined;
+      log(`     ${what}: nothing is sent in this run`);
+      return idle();
+    } else {
+      log(`     note: ${cut === plan.steps.length - 1 && s.method === "importFinalityProof" ? "the head is" : "the rest of the plan is"} left for a later run: ${what}`);
+      plan.steps = plan.steps.slice(0, cut);
+    }
+  }
   for (const s of plan.steps) s.nonce = nonce + s.index;
+  // A transaction of the record left at the next nonce (stuck, or dropped and maybe still held by
+  // some node) is outbid there: both fees at least 1/8 above the highest signed, within the cap.
+  let fees = current;
+  if (earlier.length > 0) {
+    const cap = feeCap(o, current, gateOf(plan.steps[0], o));
+    const higher = raised(highest(earlier), current, cap);
+    if (higher) fees = higher;
+    else if (stuck) {
+      log(`     replacing ${earlier.at(-1)!.txHash} needs a max fee above ${fmt(cap)} wei: it is left to be mined`);
+      return PENDING;
+    }
+  }
   const changes = plan.steps.filter((s) => s.setAfter !== s.setBefore).length;
   log(
     `\nPlan: ${plan.steps.length} transaction${plan.steps.length === 1 ? "" : "s"} from nonce ${nonce}: ${changes} set change${changes === 1 ? "" : "s"} (importHeader)` +
@@ -1751,13 +2220,19 @@ async function relay(o: Options, sender: Sender): Promise<number> {
     );
   }
 
-  const ctx: Context = { block, fees, balance, sender: sender.address, client: address, keep: o.keep };
-  let dry: DryRun | null = null;
+  const ctx: Context = { block, fees, balance, sender: sender.address, client: address, keep: o.keep, head: plan.head };
+  let dry: DryRun | "underfunded" | null = null;
   try {
     dry = await dryRun(plan.steps, ctx, title);
   } catch (error) {
     if (error instanceof Unreachable) throw error;
     check(false, errorText(error));
+    // A node refuses to simulate a transaction the sender cannot pay for at its max fee.
+    if (failures === 1 && /insufficient funds/i.test(errorText(error))) dry = "underfunded";
+  }
+  if (dry === "underfunded") {
+    log("\nThe dry run failed on the sender's balance alone: nothing can be sent until it is funded.");
+    throw new Underfunded(`the sender has ${eth(balance)}, too little for the plan at its max fee with --keep ${eth(o.keep)} left`);
   }
   if (!dry) {
     log("\nThe dry run failed: nothing can be sent.");
@@ -1768,9 +2243,7 @@ async function relay(o: Options, sender: Sender): Promise<number> {
     return OK;
   }
   log("\nThe dry run passed. Sending:");
-  const sent = await sendPlan(plan.steps, dry, ctx, o, ledger!);
-  if (sent === OK) log(`\nEvery transaction is mined and checked; the history is ${ledger!.history}.`);
-  return sent;
+  return sendPlan(plan.steps, dry, ctx, o, ledger!);
 }
 
 /** One run's exit code, and whether it stopped on something only the admin or the operator can clear. */
@@ -1782,13 +2255,14 @@ interface Run {
 /** One run; with --send, under the sender's lock. Fatal problems propagate, everything else becomes an exit code. */
 async function runOnce(o: Options, sender: Sender): Promise<Run> {
   failures = 0;
-  let release: (() => void) | null = null;
+  let lock: Lock | null = null;
   try {
     if (o.send) {
-      release = takeLock(sender.lock);
-      if (!release) return { code: FAILED, blocked: false };
+      mkdirSync(dirname(sender.lock), { recursive: true });
+      lock = takeLock(sender.lock);
+      if (!lock) return { code: FAILED, blocked: false };
     }
-    return { code: await relay(o, sender), blocked: false };
+    return { code: await relay(o, sender, lock), blocked: false };
   } catch (error) {
     if (error instanceof Fatal) throw error;
     if (error instanceof Unreachable) {
@@ -1796,10 +2270,10 @@ async function runOnce(o: Options, sender: Sender): Promise<Run> {
       return { code: UNREACHABLE, blocked: false };
     }
     check(false, errorText(error));
-    if (error instanceof Stop) log("\nNothing was planned.");
+    if (error instanceof Stop) log(error instanceof Underfunded ? "\nNothing was sent." : "\nNothing was planned.");
     return { code: FAILED, blocked: error instanceof Blocked };
   } finally {
-    release?.();
+    lock?.release();
   }
 }
 
@@ -1811,8 +2285,9 @@ async function main(): Promise<number> {
   if (o.send) {
     const unlocked = keystoreAddress(o.account!, o.passwordFile!);
     if (!unlocked) return FAILED;
-    sender = senderOf(unlocked.toLowerCase() as Hex, `${unlocked} (keystore ${o.account})`);
-  } else sender = o.from ? senderOf(o.from, o.from) : senderOf(deployer, `${deployerName} (the deployer)`);
+    sender = senderOf(unlocked.toLowerCase() as Hex, `${unlocked} (keystore ${o.account})`, o.stateDir);
+  } else sender = o.from ? senderOf(o.from, o.from, o.stateDir) : senderOf(deployer, `${deployerName} (the deployer)`, o.stateDir);
+  if (!legacyRecordMoved(sender)) return FAILED;
   let wait = o.watch ?? 0;
   for (;;) {
     const run = await runOnce(o, sender);
@@ -1826,10 +2301,16 @@ async function main(): Promise<number> {
   }
 }
 
-main().then(
-  (code) => process.exit(code),
-  (error: unknown) => {
-    check(false, errorText(error));
-    process.exit(FAILED);
-  },
-);
+/**
+ * Ends the process with `code` once nothing is left to run, or 10 s later at the latest: exiting at
+ * once while a socket still closes can fail an assertion in libuv on Windows (exit code 127).
+ */
+function exit(code: number): void {
+  process.exitCode = code;
+  setTimeout(() => process.exit(code), 10_000).unref();
+}
+
+main().then(exit, (error: unknown) => {
+  check(false, errorText(error));
+  exit(FAILED);
+});
