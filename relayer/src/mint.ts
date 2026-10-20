@@ -3,7 +3,7 @@
 // commitment from the vault's storage. The tool captures a mint bundle, dry-runs the deployment
 // and the mint with eth_simulateV1, sends them, and reads the bridge back.
 //
-//   npm run mint -- bundle --nonce <n> [--out <dir>]
+//   npm run mint -- bundle --nonce <n> [--out <dir>] [--force]
 //   npm run mint -- bundle --check <file>
 //   npm run mint -- plan [--bundle <file> | --nonce <n>] [--sandbox] [--from <address>]
 //   npm run mint -- deploy [--bundle <file> | --nonce <n>] [--send --account <keystore> --password-file <path>]
@@ -15,11 +15,13 @@
 //
 // bundle --nonce reads, at the latest finalized V3 block B, everything one importAndMint of lock
 // <n> needs, and writes it to <dir>/mint-bundle.json (by default fixtures/v3-testnet-mint), nothing
-// else: B's header (its SCALE bytes must hash to B's hash; B must change no set) and its parent
-// header; grandpa_proveFinality(B), without unknown headers, whose justification is verified under
-// Grandpa.CurrentSetId and GrandpaApi_grandpa_authorities at B's parent (the set that signs B; both
-// must hold the same set at B, which changes none) with the light client's own signature check
-// (grandpa.ts clientVerifies); the signers hint, built as relay.ts builds it; and, under B's state
+// else, and not over a file that is there already unless --force: B's header (its SCALE bytes must
+// hash to B's hash; neither B nor its parent may change a set: the capture is refused with "run
+// again in a few seconds") and its parent header; grandpa_proveFinality(B), without unknown
+// headers, whose justification is verified under Grandpa.CurrentSetId and
+// GrandpaApi_grandpa_authorities at B's parent (the set that signs B; both must hold the same set
+// at B, which changes none) with the light client's own signature check (grandpa.ts
+// clientVerifies); the signers hint, built as relay.ts builds it; and, under B's state
 // root, the read proofs of Revive.AccountInfoOf(vault), of the vault's child-trie root and of
 // commitments[n] in the child trie (chain.ts, as capture-contract.ts reads them). Each proof is
 // walked here; the account entry must be a contract whose code hash is the recorded vault's, and
@@ -38,19 +40,25 @@
 // call while the minter is not bound. It refuses unless the deployer's next nonce, mined and
 // pending, is 31 and CREATE(deployer, 31) is the lock's minter; and unless the light client can
 // import B: it has to be at B's set and below B (or hold B), so while it lags behind the bundle's
-// set the plan says to run the relayer first instead of showing the import's revert. Every
-// transaction runs first with the 16,777,216 cap as gas limit, then with the limit it is sent with
-// (its gas + 10%), from its sender at the nonce and with the balance it has on chain, as
-// script/deploy-sepolia.mjs runs its plan; a request goes on from what the one before left. The plan
-// prints the gas, the fees and the cost, checks the events (HeaderImported, VaultBound, Minted,
-// Transfer), reads the wtPOT balance after, and runs the same importAndMint once more from another
-// sender, which must verify B again and revert with NonceAlreadyUsed.
+// set the plan says to run the relayer first instead of showing the import's revert, and once it
+// is past B it says to capture the bundle again: importing into the light client is open to
+// anyone, so a head any relayer imports (ours or another's) can move it past B, and a mint sent
+// then reverts NotNewer. Every transaction runs first with the 16,777,216 cap as gas limit, then
+// with the limit it is sent with (its gas + 10%), from its sender at the nonce and with the balance
+// it has on chain, as script/deploy-sepolia.mjs runs its plan; a request goes on from what the one
+// before left. The plan prints the gas, the fees and the cost, checks the events (HeaderImported,
+// VaultBound, Minted, Transfer), reads the wtPOT balance after, and runs the same importAndMint
+// once more from another sender, which must verify B again and revert with NonceAlreadyUsed.
 // plan --sandbox runs the same path on a light client of its own: a sandbox sender creates a fresh
 // GrandpaLightClient from the Sepolia build (its libraries are the ones on chain) and initializes it
 // at the bundle's set with B's parent as the checkpoint, so that importAndMint imports B itself; the
 // minter then points at that client. The deployer's nonce is 31 in the sandbox and the minter's and
 // token's addresses are empty there, so the whole path runs on Sepolia's EVM without a relayer run,
 // before or after the deployment, and nothing is sent.
+// Before it plans, every run of plan, deploy and mint settles what an earlier --send run left open
+// in deployments/sepolia-bridge.json (a hash recorded, no block): a mined transaction gets its
+// receipt and the checks it allows, a pending one stays open, one neither mined nor pending is
+// marked dropped, which lets a later --send send it again.
 // deploy dry-runs the two creations (or the token's alone if the minter is there) and mint the
 // importAndMint, as plan does; with --send they then send them one transaction at a time the way
 // deploy-sepolia.mjs does: cast mktx with the keystore, the transaction's hash recorded in
@@ -75,7 +83,13 @@
 // status reads the minter (bound, trie id, burns), the token (total supply, each recipient's
 // balance) and the vault on V3 as v3-vault.ts status reads it (each lock's commitment recomputed and
 // compared with its event and with storage, and the accounting), and says which locks are minted and
-// whether each burn has been released on V3, which the committee does (the trusted return path).
+// whether each burn has been released on V3, which the committee does (the trusted return path). It
+// reads the logs in windows of at most 10,000 blocks from each contract's deploy block; when an RPC
+// refuses old logs (the public Sepolia RPC answers "pruned history unavailable" after about a week)
+// it falls back to the views: burnCount and burnIdOf on Sepolia, nextNonce and the commitments with
+// the record's lock fields on V3. A release has its Released log through eth_getLogs only when V3's
+// EVM RPC serves it, which it does for Ethereum transactions; the committee's releases are
+// Substrate extrinsics, counted from released[burnId] and the burn's amount.
 //
 // Nothing is signed without --send, and --account and --password-file are refused without it.
 // Every RPC client of this process refuses eth_send*, eth_sign*, personal_* and author_submit*
@@ -116,6 +130,7 @@ import {
   initializeWrites,
   installDryRunGuard,
   librariesIn,
+  logWindows,
   MINTED_TOPIC,
   MINTER,
   minterConstructorArgs,
@@ -200,6 +215,7 @@ import {
   redactAlso,
   retry,
   rpc,
+  rpcBody,
   share,
   signAndPublish,
   sleep,
@@ -305,7 +321,7 @@ async function sepolia<R>(what: string, read: () => Promise<R>): Promise<R> {
 // Options
 
 const USAGE = `usage (from relayer/):
-  npm run mint -- bundle --nonce <n> [--out <dir>]
+  npm run mint -- bundle --nonce <n> [--out <dir>] [--force]
   npm run mint -- bundle --check <file>
   npm run mint -- plan [--bundle <file> | --nonce <n>] [--sandbox] [--from <address>]
   npm run mint -- deploy [--bundle <file> | --nonce <n>] [--send --account <keystore> --password-file <path>]
@@ -327,6 +343,8 @@ interface Common {
 interface BundleOptions extends Common {
   nonce?: bigint;
   out: string;
+  /** Write over a bundle file that is there already. */
+  force: boolean;
   checkFile?: string;
 }
 
@@ -389,15 +407,16 @@ function parseCommon(values: Record<string, string | boolean | undefined>): Comm
 const COMMON = { rpc: { type: "string" }, evm: { type: "string" } } as const;
 
 function bundleOptions(args: string[]): BundleOptions {
-  const v = parse(args, { nonce: { type: "string" }, out: { type: "string" }, check: { type: "string" }, ...COMMON });
+  const v = parse(args, { nonce: { type: "string" }, out: { type: "string" }, check: { type: "string" }, force: { type: "boolean", default: false }, ...COMMON });
   const nonceText = str(v.nonce);
   const checkFile = str(v.check);
   if ((nonceText === undefined) === (checkFile === undefined)) usage("bundle takes --nonce <n> (to capture one) or --check <file> (to verify one)");
-  if (checkFile !== undefined && (str(v.out) !== undefined || str(v.rpc) !== undefined || str(v.evm) !== undefined)) usage("--check is offline: --out, --rpc and --evm are for a capture");
+  if (checkFile !== undefined && (str(v.out) !== undefined || str(v.rpc) !== undefined || str(v.evm) !== undefined || v.force === true)) usage("--check is offline: --out, --force, --rpc and --evm are for a capture");
   return {
     ...parseCommon(v),
     nonce: nonceText === undefined ? undefined : option("--nonce", () => parseNonce(nonceText)),
     out: resolve(str(v.out) ?? at(DEFAULT_OUT)),
+    force: v.force === true,
     checkFile: checkFile === undefined ? undefined : resolve(checkFile),
   };
 }
@@ -504,12 +523,22 @@ interface RecordedLock {
   commitment?: Hex;
 }
 
-/** What deployments/v3-testnet.json says: the vault, its code hash, the block it was deployed in, and its locks. */
+/** A release round as deployments/v3-testnet.json records it (release.ts). */
+interface RecordedRelease {
+  status: string;
+  burn: { burnNonce: string; burnId: Hex };
+  payee: Hex;
+  amountNative: string;
+  released?: { block: { number: number } };
+}
+
+/** What deployments/v3-testnet.json says: the vault, its code hash, the block it was deployed in, its locks, and the committee's releases. */
 interface VaultDeployment {
   address: Hex;
   codeHash: Hex;
   block: number;
   locks: RecordedLock[];
+  releases: RecordedRelease[];
 }
 
 function readV3(): VaultDeployment {
@@ -519,17 +548,28 @@ function readV3(): VaultDeployment {
     chainId: number;
     vault: { status: string; address: string; codeHash: string | null; block: { number: number } | null } | null;
     locks: RecordedLock[];
+    releases?: RecordedRelease[];
   }>(at(V3_RECORD));
   if (record.genesisHash !== V3.genesis || BigInt(record.chainId) !== V3.chainId) throw new Stop(`${V3_RECORD} is not a record of ${V3.title}`);
   const vault = record.vault;
   if (!vault || vault.status !== "deployed" || !vault.codeHash || !vault.block) throw new Stop(`${V3_RECORD} records no deployed vault`);
-  return { address: vault.address.toLowerCase() as Hex, codeHash: vault.codeHash.toLowerCase() as Hex, block: vault.block.number, locks: Array.isArray(record.locks) ? record.locks : [] };
+  return {
+    address: vault.address.toLowerCase() as Hex,
+    codeHash: vault.codeHash.toLowerCase() as Hex,
+    block: vault.block.number,
+    locks: Array.isArray(record.locks) ? record.locks : [],
+    releases: Array.isArray(record.releases) ? record.releases : [],
+  };
 }
 
-/** One transaction of the bridge deployment, one mint, or one of the demo's reverts, in deployments/sepolia-bridge.json. */
+/**
+ * One transaction of the bridge deployment, one mint, or one of the demo's reverts, in
+ * deployments/sepolia-bridge.json; release.ts writes the burns of the trusted return path there
+ * too (kind "burn").
+ */
 interface BridgeStep {
   name: string;
-  kind: "deploy" | "mint" | "tamper" | "replay";
+  kind: "deploy" | "mint" | "tamper" | "replay" | "burn";
   nonce: number;
   sender: Hex;
   contract: string;
@@ -543,6 +583,8 @@ interface BridgeStep {
   /** A tamper or a replay: what was changed, and the error it has to revert with, by name and as revert data. */
   tamper?: { part: Tamper; what: string };
   expectedRevert?: { name: string; data: Hex };
+  /** A burn (release.ts): what it asked for, and the burn nonce and id the minter gave it. */
+  burn?: { amount: string; v3Recipient: Hex; expected: { burnNonce: string; burnId: Hex }; burnNonce: string | null; burnId: Hex | null };
   dataHash: Hex;
   gasLimit: number | null;
   simulatedGas: number | null;
@@ -557,6 +599,7 @@ interface BridgeStep {
   ok: boolean | null;
   /** Transactions at this nonce that were never mined. */
   dropped?: Hex[];
+  note?: string;
 }
 
 interface BridgeRecord {
@@ -775,6 +818,41 @@ class EvmRpc {
     const value = await this.call<string>("eth_getStorageAt", [address, position, block]);
     return value === "0x" ? 0n : BigInt(value);
   }
+
+  /** eth_getLogs from `from` to `to` in windows of at most 10,000 blocks; { refused } when the RPC refuses a window. */
+  async logs(filter: { address: Hex; topics: (string | string[])[] }, from: number, to: number): Promise<LogJson[] | { refused: string }> {
+    const out: LogJson[] = [];
+    for (const [a, z] of logWindows(from, to)) {
+      try {
+        out.push(...(await this.call<LogJson[]>("eth_getLogs", [{ ...filter, fromBlock: qty(a), toBlock: qty(z) }])));
+      } catch (error) {
+        if (error instanceof RpcError) return { refused: `${errorText(error)} for #${fmt(a)} to #${fmt(z)}` };
+        throw error;
+      }
+    }
+    return out;
+  }
+}
+
+/**
+ * eth_getLogs on Sepolia from `from` to `to` in windows of at most 10,000 blocks; { refused } when
+ * the RPC refuses a window three times (the public RPC answers "pruned history unavailable" for
+ * logs about a week old, and caps a range at 50,000 blocks).
+ */
+async function sepoliaLogs(filter: { address: Hex; topics: (string | string[])[] }, from: number, to: number): Promise<LogJson[] | { refused: string }> {
+  const out: LogJson[] = [];
+  for (const [a, z] of logWindows(from, to)) {
+    for (let attempt = 1; ; attempt++) {
+      const body = await sepolia("logs", () => rpcBody("eth_getLogs", [{ ...filter, fromBlock: qty(a), toBlock: qty(z) }]));
+      if (!body.error) {
+        out.push(...(body.result as LogJson[]));
+        break;
+      }
+      if (attempt === 3) return { refused: `${body.error.message ?? "error"}${body.error.code === undefined ? "" : ` (code ${body.error.code})`} for #${fmt(a)} to #${fmt(z)}` };
+      await sleep(3_000);
+    }
+  }
+  return out;
 }
 
 async function connectV3(url: string): Promise<Chain> {
@@ -880,6 +958,10 @@ async function captureBundle(o: Common, nonce: bigint): Promise<MintBundleFixtur
     if (change) throw new Stop(`#${fmt(B.number)} carries a ${change.log.kind}: a bundle is taken at a block that changes no set; run again in a few seconds`);
     const parentHash = bytesToHex(header.parentHash);
     const parent = await chain.header(parentHash);
+    // B's parent is the checkpoint a fresh light client starts from (plan --sandbox), and the set
+    // that signs B is read there: a parent that changes the set is refused as B would be.
+    const parentChange = grandpaLogs(parent).find((l) => l.log.kind === "ScheduledChange" || l.log.kind === "ForcedChange");
+    if (parentChange) throw new Stop(`#${fmt(parent.number)}, the parent of #${fmt(B.number)}, carries a ${parentChange.log.kind}: a bundle is taken at a block whose parent changes no set either; run again in a few seconds`);
     const runtime = await chain.runtime(B.hash);
     const trieVersion: 0 | 1 = runtime.stateVersion === 1 ? 1 : 0;
     log(`(1) block #${fmt(B.number)} ${B.hash}: ${runtime.specName} ${runtime.specVersion}, trie V${trieVersion}, header ${header.encoded.length} B, finality proof ${fmt(proof.scale.length)} B`);
@@ -1039,14 +1121,22 @@ async function bundle(o: BundleOptions): Promise<number> {
     log(ok ? "\nThe bundle checks out." : "\nThe bundle does not check out.");
     return ok ? OK : FAILED;
   }
+  const file = join(o.out, BUNDLE_FILE);
+  // A bundle a mint was sent with stays as it was: the record names its file.
+  const existing = () => {
+    if (existsSync(file) && !o.force) throw new Stop(`${repoPath(file)} is there already: bundle does not write over it without --force (a sent mint's record can name it); --out <dir> writes elsewhere`);
+  };
+  existing();
   log(`${new Date().toISOString()}: capturing the mint bundle of lock ${o.nonce} on ${V3.title}`);
   const b = await captureBundle(o, o.nonce!);
   if (!verifyBundle(b, "Offline checks before writing")) {
     log("\nThe bundle does not check out: nothing is written.");
     return FAILED;
   }
+  existing();
+  const named = readBridge()?.steps.filter((s) => s.bundle?.file === repoPath(file)) ?? [];
+  if (named.length > 0) log(`     note: ${BRIDGE_RECORD} names ${repoPath(file)} for ${named.map((s) => s.name).join(", ")}; --force writes over it`);
   mkdirSync(o.out, { recursive: true });
-  const file = join(o.out, BUNDLE_FILE);
   const bytes = writeJson(file, b);
   log(`\nWrote ${file} (${fmt(bytes)} B): ${bundleTitle(b)}`);
   for (const n of b.notes) log(`  note: ${n}`);
@@ -1296,9 +1386,11 @@ function requireClientReady(s: Setting): void {
   const c = s.client;
   const relay =
     `run npm run relay -- --chain v3 first, then capture the bundle again (npm run mint -- bundle --nonce ${b.lock.nonce})` +
-    (s.bridge.minterDeployed
+    (s.bridge.minterDeployed && s.bridge.tokenDeployed
       ? ""
-      : `. Until the minter is deployed the relayer sends from a key other than the deployer, whose nonce ${MINTER_NONCE} creates the minter; npm run mint -- deploy dry-runs the creations alone`);
+      : `. Until both are deployed the relayer sends from a key other than the deployer, whose nonces ${MINTER_NONCE} and ${TOKEN_NONCE} create the minter and the token; npm run mint -- deploy dry-runs the creations alone`);
+  // Anyone can import into the light client: a head any relayer imported moves it past a bundle's block.
+  const recapture = `capture the bundle again (npm run mint -- bundle --nonce ${b.lock.nonce} --force); importing into ${CLIENT_NAME} is open to anyone, so any relayer's import moves it on`;
   if (c.genesis !== b.provenance.genesisHash) throw new Stop(`${CLIENT_NAME} follows genesis ${c.genesis}, the bundle is from ${b.provenance.genesisHash}`);
   if (c.halted || c.paused) throw new Stop(`${CLIENT_NAME} is ${c.halted ? "halted" : "paused"}: imports revert until its admin acts`);
   const want = BigInt(b.provenance.setId);
@@ -1306,10 +1398,10 @@ function requireClientReady(s: Setting): void {
     throw new Stop(`${CLIENT_NAME} is at set ${c.setId} (latest #${fmt(c.latestNumber)}), and the bundle's block #${fmt(b.header.number)} is signed by set ${want}: the import cannot pass until the client follows V3 there: ${relay}`);
   }
   if (c.setId > want && !s.imported) {
-    throw new Stop(`${CLIENT_NAME} is at set ${c.setId}, past the bundle's set ${want}, and does not hold #${fmt(b.header.number)}: capture the bundle again (npm run mint -- bundle --nonce ${b.lock.nonce})`);
+    throw new Stop(`${CLIENT_NAME} is at set ${c.setId}, past the bundle's set ${want}, and does not hold #${fmt(b.header.number)}: ${recapture}`);
   }
   if (!s.imported && c.latestNumber >= b.header.number) {
-    throw new Stop(`${CLIENT_NAME} is at #${fmt(c.latestNumber)}, at or past the bundle's block #${fmt(b.header.number)}, which it does not hold: capture the bundle again (npm run mint -- bundle --nonce ${b.lock.nonce})`);
+    throw new Stop(`${CLIENT_NAME} is at #${fmt(c.latestNumber)}, at or past the bundle's block #${fmt(b.header.number)}, which it does not hold (the import would revert NotNewer): ${recapture}`);
   }
   check(
     true,
@@ -1706,6 +1798,20 @@ function revertText(r: { error?: { message?: string; data?: string }; returnData
   return name ? `reverted with ${name}` : (r.error?.message ?? `status ${r.status}`);
 }
 
+const NOT_NEWER = bytesToHex(keccak_256(new TextEncoder().encode("NotNewer(uint32,uint32)")).slice(0, 4));
+
+/**
+ * What to do about a NotNewer revert: the light client moved to the bundle's block or past it
+ * after the bundle was read. Importing into it is open to anyone, so the import that did it can be
+ * any relayer's, ours or not; the remedy is a fresh bundle.
+ */
+function notNewerHint(r: { error?: { data?: string }; returnData?: string }): string {
+  const data = r.error?.data ?? r.returnData;
+  return isHexData(data) && data.toLowerCase().startsWith(NOT_NEWER)
+    ? ` (the light client moved to or past the bundle's block after it was read: anyone can import into it, so any relayer's import can do that; capture the bundle again with --force and send again)`
+    : "";
+}
+
 /** A demo step's outcome: it passes when the call reverted with exactly the expected revert data. */
 function revertCheck(revert: Uint8Array, r: { error?: { message?: string; data?: string }; returnData?: string; status: string }, errors: Map<Hex, string>): [boolean, string] {
   const want = revertName(revert, errors) ?? shortHex(revert);
@@ -1726,7 +1832,7 @@ function judge(s: Step, sim: Simulated, limit: number, errors: Map<Hex, string>)
     const [ok, what] = revertCheck(s.expect.revert, r, errors);
     return [[ok, `${tag(s)} ${s.label}: ${what}; ${gas}`]];
   }
-  if (r.status !== "0x1") return [[false, `${tag(s)} ${s.label}: ${revertText(r, errors)}`]];
+  if (r.status !== "0x1") return [[false, `${tag(s)} ${s.label}: ${revertText(r, errors)}${notNewerHint(r)}`]];
   if (s.kind === "deploy") {
     const code = hexToBytes(r.returnData);
     const there = sim.codeHashThere.get(s.index) === bytesToHex(keccak_256(code));
@@ -1928,7 +2034,7 @@ async function recordReceipt(record: BridgeRecord, s: Step, entry: BridgeStep, r
   } else {
     // A receipt has no revert reason: replay the call on the state its block left.
     const body = await sepolia("replay", () => ethCall({ from: s.from, to: s.to!, data: s.data, gas: entry.gasLimit ?? CAP }, receipt.blockNumber));
-    lines.push([false, `     replayed on its block: ${body.error ? revertText({ status: "0x0", error: body.error }, plan.errors) : "it passes there"}`]);
+    lines.push([false, `     replayed on its block: ${body.error ? `${revertText({ status: "0x0", error: body.error }, plan.errors)}${notNewerHint({ error: body.error })}` : "it passes there"}`]);
   }
   let ok = true;
   for (const [k, what] of lines) ok = check(k, what) && ok;
@@ -1965,6 +2071,103 @@ async function reconcile(record: BridgeRecord, s: Step, entry: BridgeStep, plan:
   entry.txHash = null;
   saveBridge(record);
   return false;
+}
+
+/** The checks a receipt allows for an entry without the plan that sent it, as [passed, what]. */
+async function receiptChecks(entry: BridgeStep, receipt: Receipt, errors: Map<Hex, string>): Promise<[boolean, string][]> {
+  const status = Number(BigInt(receipt.status));
+  const lines: [boolean, string][] = [];
+  const head = `${entry.name}: status ${status}, block ${fmt(Number(BigInt(receipt.blockNumber)))}, ${share(gasOf(receipt))}, tx ${receipt.transactionHash}`;
+  switch (entry.kind) {
+    case "deploy": {
+      const r = receipt as Receipt & { contractAddress?: string };
+      lines.push([status === 1 && r.contractAddress?.toLowerCase() === entry.address, `${head}, created at ${checksumAddress(hexToBytes(entry.address))}`]);
+      const code = await codeAt(entry.address, receipt.blockNumber);
+      lines.push([bytesToHex(keccak_256(code)) === entry.codeHash, "with the code the dry run left there"]);
+      break;
+    }
+    case "mint": {
+      const l = entry.lock ? findLog(receipt.logs, entry.address, MINTED_TOPIC, bytesToHex(uintWord(BigInt(entry.lock.nonce)))) : undefined;
+      const e = l ? decodeMinted(l) : null;
+      lines.push([status === 1, head]);
+      lines.push([!!e && bytesToHex(e.recipient) === entry.lock?.recipient && e.amount === BigInt(entry.lock?.amountNative ?? -1), `Minted lock ${entry.lock?.nonce}: ${e ? `${formatWtpot(e.amount)} to ${checksumAddress(e.recipient)}` : "no Minted event"}`]);
+      break;
+    }
+    case "tamper":
+    case "replay": {
+      lines.push([status === 0, `${head} (it has to revert)`]);
+      // A receipt has no revert reason: the call, rebuilt from the bundle file the entry names, replayed on its block.
+      const file = entry.bundle?.file ? at(entry.bundle.file) : null;
+      const b = file && existsSync(file) ? readBundle(file) : null;
+      const data =
+        b && entry.expectedRevert
+          ? entry.kind === "replay"
+            ? replayCall(b).data
+            : entry.tamper
+              ? tamperedCall(b, entry.tamper.part, hexToBytes(entry.address), SEPOLIA_CHAIN_ID).data
+              : null
+          : null;
+      if (data && bytesToHex(keccak_256(data)) === entry.dataHash) {
+        const body = await sepolia("replay", () => ethCall({ from: entry.sender, to: entry.address, data: bytesToHex(data), gas: entry.gasLimit ?? CAP }, receipt.blockNumber));
+        const replayed = { status: body.error ? "0x0" : "0x1", error: body.error, returnData: isHexData(body.result) ? body.result : undefined };
+        const [ok, what] = revertCheck(hexToBytes(entry.expectedRevert!.data), replayed, errors);
+        lines.push([ok, `replayed on its block, it ${what}`]);
+      } else log(`     note: ${entry.name} is not replayed: ${entry.bundle?.file ?? "no bundle file"} does not rebuild its call here`);
+      break;
+    }
+    case "burn": {
+      const l = receipt.logs.find((x) => x.address.toLowerCase() === entry.address && x.topics[0]?.toLowerCase() === BURN_REQUESTED_TOPIC);
+      const e = l ? decodeBurnRequested(l) : null;
+      lines.push([status === 1, head]);
+      const fields = !!e && bytesToHex(e.from) === entry.sender && bytesToHex(e.v3Recipient) === entry.burn?.v3Recipient && e.amount === BigInt(entry.burn?.amount ?? -1);
+      lines.push([fields && equalBytes(e!.burnId, burnId(SEPOLIA_CHAIN_ID, hexToBytes(entry.address), e!.burnNonce)), `BurnRequested: ${e ? `burn ${e.burnNonce}, ${formatWtpot(e.amount)} for ${checksumAddress(e.v3Recipient)} on V3, burn id ${shortHex(e.burnId)} (the vault's convention)` : "no event"}`]);
+      if (e && entry.burn) Object.assign(entry.burn, { burnNonce: e.burnNonce.toString(), burnId: bytesToHex(e.burnId) });
+      break;
+    }
+    default:
+      lines.push([status === 1, head]);
+  }
+  return lines;
+}
+
+/**
+ * Settles every entry an earlier --send run left open in the record (its hash recorded, its block
+ * not), before anything is planned: a mined one gets its block, gas and status and the checks its
+ * receipt allows (a creation's address and code, a mint's Minted event, a burn's BurnRequested
+ * event, a demo revert's status 0 and, with its bundle file here, its revert replayed on its
+ * block); a pending one stays open; one neither mined nor pending is marked dropped, so that a
+ * later --send sends it again.
+ */
+async function settleOpen(record: BridgeRecord, errors: Map<Hex, string>): Promise<void> {
+  for (const entry of record.steps.filter((e) => e.txHash !== null && e.block === null)) {
+    let receipt: Receipt | null = null;
+    for (const h of [entry.txHash!, ...(entry.dropped ?? [])]) receipt ??= await sepolia("receipt", () => receiptOf(h, false));
+    if (!receipt) {
+      const n = await sepolia("nonces", () => nonces(entry.sender));
+      if (n.latest <= entry.nonce && n.pending > n.latest) {
+        log(`     ${entry.name} (nonce ${entry.nonce}): ${entry.txHash}, sent by an earlier run, is still pending`);
+        continue;
+      }
+      entry.dropped = [...(entry.dropped ?? []), entry.txHash!];
+      entry.note = n.latest > entry.nonce ? `nonce ${entry.nonce} was used by another transaction` : `neither mined nor pending at ${new Date().toISOString()}`;
+      entry.txHash = null;
+      saveBridge(record);
+      log(`     ${entry.name} (nonce ${entry.nonce}): ${entry.dropped.at(-1)}, sent by an earlier run, was never mined (${entry.note})`);
+      continue;
+    }
+    log(`     settling ${entry.name} (nonce ${entry.nonce}), sent by an earlier run:`);
+    let ok = true;
+    for (const [k, what] of await receiptChecks(entry, receipt, errors)) ok = check(k, `     ${what}`) && ok;
+    Object.assign(entry, {
+      txHash: receipt.transactionHash,
+      block: Number(BigInt(receipt.blockNumber)),
+      gasUsed: gasOf(receipt),
+      status: Number(BigInt(receipt.status)),
+      effectiveGasPrice: BigInt(receipt.effectiveGasPrice ?? 0).toString(),
+      ok,
+    });
+    saveBridge(record);
+  }
 }
 
 /** Sends the steps `o.command` sends, one at a time, each recorded before it is published. */
@@ -2005,6 +2208,7 @@ async function send(plan: Plan, dry: DryRun, s: Setting, fees: Fees): Promise<nu
     }
     if (!(await recordReceipt(record, step, entry, receipt, plan))) {
       if (step.name === "BridgeMinter") log(`     nonce ${MINTER_NONCE} is spent: no minter can be created at ${checksumAddress(hexToBytes(step.address!))} any more`);
+      if (step.name === "WrappedTPOT") log(`     nonce ${TOKEN_NONCE} is spent: no token can be created at ${checksumAddress(hexToBytes(step.address!))} any more, the token the minter takes`);
       return FAILED;
     }
     if (step.kind === "deploy") log(`     verify: ${verifyCommand(step.artifact!, step.address!, step.constructorArgs!)}`);
@@ -2084,8 +2288,10 @@ async function planCommand(o: PlanOptions): Promise<number> {
   checkBridge(bridge, deployment, vault);
   const record = readBridge();
   if (record) {
+    // What an earlier --send run left open is settled before anything is planned.
+    await settleOpen(record, errorMap(BRIDGE_ERRORS));
     const open = record.steps.filter((e) => e.block === null && e.txHash !== null);
-    log(`${BRIDGE_RECORD}: ${record.steps.length} step${record.steps.length === 1 ? "" : "s"}${open.length ? `, ${open.map((e) => `${e.name} (nonce ${e.nonce}) signed and not seen mined`).join(", ")}` : ""}`);
+    log(`${BRIDGE_RECORD}: ${record.steps.length} step${record.steps.length === 1 ? "" : "s"}${open.length ? `, ${open.map((e) => `${e.name} (nonce ${e.nonce}) signed and still pending`).join(", ")}` : ""}`);
     for (const [name, address] of Object.entries(record.contracts)) {
       const onChain = name === "BridgeMinter" ? bridge.minter : name === "WrappedTPOT" ? bridge.token : null;
       if (onChain !== address) throw new Stop(`${BRIDGE_RECORD} records ${name} at ${address}, not at ${onChain}`);
@@ -2194,7 +2400,7 @@ async function status(o: Common): Promise<number> {
     log(`     the demo's ${s.kind}${s.tamper ? ` (${s.tamper.part})` : ""} of lock ${s.lock?.nonce}: tx ${s.txHash}, block ${fmt(s.block ?? 0)}, reverted with ${s.expectedRevert?.name}`);
   }
 
-  // V3: the vault, read as v3-vault.ts status reads it.
+  // V3: the vault, read as v3-vault.ts status reads it, its logs in windows from its deploy block.
   const evm = new EvmRpc(o.evm);
   const evmChainId = BigInt(await evm.call<string>("eth_chainId"));
   if (!check(evmChainId === V3.chainId, `the EVM RPC ${new URL(o.evm).host} serves chain ${evmChainId}`)) throw new Stop("the EVM RPC serves another chain");
@@ -2207,30 +2413,19 @@ async function status(o: Common): Promise<number> {
   const nextNonce = await evm.word(vault.address, SLOTS.nextNonce, tagV3);
   const outstanding = await evm.word(vault.address, SLOTS.outstanding, tagV3);
   log(`\nThe vault on V3 at block #${fmt(head)}: nextNonce ${nextNonce}, outstanding ${formatTpot(outstanding)}`);
-  const logs = await evm.call<LogJson[]>("eth_getLogs", [{ address: vault.address, fromBlock: qty(vault.block), toBlock: tagV3, topics: [[LOCKED_TOPIC, RELEASED_TOPIC]] }]);
+  const found = await evm.logs({ address: vault.address, topics: [[LOCKED_TOPIC, RELEASED_TOPIC]] }, vault.block, head);
   let locked = 0n;
   let released = 0n;
-  const lockNonces = new Set<bigint>();
   const releases = new Map<Hex, bigint>();
   let minted = 0;
   let ours = 0;
-  for (const l of logs) {
-    const where = `#${fmt(Number(BigInt(l.blockNumber ?? "0")))} ${shortHex(l.transactionHash ?? "0x")}`;
-    if (l.topics[0]?.toLowerCase() === RELEASED_TOPIC) {
-      const e = decodeReleased(l);
-      released += e.amountNative;
-      releases.set(bytesToHex(e.burnId), e.amountNative);
-      log(`     release (${where}): ${formatTpot(e.amountNative)} to ${checksumAddress(e.to)}, burn id ${shortHex(e.burnId)} (the committee's, trusted)`);
-      continue;
-    }
-    const e = decodeLocked(l);
+  /** A lock's line: its commitment recomputed from its fields and compared with storage, and whether this minter minted it. */
+  const lockLine = async (e: { nonce: bigint; sender: Uint8Array | null; recipient: Uint8Array; dstChainId: bigint; dstMinter: Uint8Array; amountNative: bigint; commitment: Uint8Array }, where: string) => {
     locked += e.amountNative;
-    lockNonces.add(e.nonce);
     const recomputed = lockCommitment({ v3ChainId: V3.chainId, vault: hexToBytes(vault.address), dstChainId: e.dstChainId, dstMinter: e.dstMinter, recipient: e.recipient, amountNative: e.amountNative, nonce: e.nonce });
     const stored = await evm.word(vault.address, commitmentSlot(e.nonce), tagV3);
-    const forThisMinter = e.dstChainId === SEPOLIA_CHAIN_ID && bytesToHex(e.dstMinter) === bridge.minter;
     let state = "for another chain or minter";
-    if (forThisMinter) {
+    if (e.dstChainId === SEPOLIA_CHAIN_ID && bytesToHex(e.dstMinter) === bridge.minter) {
       ours += 1;
       if (!bridge.minterDeployed || !bridge.tokenDeployed) state = "for this minter, which is not deployed: not minted";
       else {
@@ -2242,37 +2437,95 @@ async function status(o: Common): Promise<number> {
     }
     check(
       equalBytes(recomputed, e.commitment) && stored === BigInt(bytesToHex(e.commitment)),
-      `lock ${e.nonce} (${where}): ${formatTpot(e.amountNative)} from ${checksumAddress(e.sender)} for ${checksumAddress(e.recipient)} on chain ${e.dstChainId}, ` +
+      `lock ${e.nonce} (${where}): ${formatTpot(e.amountNative)}${e.sender ? ` from ${checksumAddress(e.sender)}` : ""} for ${checksumAddress(e.recipient)} on chain ${e.dstChainId}, ` +
         `minter ${checksumAddress(e.dstMinter)}, commitment ${shortHex(e.commitment)} recomputed and in storage; ${state}`,
     );
-  }
-  check(BigInt(lockNonces.size) === nextNonce && [...lockNonces].every((x) => x < nextNonce), `one Locked log for each of the ${nextNonce} nonces`);
-  check(locked - released === outstanding, `outstanding = locked ${formatTpot(locked)} - released ${formatTpot(released)}`);
-  log(`     ${ours} of ${logs.length - releases.size} lock${logs.length - releases.size === 1 ? "" : "s"} for this minter, ${minted} minted`);
-
-  // Sepolia: the mints and the burns, the start of the trusted return path.
-  if (bridge.minterDeployed && bridge.tokenDeployed) {
-    const fromBlock = qty(record?.steps.find((s) => s.name === "BridgeMinter" && s.ok)?.block ?? 0);
-    const minterLogs = await sepolia("logs", () => rpc<LogJson[]>("eth_getLogs", [{ address: bridge.minter, fromBlock, toBlock: block.number, topics: [[MINTED_TOPIC, BURN_REQUESTED_TOPIC]] }]));
-    let mintedSum = 0n;
-    let burnedSum = 0n;
-    for (const l of minterLogs.filter((x) => x.topics[0]?.toLowerCase() === MINTED_TOPIC)) mintedSum += decodeMinted(l).amount;
-    const burns = minterLogs.filter((x) => x.topics[0]?.toLowerCase() === BURN_REQUESTED_TOPIC);
-    log(`\n${burns.length} burn${burns.length === 1 ? "" : "s"} on Sepolia (the trusted return path: the committee releases on V3, which no contract here checks)`);
-    for (const l of burns) {
-      const e = decodeBurnRequested(l);
-      burnedSum += e.amount;
-      const id = burnId(SEPOLIA_CHAIN_ID, hexToBytes(bridge.minter), e.burnNonce);
-      const releasedWord = await evm.word(vault.address, releasedSlot(id), tagV3);
-      check(
-        equalBytes(id, e.burnId),
-        `burn ${e.burnNonce} (${shortHex(l.transactionHash ?? "0x")}): ${formatWtpot(e.amount)} from ${checksumAddress(e.from)} for ${checksumAddress(e.v3Recipient)} on V3, ` +
-          `burn id ${shortHex(e.burnId)} (the vault's convention); ${releasedWord !== 0n ? `released on V3${releases.has(bytesToHex(id)) ? ` (${formatTpot(releases.get(bytesToHex(id))!)})` : ""}` : "not released yet"}`,
-      );
+  };
+  let lockCount = 0;
+  if ("refused" in found) {
+    // The locks from storage: nextNonce, and each commitment against the fields the record has.
+    log(`     the EVM RPC refuses eth_getLogs (${found.refused}): the locks from storage and ${V3_RECORD}, the releases from the burns`);
+    for (let n = 0n; n < nextNonce; n++) {
+      const l = vault.locks.find((x) => x.status === "locked" && x.vault === vault.address && x.vaultNonce === n.toString() && x.commitment);
+      if (!l) {
+        check(false, `lock ${n}: ${V3_RECORD} has no fields to recompute its commitment from`);
+        continue;
+      }
+      const e = { nonce: n, sender: null, recipient: hexToBytes(l.recipient), dstChainId: BigInt(l.dstChainId), dstMinter: hexToBytes(l.dstMinter), amountNative: BigInt(l.amountNative), commitment: hexToBytes(l.commitment!) };
+      await lockLine(e, `${V3_RECORD}, ${shortHex(l.txHash)}`);
+      lockCount += 1;
     }
-    check(BigInt(burns.length) === bridge.burnCount, `burnCount() is the ${burns.length} BurnRequested event${burns.length === 1 ? "" : "s"}`);
-    check(bridge.totalSupply === mintedSum - burnedSum, `wtPOT total supply = minted ${formatWtpot(mintedSum)} - burned ${formatWtpot(burnedSum)}`);
+  } else {
+    const lockNonces = new Set<bigint>();
+    for (const l of found) {
+      const where = `#${fmt(Number(BigInt(l.blockNumber ?? "0")))} ${shortHex(l.transactionHash ?? "0x")}`;
+      if (l.topics[0]?.toLowerCase() === RELEASED_TOPIC) {
+        const e = decodeReleased(l);
+        released += e.amountNative;
+        releases.set(bytesToHex(e.burnId), e.amountNative);
+        log(`     release (${where}): ${formatTpot(e.amountNative)} to ${checksumAddress(e.to)}, burn id ${shortHex(e.burnId)} (the committee's, trusted)`);
+        continue;
+      }
+      const e = decodeLocked(l);
+      lockNonces.add(e.nonce);
+      await lockLine(e, where);
+      lockCount += 1;
+    }
+    check(BigInt(lockNonces.size) === nextNonce && [...lockNonces].every((x) => x < nextNonce), `one Locked log for each of the ${nextNonce} nonces`);
   }
+  log(`     ${ours} of ${lockCount} lock${lockCount === 1 ? "" : "s"} for this minter, ${minted} minted`);
+
+  // Sepolia: the mints and the burns, the start of the trusted return path; their logs in windows
+  // from the minter's deploy block, or the views when the RPC refuses old logs.
+  /** Released on V3 (released[burnId] set) with no Released log: the committee's releases are Substrate extrinsics, whose events V3's EVM RPC does not serve. */
+  let releasedUnlogged = 0n;
+  let unknownAmounts = 0;
+  if (bridge.minterDeployed && bridge.tokenDeployed) {
+    const fromBlock = record?.steps.find((s) => s.name === "BridgeMinter" && s.ok)?.block ?? 0;
+    const minterLogs = await sepoliaLogs({ address: bridge.minter, topics: [[MINTED_TOPIC, BURN_REQUESTED_TOPIC]] }, fromBlock, Number(BigInt(block.number)));
+    const releaseState = async (id: Uint8Array, amount: bigint | null) => {
+      const flag = await evm.word(vault.address, releasedSlot(id), tagV3);
+      if (flag === 0n) return "not released yet";
+      const logged = releases.get(bytesToHex(id));
+      if (logged !== undefined) return `released on V3 (${formatTpot(logged)}, its Released log)`;
+      const recorded = vault.releases.find((r) => r.status === "released" && r.burn.burnId === bytesToHex(id));
+      const value = amount ?? (recorded ? BigInt(recorded.amountNative) : null);
+      if (value === null) unknownAmounts += 1;
+      else releasedUnlogged += value;
+      return `released on V3 (released[burnId] is set${recorded?.released ? `; ${V3_RECORD}: #${fmt(recorded.released.block.number)}, ${formatTpot(BigInt(recorded.amountNative))}` : ""}; the EVM RPC serves no Released log for it)`;
+    };
+    if ("refused" in minterLogs) {
+      log(`\n${bridge.burnCount} burn${bridge.burnCount === 1n ? "" : "s"} on Sepolia, from burnCount and burnIdOf: the Sepolia RPC refuses eth_getLogs (${minterLogs.refused}) (the trusted return path: the committee releases on V3, which no contract here checks)`);
+      for (let n = 0n; n < bridge.burnCount; n++) {
+        const id = wordAt(await sepolia("burnIdOf", () => view(bridge.minter, callData(MINTER.burnIdOf, uintWord(n)), block.number)), 0);
+        const recorded = record?.steps.find((s) => s.kind === "burn" && s.ok && s.burn?.burnNonce === n.toString());
+        check(equalBytes(id, burnId(SEPOLIA_CHAIN_ID, hexToBytes(bridge.minter), n)), `burn ${n}: burn id ${shortHex(id)} (the vault's convention); ${await releaseState(id, recorded?.burn ? BigInt(recorded.burn.amount) : null)}`);
+      }
+      log("     without the logs, the total supply is not checked against the mints and the burns");
+    } else {
+      let mintedSum = 0n;
+      let burnedSum = 0n;
+      for (const l of minterLogs.filter((x) => x.topics[0]?.toLowerCase() === MINTED_TOPIC)) mintedSum += decodeMinted(l).amount;
+      const burns = minterLogs.filter((x) => x.topics[0]?.toLowerCase() === BURN_REQUESTED_TOPIC);
+      log(`\n${burns.length} burn${burns.length === 1 ? "" : "s"} on Sepolia (the trusted return path: the committee releases on V3, which no contract here checks)`);
+      for (const l of burns) {
+        const e = decodeBurnRequested(l);
+        burnedSum += e.amount;
+        const id = burnId(SEPOLIA_CHAIN_ID, hexToBytes(bridge.minter), e.burnNonce);
+        check(
+          equalBytes(id, e.burnId),
+          `burn ${e.burnNonce} (${shortHex(l.transactionHash ?? "0x")}): ${formatWtpot(e.amount)} from ${checksumAddress(e.from)} for ${checksumAddress(e.v3Recipient)} on V3, ` +
+            `burn id ${shortHex(e.burnId)} (the vault's convention); ${await releaseState(id, e.amount)}`,
+        );
+      }
+      check(BigInt(burns.length) === bridge.burnCount, `burnCount() is the ${burns.length} BurnRequested event${burns.length === 1 ? "" : "s"}`);
+      check(bridge.totalSupply === mintedSum - burnedSum, `wtPOT total supply = minted ${formatWtpot(mintedSum)} - burned ${formatWtpot(burnedSum)}`);
+      const burnIds = new Set(burns.map((l) => bytesToHex(decodeBurnRequested(l).burnId)));
+      for (const [id, amount] of releases) if (!burnIds.has(id)) check(false, `a Released log for burn id ${shortHex(id)} (${formatTpot(amount)}), which no burn on Sepolia has`);
+    }
+  }
+  if (unknownAmounts > 0) log(`     note: ${unknownAmounts} release${unknownAmounts === 1 ? "" : "s"} of an unknown amount: outstanding is not checked against the locks`);
+  else check(locked - released - releasedUnlogged === outstanding, `outstanding = locked ${formatTpot(locked)} - released ${formatTpot(released + releasedUnlogged)}${releasedUnlogged ? ` (${formatTpot(releasedUnlogged)} of it without a Released log)` : ""}`);
   return failures === 0 ? OK : FAILED;
 }
 
