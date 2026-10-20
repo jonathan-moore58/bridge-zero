@@ -58,7 +58,9 @@
 // status reads the vault: nextNonce (slot 1), outstanding, its balance, every Locked and Released log
 // (eth_getLogs from the deployment block), each Locked commitment recomputed and compared with the
 // event and with storage, and the accounting (outstanding = locked - released, balance at least
-// outstanding times the ratio, one Locked log per nonce).
+// outstanding times the ratio, one Locked log per nonce). The committee's releases (release.ts) are
+// Substrate extrinsics whose Released event the EVM RPC does not return as a log: the ones the
+// record lists count once released[burnId] holds them.
 //
 // Exit code 0 when the dry run passed, the transaction is done and checked, or status found nothing
 // wrong; 1 when a check fails or the tool refuses; 2 when the node or the EVM RPC cannot be reached;
@@ -96,6 +98,7 @@ import {
   parseTpot,
   readImmutables,
   readVaultBuild,
+  releasedSlot,
   RELEASED_TOPIC,
   reviveAddress,
   SLOTS,
@@ -436,6 +439,8 @@ interface VaultRecord {
   /** Deploy extrinsics that were final without ExtrinsicSuccess: they used a nonce and paid a fee, and left no vault. */
   failedDeploys?: VaultEntry[];
   locks: LockEntry[];
+  /** The committee's release rounds (release.ts), as far as status reads them. */
+  releases?: { status: string; burn: { burnNonce: string; burnId: Hex }; payee: Hex; amountNative: string; released?: { block: { number: number } } }[];
 }
 
 function readRecord(): VaultRecord | null {
@@ -1271,6 +1276,7 @@ async function status(o: StatusOptions): Promise<number> {
   let locked = 0n;
   let released = 0n;
   const nonces = new Set<bigint>();
+  const logged = new Set<string>();
   for (const l of logs) {
     const where = `#${fmt(Number(BigInt(l.blockNumber ?? "0")))} ${shortHex(l.transactionHash ?? "0x")}`;
     if (l.topics[0]?.toLowerCase() === LOCKED_TOPIC) {
@@ -1287,8 +1293,17 @@ async function status(o: StatusOptions): Promise<number> {
     } else {
       const e = decodeReleased(l);
       released += e.amountNative;
+      logged.add(bytesToHex(e.burnId));
       log(`     release (${where}): ${formatTpot(e.amountNative)} to ${checksumAddress(e.to)}, burn id ${shortHex(e.burnId)}`);
     }
+  }
+  // The committee's releases are Substrate extrinsics (multisig.asMulti dispatching revive.call),
+  // whose Released event the EVM RPC does not return as a log: the ones release.ts recorded count
+  // once the vault's released[burnId] holds them.
+  for (const r of (record?.releases ?? []).filter((x) => x.status === "released" && !logged.has(x.burn.burnId.toLowerCase()))) {
+    const flag = await evm.word(vault.address, releasedSlot(hexToBytes(r.burn.burnId)), tag);
+    if (flag !== 0n) released += BigInt(r.amountNative);
+    check(flag !== 0n, `release of burn ${r.burn.burnNonce} (${RECORD}${r.released ? `, #${fmt(r.released.block.number)}` : ""}): ${formatTpot(BigInt(r.amountNative))} to ${checksumAddress(hexToBytes(r.payee))}, burn id ${shortHex(r.burn.burnId)}, released[burnId] set; no Released log (a Substrate extrinsic)`);
   }
   check(BigInt(nonces.size) === nextNonce && [...nonces].every((n) => n < nextNonce), `one Locked log for each of the ${nextNonce} nonces`);
   check(locked - released === outstanding, `outstanding = locked ${formatTpot(locked)} - released ${formatTpot(released)}`);
