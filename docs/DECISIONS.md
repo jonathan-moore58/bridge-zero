@@ -189,10 +189,12 @@ is `0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14`), so neither has a setter.
 
 **Consequences.**
 
-- The deployer's nonce 31 is spoken for. Until BridgeMinter is mined the deployer sends nothing
-  else, and the relayer that keeps the light client current signs with another key. Any other
-  transaction from the deployer at nonce 31 would leave lock 0 mintable nowhere; its tPOT would stay
-  counted in `outstanding` until the trusted return path released it.
+- The deployer's nonces 31 and 32 are spoken for, both. Until both creations are mined the deployer
+  sends nothing else, and the relayer that keeps the light client current signs with another key.
+  Any other transaction from the deployer at nonce 31 would leave lock 0 mintable nowhere, its tPOT
+  counted in `outstanding` until the trusted return path released it; any other at nonce 32 would
+  leave the minter without the token it was given. (Both were mined on Oct 20, at Sepolia blocks
+  #11,950,851 and #11,950,852.)
 - Between the two transactions the minter points at an address without code, and a mint reverts at
   the token call. If WrappedTPOT's creation failed, nonce 32 would be spent and the minter would
   have no token. The mint tool therefore has the node run both creations (validation on, the

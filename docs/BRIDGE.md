@@ -5,7 +5,8 @@ V3 testnet becomes wtPOT on Sepolia, minted by
 [`BridgeMinter`](../contracts/src/bridge/BridgeMinter.sol) from a proof, and how wtPOT goes back on
 the trusted return path. The vault and the V3 testnet are described in [V3.md](V3.md); why the
 Sepolia side is built this way is in [DECISIONS.md](DECISIONS.md) (D5 to D7). Measured on Oct 20,
-2026 with forge and with read-only `eth_simulateV1` calls to a Sepolia node; nothing here was sent.
+2026 with forge and with read-only `eth_simulateV1` calls to a Sepolia node, and for the return
+path with dry runs on Sepolia and on V3; the measuring sent nothing.
 
 ## The contracts
 
@@ -14,13 +15,14 @@ Sepolia side is built this way is in [DECISIONS.md](DECISIONS.md) (D5 to D7). Me
 | `PortaldotVault` | V3 testnet (chain id 420420777) | `0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd` | holds locked tPOT; stores one commitment per lock |
 | `GrandpaLightClient` #2 | Sepolia | `0x447171c4885Ad725eE4772E8e3c228aDeE50Dcb0` | follows V3's GRANDPA finality; stores finalized state roots |
 | `StorageProofs` | Sepolia | `0x5DA053Bc5659ba9f725E4b1B5083545B933EF2a3` | the trie walk, a library linked into the minter |
-| `BridgeMinter` | Sepolia | `0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E` (`CREATE(deployer, 31)`), not deployed yet | proves locks and mints; holds no funds |
-| [`WrappedTPOT`](../contracts/src/bridge/WrappedTPOT.sol) (wtPOT) | Sepolia | `0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14` (`CREATE(deployer, 32)`), not deployed yet | ERC-20, 14 decimals; only the minter mints and burns |
+| `BridgeMinter` | Sepolia | `0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E` (`CREATE(deployer, 31)`), deployed at block #11,950,851 | proves locks and mints, and burns for the return path; holds no funds |
+| [`WrappedTPOT`](../contracts/src/bridge/WrappedTPOT.sol) (wtPOT) | Sepolia | `0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14` (`CREATE(deployer, 32)`), deployed at block #11,950,852 | ERC-20, 14 decimals; only the minter mints and burns |
 
 The deployer is `0xD9838A86cF83C28Ee486544060D1cA4Ca2971071`. Neither BridgeMinter nor WrappedTPOT
 has an owner or an admin: the minter's light client, vault, V3 chain id, vault code hash and token,
 and the token's minter, are fixed in their constructors. `deployments/sepolia-bridge.json` records
-both once the mint tool deploys them.
+both, the mint of lock 0 and the demo's reverts, and the burns of the
+[trusted return path](#the-trusted-return-path).
 
 ## From a lock to wtPOT
 
@@ -76,9 +78,11 @@ latest finalized block, B; once read they stay valid. The light client imports B
 newer than its latest header and signed by its current set (a header at or below the latest that it
 never imported reverts `NotNewer`). The testnet changes sets about every 6 hours: if the client is
 behind, `npm run relay -- --chain v3` brings it up first, then the bundle is read again; if the
-client moves past B before the mint, the bundle is read again. The lock itself does not expire.
+client moves past B before the mint, the bundle is read again. Importing into the light client is
+open to anyone, so the import that moves it past B can be any relayer's, ours or another's. The
+lock itself does not expire.
 
-## Deploying: the order and the nonce-31 rule
+## Deploying: the order, and nonces 31 and 32
 
 Build with the Sepolia profile, which links StorageProofs at compile time so that Etherscan
 verification compiles the same code:
@@ -96,10 +100,12 @@ The deployer's next two Sepolia transactions are these, in this order:
    `0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14`, the token the minter was given.
 
 On Oct 20 (Sepolia block #11,950,547) the deployer was at nonce 31, mined and pending, with 0.19996
-ETH. Nothing else may be sent from it first: any other transaction at nonce 31 would leave lock 0
-mintable nowhere (D5). Until BridgeMinter is mined, the relayer that keeps the light client current
-signs with another key: run from the deployer, `npm run relay -- --chain v3` plans its imports from
-nonce 31 (its dry run of Oct 20 did).
+ETH. Both nonces were spoken for, 31 and 32: any other transaction at nonce 31 would have left lock
+0 mintable nowhere, and any other at nonce 32 the minter without its token (D5). Until both were
+mined the deployer sent nothing else, and the relayer that keeps the light client current would
+have signed with another key: run from the deployer, `npm run relay -- --chain v3` plans its imports
+from the deployer's next nonce, which was 31 (its dry run of Oct 20 did). Both were mined that day,
+at blocks #11,950,851 and #11,950,852.
 
 `npm run mint -- deploy` has a Sepolia node run both creations; with `--send --account <keystore>
 --password-file <path>` it sends them one at a time, records each transaction's hash in
@@ -117,21 +123,25 @@ details):
 
 | Command | What it does |
 |---|---|
-| `bundle --nonce <n> [--out <dir>]` | Reads, at the latest finalized V3 block B, everything `importAndMint` of lock n needs: B's header, `grandpa_proveFinality(B)` with its signatures checked under the set that signs B, the signers hint, and the three proofs, each walked against B's state root (the account entry must name the vault's code hash, the slot must hold lock n's commitment). Writes `<dir>/mint-bundle.json` (by default `fixtures/v3-testnet-mint`) and nothing else. |
+| `bundle --nonce <n> [--out <dir>] [--force]` | Reads, at the latest finalized V3 block B, everything `importAndMint` of lock n needs: B's header, `grandpa_proveFinality(B)` with its signatures checked under the set that signs B, the signers hint, and the three proofs, each walked against B's state root (the account entry must name the vault's code hash, the slot must hold lock n's commitment). Refuses a B, or a parent of B, that changes a set ("run again in a few seconds"). Writes `<dir>/mint-bundle.json` (by default `fixtures/v3-testnet-mint`) and nothing else, and not over a file that is there already unless `--force`. |
 | `bundle --check <file>` | Checks a bundle file offline the same way; `npm run check` checks the fixtures, bundles included. |
 | `plan [--bundle <file> \| --nonce <n>] [--sandbox] [--from <address>]` | Dry run with `eth_simulateV1`, validation on, from the senders' own nonces and balances, first with the 16,777,216 cap as gas limit and then with the gas + 10%: the two creations while the minter is not deployed (refused unless the deployer's next nonce is 31 and `CREATE(deployer, 31)` is the lock's minter), then `importAndMint`. Prints the gas, fees, events and the wtPOT balance after, and runs the same `importAndMint` once more from another sender, which has to verify B again and revert `NonceAlreadyUsed`. While the light client lags behind the bundle's set it asks for `npm run relay -- --chain v3` first. `--sandbox` runs the path on a fresh GrandpaLightClient created in the simulation, at the bundle's set, so it needs no relayer run. |
 | `deploy [--bundle <file> \| --nonce <n>] [--send --account <keystore> --password-file <path>]` | The two creations (above), for the minter the lock names (lock 0 by default); `--send` needs the deployer's keystore. |
 | `mint [--bundle <file> \| --nonce <n>] [--from <address>] [--send --account <keystore> --password-file <path>]` | `importAndMint` of the lock; any key can send it. |
 | `mint --tamper signature\|header\|proof\|amount\|recipient` or `mint --replay`, with the options of `mint`, or `--sandbox` | The demo's two reverts, as transactions. A tamper is the lock's `importAndMint` with one part changed, which has to revert with the error that names that part, before the mint or after it; the replay, once the lock is minted, is the same `importAndMint` again, which has to revert `NonceAlreadyUsed`. The dry run requires exactly that revert; `--send` records the transaction, then checks status 0 in its receipt and the revert, replayed on its block. `--sandbox` runs them on `plan --sandbox`'s path: a tamper before the mint and again after it, the replay after it. |
-| `status` | The minter (bound or not, trie id, burns), the token (total supply, balances) and the vault's locks on V3, each with its commitment checked, marked minted or not, whether each burn has been released on V3, and the demo's reverts in the record. |
+| `status` | The minter (bound or not, trie id, burns), the token (total supply, balances) and the vault's locks on V3, each with its commitment checked, marked minted or not, whether each burn has been released on V3, and the demo's reverts in the record. It reads the logs in windows of at most 10,000 blocks from each contract's deploy block; when an RPC refuses old logs (the public Sepolia RPC answers "pruned history unavailable" after about a week), it falls back to the views: `burnCount` and `burnIdOf` on Sepolia, `nextNonce` and the stored commitments, checked against the record's lock fields, on V3. |
 
 `plan` and `mint` take the bundle file given, a bundle read on the spot for `--nonce`, or else
 `fixtures/v3-testnet-mint/mint-bundle.json`. Without `--send` nothing is signed: a dry run refuses
 `--account` and `--password-file`. A plan with a creation refuses a Sepolia build that was not
 compiled from the checkout's sources (each source's keccak-256 in the build's metadata, read with
 LF or CRLF line ends), and a dry run prints the `forge verify-contract` command of each contract it
-would create. Exit codes: 0 done, 1 a check failed or the tool refused, 2 a node could not be
-reached, 3 a sent transaction is still pending.
+would create. Before it plans, every run of `plan`, `deploy` and `mint`, dry run or not, settles
+what an earlier `--send` run left open in `deployments/sepolia-bridge.json` (a hash recorded, no
+block): a mined transaction gets its receipt and the checks it allows, a pending one stays open,
+and one neither mined nor pending is marked dropped, so that a later `--send` sends it again. Exit
+codes: 0 done, 1 a check failed or the tool refused, 2 a node could not be reached, 3 a sent
+transaction is still pending.
 
 ## Costs
 
@@ -173,7 +183,8 @@ Gas on Sepolia, against the 16,777,216 cap per transaction:
 Step 1 starts in the repository's root; every later command runs in `relayer/`, except step 3's,
 in `contracts/`. A command without `--send` is a dry run and signs nothing. `bz-deployer` is the
 Foundry keystore of the deployer `0xD9838A86cF83C28Ee486544060D1cA4Ca2971071` and `<path>` its
-password file. Until step 2 is mined, the deployer sends nothing else.
+password file. Until both of step 2's transactions are mined, nonces 31 and 32, the deployer sends
+nothing else.
 
 **1. Build and rehearse.**
 
@@ -223,8 +234,8 @@ npm run relay -- --chain v3 --send --account <relayer keystore> --password-file 
 On Oct 20 the client was at set 25 (#92,604) and V3 at set 30: the dry run planned the five set
 changes #93,035, #96,612, #100,199, #103,784 and #107,359, then the head, six transactions and
 13,842,577 gas. Run it after step 2 only: it plans from its sender's next nonce, and from the
-deployer before the deploy that is nonce 31. relay.ts advises a key of its own for the relayer,
-since the deployer is the client's admin.
+deployer before the deploy those are nonces 31 and 32. relay.ts advises a key of its own for the
+relayer, since the deployer is the client's admin.
 
 **5. Read the bundle** at V3's latest finalized block B:
 
@@ -233,12 +244,16 @@ npm run mint -- bundle --nonce 0
 ```
 
 It writes `fixtures/v3-testnet-mint/mint-bundle.json`, which `plan`, `mint` and
-`BridgeMinterLive.t.sol` read. Once read, the proofs stay valid; the bundle stays usable while the
-light client is in B's set and below B, or holds B. The relayer imports a head about once an hour
-and V3 changes sets about every 6 hours; if the client moves past B or V3 changes sets first, the
-mint's dry run says so, and steps 4 and 5 run again. A relayer left running with `--watch` is best
-stopped until step 6 is mined: a head it imports between the dry run and the mint makes the mint
-revert `NotNewer`.
+`BridgeMinterLive.t.sol` read; over a bundle that is there already only with `--force` (a sent
+mint's record can name it), and never at a block B whose parent changes a set (it says to run again
+in a few seconds). Once read, the proofs stay valid; the bundle stays usable while the light client
+is in B's set and below B, or holds B. The relayer imports a head about once an hour and V3 changes
+sets about every 6 hours; if the client moves past B or V3 changes sets first, the mint's dry run
+says so, and steps 4 and 5 run again. Importing into the light client is open to anyone: a head that
+any relayer imports between the dry run and the mint, ours left running with `--watch` or anyone
+else's, makes the mint revert `NotNewer`. Ours is best stopped until step 6 is mined; after a
+`NotNewer` from someone else's import, read the bundle again (`bundle --nonce 0 --force`) and mint
+again.
 
 **6. Mint lock 0**, in one transaction:
 
@@ -287,6 +302,12 @@ a limit of about 2,650,000.
 
 ## The trusted return path
 
+The way back is trusted, not proven: wtPOT burned on Sepolia becomes tPOT on V3 when the
+committee's 2-of-3 multisig has the vault release it, and no contract checks the release against
+the burn (D1). `npm run release` in `relayer/` ([`relayer/src/release.ts`](../relayer/src/release.ts);
+its header has the details) burns on Sepolia, takes the committee through its two approvals on V3,
+and checks each side.
+
 1. **Burn, on Sepolia.** A holder calls `burn(amount, v3Recipient)` on the minter. It destroys
    `amount` of the caller's wtPOT (no approval is needed: the token lets only the minter burn, and
    the minter burns only from its caller), takes the next burn nonce and emits
@@ -297,10 +318,17 @@ a limit of about 2,650,000.
    ```
 
    the vault's convention (`srcChainId`, `srcMinter`, `burnNonce`); `burnIdOf(burnNonce)` returns
-   it.
-2. **The committee.** The 2-of-3 committee (D1) reads the event on Sepolia, checks the burn and
-   approves on V3 `multisig.asMulti` of `revive.call(vault, 0, weight limit, deposit limit,
-   release(burnId, v3Recipient, amount))` ([V3.md](V3.md#release-trusted) has the limits).
+   it. Burn 0 will carry `0x0b8e808d1084dd2878e3d20b124a677cdc26785882cf3aac9f7ccbf84245471f`.
+2. **The committee.** The members read the burn at Sepolia's finalized block, check its burn id
+   against `burnIdOf` and the convention, and approve on V3, through pallet-multisig, the call
+   `revive.call(vault, 0, weight limit, storage deposit limit, release(burnId, v3Recipient,
+   amount))`. One member opens it with `multisig.asMulti(2, the other two members in ascending
+   order, no timepoint, the call, its weight)`, which reserves 9.27 tPOT of that member's until the
+   release runs; a second member runs it with `asMulti` and the timepoint `multisig.multisigs` holds
+   for it (the opening's block and extrinsic index). Both carry the call in full: V3's
+   pallet-multisig stores only its hash, so the call is on chain in the opening extrinsic, where
+   the second approver's tool reads it ([V3.md](V3.md#release-trusted) has the limits and the
+   pallet's rules).
 3. **The release, on V3.** The vault, called by its `RELEASER` (the committee's multisig address
    `0xA08A7f7DEd49CC81F901Fb42Fec00edFC48c0fc1`), pays `amount` native base units (`amount × 10^4`
    wei) to `v3Recipient`, at most `outstanding`, once per burn id.
@@ -308,7 +336,133 @@ a limit of about 2,650,000.
 Trusted: nothing on V3 checks the burn. The committee can release without a burn, or not release
 after one, and any 2 of its 3 members can pay out up to `outstanding` (D1). On Sepolia the burn is
 final: the minter cannot undo it and does not see the release. `v3Recipient` has to be an address
-someone controls on V3 ([V3.md](V3.md#release-trusted)); the minter refuses only the zero address.
+someone controls on V3 ([V3.md](V3.md#release-trusted)); the minter refuses only the zero address,
+and the tool refuses, before a burn and before a release, an address nobody is shown to control:
+it takes a mapped Substrate account, a contract on V3, or an address that sends transactions as a
+key does (the burn's sender, or one with a nonce on Sepolia or V3, without code there), so a burn
+sent from a contract on Sepolia, a smart wallet say, names another `v3Recipient`. Before a burn the
+tool also dry-runs, from the multisig at V3's finalized head, the release that burn asks for, and
+refuses the burn when that release does not run. That checks V3 as it stands at the burn; it is no
+promise that the committee releases (D1).
+
+### The release tool
+
+| Command | What it does |
+|---|---|
+| `burn --amount <wtPOT> --v3-recipient <h160> [--from <address>]` | Dry run with `eth_simulateV1`, validation on, first with the 16,777,216 cap as gas limit, then with the gas + 10% it is sent with: the sender's wtPOT, the `BurnRequested` event with the next burn nonce and its burn id (`burnIdOf` and the vault's convention), the `Transfer` to the zero address, and the balance, the total supply and `burnCount` after. Refuses a `v3Recipient` nobody is shown to control on V3, and a burn whose release does not run from the multisig at V3's finalized head (`reviveApi.call`): a burn cannot be undone. With `--send --account <keystore> --password-file <path>` it sends the burn through cast as the mint tool sends its transactions, its hash recorded in `deployments/sepolia-bridge.json` (a step of kind `burn`) before it is published, and checks the receipt and the event. |
+| `release --burn-nonce <n> [--to <h160>]` | Reads burn n at Sepolia's finalized block (its log, in windows of at most 10,000 blocks from the minter's deploy block #11,950,851), checks on V3 that it is not released and that `outstanding` covers it, dry-runs the release from the multisig (`reviveApi.call`, and `reviveApi.traceCall` for the `Released` log and the payout), builds the call with its limits, and prints the call, its hash and weight, the multisig's state for it, the costs and what the next approver runs. `--to`, if given, has to be the burn's `v3Recipient`. Exit code 3 while the burn is not final. |
+| `release --burn-nonce <n> --rehearse --amount <wtPOT> --to <h160>` | The same V3 side for a burn that is not on Sepolia yet (the vault does not look at Sepolia), under `burnIdOf(n)`; with `--approve --member <k>`, member k's approval too. Nothing can be sent. |
+| `release --burn-nonce <n> --approve --member <1\|2\|3> [--send --key-file <member json> --password-file <path>]` | Member k's approval: `asMulti` without a timepoint when nothing is open (it opens the operation), with the timepoint when the other member approved (it runs the call). Prints the fee and refuses a member whose free balance does not cover it, the deposit and the existential deposit. `--send` signs with the member's polkadot-js keystore (decoded with the password file, never printed), records the approval in `deployments/v3-testnet.json` (`releases`) before it submits, waits for finality and checks the events; after the second approval, `released[burnId]`, `outstanding` and the payee's balance (its `System.Account` at the block and its parent; through the EVM RPC too while that still serves the block's state, about 256 blocks). An approval a later run settles but cannot check stays submitted, with a warning, and does not hold up the command. |
+| `release --burn-nonce <n> --cancel --member <k> [--send ...]` | The opener's `cancelAsMulti`, which gives its deposit back. |
+| `fund --member <1\|2\|3> \| --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]` | `balances.transferKeepAlive` from the testnet account `5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7` (or `--from`) to a member or to the multisig, with the fee and what the member needs; `--send` signs with a key file in `v3-vault deploy`'s format (`.substrate.mnemonic`) and records the transfer (`committeeFunding`). |
+| `status` | The burns on Sepolia (logs in windows, or `burnCount` and `burnIdOf` when the RPC refuses old logs) with the release state of each on V3 (`released[burnId]`, the record, the multisig's open operations), the members' and the multisig's balances, and the accounting: `outstanding` covers the wtPOT supply and the burns not released yet. |
+
+Nothing is signed without `--send`, and a dry run refuses the key options. Every fetch of the
+process refuses `eth_send*` and `eth_sign*`, and the V3 node's provider refuses `author_submit*`
+before anything reaches its socket unless the command signs on V3 with `--send` (`bridge.ts`). A run
+that stops after it sent settles what the record holds as sent before it does anything else. Exit
+codes are the mint tool's: 0 done, 1 refused or a check failed, 2 a node could not be reached, 3
+something sent, or the burn, is not final yet.
+
+V3's EVM RPC serves the logs of Ethereum transactions, and a release is a Substrate extrinsic
+(`multisig.asMulti` dispatching `revive.call`): its `Released` event is the `revive.ContractEmitted`
+event the tool checks, and `eth_getLogs` may not return it (the tool says which it sees, and the
+status commands count such a release from `released[burnId]` and its burn's amount).
+
+### What the way back costs
+
+| What | Paid by | Measured on Oct 20 |
+|---|---|---|
+| `burn` on Sepolia | the holder | 159,354 gas (0.9% of the cap), sent with a limit of 175,290: about 0.00000000016 ETH at the day's base fee, at most 0.0000017529 ETH at the tool's maximum fee |
+| The release's storage deposit (`released[burnId]`) | the multisig account | 3.8415 tPOT, 0 net for the release that brings `outstanding` to 0, plus 0.1 tPOT when the payee account does not exist yet; the call's limit is 3.9415 tPOT |
+| Opening the operation (`asMulti`, no timepoint) | the first member | a fee of about 0.0328 tPOT, and 9.27 tPOT (`DepositBase` 5.43 + 2 × `DepositFactor` 1.92) reserved until the release runs |
+| Running it (`asMulti` with the timepoint) | the second member | a fee of about 0.0336 tPOT |
+| Cancelling it (`cancelAsMulti`) | the first member | a fee of about 0.0216 tPOT; the deposit comes back |
+| Funding a member (`balances.transferKeepAlive`) | `5ERJ…` | a fee of about 0.015 tPOT |
+
+From the rehearsal of burn 0 as a release of 0.5 tPOT to `0xD9838A86cF83C28Ee486544060D1cA4Ca2971071`
+(`release --burn-nonce 0 --rehearse --amount 0.5 --to 0xD983…1071`, V3 #116,205): the release takes
+782,299,332 ref time and 26,093 proof size from the multisig (`reviveApi.call`); the call is
+approved with twice that, rounded up, 1,600,000,000 and 60,000, and a storage deposit limit of
+3.9415 tPOT; it encodes in 142 bytes with call hash `0x9f59c293…17ee9b9a`, and its dispatch weight,
+the maximum weight of the approval that runs it, is 2,106,623,000 ref time and 67,725 proof size.
+A member needs 9.403 tPOT free to open a release and 0.134 tPOT to run one, the existential deposit
+of 0.1 tPOT included. Fees on V3 are mostly the extrinsic's length (0.0001 tPOT a byte); the weight
+adds little.
+
+### Runbook: back from Sepolia to V3
+
+Every command runs in `relayer/`. A command without `--send` is a dry run and signs nothing.
+`bz-deployer` is the Foundry keystore of the deployer, which holds the 1 wtPOT of lock 0, and
+`<path>` its password file; `<5ERJ key file>` is the key file of the testnet account
+`5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7` (`v3-vault deploy`'s format);
+`<member-1.json>` and `<member-2.json>` are the committee's polkadot-js keystores and
+`<committee password file>` the file that opens them. Members 1 and 2 approve; member 3 is the spare.
+
+**1. Burn 0.5 wtPOT** for the deployer's own address on V3:
+
+```
+npm run release -- burn --amount 0.5 --v3-recipient 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071
+npm run release -- burn --amount 0.5 --v3-recipient 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 --send --account bz-deployer --password-file <path>
+npm run release -- status
+```
+
+It becomes burn 0. Sepolia finalizes its block about 13 minutes later; until then `release` ends
+with exit code 3.
+
+**2. Fund two members** from `5ERJ…` (about 196 tPOT): member 1 opens the release, member 2 runs it.
+
+```
+npm run release -- fund --member 1 --amount 10
+npm run release -- fund --member 1 --amount 10 --send --key-file <5ERJ key file>
+npm run release -- fund --member 2 --amount 1
+npm run release -- fund --member 2 --amount 1 --send --key-file <5ERJ key file>
+```
+
+The multisig account already holds 20 tPOT for storage deposits, enough for five releases.
+
+**3. The committee's dry run:**
+
+```
+npm run release -- release --burn-nonce 0
+```
+
+It prints the call, its hash, that no member has approved it, and the commands below.
+
+**4. Approval 1: member 1 opens it.**
+
+```
+npm run release -- release --burn-nonce 0 --approve --member 1
+npm run release -- release --burn-nonce 0 --approve --member 1 --send --key-file <member-1.json> --password-file <committee password file>
+```
+
+The tool checks `multisig.NewMultisig` and the operation in `multisig.multisigs` at its timepoint,
+with 9.27 tPOT of member 1's reserved.
+
+**5. Approval 2: member 2 runs it.**
+
+```
+npm run release -- release --burn-nonce 0 --approve --member 2
+npm run release -- release --burn-nonce 0 --approve --member 2 --send --key-file <member-2.json> --password-file <committee password file>
+```
+
+The tool checks `multisig.MultisigExecuted` with result `Ok` (the extrinsic succeeds even when the
+call fails, so the result is what tells) and the vault's `Released` event, then `released[burnId]`
+set, `outstanding` down by 0.5 tPOT and the payee's balance on the EVM side up by 5 × 10^17 wei;
+member 1's deposit is unreserved.
+
+**6. Check:**
+
+```
+npm run release -- status
+npm run v3-vault -- status
+npm run mint -- status
+```
+
+Burn 0 shows as released, and the vault's `outstanding`, 0.5 tPOT, covers the 0.5 wtPOT left on
+Sepolia. If an operation's call no longer covers the dry run when the second member comes to it
+(the state moved in between), its opener cancels it (`--cancel --member 1`, then with `--send ...`)
+and the round starts again.
 
 ## What the minter trusts
 
