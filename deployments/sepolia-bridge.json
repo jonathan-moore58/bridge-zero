@@ -361,6 +361,38 @@
       "effectiveGasPrice": "1015",
       "status": 1,
       "ok": true
+    },
+    {
+      "name": "importAndMint lock 1",
+      "kind": "mint",
+      "nonce": 57,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/BridgeMinter.sol:BridgeMinter",
+      "address": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "lock": {
+        "nonce": 1,
+        "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "amountNative": "100000000000000"
+      },
+      "bundle": {
+        "file": "fixtures/v3-testnet-lock1/mint-bundle.json",
+        "block": {
+          "number": 118637,
+          "hash": "0xf7d13964affa4085c9e2e87eee896be2b621846761e9839a93aa9a831c1c5a0d"
+        },
+        "setId": 33
+      },
+      "dataHash": "0x76998332f2be3e641d8967535dcfef860d8f4074398f5a39011af33ca0aafe08",
+      "gasLimit": 2630176,
+      "simulatedGas": 2391069,
+      "codeHash": null,
+      "txHash": "0xb9134dd793b84ff53375cd6b5ec8fb51940fea0a5cce2b5924f674b530d7f943",
+      "signedAt": "2026-10-20T14:46:09.780Z",
+      "block": 11955981,
+      "gasUsed": 2391069,
+      "effectiveGasPrice": "1014",
+      "status": 1,
+      "ok": true
     }
   ]
 }
