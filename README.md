@@ -18,11 +18,15 @@ V3 testnet becomes wtPOT on Sepolia in one transaction that verifies V3's finali
 from the vault's storage, and mints. No trusted relayer: anyone can bring the proofs, and the
 contracts check them. What is trusted is the Portaldot validator set, each chain's sudo key and
 each light client's admin ([Trusted](#how-it-works)); the way back (burn wtPOT on Sepolia, release
-tPOT on V3) is trusted too, a 2-of-3 committee, and ran once on Oct 20 (rows 47 to 51). The light
-client and the proof libraries are a building block for iBridge: an EVM contract can use them to
-read proven Portaldot state, as ProvenBalance and BridgeMinter do. Today the bridge connects the
-Portaldot V3 testnet and Ethereum Sepolia; the same contracts can run on other EVM chains that have
-the BLAKE2F precompile, which the [roadmap](#roadmap) plans for after the event.
+tPOT on V3) is trusted too, a 2-of-3 committee, and ran once on Oct 20 (rows 47 to 51).
+
+So Bridge Zero is an asset bridge and a data bridge. The asset bridge moves tPOT to Sepolia as
+wtPOT and back. The data bridge is the light client with the proof libraries: any EVM contract can
+use them to read proven Portaldot state, as ProvenBalance (an account's balance) and BridgeMinter
+(a lock in the vault's storage) do, and they are a building block for iBridge. Today the bridge
+connects the Portaldot V3 testnet and Ethereum Sepolia. The [roadmap](#roadmap) plans a liquidity
+engine for transfers that settle in seconds, a faster way back, and the same contracts on more EVM
+chains that have the BLAKE2F precompile.
 
 ## Live on testnets
 
@@ -336,6 +340,10 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   Ethereum mainnet the same gas is paid at mainnet prices.
 - The relayer runs when it is started (`--watch` keeps it running): a light client is as current
   as its last run.
+- The way back waits for Sepolia's finality, about 13 to 15 minutes, before the committee releases,
+  so the recorded run took about 20 minutes from the burn to the release (rows 47 to 51). The
+  way in needs only V3's finality: 48 seconds for lock 1. The roadmap's fast mode and LP
+  fast-fill are planned for the way back.
 
 ## Roadmap
 
@@ -349,15 +357,29 @@ Plans, not promises: a step counts once it runs on chain and is in the [evidence
 - The proof kit, packaged for other builders: the light client, the proof libraries and the
   capture and check tools, so another EVM contract can read proven Portaldot state.
 
-**After the event**
+**Planned after the check-in: a liquidity engine and more chains**
 
+- **A faster way back.** A fast mode in which the committee releases a burn after a few Sepolia
+  confirmations instead of Sepolia's finality, a trade-off it states, and an auto-release watcher
+  that runs both approvals as soon as a burn qualifies: the way back in about a minute instead of
+  about 20 minutes.
+- **LP fast-fill, the first part of a liquidity engine.** A liquidity provider pays a burn's
+  recipient on V3 within seconds, from its own tPOT; once the burn is final, the committee releases
+  the burn's amount from the vault to the provider that filled it. The vault's `release` pays any
+  address, so the contracts stay as they are. The provider carries the wait and the reorg risk and
+  can charge for it, as the liquidity bridges on Ethereum mainnet do.
+- **Fast-fill for the way in.** A provider pays wtPOT on Sepolia at once and is repaid when the
+  lock's proven mint lands; this needs a minter that mints to the provider that filled.
 - **More EVM chains.** The same contracts can be deployed on EVM chains that have the BLAKE2F
   precompile (EIP-152) and room for the light client's deployment (15,039,367 gas on Sepolia). On
   Oct 20 a read-only call to that precompile returned the expected result for an EIP-152 test
   vector on Base Sepolia, OP Sepolia, Arbitrum Sepolia, Polygon Amoy, the BNB Smart Chain testnet,
   Avalanche Fuji and Linea Sepolia; zkSync Era Sepolia does not have it. Each chain gets its own
   light client and minter; a lock's commitment already names the destination chain and minter, so
-  one vault on Portaldot can serve them all. None of them is promised for this event.
+  one vault on Portaldot can serve them all, and the liquidity providers can serve every route.
+
+**After the event**
+
 - **A web app for the bridge.** Lock, mint and burn from a wallet, with the proofs read in the
   browser.
 - **A proven way back.** An Ethereum light client on Portaldot, so that the vault checks a burn
