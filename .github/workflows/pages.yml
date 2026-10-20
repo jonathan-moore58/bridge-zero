@@ -1,0 +1,62 @@
+# Builds the status page in site/ and deploys it to GitHub Pages, at /bridge-zero/. The page reads
+# deployments/, fixtures/, the README and the contract sources at build time, so a change to any of
+# them rebuilds it. Pages has to be enabled in the repository's settings with "GitHub Actions" as
+# its source; until it is, the deploy job fails and nothing is published.
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/**"
+      - "deployments/**"
+      - "fixtures/**"
+      - "contracts/src/**"
+      - "README.md"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Install
+        working-directory: site
+        run: npm ci --no-audit --no-fund
+      - name: Type-check and test
+        working-directory: site
+        run: npm run check
+      - name: Build
+        working-directory: site
+        run: npm run build
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
