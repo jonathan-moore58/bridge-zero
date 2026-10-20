@@ -1,0 +1,21 @@
+{
+  "about": "The timed run of lock 1, Oct 20, 2026: the intervals the bridge’s tools measured, with their own checks, from sending the lock on the V3 testnet to the mint’s receipt on Sepolia, and the timestamps of the two blocks. deployments/ records each transaction and its block, not these intervals; the README’s section \"Lock to mint in 48 seconds\" states them (the lock 10, GRANDPA finality 14, reading and checking the proofs 9, the mint 15), and the message of commit 06c996a records the 14 s of finality and the 48 s in all. The build checks that both transactions are in deployments/, that the steps add up to the total, and, when the README has that section, that it gives the same numbers.",
+  "runs": [
+    {
+      "lockTx": "0x30606cf196d5d9553c83580b7d114de91f8a4839d819320ca775351a8c6c70e4",
+      "mintTx": "0xb9134dd793b84ff53375cd6b5ec8fb51940fea0a5cce2b5924f674b530d7f943",
+      "measuredOn": "2026-10-20",
+      "steps": [
+        { "key": "lock", "seconds": 10, "what": "the lock on V3" },
+        { "key": "finality", "seconds": 14, "what": "GRANDPA finality of the lock’s block" },
+        { "key": "proofs", "seconds": 9, "what": "reading and checking the proofs" },
+        { "key": "mint", "seconds": 15, "what": "the mint on Sepolia, to its receipt" }
+      ],
+      "totalSeconds": 48,
+      "blockTimes": {
+        "lock": { "chain": "v3", "block": 118636, "at": "2026-10-20T14:45:36Z" },
+        "mint": { "chain": "sepolia", "block": 11955981, "at": "2026-10-20T14:46:12Z" }
+      }
+    }
+  ]
+}

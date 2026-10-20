@@ -1,0 +1,139 @@
+/* Bridge Zero design tokens, in Portaldot's colours: violet-tinted ink surfaces, the mark's
+   violet-to-blue gradient for what the visitor acts on and for progress, lilac accents, and three
+   small meaning signals: green for what is verified, amber for what is trusted, coral for what
+   reverts. Sora for text, Geist Mono for hashes and numbers, both served with the page. */
+
+@font-face {
+  font-family: "Sora";
+  src: url("../../node_modules/@fontsource-variable/sora/files/sora-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  src: url("../../node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces: the page, then raised violet-tinted ink */
+  --bg: #0d0c14;
+  --bg-deep: #08070d;
+  --ink-0: #0d0c14;
+  --ink-1: #111019;
+  --ink-2: #16141f;
+  --ink-3: #1a1726;
+  --ink-4: #1c1928;
+  --ink-5: #221e31;
+  --card-bg: linear-gradient(180deg, #17151f 0%, #131119 100%);
+  --panel-bg: rgb(20 18 30 / 0.78);
+
+  /* Hairlines: white at low alpha; violet where something is the brand's */
+  --line-1: rgb(255 255 255 / 0.06);
+  --line-2: rgb(255 255 255 / 0.09);
+  --line-3: rgb(255 255 255 / 0.14);
+  --line-4: rgb(255 255 255 / 0.22);
+  --line-brand: rgb(177 151 255 / 0.28);
+  --line-brand-strong: rgb(177 151 255 / 0.5);
+
+  /* Text: every step down to --text-3 passes 4.5:1 on --ink-5; --text-4 is decoration only */
+  --text-1: #f3f1fa;
+  --text-value: #e7e4f2;
+  --text-2: #b3aec6;
+  --text-3: #8c86a3;
+  --text-4: #5d5772;
+
+  /* Portaldot: the mark's gradient, and its accents */
+  --brand-1: #6c27e2;
+  --brand-2: #4a34f0;
+  --brand-3: #2d68f4;
+  --brand: linear-gradient(100deg, #6c27e2 0%, #4a34f0 52%, #2d68f4 100%);
+  --brand-v: linear-gradient(180deg, #6c27e2 0%, #4a34f0 52%, #2d68f4 100%);
+  --brand-text: linear-gradient(100deg, #c9b8ff 0%, #a98bff 30%, #7f9cff 64%, #b4c8ff 100%);
+  --brand-wash: rgb(108 39 226 / 0.14);
+  --accent: #b197ff;
+  --lilac: #d6c9ff;
+  --lilac-2: #c9b8ff;
+
+  /* Meaning: small signals only (badges, dots, outlines) */
+  --verify: #45e0a8;
+  --verify-strong: #7aeec4;
+  --verify-ink: #04140e;
+  --verify-wash: rgb(69 224 168 / 0.1);
+  --verify-line: rgb(69 224 168 / 0.3);
+  --trust: #f2b95b;
+  --trust-wash: rgb(242 185 91 / 0.1);
+  --trust-line: rgb(242 185 91 / 0.32);
+  --revert: #ff8a78;
+  --revert-soft: #ffb5a8;
+  --revert-wash: rgb(255 138 120 / 0.1);
+  --revert-line: rgb(255 138 120 / 0.32);
+
+  /* Chains */
+  --pdot: #b197ff;
+  --eth: #a9b4ff;
+
+  /* Type */
+  --font-sans: "Sora", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+
+  --t-display: clamp(2rem, 1.45rem + 1.9vw, 3rem);
+  --t-h2: clamp(1.5rem, 1.2rem + 0.9vw, 2rem);
+  --t-h3: clamp(1.08rem, 1.02rem + 0.3vw, 1.25rem);
+  --t-lead: clamp(1rem, 0.97rem + 0.18vw, 1.1rem);
+  --t-body: 1rem;
+  --t-small: 0.875rem;
+  --t-micro: 0.6875rem;
+  --t-mono: 0.8125rem;
+
+  /* Space: a 4 px scale */
+  --s-1: 4px;
+  --s-2: 8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 20px;
+  --s-6: 24px;
+  --s-7: 32px;
+  --s-8: 40px;
+  --s-9: 48px;
+  --s-10: 64px;
+  --s-11: 80px;
+  --s-12: 112px;
+  --section-y: clamp(56px, 6vw, 88px);
+  --gutter: clamp(16px, 4vw, 32px);
+  --container: 1200px;
+
+  /* Shape */
+  --r-xs: 6px;
+  --r-sm: 10px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 28px;
+  --r-full: 999px;
+
+  /* Depth */
+  --ring-1: inset 0 0 0 1px rgb(255 255 255 / 0.07);
+  --shadow-card: inset 0 1px 0 rgb(255 255 255 / 0.04), 0 26px 60px -34px rgb(0 0 0 / 0.85);
+  --shadow-pop: inset 0 0 0 1px rgb(255 255 255 / 0.08), 0 40px 120px -36px rgb(0 0 0 / 0.75), 0 0 90px -40px rgb(108 39 226 / 0.45);
+  --glow-brand: 0 0 0 1px rgb(177 151 255 / 0.5), 0 0 36px -8px rgb(108 39 226 / 0.6);
+  --glow-verify: 0 0 0 1px var(--verify-line), 0 0 30px -10px rgb(69 224 168 / 0.45);
+  --glow-revert: 0 0 0 1px var(--revert-line), 0 0 30px -12px rgb(255 138 120 / 0.4);
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --d-1: 140ms;
+  --d-2: 240ms;
+  --d-3: 420ms;
+  --d-4: 800ms;
+}
