@@ -2,7 +2,8 @@
 // values cast computed (cast calldata, cast abi-encode, cast keccak, cast compute-address), the
 // events and errors, the check of deployed code, the signers hint and the offline checks on the
 // mint bundle captured from the V3 testnet (fixtures/v3-testnet-mint), the demo's tampered and
-// replayed calls on that bundle, and the dry-run guard.
+// replayed calls on that bundle, the dry-run guard (fetch, the WebSocket client, a polkadot-js
+// provider), and the windows a log search asks.
 //
 //   npm test
 
@@ -30,6 +31,7 @@ import {
   formatWtpot,
   guardedFetch,
   guardedRequest,
+  guardProvider,
   HEADER_IMPORTED_TOPIC,
   immutablesProblem,
   importAndMintCalldata,
@@ -38,6 +40,8 @@ import {
   installDryRunGuard,
   isWriteMethod,
   librariesIn,
+  LOG_WINDOW,
+  logWindows,
   MINTED_TOPIC,
   MINTER,
   minterConstructorArgs,
@@ -513,5 +517,64 @@ describe("the dry-run guard", () => {
       globalThis.fetch = fetchBefore;
       RpcClient.prototype.request = requestBefore;
     }
+  });
+
+  it("refuses author_submit* on a polkadot-js provider before its socket, through send and subscribe", async () => {
+    const asked: string[] = [];
+    const provider = {
+      send: async (method: string, ..._rest: unknown[]) => {
+        asked.push(method);
+        return null;
+      },
+      subscribe: async (_type: string, method: string, ..._rest: unknown[]) => {
+        asked.push(method);
+        return 1;
+      },
+    };
+    guardProvider(provider, "test-node-v3.portaldot.dev");
+    await assert.rejects(provider.send("author_submitExtrinsic", ["0x00"]), DryRunViolation);
+    await assert.rejects(provider.subscribe("author_extrinsicUpdate", "author_submitAndWatchExtrinsic", ["0x00"]), DryRunViolation);
+    await assert.rejects(provider.send("eth_sendRawTransaction", ["0x00"]), DryRunViolation);
+    assert.deepEqual(asked, []);
+    await provider.send("state_call", ["ReviveApi_call", "0x"]);
+    await provider.subscribe("chain_newHead", "chain_subscribeNewHeads", []);
+    assert.deepEqual(asked, ["state_call", "chain_subscribeNewHeads"]);
+  });
+
+  it("guards a real WsProvider: an extrinsic is refused by the guard, a read reaches the provider", async () => {
+    const { WsProvider } = await import("@polkadot/api");
+    // Never connected: a request that passes the guard fails in the provider, for want of a socket.
+    const provider = guardProvider(new WsProvider("ws://127.0.0.1:9", false), "127.0.0.1:9");
+    await assert.rejects(provider.send("author_submitExtrinsic", ["0x00"]), DryRunViolation);
+    await assert.rejects(provider.subscribe("author_extrinsicUpdate", "author_submitAndWatchExtrinsic", ["0x00"], () => undefined), DryRunViolation);
+    await assert.rejects(provider.send("chain_getHeader", []), (error: unknown) => !(error instanceof DryRunViolation));
+  });
+});
+
+describe("log windows", () => {
+  it("splits a block range into windows of at most 10,000 blocks, both ends included", () => {
+    assert.deepEqual(logWindows(11_950_851, 11_954_835), [[11_950_851, 11_954_835]]);
+    assert.deepEqual(logWindows(100_955, 116_345), [
+      [100_955, 110_954],
+      [110_955, 116_345],
+    ]);
+    assert.deepEqual(logWindows(0, 19_999), [
+      [0, 9_999],
+      [10_000, 19_999],
+    ]);
+    assert.deepEqual(logWindows(5, 5), [[5, 5]]);
+    assert.deepEqual(logWindows(6, 5), []);
+    assert.deepEqual(logWindows(1, 5, 2), [
+      [1, 2],
+      [3, 4],
+      [5, 5],
+    ]);
+    for (const [a, z] of logWindows(1, 123_456)) assert.ok(z - a + 1 <= LOG_WINDOW);
+  });
+
+  it("refuses what is not a block range", () => {
+    assert.throws(() => logWindows(-1, 5), RangeError);
+    assert.throws(() => logWindows(1, 5, 0), RangeError);
+    assert.throws(() => logWindows(0.5, 5), RangeError);
   });
 });

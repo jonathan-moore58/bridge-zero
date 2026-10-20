@@ -4,8 +4,9 @@
 // arguments of the deployment, the checks that deployed code is the build's and that a build is
 // from the current sources, the light client's storage after initialize (for a simulation), the
 // errors a revert names, the offline checks of a mint bundle, the demo's tampered and replayed
-// calls with the reverts they have to get, and the guard that keeps a dry run from sending. No
-// network access: mint.ts and bridge.test.ts use it.
+// calls with the reverts they have to get, the guard that keeps a dry run from sending (on fetch,
+// on the WebSocket client and on a polkadot-js provider), and the windows a log search asks. No
+// network access: mint.ts, release.ts and bridge.test.ts use it.
 
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex, concatBytes, equalBytes, flipByte, hexToBytes, shortHex, type Hex } from "./bytes.js";
@@ -780,10 +781,51 @@ export function guardedRequest(inner: RpcClient["request"]): RpcClient["request"
 
 /**
  * Keeps this process from sending anything: global fetch (the Sepolia and EVM RPCs) and the
- * WebSocket client (the V3 node) refuse the write methods above. mint.ts installs it, before its
- * first request, for every command that is not --send.
+ * WebSocket client (the V3 node) refuse the write methods above. mint.ts and release.ts install
+ * it before their first request, for every command: a --send sends on Sepolia through cast
+ * publish, a process of its own.
  */
 export function installDryRunGuard(): void {
   globalThis.fetch = guardedFetch(globalThis.fetch);
   RpcClient.prototype.request = guardedRequest(RpcClient.prototype.request);
+}
+
+/** The two ways a request reaches the socket of a polkadot-js provider (WsProvider). */
+export interface JsonRpcProvider {
+  send(method: string, params: unknown[], ...rest: never[]): Promise<unknown>;
+  subscribe(type: string, method: string, params: unknown[], ...rest: never[]): Promise<unknown>;
+}
+
+/**
+ * `provider` refusing every write method (author_submitExtrinsic, author_submitAndWatchExtrinsic,
+ * ...) before it reaches the socket: what release.ts gives @polkadot/api unless a command signs
+ * with --send. polkadot-js submits an extrinsic through one of these two methods.
+ */
+export function guardProvider<P extends JsonRpcProvider>(provider: P, where: string): P {
+  const send = provider.send.bind(provider) as (method: string, params: unknown[], ...rest: unknown[]) => Promise<unknown>;
+  const subscribe = provider.subscribe.bind(provider) as (type: string, method: string, params: unknown[], ...rest: unknown[]) => Promise<unknown>;
+  const guarded: JsonRpcProvider = {
+    send: (method, params, ...rest) => (isWriteMethod(method) ? Promise.reject(new DryRunViolation(method, where)) : send(method, params, ...rest)),
+    subscribe: (type, method, params, ...rest) => (isWriteMethod(method) ? Promise.reject(new DryRunViolation(method, where)) : subscribe(type, method, params, ...rest)),
+  };
+  provider.send = guarded.send as P["send"];
+  provider.subscribe = guarded.subscribe as P["subscribe"];
+  return provider;
+}
+
+// ---------------------------------------------------------------------------------------
+// Logs in windows
+
+/** The most blocks one eth_getLogs request spans: public RPCs cap the range (the Sepolia RPC at 50,000). */
+export const LOG_WINDOW = 10_000;
+
+/**
+ * Blocks `from` to `to` (both included) as windows of at most `size` blocks, in order: the ranges
+ * a log search asks one at a time.
+ */
+export function logWindows(from: number, to: number, size = LOG_WINDOW): [number, number][] {
+  if (!Number.isSafeInteger(from) || !Number.isSafeInteger(to) || from < 0 || !Number.isSafeInteger(size) || size < 1) throw new RangeError(`not a block range: ${from} to ${to} by ${size}`);
+  const out: [number, number][] = [];
+  for (let start = from; start <= to; start += size) out.push([start, Math.min(to, start + size - 1)]);
+  return out;
 }
