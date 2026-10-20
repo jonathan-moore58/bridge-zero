@@ -5,6 +5,11 @@ finality (the validators' signatures) and Substrate storage proofs, so an EVM
 contract can use Portaldot state without a trusted relayer: trust rests on the
 Portaldot validator set.
 
+**Live page: [jonathan-moore58.github.io/bridge-zero](https://jonathan-moore58.github.io/bridge-zero/)**. It reads both light clients, the
+vault and the bridge from the chains as you watch, and its "Check it live" buttons send the
+tampered mints to BridgeMinter as read-only calls, which it refuses. It has no wallet and signs
+nothing.
+
 Built for the Portaldot Hacker House 2026, Multi-Chain & Cross-Chain Infra track.
 Development runs from Oct 14 to Nov 6, 2026; this repository starts on Oct 14.
 
@@ -312,6 +317,10 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   address the burn named (rows 48 to 51). `npm run release` checks the burn, dry-runs the release
   from the multisig before anything is sent, and checks the payout
   ([docs/BRIDGE.md](docs/BRIDGE.md#the-release-tool)).
+- The live page, [jonathan-moore58.github.io/bridge-zero](https://jonathan-moore58.github.io/bridge-zero/) (`site/`), built and deployed
+  by `.github/workflows/pages.yml` on every change to the records: both light clients, the vault
+  and the bridge read live, the recorded runs as the fallback when an RPC is down, and the six
+  tampered mints checked live against BridgeMinter.
 - Tests: 327 forge tests, 74 relayer tests and 295 fixture checks pass
   ([Verify it yourself](#verify-it-yourself)).
 
@@ -351,7 +360,6 @@ Plans, not promises: a step counts once it runs on chain and is in the [evidence
 
 **Next, before Nov 6**
 
-- A status page that reads both light clients, the vault and the bridge live, for anyone to check.
 - The relayer kept running (`--watch`), so the V3 light client stays at V3's current validator set
   and a mint needs only V3's finality and one Sepolia transaction (48 seconds for lock 1).
 - The proof kit, packaged for other builders: the light client, the proof libraries and the
@@ -620,6 +628,7 @@ The bundle is [`fixtures/v3-testnet-lock1`](fixtures/v3-testnet-lock1).
 | `contracts/` | Foundry project: light client, proof verification, bridge contracts |
 | `relayer/` | TypeScript tools: fetch finality and storage proofs from Portaldot nodes, relay finality to the Sepolia light clients, deploy and use the vault on V3, mint wtPOT, and run the return path |
 | `fixtures/` | Captured chain data used by the tests, each file with its source |
+| `site/` | The live page (Vite, TypeScript, Preact): reads the chains, with the records as the fallback; deployed to GitHub Pages by `.github/workflows/pages.yml` |
 | `deployments/` | Records of every Sepolia transaction, and on the V3 testnet of the vault's deployment, lock 0 and the return path: addresses, hashes, blocks, gas and fees |
 | `docs/` | Gas measurements, deployment notes, decisions |
 
