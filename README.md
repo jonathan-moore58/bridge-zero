@@ -20,7 +20,9 @@ contracts check them. What is trusted is the Portaldot validator set, each chain
 each light client's admin ([Trusted](#how-it-works)); the way back (burn wtPOT on Sepolia, release
 tPOT on V3) is trusted too, a 2-of-3 committee, and ran once on Oct 20 (rows 47 to 51). The light
 client and the proof libraries are a building block for iBridge: an EVM contract can use them to
-read proven Portaldot state, as ProvenBalance and BridgeMinter do.
+read proven Portaldot state, as ProvenBalance and BridgeMinter do. Today the bridge connects the
+Portaldot V3 testnet and Ethereum Sepolia; the same contracts can run on other EVM chains that have
+the BLAKE2F precompile, which the [roadmap](#roadmap) plans for after the event.
 
 ## Live on testnets
 
@@ -303,21 +305,6 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
 - Tests: 327 forge tests, 74 relayer tests and 264 fixture checks pass
   ([Verify it yourself](#verify-it-yourself)).
 
-**Next, before Nov 6**
-
-- A status page that reads both light clients, the vault and the bridge live.
-- The proof kit, packaged for other builders: the light client, the proof libraries and the
-  capture and check tools, so another EVM contract can read proven Portaldot state.
-
-**Other chains**
-
-The same contracts can be deployed on EVM chains that have the BLAKE2F precompile (EIP-152) and
-room for the light client's deployment (15,039,367 gas on Sepolia). On Oct 20 a read-only call to
-that precompile returned the expected result for an EIP-152 test vector on Base Sepolia, OP
-Sepolia, Arbitrum Sepolia, Polygon Amoy, the BNB Smart Chain testnet, Avalanche Fuji and Linea
-Sepolia; zkSync Era Sepolia does not have it. Solana is not an EVM chain and would need its own
-program. None of them is promised for this event.
-
 **Known limits**
 
 - The V3 testnet has 2 GRANDPA validators, probably development keys: the V3 path shows the
@@ -342,6 +329,39 @@ program. None of them is promised for this event.
   Ethereum mainnet the same gas is paid at mainnet prices.
 - The relayer runs when it is started (`--watch` keeps it running): a light client is as current
   as its last run.
+
+## Roadmap
+
+Plans, not promises: a step counts once it runs on chain and is in the [evidence](#evidence).
+
+**Next, before Nov 6**
+
+- A status page that reads both light clients, the vault and the bridge live, for anyone to check.
+- The relayer kept running (`--watch`), so the V3 light client stays at V3's current validator set
+  and a mint needs only V3's finality and one Sepolia transaction.
+- The proof kit, packaged for other builders: the light client, the proof libraries and the
+  capture and check tools, so another EVM contract can read proven Portaldot state.
+
+**After the event**
+
+- **More EVM chains.** The same contracts can be deployed on EVM chains that have the BLAKE2F
+  precompile (EIP-152) and room for the light client's deployment (15,039,367 gas on Sepolia). On
+  Oct 20 a read-only call to that precompile returned the expected result for an EIP-152 test
+  vector on Base Sepolia, OP Sepolia, Arbitrum Sepolia, Polygon Amoy, the BNB Smart Chain testnet,
+  Avalanche Fuji and Linea Sepolia; zkSync Era Sepolia does not have it. Each chain gets its own
+  light client and minter; a lock's commitment already names the destination chain and minter, so
+  one vault on Portaldot can serve them all. None of them is promised for this event.
+- **A web app for the bridge.** Lock, mint and burn from a wallet, with the proofs read in the
+  browser.
+- **A proven way back.** An Ethereum light client on Portaldot, so that the vault checks a burn
+  instead of trusting the committee.
+- **Portaldot's V3 mainnet,** once it is live. The Portaldot Node Console already lists a network
+  named "PortaldotV3 Live" that finalizes with GRANDPA the same way (2 validators, checked
+  read-only on Oct 20); a light client started from its own checkpoint could follow it.
+- **Non-EVM chains.** Solana is not an EVM chain: it would need its own verifier program. Research
+  only.
+- **Before any mainnet value:** an outside audit; each light client's admin replaced by a timelock
+  or a multisig, or renounced; committee keys held by independent members.
 
 ## Development log
 
