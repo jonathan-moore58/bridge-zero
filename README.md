@@ -8,19 +8,339 @@ Portaldot validator set.
 Built for the Portaldot Hacker House 2026, Multi-Chain & Cross-Chain Infra track.
 Development runs from Oct 14 to Nov 6, 2026; this repository starts on Oct 14.
 
+## What it does
+
+`GrandpaLightClient` runs on Ethereum Sepolia and follows the finality of a Portaldot chain: it
+accepts a block header only with valid signatures from more than two thirds of the chain's GRANDPA
+validators, checked in Solidity, and then holds that block's state root, against which contracts
+check Substrate storage proofs. The bridge is built on it: tPOT locked in a vault on the Portaldot
+V3 testnet becomes wtPOT on Sepolia in one transaction that verifies V3's finality, proves the lock
+from the vault's storage, and mints. No trusted relayer: anyone can bring the proofs, and the
+contracts check them. What is trusted is the Portaldot validator set, each chain's sudo key and
+each light client's admin ([Trusted](#how-it-works)); the way back (burn wtPOT on Sepolia, release
+tPOT on V3) is trusted too, a 2-of-3 committee, and has not been run yet. The light client and
+the proof libraries are a building block for iBridge: an EVM contract can use them to read proven
+Portaldot state, as ProvenBalance and BridgeMinter do.
+
+## Live on testnets
+
+| | Where | What it proves |
+|---|---|---|
+| **Lock 0 minted** (row 32) | Sepolia transaction [`0x91714c84…`](https://sepolia.etherscan.io/tx/0x91714c8422a7058c161f5592ff7c59eb62399bc99d5f02d6a9ebc1506c955cba) | One transaction verified V3 block #108,424 with both V3 validators' signatures, bound the vault, proved lock 0's commitment from the vault's storage and minted 1 wtPOT. Its Logs tab lists `HeaderImported`, `VaultBound`, `Transfer` and `Minted`. |
+| `BridgeMinter` | Sepolia [`0x8287…cB9E`](https://sepolia.etherscan.io/address/0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E) | The minter, source-verified, with no owner and no admin. Rows 32 to 38 are sent to it: the mint, then five tampered copies, each reverted with the error that names what was changed, and a replay, reverted with `NonceAlreadyUsed(0)`. |
+| The V3 light client | Sepolia [`0x4471…dcb0`](https://sepolia.etherscan.io/address/0x447171c4885ad725ee4772e8e3c228adee50dcb0) (`GrandpaLightClient` #2) | Follows the V3 testnet's finality from a checkpoint at validator set 19: every set change from 19 to 30, imported in order, each with both validators' signatures (rows 5, 6, 18 to 23, 26 to 31). It is as current as the relayer's last run (see Known limits). |
+| The vault and lock 0 | V3 testnet: vault `0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd`, lock transaction `0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051` (block #101,009) | 1 tPOT locked for Sepolia; the vault stores the commitment `0x9eba08c9…41e23435` that the mint proved. We found no indexed explorer for the V3 testnet: the Portaldot Node Console shows the [deployment block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/100955) and the [lock's block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/101009), and [cast](#verify-it-yourself) reads the vault. |
+| **Old mainnet, 7 of 10** (row 3) | Sepolia transaction [`0x8ddd807e…`](https://sepolia.etherscan.io/tx/0x8ddd807e2880b51b397cfac898b857740f7bfd081cddd32dcc71d405ea980696) | The same light client code verified old-mainnet block #2,726,202 with 7 of its 10 validators' signatures and proved an account balance from that block's state root (Logs: `HeaderImported` with `signatures` 7, then `BalanceProven`). The old mainnet's explorer shows the same block hash and state root: [#2,726,202](https://portalscan.portaldot.io/#/blocks/2726202). |
+
+The [evidence tables](#evidence) list all 38 transactions.
+
+## How it works
+
+### Components
+
+```mermaid
+flowchart TB
+    subgraph V3["Portaldot V3 testnet"]
+        VAL["GRANDPA validators<br/>2 keys, both sign"]
+        VAULT["PortaldotVault 0xa02E…8ffd<br/>lock() stores commitments[nonce]"]
+    end
+
+    subgraph OFF["Off-chain tools, relayer/"]
+        RELAY["Relayer<br/>npm run relay"]
+        TOOL["Mint tool<br/>npm run mint"]
+    end
+
+    subgraph SEP["Ethereum Sepolia"]
+        LC["GrandpaLightClient #2 0x4471…dcb0<br/>finalized V3 headers and state roots"]
+        BM["BridgeMinter 0x8287…cB9E<br/>proves a lock, mints"]
+        WT["WrappedTPOT 0x1fcB…Cb14<br/>wtPOT"]
+        LIB["Linked libraries: SCL_EIP6565,<br/>GrandpaCodec, AuthoritySets"]
+        SP["Linked library:<br/>StorageProofs"]
+    end
+
+    subgraph RET["Trusted return path, not run yet"]
+        BURN["Burn on Sepolia<br/>BridgeMinter.burn emits BurnRequested"]
+        COMM["2-of-3 committee<br/>pallet-multisig account on V3"]
+        REL["Release on V3<br/>PortaldotVault.release pays tPOT"]
+    end
+
+    VAL -->|"finality proofs"| RELAY
+    VAL -->|"finality proof of block B"| TOOL
+    VAULT -->|"storage proofs at B"| TOOL
+    RELAY -->|"set changes and heads"| LC
+    TOOL -->|"importAndMint: one transaction"| BM
+    BM -->|"import B, read its state root"| LC
+    BM -->|"mint"| WT
+    LC --- LIB
+    BM --- SP
+    WT -.->|"a holder burns wtPOT"| BURN
+    BURN -.->|"TRUSTED"| COMM
+    COMM -.->|"TRUSTED: 2 of 3 approve"| REL
+
+    classDef trusted stroke-dasharray: 6 4
+    class BURN,COMM,REL trusted
+```
+
+### From a lock to a mint
+
+```mermaid
+sequenceDiagram
+    actor U as Locker
+    participant V as Portaldot V3 testnet<br/>vault, node, validators
+    participant T as Mint tool<br/>(off-chain)
+    participant M as BridgeMinter<br/>(Sepolia)
+    participant L as GrandpaLightClient<br/>(V3 client, Sepolia)
+    participant W as WrappedTPOT<br/>(Sepolia)
+
+    U->>V: vault.lock(11155111, minter, recipient)<br/>with 1 tPOT
+    V->>V: commitments[nonce] = keccak256(tag,<br/>420420777, vault, 11155111, minter,<br/>recipient, amount, nonce)
+    V->>V: GRANDPA finalizes the block<br/>with the lock, then later blocks
+    T->>V: at the latest finalized block B:<br/>header, grandpa_proveFinality(B)
+    T->>V: read proofs at B: the vault's<br/>account entry, its child-trie root,<br/>commitments[nonce]
+    Note over T: checks every signature and proof,<br/>dry-runs the call on a Sepolia node
+    Note over L: the relayer keeps it at<br/>V3's current validator set
+    rect rgba(128, 128, 128, 0.12)
+        Note over T,W: one Sepolia transaction
+        T->>M: importAndMint(header,<br/>finalityProof, signers, lockProof)
+        M->>L: importFinalityProof(header,<br/>finalityProof, signers)
+        L->>L: hash the header (blake2b-256):<br/>it must be B, the block<br/>the proof finalizes
+        L->>L: verify 2 of 2 ed25519<br/>precommit signatures against<br/>the set it follows
+        L->>L: store B's state root<br/>(HeaderImported)
+        L-->>M: B (the lock proof must name B)
+        M->>L: stateRootOf(B), read for the bind<br/>and again for the mint
+        opt vault not bound yet (first mint)
+            M->>M: prove the vault's account entry:<br/>code hash, trie id (VaultBound)
+        end
+        M->>M: prove the child-trie root,<br/>then commitments[nonce]
+        M->>M: recompute the commitment:<br/>it must equal the proven word
+        M->>M: used[nonce] must be false,<br/>then set it
+        M->>W: mint(recipient, amount)
+        Note over M,W: Transfer, Minted
+    end
+```
+
+**No trusted relayer.** The relayer and the mint tool carry data; the Sepolia contracts check all
+of it. The light client builds the signed GRANDPA message on chain, reads the validator keys from
+its own storage, and imports a header only with valid signatures from N - floor((N - 1) / 3) of
+the N validators it follows (2 of 2 on V3, 7 of 10 on the old mainnet). The minter reads the vault
+only through storage proofs against an imported state root, and mints only the lock the proven
+commitment describes. Anyone can run the relayer or send a mint; a relayer that stops can delay a
+mint, not forge one.
+
+**Trusted:** the Portaldot validator set (on V3: 2 validators, probably development keys) and each
+chain's sudo key, which can change any storage (V3 and the old mainnet both have one, `Sudo.Key` in
+[`fixtures/probe/`](fixtures/probe)); each light client's admin, the deployer, who set its
+checkpoint, can pause it at any time and install a new one while it is paused, so a checkpoint it
+installs counts like a finalized block and the admin is trusted like the validator set (in
+production it would be a timelock or a multisig, or renounced); and the return path (not run yet),
+where 2 of the 3 committee members release tPOT through pallet-multisig and nothing on V3 checks
+the burn. [docs/BRIDGE.md](docs/BRIDGE.md#what-the-minter-trusts) lists every assumption.
+
+## Verify it yourself
+
+These read the chains and need nothing but [Foundry](https://getfoundry.sh)'s `cast`; none of them
+signs or sends anything. They are written for bash or zsh, and the outputs are what cast 1.8.5
+printed on Oct 20, 2026, except the two marked as growing. Any Sepolia RPC works in place of the
+public one.
+
+```sh
+SEPOLIA=https://ethereum-sepolia-rpc.publicnode.com
+V3=https://test-evm-rpc-v3.portaldot.dev
+
+# GrandpaLightClient #2 (Sepolia): the V3 validator set it is at, and the latest V3 block it holds.
+# Both grow with each relayer run; the mint (row 32) verified block #108,424, in set 30.
+cast call 0x447171c4885Ad725eE4772E8e3c228aDeE50Dcb0 "currentSetId()(uint64)" --rpc-url $SEPOLIA
+# 30 or higher (grows with each relayer run)
+cast call 0x447171c4885Ad725eE4772E8e3c228aDeE50Dcb0 "latestFinalized()(bytes32,uint32)" --rpc-url $SEPOLIA
+# the hash of the latest V3 block it holds
+# its number: 108424 or higher (grows with each relayer run)
+
+# Signatures each client needs: 2 of the V3 testnet's 2, 7 of the old mainnet's 10
+cast call 0x447171c4885Ad725eE4772E8e3c228aDeE50Dcb0 "threshold()(uint256)" --rpc-url $SEPOLIA
+# 2
+cast call 0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6 "threshold()(uint256)" --rpc-url $SEPOLIA
+# 7
+
+# The state roots the clients hold for V3 block #108,424 (row 32; the root in its header on the V3
+# node) and for old-mainnet block #2,726,202 (row 3; the root the old mainnet's explorer shows)
+cast call 0x447171c4885Ad725eE4772E8e3c228aDeE50Dcb0 "stateRootOf(bytes32)(bytes32,uint32)" 0xc89b7e6c5d7596897e677d464a9cc5ca373a69412f810d3f003d7aa8761e4e6d --rpc-url $SEPOLIA
+# 0x0323c7bf619aefcc5360ef3977f8761a57c3a2fe090346bc95be7323d0d9c264
+# 108424 [1.084e5]
+cast call 0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6 "stateRootOf(bytes32)(bytes32,uint32)" 0xae013833a74184522e47e70e41c895f29dec7e59d25504e1fb89b8eb87f3c14f --rpc-url $SEPOLIA
+# 0xf8cd5d2b26dc43dd577ba4fde39fbc99d61835a0c1984381058f032f44be0e34
+# 2726202 [2.726e6]
+
+# BridgeMinter (Sepolia): lock 0 is minted, and the vault's trie id was bound from a proof
+cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "used(uint256)(bool)" 0 --rpc-url $SEPOLIA
+# true
+cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "vaultTrieId()(bytes32)" --rpc-url $SEPOLIA
+# 0xbe307c2d11dbc9391cda93d17e9772542d1300c9af14e7431918fb49e2f47c3a
+
+# WrappedTPOT (Sepolia, 14 decimals): 1 wtPOT to lock 0's recipient, and nothing else minted
+cast call 0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14 "balanceOf(address)(uint256)" 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 --rpc-url $SEPOLIA
+# 100000000000000 [1e14]
+cast call 0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14 "totalSupply()(uint256)" --rpc-url $SEPOLIA
+# 100000000000000 [1e14]
+
+# The vault (V3 testnet, through its EVM RPC): 899 bytes of code, whose keccak-256 is the code hash
+# BridgeMinter was deployed with (its vaultCodeHash)
+cast codesize 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd --rpc-url $V3
+# 899
+cast code 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd --rpc-url $V3 | cast keccak
+# 0xa72553f50cdf645fb343b2cf089e431a1b26fb07e80f4e2236d55bf9811c663f
+
+# Lock 0's commitment as the vault stores it on V3, and the same word recomputed by the minter on
+# Sepolia from the lock's recipient, amount (10^14 native units, 1 tPOT) and nonce
+cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "commitments(uint256)(bytes32)" 0 --rpc-url $V3
+# 0x9eba08c90e4527bdb00da438eb8f15ad244cbb202e8886d929b0e12941e23435
+cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "commitmentOf(address,uint256,uint256)(bytes32)" 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 100000000000000 0 --rpc-url $SEPOLIA
+# 0x9eba08c90e4527bdb00da438eb8f15ad244cbb202e8886d929b0e12941e23435
+
+# The lock itself: the vault's Locked event at V3 block #101,009 (abridged)
+cast logs --from-block 101009 --to-block 101009 --address 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd --rpc-url $V3
+# - address: 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd
+#   blockNumber: 101009
+#   data: 0x0000…00aa36a7 0000…8287b3baf205ca8456f98346f13064aa7fcdcb9e 0000…5af3107a4000 9eba08c90e4527bdb00da438eb8f15ad244cbb202e8886d929b0e12941e23435
+#   topics: [
+#     0x56431a42ac501689c7bf63a9cab5bc9a191019a6321793149852e1bbe6db157c
+#     0x0000000000000000000000000000000000000000000000000000000000000000
+#     0x000000000000000000000000d9838a86cf83c28ee486544060d1ca4ca2971071
+#     0x000000000000000000000000d9838a86cf83c28ee486544060d1ca4ca2971071
+#   ]
+#   transactionHash: 0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051
+```
+
+The `Locked` event's data is the destination chain (`0xaa36a7`, 11155111), the minter, the amount
+(`0x5af3107a4000`, 10^14 native units) and the commitment; its topics are the event, nonce 0, the
+sender and the recipient. The V3 EVM RPC no longer serves the lock's transaction or receipt
+(`eth_getTransactionReceipt` returns null) but still returns its log. For the Sepolia rows,
+Etherscan has every receipt; the public RPC above returns none for the older rows. In a browser,
+the Portaldot Node Console, a Polkadot.js Apps interface that reads the V3 node directly (it is
+not an indexed explorer), shows block
+[#100,955](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/100955)
+with the vault's `revive.instantiateWithCode` and `revive.Instantiated`, and block
+[#101,009](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/101009)
+with lock 0's `revive.ethTransact` and `revive.ContractEmitted`.
+
+**Without chain access**, from a clone of this repository, with Node.js 24 and Foundry:
+
+```sh
+git submodule update --init          # the four pinned libraries of NOTICE.md
+
+cd relayer
+npm ci
+npm run check -- --dir ../fixtures/v3-testnet-hero
+# ...
+# All checks passed: 31 passed, 0 failed.
+npm test
+# ℹ tests 47
+# ℹ pass 47
+# ℹ fail 0
+
+cd ../contracts
+FOUNDRY_PROFILE=v3 forge build --skip test --skip script
+forge test
+# Ran 28 test suites in …: 327 tests passed, 0 failed, 2 skipped (329 total tests)
+```
+
+`npm run check` re-verifies a fixture directory with no network access: every header hashes to its
+block hash, every GRANDPA signature verifies and meets the threshold, every storage proof walks from
+the state root to its value, and tampered copies fail. Each directory passes:
+
+| `--dir` | What it holds | Checks |
+|---|---|---|
+| `../fixtures/mainnet` | old mainnet, set 3895, head #2,726,202 (rows 1 to 4) | 46 passed |
+| `../fixtures/mainnet-pre-v3` | old mainnet before the V3.0 launch, set 3896, head #2,727,094 | 46 passed |
+| `../fixtures/v3-testnet` | V3 testnet, set 20, head #71,745 (rows 5 to 8) | 48 passed, 1 skipped |
+| `../fixtures/v3-testnet-vault` | the vault's lock 0, proven at V3 #101,027 | 31 passed |
+| `../fixtures/v3-testnet-mint` | a mint bundle for lock 0 at V3 #104,587 | 31 passed |
+| `../fixtures/v3-testnet-hero` | the bundle row 32 minted with, V3 #108,424, set 30 | 31 passed |
+| `../fixtures/westend-asset-hub-revive` | a pallet-revive contract slot on Westend Asset Hub | 31 passed |
+
+`FOUNDRY_PROFILE=v3 forge build` writes the V3 build of the vault, which its tests check; without
+it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, which run with
+`SEPOLIA_FORK=1` against a Sepolia RPC. forge installs solc 0.8.27 on first use.
+
 ## Status
 
-The light client runs on Ethereum Sepolia. It has verified GRANDPA finality from two Portaldot
-chains, the old Portaldot mainnet (10 validators, 7 signatures needed) and the Portaldot V3 testnet
-(2 validators, both needed), and proved an account balance from each verified block's state root.
-On Oct 18 the relayer brought both light clients up to the chains' live finalized heads: every
-validator-set change since their checkpoints, each with its validators' signatures, then the head.
-On Oct 19 the bridge's vault went live on the V3 testnet, and on Oct 20 the bridge ran end to end:
-1 tPOT locked in the vault on the V3 testnet became 1 wtPOT on Sepolia in one transaction that
-verified V3's finality (both validators' signatures), proved the lock from the vault's storage
-against that block's state root, and minted. Tampered and replayed copies of it revert on chain.
-Next: the return path (burn on Sepolia, release on V3 by a trusted 2-of-3 committee), a status
-page, and the proof kit.
+**Works today**
+
+- Finality from two Portaldot chains, verified on Sepolia: the old mainnet with 7 of its 10
+  validators' signatures (rows 2, 3 and 9 to 17) and the V3 testnet with both of its 2 (rows 6, 7,
+  18 to 23 and 26 to 31). A flipped signature byte reverts (rows 4, 8 and 33).
+- Storage proofs against a verified state root: an account balance on each chain, trie V0 and trie
+  V1 (rows 3 and 7), and a pallet-revive contract slot in the vault's child trie (row 32).
+- The relayer (`npm run relay`) imports every validator-set change in order, then the finalized
+  head, after a dry run of the whole plan on a Sepolia node (rows 9 to 23 and 26 to 31).
+- The vault on the V3 testnet and lock 0 ([the vault](#the-vault-on-the-portaldot-v3-testnet)).
+- The bridge from V3 to Sepolia: BridgeMinter and wtPOT (rows 24 and 25), and one `importAndMint`
+  that verified V3's finality, bound the vault, proved `commitments[0]` and minted 1 wtPOT
+  (row 32). A tampered signature, header, storage proof, amount or recipient reverts with the
+  error that names it, and a replay with `NonceAlreadyUsed(0)` (rows 33 to 38).
+- Tests: 327 forge tests, 47 relayer tests and 264 fixture checks pass
+  ([Verify it yourself](#verify-it-yourself)).
+
+**Next, before Nov 6**
+
+- The trusted return path, run once: wtPOT burned on Sepolia, tPOT released from the vault on V3
+  by the committee's 2-of-3 multisig.
+- A status page that reads both light clients, the vault and the bridge live.
+- The proof kit, packaged for other builders: the light client, the proof libraries and the
+  capture and check tools, so another EVM contract can read proven Portaldot state.
+
+**Other chains**
+
+The same contracts can be deployed on EVM chains that have the BLAKE2F precompile (EIP-152) and
+room for the light client's deployment (15,039,367 gas on Sepolia). On Oct 20 a read-only call to
+that precompile returned the expected result for an EIP-152 test vector on Base Sepolia, OP
+Sepolia, Arbitrum Sepolia, Polygon Amoy, the BNB Smart Chain testnet, Avalanche Fuji and Linea
+Sepolia; zkSync Era Sepolia does not have it. Solana is not an EVM chain and would need its own
+program. None of them is promised for this event.
+
+**Known limits**
+
+- The V3 testnet has 2 GRANDPA validators, probably development keys: the V3 path shows the
+  mechanics. The old mainnet rows (2, 3, 9 to 17) show the same checks against a real
+  10-validator set. Both chains have a sudo key that can change any storage; a light client cannot
+  rule that out.
+- The return path is trusted and has not been run: whoever holds 2 of the 3 committee keys can
+  release up to the vault's outstanding tPOT, to any address.
+- Each light client's admin (the deployer) set its checkpoint and can pause it and install a new
+  checkpoint while it is paused or halted. Since it can pause at any time, it could make the
+  client, and so the minter, accept a state root of its choosing: the admin is trusted like the
+  validator set. In production it would be a timelock or a multisig, or renounced.
+- Testnet only: every contract is on Sepolia or the V3 testnet, and the vendored ed25519, BLAKE2b
+  and trie code is treated as unaudited ([docs/GAS.md](docs/GAS.md#decision)).
+- Gas, against Sepolia's 16,777,216 cap per transaction: a V3 head import about 1.87M, a V3 set
+  change about 2.39M, lock 0's mint with the bind 2,952,838 (17.6%), an old-mainnet set change
+  with 7 signatures 6,322,745 (37.7%); each signature costs about 0.77M. A set change to more
+  than 16 validators (`MAX_AUTHORITIES`) halts the client, since from 18 new keys up it would not
+  fit one transaction. Sepolia's fees are near zero (the mint paid 1,015 wei per gas); on
+  Ethereum mainnet the same gas is paid at mainnet prices.
+- The relayer runs when it is started (`--watch` keeps it running): a light client is as current
+  as its last run.
+
+## Development log
+
+From the git history, in UTC (the time zone Etherscan shows). Rows are the [evidence](#evidence) rows.
+
+- **Oct 14.** The repository and its Foundry project; the capture tool and the off-chain checker;
+  old-mainnet fixtures (a finality proof, a set change and an account proof, set 3895).
+- **Oct 15.** The gas benchmark (one transaction fits; crypto-lib's ed25519 kept), then the light
+  client: SCALE, header and justification decoding, verified header import, set changes and halts,
+  trie V0 and V1 proofs, ProvenBalance. Split into linked libraries so every deployment fits
+  Sepolia's per-transaction cap, measured on a Sepolia node; the read-only node probe.
+- **Oct 17.** The V3 testnet snapshot (set 20, head #71,745), with the light client and trie V1
+  proofs tested on it. On chain: eight contracts on Sepolia, both light clients initialized, a
+  verified block and a proven balance from each chain, and two tampered copies reverted (rows 1
+  to 8).
+- **Oct 18.** A pallet-revive contract slot proven from a state root (Westend Asset Hub). The
+  relayer: its first run brought both light clients to the live finalized heads (rows 9 to 23).
+- **Oct 19.** The vault, its V3 tool and the decisions behind them (docs/DECISIONS.md). On chain:
+  the vault deployed on the V3 testnet at block #100,955 and lock 0 at #101,009. Then BridgeMinter,
+  wtPOT and the mint tool (docs/BRIDGE.md). On chain: both deployed, the V3 light client brought to
+  the head, lock 0 minted in one transaction, five tampered copies and a replay reverted (rows 24
+  to 38).
 
 ## Evidence
 
@@ -56,7 +376,7 @@ Linked libraries: `SCL_EIP6565` [`0x51da…b77e`](https://sepolia.etherscan.io/a
 
 ### Following the live chains
 
-Sepolia blocks 11,943,046 to 11,943,083, Oct 18, sent by the relayer
+Sepolia blocks 11,943,046 to 11,943,083, Oct 18 (UTC), sent by the relayer
 (`npm run relay -- --chain mainnet|v3`, in [`relayer/`](relayer)). A run reads the light client's
 state on Sepolia, finds every validator-set change on the Portaldot chain since the client's latest
 block, and imports them in order, each with the justification the chain stores for it. It then
@@ -128,7 +448,7 @@ every transaction on a Sepolia node first, and sends. The record is
 | `BridgeMinter` | [`0x8287…cB9E`](https://sepolia.etherscan.io/address/0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E) |
 | `WrappedTPOT` (wtPOT, 14 decimals) | [`0x1fcB…Cb14`](https://sepolia.etherscan.io/address/0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14) |
 
-Sepolia blocks 11,950,851 to 11,950,922, Oct 20:
+Sepolia blocks 11,950,851 to 11,950,922, Oct 19 (UTC):
 
 | # | What it shows | Transaction | Block | Result |
 |---|---|---|---|---|
