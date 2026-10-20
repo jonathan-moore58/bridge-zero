@@ -18,21 +18,23 @@ V3 testnet becomes wtPOT on Sepolia in one transaction that verifies V3's finali
 from the vault's storage, and mints. No trusted relayer: anyone can bring the proofs, and the
 contracts check them. What is trusted is the Portaldot validator set, each chain's sudo key and
 each light client's admin ([Trusted](#how-it-works)); the way back (burn wtPOT on Sepolia, release
-tPOT on V3) is trusted too, a 2-of-3 committee, and has not been run yet. The light client and
-the proof libraries are a building block for iBridge: an EVM contract can use them to read proven
-Portaldot state, as ProvenBalance and BridgeMinter do.
+tPOT on V3) is trusted too, a 2-of-3 committee, and ran once on Oct 20 (rows 47 to 51). The light
+client and the proof libraries are a building block for iBridge: an EVM contract can use them to
+read proven Portaldot state, as ProvenBalance and BridgeMinter do.
 
 ## Live on testnets
 
 | | Where | What it proves |
 |---|---|---|
 | **Lock 0 minted** (row 32) | Sepolia transaction [`0x91714c84…`](https://sepolia.etherscan.io/tx/0x91714c8422a7058c161f5592ff7c59eb62399bc99d5f02d6a9ebc1506c955cba) | One transaction verified V3 block #108,424 with both V3 validators' signatures, bound the vault, proved lock 0's commitment from the vault's storage and minted 1 wtPOT. Its Logs tab lists `HeaderImported`, `VaultBound`, `Transfer` and `Minted`. |
-| `BridgeMinter` | Sepolia [`0x8287…cB9E`](https://sepolia.etherscan.io/address/0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E) | The minter, source-verified, with no owner and no admin. Rows 32 to 38 are sent to it: the mint, then five tampered copies, each reverted with the error that names what was changed, and a replay, reverted with `NonceAlreadyUsed(0)`. |
-| The V3 light client | Sepolia [`0x4471…dcb0`](https://sepolia.etherscan.io/address/0x447171c4885ad725ee4772e8e3c228adee50dcb0) (`GrandpaLightClient` #2) | Follows the V3 testnet's finality from a checkpoint at validator set 19: every set change from 19 to 30, imported in order, each with both validators' signatures (rows 5, 6, 18 to 23, 26 to 31). It is as current as the relayer's last run (see Known limits). |
+| `BridgeMinter` | Sepolia [`0x8287…cB9E`](https://sepolia.etherscan.io/address/0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E) | The minter, source-verified, with no owner and no admin. Rows 32 to 38 and 47 are sent to it: the mint, then five tampered copies, each reverted with the error that names what was changed, a replay, reverted with `NonceAlreadyUsed(0)`, and burn 0, the way back. |
+| The V3 light client | Sepolia [`0x4471…dcb0`](https://sepolia.etherscan.io/address/0x447171c4885ad725ee4772e8e3c228adee50dcb0) (`GrandpaLightClient` #2) | Follows the V3 testnet's finality from a checkpoint at validator set 19: every set change from 19 to 32, imported in order, each with both validators' signatures (rows 5, 6, 18 to 23, 26 to 31, 44 to 46). It is as current as the relayer's last run (see Known limits). |
 | The vault and lock 0 | V3 testnet: vault `0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd`, lock transaction `0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051` (block #101,009) | 1 tPOT locked for Sepolia; the vault stores the commitment `0x9eba08c9…41e23435` that the mint proved. We found no indexed explorer for the V3 testnet: the Portaldot Node Console shows the [deployment block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/100955) and the [lock's block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/101009), and [cast](#verify-it-yourself) reads the vault. |
+| **The way back, run once** (rows 47 to 51, trusted) | Sepolia burn [`0x42d70ae9…`](https://sepolia.etherscan.io/tx/0x42d70ae96cd010ed114a62178b88bf2cfcfe85933448aa6010c4f0d1b22dc1d7); the release in V3 block [#117,701](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117701) | 0.5 wtPOT burned on Sepolia for `0xD983…1071` on V3; 2 of the 3 committee members approved the release through pallet-multisig, and the vault paid that address 0.5 tPOT once, for that burn id. No contract checks the release against the burn: the committee is trusted. |
 | **Old mainnet, 7 of 10** (row 3) | Sepolia transaction [`0x8ddd807e…`](https://sepolia.etherscan.io/tx/0x8ddd807e2880b51b397cfac898b857740f7bfd081cddd32dcc71d405ea980696) | The same light client code verified old-mainnet block #2,726,202 with 7 of its 10 validators' signatures and proved an account balance from that block's state root (Logs: `HeaderImported` with `signatures` 7, then `BalanceProven`). The old mainnet's explorer shows the same block hash and state root: [#2,726,202](https://portalscan.portaldot.io/#/blocks/2726202). |
 
-The [evidence tables](#evidence) list all 38 transactions.
+The [evidence tables](#evidence) number 51 transactions: 47 on Sepolia, and the return path's 4
+on V3.
 
 ## How it works
 
@@ -58,7 +60,7 @@ flowchart TB
         SP["Linked library:<br/>StorageProofs"]
     end
 
-    subgraph RET["Trusted return path, not run yet"]
+    subgraph RET["Trusted return path, run once (rows 47 to 51)"]
         BURN["Burn on Sepolia<br/>BridgeMinter.burn emits BurnRequested"]
         COMM["2-of-3 committee<br/>pallet-multisig account on V3"]
         REL["Release on V3<br/>PortaldotVault.release pays tPOT"]
@@ -132,9 +134,8 @@ chain's sudo key, which can change any storage (V3 and the old mainnet both have
 [`fixtures/probe/`](fixtures/probe)); each light client's admin, the deployer, who set its
 checkpoint, can pause it at any time and install a new one while it is paused, so a checkpoint it
 installs counts like a finalized block and the admin is trusted like the validator set (in
-production it would be a timelock or a multisig, or renounced); and the return path (not run yet),
-where 2 of the 3 committee members release tPOT through pallet-multisig and nothing on V3 checks
-the burn. [docs/BRIDGE.md](docs/BRIDGE.md#what-the-minter-trusts) lists every assumption.
+production it would be a timelock or a multisig, or renounced); and the return path, where 2 of
+the 3 committee members release tPOT through pallet-multisig and nothing on V3 checks the burn. [docs/BRIDGE.md](docs/BRIDGE.md#what-the-minter-trusts) lists every assumption.
 
 ## Verify it yourself
 
@@ -176,11 +177,12 @@ cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "used(uint256)(bool)" 0 --r
 cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "vaultTrieId()(bytes32)" --rpc-url $SEPOLIA
 # 0xbe307c2d11dbc9391cda93d17e9772542d1300c9af14e7431918fb49e2f47c3a
 
-# WrappedTPOT (Sepolia, 14 decimals): 1 wtPOT to lock 0's recipient, and nothing else minted
+# WrappedTPOT (Sepolia, 14 decimals): lock 0 minted 1 wtPOT to its recipient, who burned 0.5 of it
+# (row 47); nothing else is minted
 cast call 0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14 "balanceOf(address)(uint256)" 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 --rpc-url $SEPOLIA
-# 100000000000000 [1e14]
+# 50000000000000 [5e13]
 cast call 0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14 "totalSupply()(uint256)" --rpc-url $SEPOLIA
-# 100000000000000 [1e14]
+# 50000000000000 [5e13]
 
 # The vault (V3 testnet, through its EVM RPC): 899 bytes of code, whose keccak-256 is the code hash
 # BridgeMinter was deployed with (its vaultCodeHash)
@@ -208,6 +210,17 @@ cast logs --from-block 101009 --to-block 101009 --address 0xa02EE16EB03d2cf1aeF1
 #     0x000000000000000000000000d9838a86cf83c28ee486544060d1ca4ca2971071
 #   ]
 #   transactionHash: 0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051
+
+# The way back (trusted, rows 47 to 51): burn 0 on Sepolia and its burn id, then on V3 the vault's
+# released flag for that id, and what it still holds for wtPOT (1 tPOT locked, 0.5 released)
+cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "burnCount()(uint256)" --rpc-url $SEPOLIA
+# 1
+cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "burnIdOf(uint256)(bytes32)" 0 --rpc-url $SEPOLIA
+# 0x0b8e808d1084dd2878e3d20b124a677cdc26785882cf3aac9f7ccbf84245471f
+cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "released(bytes32)(bool)" 0x0b8e808d1084dd2878e3d20b124a677cdc26785882cf3aac9f7ccbf84245471f --rpc-url $V3
+# true
+cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "outstanding()(uint256)" --rpc-url $V3
+# 50000000000000 [5e13]
 ```
 
 The `Locked` event's data is the destination chain (`0xaa36a7`, 11155111), the minter, the amount
@@ -220,7 +233,11 @@ not an indexed explorer), shows block
 [#100,955](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/100955)
 with the vault's `revive.instantiateWithCode` and `revive.Instantiated`, and block
 [#101,009](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/101009)
-with lock 0's `revive.ethTransact` and `revive.ContractEmitted`.
+with lock 0's `revive.ethTransact` and `revive.ContractEmitted`. The release is a Substrate
+extrinsic (`multisig.asMulti` dispatching `revive.call`), so the EVM RPC returns no `Released` log
+for it; block
+[#117,701](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117701)
+shows `multisig.MultisigExecuted` and the vault's `revive.ContractEmitted`.
 
 **Without chain access**, from a clone of this repository, with Node.js 24 and Foundry:
 
@@ -233,8 +250,8 @@ npm run check -- --dir ../fixtures/v3-testnet-hero
 # ...
 # All checks passed: 31 passed, 0 failed.
 npm test
-# ℹ tests 47
-# ℹ pass 47
+# ℹ tests 74
+# ℹ pass 74
 # ℹ fail 0
 
 cd ../contracts
@@ -266,24 +283,27 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
 **Works today**
 
 - Finality from two Portaldot chains, verified on Sepolia: the old mainnet with 7 of its 10
-  validators' signatures (rows 2, 3 and 9 to 17) and the V3 testnet with both of its 2 (rows 6, 7,
-  18 to 23 and 26 to 31). A flipped signature byte reverts (rows 4, 8 and 33).
+  validators' signatures (rows 2, 3, 9 to 17 and 39 to 43) and the V3 testnet with both of its 2
+  (rows 6, 7, 18 to 23, 26 to 31 and 44 to 46). A flipped signature byte reverts (rows 4, 8 and 33).
 - Storage proofs against a verified state root: an account balance on each chain, trie V0 and trie
   V1 (rows 3 and 7), and a pallet-revive contract slot in the vault's child trie (row 32).
 - The relayer (`npm run relay`) imports every validator-set change in order, then the finalized
-  head, after a dry run of the whole plan on a Sepolia node (rows 9 to 23 and 26 to 31).
+  head, after a dry run of the whole plan on a Sepolia node (rows 9 to 23, 26 to 31 and 39 to 46).
 - The vault on the V3 testnet and lock 0 ([the vault](#the-vault-on-the-portaldot-v3-testnet)).
 - The bridge from V3 to Sepolia: BridgeMinter and wtPOT (rows 24 and 25), and one `importAndMint`
   that verified V3's finality, bound the vault, proved `commitments[0]` and minted 1 wtPOT
   (row 32). A tampered signature, header, storage proof, amount or recipient reverts with the
   error that names it, and a replay with `NonceAlreadyUsed(0)` (rows 33 to 38).
-- Tests: 327 forge tests, 47 relayer tests and 264 fixture checks pass
+- The way back, trusted, run once: 0.5 wtPOT burned on Sepolia (row 47); 2 of the 3 committee
+  members approved its release on V3 through pallet-multisig, and the vault paid 0.5 tPOT to the
+  address the burn named (rows 48 to 51). `npm run release` checks the burn, dry-runs the release
+  from the multisig before anything is sent, and checks the payout
+  ([docs/BRIDGE.md](docs/BRIDGE.md#the-release-tool)).
+- Tests: 327 forge tests, 74 relayer tests and 264 fixture checks pass
   ([Verify it yourself](#verify-it-yourself)).
 
 **Next, before Nov 6**
 
-- The trusted return path, run once: wtPOT burned on Sepolia, tPOT released from the vault on V3
-  by the committee's 2-of-3 multisig.
 - A status page that reads both light clients, the vault and the bridge live.
 - The proof kit, packaged for other builders: the light client, the proof libraries and the
   capture and check tools, so another EVM contract can read proven Portaldot state.
@@ -300,11 +320,11 @@ program. None of them is promised for this event.
 **Known limits**
 
 - The V3 testnet has 2 GRANDPA validators, probably development keys: the V3 path shows the
-  mechanics. The old mainnet rows (2, 3, 9 to 17) show the same checks against a real
+  mechanics. The old mainnet rows (2, 3, 9 to 17, 39 to 43) show the same checks against a real
   10-validator set. Both chains have a sudo key that can change any storage; a light client cannot
   rule that out.
-- The return path is trusted and has not been run: whoever holds 2 of the 3 committee keys can
-  release up to the vault's outstanding tPOT, to any address.
+- The return path is trusted: whoever holds 2 of the 3 committee keys can release up to the
+  vault's outstanding tPOT, to any address, and nothing on V3 checks a release against a burn.
 - Each light client's admin (the deployer) set its checkpoint and can pause it and install a new
   checkpoint while it is paused or halted. Since it can pause at any time, it could make the
   client, and so the minter, accept a state root of its choosing: the admin is trusted like the
@@ -341,6 +361,10 @@ From the git history, in UTC (the time zone Etherscan shows). Rows are the [evid
   wtPOT and the mint tool (docs/BRIDGE.md). On chain: both deployed, the V3 light client brought to
   the head, lock 0 minted in one transaction, five tampered copies and a replay reverted (rows 24
   to 38).
+- **Oct 20.** The release tool and the committee's rules (docs/BRIDGE.md). On chain: both light
+  clients brought to the live heads again (rows 39 to 46), then the return path, run once: 0.5
+  wtPOT burned on Sepolia (row 47), the committee funded, and the release opened by member 1 and
+  run by member 2 on V3 (rows 48 to 51).
 
 ## Evidence
 
@@ -469,18 +493,59 @@ Sepolia blocks 11,950,851 to 11,950,922, Oct 19 (UTC):
 | 38 | Row 32 sent again | [`0x3dab3abc…`](https://sepolia.etherscan.io/tx/0x3dab3abc4ab21fd40c9342f05377a4cf63f092648d54d7327f31c5dfd7be3e37) | 11,950,922 | reverted: `NonceAlreadyUsed(0)` |
 
 - The V3 testnet's 2 validators are probably development keys, so this path shows the mechanics;
-  rows 2 to 4 and 9 to 17 show the same checks against the old mainnet's real 10-validator set.
+  rows 2 to 4, 9 to 17 and 39 to 43 show the same checks against the old mainnet's real
+  10-validator set.
 - The return path is trusted: wtPOT burned on Sepolia is released on V3 by the committee's 2-of-3
   multisig, which the vault takes as its only releaser.
+
+### The relayer's later runs
+
+Sepolia blocks 11,955,153 to 11,955,172, Oct 20 (UTC): one run for each light client, recorded in
+the same file as rows 9 to 23. The 8 transactions cost 0.00000004 Sepolia ETH in total.
+
+| # | What it shows | Transaction | Block | Result |
+|---|---|---|---|---|
+| 39 | Old mainnet set change 3903 → 3904 at #2,732,251: 7 of 10 signatures | [`0x6aa1731a…`](https://sepolia.etherscan.io/tx/0x6aa1731ae1f7899306cc2a9c9469ad028b62636f908af389a6a02921ed3fed02) | 11,955,153 | success, 6,325,583 gas |
+| 40 | Old mainnet set change 3904 → 3905 at #2,732,971 | [`0xed7d6227…`](https://sepolia.etherscan.io/tx/0xed7d622722a1a3b1489de1a35399ca48d6b87b68c678871bc6fbdf12094d8753) | 11,955,154 | success, 6,320,769 gas |
+| 41 | Old mainnet set change 3905 → 3906 at #2,733,689 | [`0x5bd7663b…`](https://sepolia.etherscan.io/tx/0x5bd7663b40d2a7f44e32499570d138a63a1c7dd8217fcc71b43425a300c0cb6f) | 11,955,155 | success, 6,321,079 gas |
+| 42 | Old mainnet set change 3906 → 3907 at #2,734,409 | [`0x24327136…`](https://sepolia.etherscan.io/tx/0x243271367ef33ec6514ba09b1b85615c95853545e7303f6e7244a57dc6a9cd47) | 11,955,156 | success, 6,324,584 gas |
+| 43 | Old mainnet block #2,734,439 verified (7 of 10): the live finalized head | [`0x00a39857…`](https://sepolia.etherscan.io/tx/0x00a39857bfa1e1c8e352fa668dfb42179e38b1cb0cda6d7388192c8e33eeff9a) | 11,955,157 | success, 5,788,312 gas |
+| 44 | V3 testnet set change 30 → 31 at #110,943: 2 of 2 signatures | [`0x4e626529…`](https://sepolia.etherscan.io/tx/0x4e6265291ef32790d056852414c0dfd2906fb7b24fc087e08f36af3780c67461) | 11,955,170 | success, 2,392,411 gas |
+| 45 | V3 testnet set change 31 → 32 at #114,535 | [`0x8ec46539…`](https://sepolia.etherscan.io/tx/0x8ec46539429df82abc59d873ba9266f0086ef9025534d57de0eacc4f94fe779c) | 11,955,171 | success, 2,386,966 gas |
+| 46 | V3 testnet block #116,992 verified: the light client at the live head | [`0x7be3e419…`](https://sepolia.etherscan.io/tx/0x7be3e4195ee54a393a20e5ef9aa6012538dd8f4ff87bebd64fdca61af110cbb6) | 11,955,172 | success, 1,883,708 gas |
+
+### The way back: a burn on Sepolia, a release on V3 (trusted)
+
+`BridgeMinter.burn` burns wtPOT and emits `BurnRequested` with a burn id; on V3 the committee's
+2-of-3 multisig calls the vault's `release`, which pays the tPOT once per burn id. Nothing on V3
+checks the burn: the committee is trusted. `npm run release` (in [`relayer/`](relayer)) dry-runs
+the burn on a Sepolia node and the release from the multisig before anything is sent, and checks
+the payout after; [`docs/BRIDGE.md`](docs/BRIDGE.md#the-release-tool) is the runbook. The records
+are [`deployments/sepolia-bridge.json`](deployments/sepolia-bridge.json) (the burn) and
+[`deployments/v3-testnet.json`](deployments/v3-testnet.json) (`committeeFunding` and `releases`,
+with every extrinsic's full hash). Oct 20 (UTC):
+
+| # | What it shows | Transaction | Block | Result |
+|---|---|---|---|---|
+| 47 | Burn 0 on Sepolia: 0.5 wtPOT burned for `0xD983…1071` on V3, burn id `0x0b8e808d…4245471f` (`BurnRequested`, `Transfer` to the zero address) | [`0x42d70ae9…`](https://sepolia.etherscan.io/tx/0x42d70ae96cd010ed114a62178b88bf2cfcfe85933448aa6010c4f0d1b22dc1d7) | Sepolia 11,955,414 | success, 159,354 gas |
+| 48 | Committee member 1 funded on V3: 10 tPOT from the testnet account `5ERJ…gPJ7`, enough to open a release | `0xe1c37a36…30209617` | V3 [#117,514](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117514) | final, fee 0.015 tPOT |
+| 49 | Committee member 2 funded on V3: 1 tPOT, enough to run one | `0x1b073b16…b2f89b9d` | V3 [#117,525](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117525) | final, fee 0.015 tPOT |
+| 50 | Member 1 opens the release: `multisig.asMulti` without a timepoint, with the call in full (`NewMultisig`; 9.27 tPOT reserved until it runs) | `0xde2695cb…004e7765` | V3 [#117,688](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117688) | final, fee 0.033 tPOT |
+| **51** | **Member 2 runs it: `asMulti` at timepoint #117,688 → `MultisigExecuted` Ok, the vault's `Released`, 0.5 tPOT to `0xD983…1071`; `released[burnId]` true, `outstanding` 1 → 0.5 tPOT** | `0x686643de…14406011` | V3 [#117,701](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117701) | **final, fee 0.034 tPOT** |
+
+- The multisig paid the release's storage deposit, 3.8415 tPOT for `released[burnId]`; member 1's
+  9.27 tPOT deposit came back when the release ran.
+- After it, the vault's `outstanding` (0.5 tPOT) equals the wtPOT supply (0.5 wtPOT), with no burn
+  waiting for a release: `npm run release -- status` checks that accounting.
 
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `contracts/` | Foundry project: light client, proof verification, bridge contracts |
-| `relayer/` | TypeScript: fetches finality and storage proofs from Portaldot nodes, and relays finality to the Sepolia light clients |
+| `relayer/` | TypeScript tools: fetch finality and storage proofs from Portaldot nodes, relay finality to the Sepolia light clients, deploy and use the vault on V3, mint wtPOT, and run the return path |
 | `fixtures/` | Captured chain data used by the tests, each file with its source |
-| `deployments/` | Sepolia records: deployment addresses, transactions and gas, and the relayer's transactions |
+| `deployments/` | Records of every transaction on Sepolia and the V3 testnet: addresses, hashes, blocks, gas and fees |
 | `docs/` | Gas measurements, deployment notes, decisions |
 
 ## Third-party code
