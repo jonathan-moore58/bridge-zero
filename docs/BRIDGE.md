@@ -73,8 +73,8 @@ per counted precommit. For a block already imported, `mint(lockProof)` mints alo
 `bindVault(blockHash, accountProof)` binds alone. Anyone can send any of them, and nothing is taken
 from the sender (D7).
 
-**Timing.** The V3 node keeps state for about 256 blocks (25 minutes), so the proofs are read at the
-latest finalized block, B; once read they stay valid. The light client imports B only while B is
+**Timing.** V3's EVM RPC serves the state of about the last 256 blocks (25 minutes), and a node may
+prune likewise, so the proofs are read at the latest finalized block, B; once read they stay valid. The light client imports B only while B is
 newer than its latest header and signed by its current set (a header at or below the latest that it
 never imported reverts `NotNewer`). The testnet changes sets about every 6 hours: if the client is
 behind, `npm run relay -- --chain v3` brings it up first, then the bundle is read again; if the
@@ -318,7 +318,7 @@ and checks each side.
    ```
 
    the vault's convention (`srcChainId`, `srcMinter`, `burnNonce`); `burnIdOf(burnNonce)` returns
-   it. Burn 0 will carry `0x0b8e808d1084dd2878e3d20b124a677cdc26785882cf3aac9f7ccbf84245471f`.
+   it. Burn 0 carries `0x0b8e808d1084dd2878e3d20b124a677cdc26785882cf3aac9f7ccbf84245471f`.
 2. **The committee.** The members read the burn at Sepolia's finalized block, check its burn id
    against `burnIdOf` and the convention, and approve on V3, through pallet-multisig, the call
    `revive.call(vault, 0, weight limit, storage deposit limit, release(burnId, v3Recipient,
