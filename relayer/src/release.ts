@@ -252,6 +252,7 @@ import {
   parseMemberKeys,
   readBurnCache,
   readHalt,
+  rpcTrouble,
   submitErrorVerdict,
   takeLock,
   tradeOff,
@@ -2502,8 +2503,11 @@ async function burnsSince(d: Deployed, heads: Heads, cache: BurnCache): Promise<
     b.deployBlock,
   );
   const first = nextNonce > 0n ? nextNonce - 1n : 0n;
-  const count = uintAt(await sepoliaView(b.minter, callData(MINTER.burnCount), qty(latest)), 0);
-  log(`     ${V3_RECORD} has ${nextNonce === 0n ? "no burn" : nextNonce === 1n ? "burn 0" : `burns 0 to ${nextNonce - 1n}`} released; burnCount ${count} at #${fmt(latest)}: the burns from nonce ${first}`);
+  // burnCount one block below the latest: a load-balanced RPC may not serve the logs of the latest
+  // block from every backend yet. A burn in the latest block is seen in the next round.
+  const countAt = Math.max(latest - 1, heads.finalized);
+  const count = uintAt(await sepoliaView(b.minter, callData(MINTER.burnCount), qty(countAt)), 0);
+  log(`     ${V3_RECORD} has ${nextNonce === 0n ? "no burn" : nextNonce === 1n ? "burn 0" : `burns 0 to ${nextNonce - 1n}`} released; burnCount ${count} at #${fmt(countAt)}: the burns from nonce ${first}`);
   const out: WatchedBurn[] = [];
   let added = 0;
   for (let n = first; n < count; n++) {
@@ -2521,7 +2525,7 @@ async function burnsSince(d: Deployed, heads: Heads, cache: BurnCache): Promise<
         continue;
       }
       if (found === null) {
-        out.push({ burnNonce: n, amount: 0n, block: 0, payee: "?", onChain: null, missing: `burnCount is ${count} at #${fmt(latest)}, but the RPC serves no BurnRequested log of it from #${fmt(fromBlock)} yet` });
+        out.push({ burnNonce: n, amount: 0n, block: 0, payee: "?", onChain: null, missing: `burnCount is ${count} at #${fmt(countAt)}, but the RPC serves no BurnRequested log of it from #${fmt(fromBlock)} yet` });
         continue;
       }
       burn = found;
@@ -2744,7 +2748,7 @@ async function watchCommand(o: WatchOptions): Promise<number> {
         if (error instanceof LockLost || error instanceof Fatal || error instanceof RecordError || error instanceof DryRunViolation) {
           return halt({ why: errorText(error), burn: null, extrinsicHash: null });
         }
-        trouble = true;
+        trouble = rpcTrouble(error);
         if (error instanceof Unreachable) {
           log(errorText(error));
           code = UNREACHABLE;

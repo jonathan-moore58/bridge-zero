@@ -454,6 +454,14 @@ export const MAX_WATCH_SECONDS = 86_400;
 /** The longest wait after rounds in a row that an RPC failed. */
 export const MAX_BACKOFF_SECONDS = 3_600;
 
+/**
+ * Whether a round's error is trouble with an RPC, after which the wait doubles: a node that did not
+ * answer (Unreachable) or an RPC that answered a read with an error (RpcError for Sepolia, EvmRpcError
+ * for V3's EVM RPC). Anything else (a
+ * check, a burn) is retried after --watch seconds, as the next round would anyway.
+ */
+export const rpcTrouble = (error: unknown): boolean => error instanceof Error && (error.name === "Unreachable" || error.name === "RpcError" || error.name === "EvmRpcError");
+
 /** The wait before the next round: --watch, doubled after each round in a row an RPC failed, up to an hour (or --watch when that is longer). */
 export function nextWait(watch: number, previous: number, trouble: boolean): number {
   if (!trouble) return watch;

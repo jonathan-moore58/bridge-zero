@@ -26,6 +26,7 @@ import {
   qualification,
   readBurnCache,
   readHalt,
+  rpcTrouble,
   submitErrorVerdict,
   takeLock,
   tradeOff,
@@ -379,6 +380,15 @@ describe("where the watcher looks, and when", () => {
     assert.equal(nextWait(30, 2_400, true), MAX_BACKOFF_SECONDS);
     assert.equal(nextWait(30, MAX_BACKOFF_SECONDS, false), 30);
     assert.equal(nextWait(7_200, 7_200, true), 7_200);
+  });
+
+  it("doubles the wait only for trouble with an RPC", () => {
+    const named = (name: string) => Object.assign(new Error("x"), { name });
+    assert.equal(rpcTrouble(named("Unreachable")), true);
+    assert.equal(rpcTrouble(named("RpcError")), true);
+    assert.equal(rpcTrouble(named("EvmRpcError")), true);
+    for (const name of ["Stop", "Error", "TypeError", "Rejected"]) assert.equal(rpcTrouble(named(name)), false, name);
+    assert.equal(rpcTrouble("Unreachable"), false);
   });
 
   it("takes two members' key files", () => {
