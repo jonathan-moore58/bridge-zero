@@ -57,11 +57,11 @@
 // nor above --max-fee when it is given (a --priority-fee above --max-base-fee needs --max-fee); one
 // of the record left at the next nonce, pending or dropped, is outbid the same way. A later step of
 // the plan keeps the fees of the step before, never above that max fee at its own gate (a head after
-// a set change pays at most the head's). All transactions for one import share its nonce, so at most one of them is mined. One mined without importing is
-// superseded (another relayer imported its header or a later one first, and the next run plans
-// again) when the client held the header at its block, or when it reverted and, replayed with
-// eth_call on the state its block left, it reverts with NotNewer; out of gas, or any other revert,
-// fails its checks.
+// a set change pays at most the head's). All transactions for one import share its nonce, so at
+// most one of them is mined. One mined without importing is superseded (another relayer imported
+// its header or a later one first, and the next run plans again) when the client held the header at
+// its block, or when it reverted and, replayed with eth_call on the state its block left, it reverts
+// with NotNewer; out of gas, or any other revert, fails its checks.
 // The sender's record, history and lock are in the state directory, --state-dir (by default
 // .bridge-zero in the home directory), which every checkout shares: relay-sepolia-<sender>.json holds
 // the sender's transactions not settled yet (signed, pending, or dropped while their nonce is free),
@@ -89,12 +89,12 @@
 // (which has no #fragment) only the host is printed. What it no longer serves (the public endpoint
 // prunes receipts and state after about 33 hours), a run asks of SEPOLIA_ARCHIVE_RPC_URLS (comma
 // separated; by default two public RPCs that keep all), and when none serves it either, settles a
-// transaction the RPC still knows mined from the client's state at the latest block. Exit code 0 when the client is up to date, the
-// dry run passed, the plan was sent and checked, or the base fee is too high to send; 1 when a check
-// fails or nothing can be relayed; 2 when an RPC cannot be reached, a read keeps failing, or the
-// Portaldot node is behind the client; 3 when a sent transaction is still pending, or one of the
-// record is open at the next nonce. With --watch, only a sent transaction that fails its checks, or
-// a signing or record problem, ends the loop.
+// transaction the RPC still knows mined from the client's state at the latest block. Exit code 0
+// when the client is up to date, the dry run passed, the plan was sent and checked, or the base fee
+// is too high to send; 1 when a check fails or nothing can be relayed; 2 when an RPC cannot be
+// reached, a read keeps failing, or the Portaldot node is behind the client; 3 when a sent
+// transaction is still pending, or one of the record is open at the next nonce. With --watch, only a
+// sent transaction that fails its checks, or a signing or record problem, ends the loop.
 
 import { randomUUID } from "node:crypto";
 import {
