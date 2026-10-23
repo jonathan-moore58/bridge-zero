@@ -102,9 +102,9 @@
 // release (opened, not run) is resumed by the other member. Without --send each burn's next approval
 // is dry-run, members 1 and 2 standing for the two keys. --send takes the two members' polkadot-js
 // keystores (--member-keys k:<path>,j:<path>, opened with one --password-file, neither printed) and
-// holds the lock release-watch-<multisig>.lock in --state-dir (by default .bridge-zero in the home
-// directory), relay.ts's scheme: one watcher per committee and machine, checked before each
-// signing. After a round an RPC failed, the wait doubles, up to an hour. A fatal stop ends the
+// holds the lock release-watch-<multisig>.lock in .bridge-zero in the home directory, whatever
+// --state-dir is, relay.ts's scheme: one watcher per committee and machine, checked before each
+// signing. --state-dir (by default that same folder) holds the halt file and the burn cache. After a round an RPC failed, the wait doubles, up to an hour. A fatal stop ends the
 // watcher with exit code 4: a sent approval that fails its checks on chain, an approval an earlier
 // run submitted that is in none of the blocks searched though its sender's nonce is used, a lost
 // lock, a key file or a record that cannot be written. With --send it first writes
@@ -290,8 +290,10 @@ const DEFAULT_SENDER = "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071";
 const DEFAULT_FUNDER = "5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
-/** The default --state-dir of the watcher, where its lock is: outside every checkout, as relay.ts keeps its state. */
+/** Where the watcher's lock is, and the default --state-dir: outside every checkout, as relay.ts keeps its state. */
 const STATE_DIR = join(homedir(), ".bridge-zero");
+/** The lock of the committee's watcher, in STATE_DIR whatever --state-dir is: two watchers of one committee on one machine never both send. */
+const watchLockPath = (multisig: string) => join(STATE_DIR, `release-watch-${multisig}.lock`);
 const BRIDGE_RECORD = "deployments/sepolia-bridge.json";
 const V3_RECORD = "deployments/v3-testnet.json";
 const at = (path: string) => resolve(ROOT, path);
@@ -446,7 +448,7 @@ interface WatchOptions extends Common {
   /** The two members whose keys sign (--member-keys); without --send, members 1 and 2. */
   memberKeys: { member: Member; path: string | null }[];
   passwordFile?: string;
-  /** Where the watcher's lock is (--state-dir), absolute. */
+  /** Where the halt file and the burn cache are (--state-dir), absolute; the lock is in STATE_DIR. */
   stateDir: string;
 }
 
@@ -2754,7 +2756,7 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
 /**
  * release --watch: a round every --watch seconds (watchRound), each burn that qualifies released by
  * two members' approvals; after rounds in a row an RPC failed, the wait doubles, up to an hour.
- * With --send one watcher per committee holds the lock in --state-dir. A fatal stop (a sent approval
+ * With --send one watcher per committee holds the lock in STATE_DIR. A fatal stop (a sent approval
  * that fails its checks, an approval that cannot be found though its nonce is used, a lost lock, a
  * key file or a record that cannot be written) ends it with exit code 4 and, with --send, leaves
  * release-watch-<multisig>.halt in --state-dir; no watcher with --send starts while it is there.
@@ -2792,12 +2794,14 @@ async function watchCommand(o: WatchOptions): Promise<number> {
   };
   let lock: Lock | null = null;
   if (o.send) {
-    try {
-      mkdirSync(o.stateDir, { recursive: true });
-    } catch (error) {
-      throw new Stop(`--state-dir cannot be created: ${errorText(error)}`);
+    for (const dir of new Set([STATE_DIR, o.stateDir])) {
+      try {
+        mkdirSync(dir, { recursive: true });
+      } catch (error) {
+        throw new Stop(`${dir} cannot be created: ${errorText(error)}`);
+      }
     }
-    lock = takeLock(join(o.stateDir, `release-watch-${v.multisig}.lock`), log);
+    lock = takeLock(watchLockPath(v.multisig), log);
     if (!lock) return FAILED;
     log(`     the lock ${lock.path} is this watcher's: no other watcher of the committee ${v.multisig} sends while it runs`);
   }

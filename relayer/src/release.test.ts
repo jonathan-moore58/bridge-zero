@@ -168,13 +168,33 @@ function keyFiles(): string[] {
   return ["--member-keys", `1:${join(SCRATCH, "member-1.json")},2:${join(SCRATCH, "member-2.json")}`, "--password-file", join(SCRATCH, "password.txt")];
 }
 
+/** A home folder of the tests' own (USERPROFILE and HOME), whose .bridge-zero holds a live watcher's lock: this test process's. */
+function homeWithLock(): Record<string, string> {
+  const home = join(SCRATCH, "home");
+  mkdirSync(join(home, ".bridge-zero"), { recursive: true });
+  writeFileSync(join(home, ".bridge-zero", `release-watch-${MULTISIG}.lock`), JSON.stringify({ pid: process.pid, token: "a running watcher", since: new Date().toISOString() }));
+  return { USERPROFILE: home, HOME: home };
+}
+
+describe("the watcher's lock, in the home folder", () => {
+  it("keeps a second watcher of the committee from sending, whatever its --state-dir", { timeout: 120_000 }, async () => {
+    const { code, out } = await run(["release", "--watch", "10", "--send", ...keyFiles(), "--state-dir", join(SCRATCH, "elsewhere"), ...OFFLINE], homeWithLock());
+    assert.equal(code, 1, out);
+    assert.match(out, new RegExp(`another watcher \\(process ${process.pid}\\) runs for this committee`));
+    assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
+  });
+});
+
 describe("release --watch after a fatal stop", () => {
   it("refuses to start with --send while the halt file is there, with exit code 4 and before any request", { timeout: 120_000 }, async () => {
     const stateDir = join(SCRATCH, "halted");
     mkdirSync(stateDir, { recursive: true });
     const halt = join(stateDir, `release-watch-${MULTISIG}.halt`);
     writeFileSync(halt, JSON.stringify({ reason: "member 2's approval failed its checks", burn: "3", extrinsicHash: "0xfeed", at: "2026-10-24T10:00:00.000Z" }));
-    const { code, out } = await run(["release", "--watch", "10", "--send", ...keyFiles(), "--state-dir", stateDir, ...OFFLINE]);
+    // A home folder of its own too: the real one's .bridge-zero is never touched.
+    const home = join(SCRATCH, "home-halted");
+    mkdirSync(home, { recursive: true });
+    const { code, out } = await run(["release", "--watch", "10", "--send", ...keyFiles(), "--state-dir", stateDir, ...OFFLINE], { USERPROFILE: home, HOME: home });
     assert.equal(code, 4, out);
     assert.match(out, /the watcher does not start: a fatal stop at 2026-10-24T10:00:00.000Z: member 2's approval failed its checks \(burn 3, extrinsic 0xfeed\); look at it, then remove /);
     assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
