@@ -8,16 +8,23 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, it } from "node:test";
-import type { Fees } from "../../contracts/script/lib/sepolia.mjs";
+import { after, before, describe, it } from "node:test";
+import { keccak256, RPC, type Fees, type Receipt } from "../../contracts/script/lib/sepolia.mjs";
+import { bytesToHex, utf8 } from "./bytes.js";
 import {
+  callAt,
   clampFees,
   feeCap,
+  findMined,
   heldBackBeforePlan,
+  importedNothing,
   legacyAdvice,
   makeStateDir,
   maxFeeAt,
   measureFees,
+  notNewerIn,
+  outcomeAtLatest,
+  pruned,
   raised,
   senderOf,
   transient,
@@ -25,6 +32,7 @@ import {
   type ClientState,
   type LegacyFacts,
   type Options,
+  type RelayEntry,
 } from "./relay.js";
 
 const GWEI = 10n ** 9n;
@@ -275,5 +283,201 @@ describe("the state directory and an earlier version's files (F7, F8, ops nits 2
     const under = join(fileURLToPath(import.meta.url), "state");
     assert.throws(() => makeStateDir(under), (error: Error) => error.name === "Blocked" && /cannot be created/.test(error.message));
     assert.equal(existsSync(under), false);
+  });
+});
+
+describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", () => {
+  // A stand-in for fetch: the Sepolia RPC (RPC) prunes receipts and old state as publicnode does;
+  // sepolia.drpc.org keeps all; sepolia.gateway.tenderly.co serves another chain, so it is never asked.
+  const CLIENT = "0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6" as const;
+  const HEADER = `0x${"0e".repeat(32)}` as const;
+  const TX = `0x${"f9".repeat(32)}` as const;
+  const OTHER = `0x${"b9".repeat(32)}` as const;
+  const BLOCK_HASH = `0x${"44".repeat(32)}`;
+  const OLD = "0xb63c86";
+  const sel = (signature: string) => bytesToHex(keccak256(utf8(signature)).slice(0, 4));
+  const LATEST = sel("latestFinalized()");
+  const IMPORTED = sel("isImported(bytes32)");
+  const NOT_NEWER = sel("NotNewer(uint32,uint32)");
+  const word = (n: bigint | number) => BigInt(n).toString(16).padStart(64, "0");
+  const PRUNED = { code: 4444, message: "pruned history unavailable: requested 11943046, earliest available 11969386" };
+
+  interface World {
+    /** The client at the latest block. */
+    latest: { number: number; imported: boolean };
+    /** What a replay of the transaction gives on its block, where it is served. */
+    replay: { result?: string; error?: object };
+    /** The client on the state of the old block, where it is served. */
+    old?: { number: number; imported: boolean };
+    /** Which hosts serve the old state, receipts and transactions. */
+    archiveState: boolean;
+    archiveReceipt: boolean;
+    receiptBlockHash: string;
+    txMined: boolean;
+    txOnPrimary: boolean;
+    asked: string[];
+  }
+  let world: World;
+  const reset = (more: Partial<World> = {}) => {
+    world = {
+      latest: { number: 2_727_000, imported: true },
+      replay: { result: `0x${word(0)}` },
+      archiveState: true,
+      archiveReceipt: true,
+      receiptBlockHash: BLOCK_HASH,
+      txMined: true,
+      txOnPrimary: true,
+      asked: [],
+      ...more,
+    };
+  };
+  const client = (at: { number: number; imported: boolean }, data: string) =>
+    data.startsWith(LATEST) ? { result: `0x${HEADER.slice(2)}${word(at.number)}` } : data.startsWith(IMPORTED) ? { result: `0x${word(at.imported ? 1 : 0)}` } : { error: { code: 3, message: "execution reverted", data: "0x" } };
+  const answer = (url: string, method: string, params: unknown[]): object => {
+    const host = new URL(url).host;
+    world.asked.push(`${host} ${method}`);
+    const primary = url === RPC;
+    if (host === "sepolia.gateway.tenderly.co") return method === "eth_chainId" ? { result: "0x1" } : { result: null };
+    if (method === "eth_chainId") return { result: "0xaa36a7" };
+    const tx = { from: "0xd9838a86cf83c28ee486544060d1ca4ca2971071", to: CLIENT, input: "0x1234", gas: "0x6a2a65", blockHash: world.txMined ? BLOCK_HASH : null, blockNumber: world.txMined ? OLD : null };
+    if (method === "eth_getTransactionByHash") return { result: params[0] === TX && (!primary || world.txOnPrimary) ? tx : null };
+    if (method === "eth_getTransactionReceipt") {
+      if (primary || !world.archiveReceipt || params[0] !== TX) return { result: null };
+      return { result: { status: "0x1", blockNumber: OLD, blockHash: world.receiptBlockHash, gasUsed: "0x6083d1", transactionHash: TX, logs: [] } };
+    }
+    if (method === "eth_call") {
+      const [call, block] = params as [{ data: string; from?: string }, string];
+      if (block === "latest") return client(world.latest, call.data);
+      if (primary || !world.archiveState) return { error: PRUNED };
+      if (call.from) return world.replay;
+      return client(world.old ?? world.latest, call.data);
+    }
+    return { error: { code: -32601, message: "Method not found" } };
+  };
+  const real = globalThis.fetch;
+  before(() => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, ...answer(String(url), body.method, body.params) }));
+    }) as typeof fetch;
+  });
+  after(() => {
+    globalThis.fetch = real;
+  });
+
+  const entry = (more: Partial<RelayEntry> = {}): RelayEntry => ({
+    chain: "mainnet",
+    client: CLIENT,
+    method: "importHeader",
+    block: { number: 2_726_491, hash: HEADER },
+    setBefore: 3895,
+    setAfter: 3896,
+    signatures: 7,
+    nonce: 16,
+    gasLimit: 6_957_669,
+    maxFee: "10000000",
+    priorityFee: "1000",
+    simulatedGas: 6_325_153,
+    dataHash: `0x${"56".repeat(32)}`,
+    txHash: TX,
+    signedAt: "2026-10-18T19:08:16.291Z",
+    sepoliaBlock: null,
+    gasUsed: null,
+    effectiveGasPrice: null,
+    status: null,
+    ok: null,
+    ...more,
+  });
+  const receipt = (status: string, gasUsed = "0x100000"): Receipt => ({ status, blockNumber: OLD, gasUsed, transactionHash: TX, logs: [] });
+
+  it("tell a pruned state from a block not seen yet", () => {
+    assert.ok(pruned(new Error(JSON.stringify(PRUNED))));
+    assert.ok(pruned(new Error('{"code":-32000,"message":"historical state 0xabc is not available"}')));
+    assert.ok(!pruned(new Error('{"code":-32000,"message":"header not found"}')));
+  });
+
+  it("find the mined one with its receipt from an archive RPC, in the block the Sepolia RPC names", async () => {
+    reset();
+    const found = await findMined([entry({ txHash: OTHER }), entry()]);
+    assert.equal(found?.entry.txHash, TX);
+    assert.equal(found?.block, 0xb63c86);
+    assert.equal(found?.receipt?.transactionHash, TX);
+    assert.ok(!world.asked.some((a) => a.startsWith("sepolia.gateway.tenderly.co eth_getTransactionReceipt")), "an RPC of another chain is not asked");
+  });
+
+  it("drop an archive receipt from another block, and find nothing when none is mined", async () => {
+    reset({ receiptBlockHash: `0x${"55".repeat(32)}` });
+    const found = await findMined([entry()]);
+    assert.equal(found?.receipt, null);
+    assert.equal(found?.block, 0xb63c86);
+    reset({ txMined: false });
+    assert.equal(await findMined([entry()]), null);
+    reset({ txOnPrimary: false, archiveReceipt: false });
+    assert.equal((await findMined([entry()]))?.block, 0xb63c86, "the transaction from an archive RPC");
+  });
+
+  it("settle from the client at the latest block when no RPC serves the receipt", async () => {
+    reset({ latest: { number: 2_727_000, imported: true } });
+    assert.equal((await outcomeAtLatest(entry())).outcome, "ok");
+    reset({ latest: { number: 2_727_000, imported: false } });
+    assert.equal((await outcomeAtLatest(entry())).outcome, "superseded");
+    reset({ latest: { number: 2_726_000, imported: false } });
+    const below = await outcomeAtLatest(entry());
+    assert.equal(below.outcome, "failed");
+    assert.match(below.why, /below it/);
+  });
+
+  it("call on an old block's state through an archive RPC once the Sepolia RPC pruned it", async () => {
+    reset();
+    const a = await callAt({ to: CLIENT, data: LATEST }, OLD, "client state");
+    assert.equal(a?.result, `0x${HEADER.slice(2)}${word(2_727_000)}`);
+    assert.deepEqual(world.asked.filter((x) => x.endsWith("eth_call")), [`${new URL(RPC).host} eth_call`, "sepolia.drpc.org eth_call"]);
+    reset({ archiveState: false });
+    assert.equal(await callAt({ to: CLIENT, data: LATEST }, OLD, "client state"), null);
+  });
+
+  it("read NotNewer wherever an RPC puts the revert data", () => {
+    const args = `${word(2_726_491)}${word(2_727_000)}`;
+    assert.deepEqual(notNewerIn({ code: 3, message: "execution reverted", data: `${NOT_NEWER}${args}` }), { number: 2_726_491n, latest: 2_727_000n });
+    assert.deepEqual(notNewerIn({ code: -32015, message: "VM execution error.", data: `Reverted ${NOT_NEWER}${args}` }), { number: 2_726_491n, latest: 2_727_000n });
+    assert.deepEqual(notNewerIn({ code: 3, message: `execution reverted: ${NOT_NEWER}${args}` }), { number: 2_726_491n, latest: 2_727_000n });
+    assert.equal(notNewerIn({ code: 3, message: "execution reverted", data: { reason: "x" } }), null);
+    assert.equal(notNewerIn({ code: 3, message: "execution reverted", data: `${sel("InvalidSignature(uint256,uint256)")}${args}` }), null);
+  });
+
+  it("replay a revert on an archive RPC: NotNewer is superseded, another revert fails", async () => {
+    reset({ replay: { error: { code: 3, message: "execution reverted", data: `${NOT_NEWER}${word(2_726_491)}${word(2_727_000)}` } } });
+    const a = await importedNothing(entry(), receipt("0x0"), 0, 0x100000);
+    assert.equal(a.superseded, true);
+    assert.match(a.why, /NotNewer\(2726491, 2727000\)/);
+    reset({ replay: { error: { code: 3, message: "execution reverted", data: `${sel("InvalidSignature(uint256,uint256)")}${word(3)}${word(5)}` } } });
+    const b = await importedNothing(entry(), receipt("0x0"), 0, 0x100000);
+    assert.equal(b.superseded, false);
+    assert.match(b.why, /InvalidSignature\(3, 5\)/);
+    // Revert data an RPC gives as an object no longer throws.
+    reset({ replay: { error: { code: 3, message: "execution reverted", data: { reason: "x" } } } });
+    assert.equal((await importedNothing(entry(), receipt("0x0"), 0, 0x100000)).superseded, false);
+  });
+
+  it("fall back to the client at the latest block when no RPC serves the old state", async () => {
+    reset({ archiveState: false, latest: { number: 2_727_000, imported: false } });
+    const past = await importedNothing(entry(), receipt("0x0"), 0, 0x100000);
+    assert.equal(past.superseded, true);
+    assert.match(past.why, /no RPC serves the state at its block any more.*the revert not replayed/);
+    reset({ archiveState: false, latest: { number: 2_726_000, imported: false } });
+    assert.equal((await importedNothing(entry(), receipt("0x0"), 0, 0x100000)).superseded, false);
+    reset({ archiveState: false, latest: { number: 2_727_000, imported: true } });
+    assert.equal((await importedNothing(entry(), receipt("0x1"), 1, 0x100000)).superseded, true, "status 1 without HeaderImported, the header held");
+    // Out of gas fails without a read.
+    reset({ archiveState: false });
+    assert.equal((await importedNothing(entry(), receipt("0x0", `0x${(6_957_669).toString(16)}`), 0, 6_957_669)).superseded, false);
+    assert.equal(world.asked.length, 0);
+  });
+
+  it("read the old state from an archive RPC for a status 1 without HeaderImported", async () => {
+    reset({ old: { number: 2_726_491, imported: true }, latest: { number: 2_726_000, imported: false } });
+    const a = await importedNothing(entry(), receipt("0x1"), 1, 0x100000);
+    assert.equal(a.superseded, true);
+    assert.match(a.why, /held the header already, at #2,726,491/);
   });
 });

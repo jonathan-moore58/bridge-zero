@@ -86,7 +86,10 @@
 // to an hour.
 //
 // The Sepolia RPC is SEPOLIA_RPC_URL when set, else the public endpoint; of it and of a --rpc URL
-// (which has no #fragment) only the host is printed. Exit code 0 when the client is up to date, the
+// (which has no #fragment) only the host is printed. What it no longer serves (the public endpoint
+// prunes receipts and state after about 33 hours), a run asks of SEPOLIA_ARCHIVE_RPC_URLS (comma
+// separated; by default two public RPCs that keep all), and when none serves it either, settles a
+// transaction the RPC still knows mined from the client's state at the latest block. Exit code 0 when the client is up to date, the
 // dry run passed, the plan was sent and checked, or the base fee is too high to send; 1 when a check
 // fails or nothing can be relayed; 2 when an RPC cannot be reached, a read keeps failing, or the
 // Portaldot node is behind the client; 3 when a sent transaction is still pending, or one of the
@@ -188,6 +191,17 @@ const DEPLOYMENT = fileURLToPath(new URL("../../deployments/sepolia.json", impor
 const DEPLOYMENTS = fileURLToPath(new URL("../../deployments", import.meta.url));
 /** The default --state-dir: each sender's record, history and lock, outside every checkout. */
 const STATE_DIR = join(homedir(), ".bridge-zero");
+
+/**
+ * RPCs asked for what the Sepolia RPC no longer serves (publicnode keeps receipts and state for about
+ * 10,000 blocks, 33 hours): an old receipt, transaction, or the state of an old block, needed to
+ * settle a transaction left open that long. SEPOLIA_ARCHIVE_RPC_URLS (comma separated) when set,
+ * else two public ones that served all of Sepolia's in October 2026. Each must answer Sepolia's chain id.
+ */
+const ARCHIVE_RPCS = (process.env.SEPOLIA_ARCHIVE_RPC_URLS ?? "https://sepolia.drpc.org,https://sepolia.gateway.tenderly.co")
+  .split(",")
+  .map((url) => url.trim())
+  .filter((url) => URL.canParse(url));
 
 /** Header requests in flight during the scan. */
 const SCAN_CONCURRENCY = 32;
@@ -1408,7 +1422,7 @@ async function dryRun(steps: Step[], ctx: Context, title: string, costFee?: bigi
 // Send
 
 /** One relayed transaction, in the sender's record while open and in its history once settled. */
-interface RelayEntry {
+export interface RelayEntry {
   chain: ChainName;
   client: Hex;
   method: Step["method"];
@@ -1439,6 +1453,8 @@ interface RelayEntry {
   superseded?: true;
   /** Never mined: another transaction of the record at its nonce was. */
   replaced?: true;
+  /** Settled when no RPC served its receipt any more: by the client's state at the latest block, its events not checked. */
+  receiptPruned?: true;
   /** When it moved from the record to the history. */
   settledAt?: string;
 }
@@ -1734,6 +1750,130 @@ type Outcome = "ok" | "superseded" | "failed";
 
 const NOT_NEWER = bytesToHex(selector("NotNewer(uint32,uint32)"));
 
+/** A JSON-RPC answer, its error included. */
+interface RpcAnswer {
+  result?: unknown;
+  error?: { code?: number; message?: string; data?: unknown };
+}
+
+/**
+ * The Sepolia RPC no longer serves the state of an old block (publicnode keeps about 10,000 blocks,
+ * 33 hours: "pruned history unavailable", code 4444), as opposed to a block it has not seen yet.
+ */
+export const pruned = (error: unknown) => /prun|historical state|history (is )?unavailable|"code":4444\b/i.test(errorText(error));
+
+/** The whole JSON-RPC answer of `url`, an RPC other than the Sepolia RPC (rpcBody). */
+async function rpcBodyAt(url: string, method: string, params: unknown[]): Promise<RpcAnswer> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  return (await res.json()) as RpcAnswer;
+}
+
+const hostOf = (url: string) => new URL(url).host;
+
+/** Whether each archive RPC answers Sepolia's chain id, asked once per process. */
+const archives = new Map<string, Promise<boolean>>();
+function servesSepolia(url: string): Promise<boolean> {
+  if (!archives.has(url)) {
+    archives.set(
+      url,
+      rpcBodyAt(url, "eth_chainId", []).then(
+        (a) => typeof a.result === "string" && BigInt(a.result) === SEPOLIA_CHAIN_ID,
+        () => false,
+      ),
+    );
+  }
+  return archives.get(url)!;
+}
+
+/**
+ * `method` asked of each archive RPC (ARCHIVE_RPCS) that serves Sepolia, in turn, for what the
+ * Sepolia RPC no longer serves: the first answer `usable` takes, or null. An RPC is printed by its
+ * host only.
+ */
+async function fromArchives(method: string, params: unknown[], usable: (a: RpcAnswer) => boolean, what: string): Promise<RpcAnswer | null> {
+  for (const url of ARCHIVE_RPCS) {
+    try {
+      if (!(await servesSepolia(url))) continue;
+      const answer = await rpcBodyAt(url, method, params);
+      if (usable(answer)) {
+        log(`     (${what} from ${hostOf(url)}: ${hostOf(RPC)} no longer serves it)`);
+        return answer;
+      }
+    } catch (error) {
+      log(`     (${hostOf(url)}: ${errorText(error)})`);
+    }
+  }
+  return null;
+}
+
+/** An archive RPC's receipt of `hash`, or null. (The Sepolia RPC answers null for a receipt it pruned.) */
+export async function archivedReceipt(hash: Hex): Promise<Receipt | null> {
+  const answer = await fromArchives(
+    "eth_getTransactionReceipt",
+    [hash],
+    (a) => (a.result as Receipt | null | undefined)?.transactionHash?.toLowerCase() === hash.toLowerCase(),
+    `the receipt of ${hash}`,
+  );
+  return (answer?.result as Receipt | undefined) ?? null;
+}
+
+/**
+ * eth_call `call` on the state `block` left: of the Sepolia RPC, asked again (every 3 s, 10 times)
+ * while it fails the way a load-balanced RPC can, and of the archive RPCs once it says that state is
+ * pruned. Null when none serves it; a revert comes back as the answer's error.
+ */
+export async function callAt(call: object, block: string, what: string): Promise<RpcAnswer | null> {
+  for (let attempt = 1; ; attempt++) {
+    let failure: unknown;
+    try {
+      const answer = (await rpcBody("eth_call", [call, block])) as RpcAnswer;
+      // An error without revert data can be a node that has not seen the block yet: asked again.
+      if (!answer.error || answer.error.data !== undefined) return answer;
+      failure = new Error(JSON.stringify(answer.error));
+      if (pruned(failure)) break;
+      if (!transient(failure)) return answer;
+    } catch (error) {
+      failure = error;
+    }
+    if (attempt === 10) throw new Unreachable(`Sepolia RPC unreachable (${what}: ${errorText(failure)})`);
+    log(`     (${what}: ${errorText(failure)}; retrying)`);
+    await sleep(3_000);
+  }
+  const served = (a: RpcAnswer) => !a.error || (a.error.data !== undefined && !pruned(new Error(JSON.stringify(a.error))));
+  return fromArchives("eth_call", [call, block], served, `${what} at Sepolia block ${fmt(Number(BigInt(block)))}`);
+}
+
+/** latestFinalized() and isImported(`hash`) on the state of an old `block` (callAt), or null when no RPC serves it. */
+async function readLatestAt(client: Hex, block: string, hash: Hex): Promise<{ hash: Hex; number: number; imported: boolean } | null> {
+  const get = async (data: Hex) => {
+    const answer = await callAt({ to: client, data }, block, "client state");
+    if (answer?.error) throw new Unreachable(`Sepolia RPC unreachable (client state at block ${block}: ${JSON.stringify(answer.error)})`);
+    return answer ? (answer.result as Hex) : null;
+  };
+  const latest = await get(callData("latestFinalized()"));
+  const imported = latest === null ? null : await get(callData("isImported(bytes32)", hexToBytes(hash)));
+  if (latest === null || imported === null) return null;
+  return { hash: bytesToHex(wordAt(hexToBytes(latest), 0)), number: Number(uintAt(hexToBytes(latest), 1)), imported: BigInt(imported) !== 0n };
+}
+
+/**
+ * NotNewer(number, latest) in a revert's error, wherever the RPC puts its data (a hex string, one
+ * after some text, or the message); null when it is another revert.
+ */
+export function notNewerIn(error: RpcAnswer["error"]): { number: bigint; latest: bigint } | null {
+  const text = JSON.stringify(error ?? {}).toLowerCase();
+  const at = text.indexOf(NOT_NEWER.slice(2));
+  const args = at < 0 ? "" : text.slice(at + 8, at + 8 + 128);
+  if (!/^[0-9a-f]{128}$/.test(args)) return null;
+  const words = hexToBytes(`0x${args}`);
+  return { number: uintAt(words, 0), latest: uintAt(words, 1) };
+}
+
 /**
  * Why a mined transaction imported nothing, and whether another relayer imported its header or a
  * later one first (superseded). Out of gas (status 0 with every gas of its limit used) fails. Status
@@ -1744,42 +1884,95 @@ const NOT_NEWER = bytesToHex(selector("NotNewer(uint32,uint32)"));
  * NotNewer (the client was at or past the header) or verifies a header the client holds; it fails
  * on any other revert, or when the header would still import. A revert for another reason in a block
  * where another relayer's import came after it would read as superseded too.
+ * The state of an old block comes from an archive RPC once the Sepolia RPC pruned it (callAt). When
+ * none serves it, the client is read at the latest block instead: a header it holds there, or one it
+ * is past, reads as superseded, the revert not replayed (as printed), and one it is still below fails.
  */
-async function importedNothing(entry: RelayEntry, receipt: Receipt, status: number, gasUsed: number): Promise<{ superseded: boolean; why: string }> {
+export async function importedNothing(entry: RelayEntry, receipt: Receipt, status: number, gasUsed: number): Promise<{ superseded: boolean; why: string }> {
   if (status === 0 && gasUsed >= entry.gasLimit) return { superseded: false, why: `out of gas, all ${fmt(entry.gasLimit)} of its gas limit used` };
+  const atLatest = async (why: string) => {
+    const now = await readLatest(entry.client, "latest", entry.block.hash);
+    const past = now.imported || now.number >= entry.block.number;
+    const where = now.imported ? "holds the header" : `is at #${fmt(now.number)} ${shortHex(now.hash)}`;
+    return {
+      superseded: past,
+      why: `${why}, and no RPC serves the state at its block any more; at the latest block the client ${where}${past ? " (the revert not replayed)" : ", below the header"}`,
+    };
+  };
+  /** The client at the receipt's block: why it was superseded, null when it was not, undefined when no RPC serves that state. */
   const held = async () => {
-    const now = await readLatest(entry.client, receipt.blockNumber, entry.block.hash);
+    const now = await readLatestAt(entry.client, receipt.blockNumber, entry.block.hash);
+    if (!now) return undefined;
     return now.imported ? `the client held the header already, at #${fmt(now.number)} ${shortHex(now.hash)}` : null;
   };
   if (status === 1) {
     const why = await held();
+    if (why === undefined) return atLatest("without HeaderImported");
     return why ? { superseded: true, why } : { superseded: false, why: "without HeaderImported" };
   }
-  const tx = await sepolia("transaction", async () => {
-    const t = await rpc<{ from: Hex; to: Hex; input: Hex; gas: string } | null>("eth_getTransactionByHash", [receipt.transactionHash]);
-    if (!t) throw new Error(`no transaction ${receipt.transactionHash}`);
-    return t;
-  });
-  const replay = await sepolia("replay", async () => {
-    const body = (await rpcBody("eth_call", [{ from: tx.from, to: tx.to, data: tx.input, gas: tx.gas }, receipt.blockNumber])) as {
-      result?: Hex;
-      error?: { message?: string; data?: string };
-    };
-    // An error without revert data can be a node that has not seen the block yet: asked again.
-    if (body.error && body.error.data === undefined && transient(new Error(JSON.stringify(body.error)))) throw new Error(JSON.stringify(body.error));
-    return body;
-  });
+  const tx = await transactionOf(receipt.transactionHash);
+  if (!tx) throw new Unreachable(`Sepolia RPC unreachable (no RPC serves transaction ${receipt.transactionHash})`);
+  const replay = await callAt({ from: tx.from, to: tx.to, data: tx.input, gas: tx.gas }, receipt.blockNumber, "replay");
+  if (!replay) return atLatest("it reverted");
   if (replay.error) {
-    const data = (replay.error.data ?? "").toLowerCase();
-    if (data.startsWith(NOT_NEWER)) {
-      const args = hexToBytes(`0x${data.slice(10)}`);
-      const [number, latest] = [uintAt(args, 0), uintAt(args, 1)];
-      return { superseded: true, why: `replayed on its block it reverts with NotNewer(${number}, ${latest}): the client was at #${fmt(latest)} already` };
-    }
-    return { superseded: false, why: `replayed on its block it ${revertText({ status: "0x0", gasUsed: "0x0", returnData: "0x", error: replay.error })}` };
+    const n = notNewerIn(replay.error);
+    if (n) return { superseded: true, why: `replayed on its block it reverts with NotNewer(${n.number}, ${n.latest}): the client was at #${fmt(n.latest)} already` };
+    const error = { message: replay.error.message, data: typeof replay.error.data === "string" ? replay.error.data : undefined };
+    return { superseded: false, why: `replayed on its block it ${revertText({ status: "0x0", gasUsed: "0x0", returnData: "0x", error })}` };
   }
   const why = await held();
+  if (why === undefined) return atLatest("it reverted");
   return why ? { superseded: true, why } : { superseded: false, why: "yet replayed on its block it would import the header" };
+}
+
+/** A transaction as eth_getTransactionByHash returns it (still served after its receipt is pruned). */
+interface Transaction {
+  from: Hex;
+  to: Hex;
+  input: Hex;
+  gas: string;
+  blockHash: Hex | null;
+  blockNumber: string | null;
+}
+
+/** The transaction `hash`, from the Sepolia RPC or else an archive RPC; null when none has it. */
+async function transactionOf(hash: Hex): Promise<Transaction | null> {
+  const t = await sepolia("transaction", () => rpc<Transaction | null>("eth_getTransactionByHash", [hash]));
+  if (t) return t;
+  const answer = await fromArchives("eth_getTransactionByHash", [hash], (a) => !!a.result, `transaction ${hash}`);
+  return (answer?.result as Transaction | undefined) ?? null;
+}
+
+/**
+ * Which of `atNonce`, the record's transactions at a nonce used on chain, was mined when the Sepolia
+ * RPC serves the receipt of none (it prunes them after about 33 hours): the one an RPC says is in a
+ * block, with its receipt from an archive RPC (in that same block) when one serves it. Null when no
+ * RPC knows any of them mined.
+ */
+export async function findMined(atNonce: RelayEntry[]): Promise<{ entry: RelayEntry; receipt: Receipt | null; block: number } | null> {
+  for (const entry of atNonce) {
+    const tx = await transactionOf(entry.txHash);
+    if (!tx?.blockHash || !tx.blockNumber) continue;
+    const receipt = await archivedReceipt(entry.txHash);
+    const same = receipt !== null && (receipt as Receipt & { blockHash?: string }).blockHash?.toLowerCase() === tx.blockHash.toLowerCase();
+    return { entry, receipt: same ? receipt : null, block: Number(BigInt(tx.blockNumber)) };
+  }
+  return null;
+}
+
+/**
+ * The outcome of a mined transaction whose receipt no RPC serves, read from the client at the latest
+ * block: ok when it holds the header (the events cannot be checked), superseded when it is past it,
+ * failed when it is still below.
+ */
+export async function outcomeAtLatest(entry: RelayEntry): Promise<{ outcome: Outcome; why: string }> {
+  const now = await readLatest(entry.client, "latest", entry.block.hash);
+  const header = `#${fmt(entry.block.number)}`;
+  if (now.imported) return { outcome: "ok", why: `the client holds ${header} at the latest block (no RPC serves the receipt, so its events are not checked)` };
+  if (now.number >= entry.block.number) {
+    return { outcome: "superseded", why: `the client does not hold ${header} but is at #${fmt(now.number)}, past it, at the latest block (no RPC serves the receipt)` };
+  }
+  return { outcome: "failed", why: `the client does not hold ${header} and is at #${fmt(now.number)}, below it, at the latest block (no RPC serves the receipt)` };
 }
 
 /**
@@ -1810,22 +2003,42 @@ async function settle(l: Ledger, entry: RelayEntry, receipt: Receipt, keysAfter?
       outcome = "failed";
     }
   }
+  finish(l, entry, { sepoliaBlock: block, gasUsed, effectiveGasPrice: BigInt(receipt.effectiveGasPrice ?? 0).toString(), status }, outcome);
+  return outcome;
+}
+
+/** Moves a mined transaction, as `outcome` and `mined` tell, and the others at its nonce (replaced) from the record to the history. */
+function finish(l: Ledger, entry: RelayEntry, mined: Partial<RelayEntry>, outcome: Outcome): void {
   delete entry.dropped;
-  Object.assign(entry, {
-    sepoliaBlock: block,
-    gasUsed,
-    effectiveGasPrice: BigInt(receipt.effectiveGasPrice ?? 0).toString(),
-    status,
-    ok: outcome === "ok",
-    ...(outcome === "superseded" ? { superseded: true } : {}),
-  });
+  Object.assign(entry, { ...mined, ok: outcome === "ok", ...(outcome === "superseded" ? { superseded: true } : {}) });
   for (const other of l.record.open.filter((e) => e !== entry && e.nonce === entry.nonce)) {
     delete other.dropped;
     other.replaced = true;
     archive(l, other);
   }
   archive(l, entry);
-  return outcome;
+}
+
+/**
+ * Settles a transaction of `atNonce` mined at a nonce used on chain whose receipt the Sepolia RPC no
+ * longer serves (findMined): with its receipt from an archive RPC, as settle does; without one, from
+ * the client at the latest block (outcomeAtLatest), its receipt's fields left empty and
+ * receiptPruned set. False when no RPC knows any of them mined.
+ */
+async function settleOld(l: Ledger, atNonce: RelayEntry[]): Promise<boolean> {
+  const mined = await findMined(atNonce);
+  if (!mined) return false;
+  if (mined.receipt) {
+    if ((await settle(l, mined.entry, mined.receipt)) === "failed") throw new Fatal(`relayed transaction ${mined.entry.txHash} failed its checks`);
+    return true;
+  }
+  const { outcome, why } = await outcomeAtLatest(mined.entry);
+  const what = `${mined.entry.method} #${fmt(mined.entry.block.number)}: mined in block ${fmt(mined.block)}, tx ${mined.entry.txHash}`;
+  if (outcome === "failed") check(false, `${what}: ${why}`);
+  else log(`     ${what}: ${outcome === "ok" ? "imported" : "superseded"}, ${why}`);
+  finish(l, mined.entry, { sepoliaBlock: mined.block, receiptPruned: true }, outcome);
+  if (outcome === "failed") throw new Fatal(`relayed transaction ${mined.entry.txHash} failed its checks`);
+  return true;
 }
 
 /** The first receipt of any of `hashes`, looked for every 4 s for `ms`; null when none is mined by then. */
@@ -1853,8 +2066,9 @@ interface Reconciled {
 
 /**
  * Settles what the record left open, before anything is planned. A transaction mined since (one
- * taken for dropped or replaced too) is checked and moves to the history; a nonce used on chain by
- * none of the record's transactions, after a minute's wait for a receipt, is Fatal. What is left
+ * taken for dropped or replaced too) is checked and moves to the history; at a nonce used on chain
+ * whose receipts the RPC no longer serves, one an RPC knows mined is settled by settleOld; a nonce
+ * used by none of the record's transactions, after a minute's wait for a receipt, is Fatal. What is left
  * is at the sender's next nonce: a transaction of the other chain's runs, which this run never
  * replaces (PENDING, until that chain's runs settle it), still pending (PENDING, until it has waited
  * --replace-after), or dropped. Superseded transactions are noted, and planning goes on from the
@@ -1876,8 +2090,15 @@ async function reconcile(l: Ledger, sender: Hex, o: Options): Promise<Reconciled
     const atNonce = open().filter((e) => e.nonce === nonce);
     // An RPC behind a load balancer can count a mined transaction before it serves its receipt.
     const receipt = await firstReceipt(atNonce.map((e) => e.txHash), NONCE_WAIT);
-    if (!receipt) throw new Fatal(`nonce ${nonce} is used on chain, but by none of ${atNonce.map((e) => e.txHash).join(", ")}; look at the sender's transactions`);
-    await settled(entryOf(l, receipt), receipt);
+    if (receipt) await settled(entryOf(l, receipt), receipt);
+    // The Sepolia RPC prunes receipts after about 33 hours: one mined before that is settled from elsewhere.
+    else if (!(await settleOld(l, atNonce))) {
+      throw new Fatal(
+        `nonce ${nonce} is used on chain, but by none of ${atNonce.map((e) => e.txHash).join(", ")} as far as ${hostOf(RPC)} and ` +
+          `${ARCHIVE_RPCS.map(hostOf).join(", ") || "no archive RPC"} tell; look at the sender's transactions, or point SEPOLIA_RPC_URL or ` +
+          `SEPOLIA_ARCHIVE_RPC_URLS at an RPC that keeps all receipts`,
+      );
+    }
   }
   const ahead = open().find((e) => e.nonce > n.latest);
   if (ahead) {
@@ -2435,7 +2656,7 @@ async function runOnce(o: Options, sender: Sender): Promise<Run> {
 
 async function main(): Promise<number> {
   const o = options();
-  redactAlso(o.passwordFile, o.rpc === CHAINS[o.chain].rpc ? undefined : o.rpc);
+  redactAlso(o.passwordFile, o.rpc === CHAINS[o.chain].rpc ? undefined : o.rpc, ...(process.env.SEPOLIA_ARCHIVE_RPC_URLS ? ARCHIVE_RPCS : []));
   const { deployer, deployerName } = deployment(o.chain);
   let sender: Sender;
   if (o.send) {
