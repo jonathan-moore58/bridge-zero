@@ -26,6 +26,7 @@ import {
   qualification,
   readBurnCache,
   readHalt,
+  receiptInLogBlock,
   reconcileVerdict,
   rpcTrouble,
   submitErrorVerdict,
@@ -80,6 +81,18 @@ describe("the confirmation rule", () => {
     assert.equal(shallow.ok, false);
     assert.match(shallow.why, /2 of 3 blocks on top/);
     assert.equal(at(1_000).ok, false);
+  });
+
+  it("takes a fast burn's receipt only with the log's block hash, and a final one's unless the hashes differ", () => {
+    const a = `0x${"aa".repeat(32)}`;
+    const b = `0x${"bb".repeat(32)}`;
+    assert.equal(receiptInLogBlock(false, a, a.toUpperCase().replace("0X", "0x")), true);
+    assert.equal(receiptInLogBlock(false, a, b), false);
+    assert.equal(receiptInLogBlock(false, undefined, a), false);
+    assert.equal(receiptInLogBlock(false, a, null), false);
+    assert.equal(receiptInLogBlock(true, a, a), true);
+    assert.equal(receiptInLogBlock(true, a, b), false);
+    assert.equal(receiptInLogBlock(true, undefined, a), true);
   });
 
   it("parses --confirmations from 1 to 64 blocks", () => {

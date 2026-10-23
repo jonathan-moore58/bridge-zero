@@ -256,6 +256,7 @@ import {
   parseMemberKeys,
   readBurnCache,
   readHalt,
+  receiptInLogBlock,
   reconcileVerdict,
   rpcTrouble,
   submitErrorVerdict,
@@ -971,7 +972,10 @@ function gitCommit(): string | null {
 // ---------------------------------------------------------------------------------------
 // Sepolia
 
-const sepoliaView = async (to: Hex, data: Uint8Array, block: string) => hexToBytes(await sepolia("view", () => rpc<Hex>("eth_call", [{ to, data: bytesToHex(data) }, block])));
+/** A block a read is made at: a number or tag, or (EIP-1898) a block hash that must be canonical, so that every read of a block not final yet is of the same block. */
+type BlockTag = string | { blockHash: string; requireCanonical: true };
+
+const sepoliaView = async (to: Hex, data: Uint8Array, block: BlockTag) => hexToBytes(await sepolia("view", () => rpc<Hex>("eth_call", [{ to, data: bytesToHex(data) }, block])));
 
 async function checkSepolia(): Promise<void> {
   let chainId: string;
@@ -990,7 +994,7 @@ interface SepoliaState {
 }
 
 /** The minter and the token at `block`: their code must be the record's. */
-async function sepoliaState(b: Bridge, block: string): Promise<SepoliaState> {
+async function sepoliaState(b: Bridge, block: BlockTag): Promise<SepoliaState> {
   for (const [name, address, hash] of [["BridgeMinter", b.minter, b.minterCodeHash], ["WrappedTPOT", b.token, b.tokenCodeHash]] as const) {
     const code = hexToBytes(await sepolia("code", () => rpc<Hex>("eth_getCode", [address, block])));
     if (bytesToHex(keccak_256(code)) !== hash) throw new Stop(`${name} ${checksumAddress(hexToBytes(address))} does not have the code ${BRIDGE_RECORD} records`);
@@ -2150,7 +2154,9 @@ async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease 
       });
     }
   }
-  const tag = qty(at.number);
+  // A block that is not the finalized one is read by its hash (EIP-1898, canonical only): a
+  // load-balanced RPC could otherwise answer each read from another fork.
+  const tag: BlockTag = at.number === F ? qty(at.number) : { blockHash: at.hash, requireCanonical: true };
   const state = await sepoliaState(b, tag);
   const id = burnId(SEPOLIA_CHAIN_ID, hexToBytes(b.minter), n);
   const viaView = wordAt(await sepoliaView(b.minter, callData(MINTER.burnIdOf, uintWord(n)), tag), 0);
@@ -2187,8 +2193,8 @@ async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease 
         BigInt(receipt.status) === 1n &&
         receipt.logs.some((l) => l.address.toLowerCase() === b.minter && l.topics[0]?.toLowerCase() === BURN_REQUESTED_TOPIC) &&
         Number(BigInt(receipt.blockNumber)) === found.block &&
-        (!receiptHash || !found.blockHash || receiptHash === found.blockHash),
-      "its transaction's receipt has status 1 and the log, in the log's block",
+        receiptInLogBlock(final, receiptHash, found.blockHash),
+      `its transaction's receipt has status 1 and the log, in the log's block${final ? "" : ` (the same block hash, ${found.blockHash ? shortHex(found.blockHash) : "none given"})`}`,
     );
     if (o.to && !equalBytes(o.to, found.v3Recipient)) throw new Stop(`burn ${n} pays ${checksumAddress(found.v3Recipient)} on V3, not --to ${checksumAddress(o.to)}`);
     if (!final) {
@@ -2197,6 +2203,14 @@ async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease 
         log(`     burn ${n} burns ${formatWtpot(found.amount)}, above --fast-cap ${formatTpot(o.rule.fastCap)}: it waits for Sepolia's finality (its block #${fmt(found.block)}, finalized #${fmt(F)}); run again then`);
         return PENDING;
       }
+      // Not final: the log's block is the canonical one of its number, and the block read at is
+      // still the canonical one after every read (no reorg in between).
+      const blockHashAt = async (number: number) =>
+        (await sepolia("block", () => rpc<{ hash: string } | null>("eth_getBlockByNumber", [qty(number), false])))?.hash.toLowerCase() ?? null;
+      const canonical = await blockHashAt(found.block);
+      check(canonical !== null && canonical === found.blockHash, `block #${fmt(found.block)} is canonical with the log's block hash (${canonical ? shortHex(canonical) : "no block"})`);
+      const still = await blockHashAt(at.number);
+      check(still === at.hash.toLowerCase(), `block #${fmt(at.number)} is still ${shortHex(at.hash)} after the reads`);
       log(`     ${tradeOff(c!)}`);
     }
     burn = { ...found, final };

@@ -83,6 +83,18 @@ export function qualification(burn: { block: number; amount: bigint }, heads: He
   return { ok: false, why: `${Math.max(depth, 0)} of ${rule.confirmations} blocks on top of its block #${burn.block} so far (fast mode)` };
 }
 
+/**
+ * Whether a burn's receipt is in its log's block: for a final burn, the two block hashes agree when
+ * the RPC gives both; for one not final yet (fast mode), both must be given and agree, as a
+ * load-balanced RPC can serve the receipt and the log from two forks.
+ */
+export function receiptInLogBlock(final: boolean, receiptBlockHash: string | null | undefined, logBlockHash: string | null | undefined): boolean {
+  const r = receiptBlockHash?.toLowerCase();
+  const l = logBlockHash?.toLowerCase();
+  if (final) return !r || !l || r === l;
+  return !!r && !!l && r === l;
+}
+
 // ---------------------------------------------------------------------------------------
 // What the committee does next for a burn
 
