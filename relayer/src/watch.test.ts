@@ -23,6 +23,7 @@ import {
   parseConfirmations,
   parseMemberKeys,
   qualification,
+  submitErrorVerdict,
   takeLock,
   tradeOff,
   watchRound,
@@ -331,6 +332,18 @@ describe("a round of the watcher", () => {
     assert.equal(r.planned, 1);
     assert.deepEqual(chain.calls, ["0:open:1:finality"]);
     assert.ok(chain.lines.some((l) => /then member 2 runs it/.test(l)));
+  });
+});
+
+describe("an error at submission", () => {
+  it("counts an extrinsic the node may still include as on its way, and one it refused as never sent", () => {
+    // 1013: the pool has it already; 1014: another with its nonce is in the pool. Either may still be included.
+    assert.equal(submitErrorVerdict("1013: Transaction Already Imported"), "pending");
+    assert.equal(submitErrorVerdict("1014: Priority is too low: (100 vs 100)"), "pending");
+    for (const text of ["1010: Invalid Transaction: Inability to pay some fees", "1011: Unknown Transaction Validity", "1012: Transaction is temporarily banned", "1015: Unknown", "1019: Unknown"]) {
+      assert.equal(submitErrorVerdict(text), "rejected", text);
+    }
+    for (const text of ["WebSocket is not connected", "1020: something else", "Error 1010"]) assert.equal(submitErrorVerdict(text), "error", text);
   });
 });
 

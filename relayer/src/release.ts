@@ -245,6 +245,7 @@ import {
   nextWait,
   parseConfirmations,
   parseMemberKeys,
+  submitErrorVerdict,
   takeLock,
   tradeOff,
   watchRound,
@@ -1294,10 +1295,12 @@ class Rejected extends Stop {
 const eventText = (r: EventRecord) => `${r.event.section}.${r.event.method}`;
 
 /**
- * Submits a signed extrinsic and waits for its block to be finalized; "pending" after FINAL_TIMEOUT
- * or when the node stops waiting for finality, as it may still be final later. Throws Rejected
- * when the node refuses it (an error 1010 to 1019 at submission) or reports it invalid, dropped or
- * usurped.
+ * Submits a signed extrinsic and waits for its block to be finalized; "pending" after FINAL_TIMEOUT,
+ * when the node stops waiting for finality, when it reports the extrinsic invalid, dropped or
+ * usurped after taking it, and at submission errors 1013 and 1014 (watch.ts submitErrorVerdict), as
+ * it may still be included through another node: the record keeps it as submitted, and the next run
+ * settles it by its nonce. Throws Rejected when the node refuses it at submission (1010 to 1012,
+ * 1015 to 1019): it was never broadcast.
  */
 async function submitAndWatch(api: ApiPromise, signed: SubmittableExtrinsic<"promise">): Promise<Final | "pending"> {
   type Outcome = { hash: Hex; index: number | undefined; records: EventRecord[]; dispatchError: string | null };
@@ -1327,7 +1330,8 @@ async function submitAndWatch(api: ApiPromise, signed: SubmittableExtrinsic<"pro
           }
           finish({ hash: s.asFinalized.toHex(), index: (result as { txIndex?: number }).txIndex, records: [...result.events], dispatchError });
         } else if (s.isInvalid || s.isDropped || s.isUsurped) {
-          finish(new Rejected(`the node reports the extrinsic ${s.type}`));
+          log(`     the node reports the extrinsic ${s.type}; another node may still include it, so it stays submitted and the next run settles it by its nonce`);
+          finish("pending");
         } else if (s.isFinalityTimeout) {
           log("     the node stopped waiting for its block to be finalized");
           finish("pending");
@@ -1342,7 +1346,9 @@ async function submitAndWatch(api: ApiPromise, signed: SubmittableExtrinsic<"pro
         },
         (error: unknown) => {
           const text = errorText(error);
-          finish(/^101\d:/.test(text) ? new Rejected(text) : error instanceof Error ? error : new Error(text));
+          const verdict = submitErrorVerdict(text);
+          if (verdict === "pending") log(`     the node answers ${text}; the extrinsic may still be included, so it stays submitted and the next run settles it by its nonce`);
+          finish(verdict === "rejected" ? new Rejected(text) : verdict === "pending" ? "pending" : error instanceof Error ? error : new Error(text));
         },
       );
   });
@@ -2336,7 +2342,7 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
       return FAILED;
     }
     if (final === "pending") {
-      log(`     not final after ${FINAL_TIMEOUT / 60_000} minutes; ${V3_RECORD} keeps it as submitted, and the next run settles it first`);
+      log(`     not seen final (at most ${FINAL_TIMEOUT / 60_000} minutes are waited); ${V3_RECORD} keeps it as submitted, and the next run settles it first`);
       return PENDING;
     }
     const ok = await checkApproval({ api, evm, keyring, v, burn: { burnId: burn.burnId, payee: burn.v3Recipient, amount: burn.amount } }, round, approval, final);

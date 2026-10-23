@@ -151,6 +151,23 @@ export function nextStep(s: BurnState, keyed: number[], threshold: number): Next
   return { kind: "open", member: keyed[0], why: `nothing is open: member ${keyed[0]} opens it` };
 }
 
+/**
+ * What an error at submission says about an extrinsic: "rejected" when the node refused it and it
+ * was never broadcast (1010 invalid, 1011 unknown validity, 1012 temporarily banned, 1015 to 1019),
+ * "pending" when it may still be included (1013: the pool has it already; 1014: another with its
+ * nonce is in the pool), "error" for anything else. A status the node reports once the extrinsic
+ * was accepted (Invalid, Dropped, Usurped) is no proof either: another node may include it, and
+ * the next run settles it by its nonce.
+ */
+export function submitErrorVerdict(text: string): "rejected" | "pending" | "error" {
+  const m = /^(\d{4}):/.exec(text);
+  if (!m) return "error";
+  const code = Number(m[1]);
+  if (code === 1013 || code === 1014) return "pending";
+  if (code >= 1010 && code <= 1019) return "rejected";
+  return "error";
+}
+
 // ---------------------------------------------------------------------------------------
 // One round
 
