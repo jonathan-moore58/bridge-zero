@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Fees } from "../../contracts/script/lib/sepolia.mjs";
-import { clampFees, feeCap, measureFees, raised, type Options } from "./relay.js";
+import { clampFees, feeCap, measureFees, raised, transient, type Options } from "./relay.js";
 
 const GWEI = 10n ** 9n;
 const fees = (base: bigint, tip = 1_000n, maxFee = 10n * base + tip): Fees => ({ base, tip, maxFee, gasPrice: base + tip });
@@ -98,5 +98,28 @@ describe("a later step's fees (F2)", () => {
   it("follows --max-fee when it is given", () => {
     const o = options({ maxFee: 2n * GWEI });
     assert.equal(clampFees({ ...fees(16n), maxFee: 5n * GWEI }, head(fees(16n), o)).maxFee, 2n * GWEI);
+  });
+});
+
+describe("RPC errors asked again (F9)", () => {
+  const rpcError = (body: object) => new Error(`eth_simulateV1: ${JSON.stringify(body)}`);
+
+  it("are the ones a load-balanced RPC gives for a while", () => {
+    assert.ok(transient(new TypeError("fetch failed")));
+    assert.ok(transient(rpcError({ code: -32000, message: "header not found" })));
+    assert.ok(transient(rpcError({ code: -32603, message: "internal error" })));
+    assert.ok(transient(rpcError({ code: 429, message: "Too Many Requests" })));
+    assert.ok(transient(rpcError({ code: -32000, message: "state is not available" })));
+  });
+
+  it("are not a node without the method", () => {
+    assert.ok(!transient(rpcError({ code: -32601, message: "the method eth_simulateV1 does not exist/is not available" })));
+    assert.ok(!transient(rpcError({ code: -32601, message: "Method not found" })));
+    assert.ok(!transient(rpcError({ code: -32000, message: "eth_simulateV1 is not supported" })));
+  });
+
+  it("are not errors of the request itself", () => {
+    assert.ok(!transient(rpcError({ code: -38014, message: "insufficient funds for gas * price + value" })));
+    assert.ok(!transient(rpcError({ code: 3, message: "execution reverted", data: "0x" })));
   });
 });

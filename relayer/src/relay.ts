@@ -289,13 +289,15 @@ const offline = (error: unknown) =>
 /**
  * An error a load-balanced RPC gives for a while: no answer or an HTTP error page (offline), a
  * block it has not seen yet or a state it does not serve, a timeout, a rate limit, an internal
- * error. Errors about the request itself, such as insufficient funds, are not.
+ * error. Errors about the request itself, such as insufficient funds, are not, nor a node without
+ * the method ("the method eth_simulateV1 does not exist/is not available", -32601).
  */
-const transient = (error: unknown) =>
+export const transient = (error: unknown) =>
   offline(error) ||
-  /header not found|block not found|unknown block|beyond (the )?(current )?head|missing trie node|not (yet )?available|timeout|timed out|rate limit|too many requests|unavailable|internal error|-32005\b|-32603\b/i.test(
-    errorText(error),
-  );
+  (!/-32601\b|method not found|method \S+ (does not exist|is not available)|not supported/i.test(errorText(error)) &&
+    /header not found|block not found|unknown block|beyond (the )?(current )?head|missing trie node|not (yet )?available|timeout|timed out|rate limit|too many requests|unavailable|internal error|-32005\b|-32603\b/i.test(
+      errorText(error),
+    ));
 
 // ---------------------------------------------------------------------------------------
 // Options
