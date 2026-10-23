@@ -7,7 +7,7 @@
 //   npm test
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -544,11 +544,16 @@ describe("the halt file", () => {
 });
 
 describe("the watcher's lock", () => {
-  const dir = mkdtempSync(join(tmpdir(), "bz-watch-lock-"));
+  // One folder for every run, not a new one each time: each test starts from a lock whose process
+  // is gone, which takeLock takes over, so a run that stopped halfway leaves nothing in the way.
+  const dir = join(tmpdir(), "bz-watch-test", "locks");
+  mkdirSync(dir, { recursive: true });
   const quiet = () => undefined;
+  const leftover = (path: string) => writeFileSync(path, JSON.stringify({ pid: 2_147_483_646, token: "an earlier run" }));
 
   it("lets one watcher hold it at a time", () => {
     const path = join(dir, "one.lock");
+    leftover(path);
     const lines: string[] = [];
     const a = takeLock(path, quiet);
     assert.ok(a?.held());
@@ -578,6 +583,7 @@ describe("the watcher's lock", () => {
 
   it("tells a watcher whose lock another took over that it is not its own", () => {
     const path = join(dir, "lost.lock");
+    leftover(path);
     const a = takeLock(path, quiet)!;
     writeFileSync(path, JSON.stringify({ pid: process.ppid, token: "another" }));
     assert.equal(a.held(), false);
