@@ -1832,11 +1832,12 @@ export async function callAt(call: object, block: string, what: string): Promise
     let failure: unknown;
     try {
       const answer = (await rpcBody("eth_call", [call, block])) as RpcAnswer;
-      // An error without revert data can be a node that has not seen the block yet: asked again.
-      if (!answer.error || answer.error.data !== undefined) return answer;
+      if (!answer.error) return answer;
+      // A pruned state goes to the archives, even when the RPC puts data on that error.
       failure = new Error(JSON.stringify(answer.error));
       if (pruned(failure)) break;
-      if (!transient(failure)) return answer;
+      // An error without revert data can be a node that has not seen the block yet: asked again.
+      if (answer.error.data !== undefined || !transient(failure)) return answer;
     } catch (error) {
       failure = error;
     }

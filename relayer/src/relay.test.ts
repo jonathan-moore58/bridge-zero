@@ -315,6 +315,8 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
     receiptBlockHash: string;
     txMined: boolean;
     txOnPrimary: boolean;
+    /** The Sepolia RPC puts revert-like data on its pruned-state error. */
+    prunedData?: boolean;
     asked: string[];
   }
   let world: World;
@@ -348,7 +350,7 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
     if (method === "eth_call") {
       const [call, block] = params as [{ data: string; from?: string }, string];
       if (block === "latest") return client(world.latest, call.data);
-      if (primary || !world.archiveState) return { error: PRUNED };
+      if (primary || !world.archiveState) return { error: primary && world.prunedData ? { ...PRUNED, data: "0x" } : PRUNED };
       if (call.from) return world.replay;
       return client(world.old ?? world.latest, call.data);
     }
@@ -434,6 +436,16 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
     assert.deepEqual(world.asked.filter((x) => x.endsWith("eth_call")), [`${new URL(RPC).host} eth_call`, "sepolia.drpc.org eth_call"]);
     reset({ archiveState: false });
     assert.equal(await callAt({ to: CLIENT, data: LATEST }, OLD, "client state"), null);
+  });
+
+  it("ask the archives when the Sepolia RPC puts data on its pruned-state error (nit 3)", async () => {
+    reset({ prunedData: true });
+    const a = await callAt({ to: CLIENT, data: LATEST }, OLD, "client state");
+    assert.equal(a?.result, `0x${HEADER.slice(2)}${word(2_727_000)}`);
+    assert.deepEqual(world.asked.filter((x) => x.endsWith("eth_call")), [`${new URL(RPC).host} eth_call`, "sepolia.drpc.org eth_call"]);
+    // A replay there is a revert only once an RPC that serves the state reverts it.
+    reset({ prunedData: true, replay: { error: { code: 3, message: "execution reverted", data: `${NOT_NEWER}${word(2_726_491)}${word(2_727_000)}` } } });
+    assert.equal((await importedNothing(entry(), receipt("0x0"), 0, 0x100000)).superseded, true);
   });
 
   it("read NotNewer wherever an RPC puts the revert data", () => {
