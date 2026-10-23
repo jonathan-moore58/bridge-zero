@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Fees } from "../../contracts/script/lib/sepolia.mjs";
-import { clampFees, feeCap, measureFees, raised, transient, type Options } from "./relay.js";
+import { clampFees, feeCap, heldBackBeforePlan, measureFees, raised, transient, type ClientState, type Options } from "./relay.js";
 
 const GWEI = 10n ** 9n;
 const fees = (base: bigint, tip = 1_000n, maxFee = 10n * base + tip): Fees => ({ base, tip, maxFee, gasPrice: base + tip });
@@ -121,5 +121,45 @@ describe("RPC errors asked again (F9)", () => {
   it("are not errors of the request itself", () => {
     assert.ok(!transient(rpcError({ code: -38014, message: "insufficient funds for gas * price + value" })));
     assert.ok(!transient(rpcError({ code: 3, message: "execution reverted", data: "0x" })));
+  });
+});
+
+describe("the check before a send run scans (F5)", () => {
+  const GENESIS = `0x${"d4".repeat(32)}` as const;
+  const client: ClientState = {
+    genesis: GENESIS,
+    setId: 46n,
+    keys: [],
+    latestHash: `0x${"14".repeat(32)}`,
+    latestNumber: 165_089,
+    halted: false,
+    paused: false,
+    maxAuthorities: 100,
+    sets: 47,
+  };
+  const node = (number: number, setId: bigint, genesis: string = GENESIS) => ({
+    setIdAtHead: async () => ({ number, setId }),
+    blockHash: async () => genesis as `0x${string}`,
+  });
+  const high = fees(2n * GWEI);
+
+  it("holds the run back while the base fee is above every gate that could matter", async () => {
+    assert.equal(await heldBackBeforePlan(node(165_744, 46n), client, fees(GWEI), options()), true);
+    assert.equal(await heldBackBeforePlan(node(165_744, 47n), client, high, options()), true);
+  });
+
+  it("lets a due set change through below its gate", async () => {
+    assert.equal(await heldBackBeforePlan(node(165_744, 47n), client, fees(GWEI), options()), false);
+  });
+
+  it("does not count the word of a node behind the client, or of another chain: the run plans, and makePlan stops", async () => {
+    assert.equal(await heldBackBeforePlan(node(165_000, 46n), client, high, options()), false);
+    assert.equal(await heldBackBeforePlan(node(165_744, 45n), client, high, options()), false);
+    assert.equal(await heldBackBeforePlan(node(165_744, 46n, `0x${"aa".repeat(32)}`), client, high, options()), false);
+  });
+
+  it("plans when the node does not say", async () => {
+    const silent = { setIdAtHead: async () => null, blockHash: async () => GENESIS as `0x${string}` };
+    assert.equal(await heldBackBeforePlan(silent, client, high, options()), false);
   });
 });

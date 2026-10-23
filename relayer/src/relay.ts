@@ -651,7 +651,7 @@ const ERRORS = new Map(
 );
 
 /** The client's state at one Sepolia block. */
-interface ClientState {
+export interface ClientState {
   genesis: Hex;
   setId: bigint;
   keys: Uint8Array[];
@@ -2039,17 +2039,27 @@ function heldBack(base: bigint, o: Options, client: { setId: bigint; behind: num
 /**
  * Before a send run scans: true, printed, when the next base fee holds back all that could be due,
  * that is the head when no set change is due (by Grandpa.CurrentSetId at the node's finalized head)
- * and the set changes too when one is. False when the node does not say: the run then plans.
+ * and the set changes too when one is. False when the node does not say, or when its word does not
+ * count: a node of another chain (genesis), or one whose finalized head is below the client's latest
+ * header (behind, so its set id can read as no change due). The run then plans, and makePlan stops
+ * on those as it does without this check.
  */
-async function heldBackBeforePlan(portaldot: Portaldot, client: ClientState, current: Fees, o: Options): Promise<boolean> {
+export async function heldBackBeforePlan(
+  portaldot: Pick<Portaldot, "setIdAtHead" | "blockHash">,
+  client: ClientState,
+  current: Fees,
+  o: Options,
+): Promise<boolean> {
   let at: { number: number; setId: bigint } | null = null;
+  let genesis: string | undefined;
   try {
     at = await portaldot.setIdAtHead();
+    genesis = (await portaldot.blockHash(0)).toLowerCase();
   } catch (error) {
     if (error instanceof RpcError && error.code === undefined) throw error;
     log(`     (the node's Grandpa.CurrentSetId: ${errorText(error)}; the run plans)`);
   }
-  if (!at) return false;
+  if (!at || genesis !== client.genesis || at.number < client.latestNumber || at.setId < client.setId) return false;
   const due = at.setId > client.setId;
   if (due && current.base <= o.maxBaseFeeChange) return false;
   if (due) heldBack(current.base, o, { setId: client.setId, behind: at.number - client.latestNumber }, at.setId);
