@@ -12,7 +12,8 @@
 //   npm run release -- release --watch <seconds> --send --member-keys <k>:<member json>,<j>:<member json> --password-file <path>
 //   npm run release -- fund --member <1|2|3> | --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]
 //   npm run release -- status
-//   fast mode, for release and release --watch: --confirmations <n> (1 to 64) [--fast-cap <tPOT>] [--fast-budget <tPOT>, --watch]
+//   fast mode, for release and release --watch: --confirmations <n> (1 to 64; 3 or more for --watch --send)
+//   [--fast-cap <tPOT>] [--fast-budget <tPOT>, --watch] [--fast-cap-override, for either above 10 tPOT]
 //   more options: --rpc <wss url> (the V3 node), --evm <http(s) url> (its EVM RPC), --priority-fee
 //   <gwei> and --max-fee <gwei> (burn)
 //
@@ -247,9 +248,11 @@ import {
   checkBlock,
   cursorOf,
   DEFAULT_FAST_CAP,
+  FAST_LIMIT,
   FINALITY,
   haltRefusal,
   MAX_WATCH_SECONDS,
+  MIN_WATCH_CONFIRMATIONS,
   MIN_WATCH_SECONDS,
   nextWait,
   parseConfirmations,
@@ -380,7 +383,8 @@ const USAGE = `usage (from relayer/):
   npm run release -- release --burn-nonce <n> --rehearse --amount <wtPOT> --to <h160> [--approve --member <1|2|3>]
   npm run release -- release --burn-nonce <n> --approve|--cancel --member <1|2|3> [--send --key-file <member json> --password-file <path>]
   npm run release -- release --watch <seconds> [--rounds <n>] [--state-dir <path>] [--send --member-keys <k>:<member json>,<j>:<member json> --password-file <path>]
-  fast mode, for release and release --watch: --confirmations <n> (1 to 64) [--fast-cap <tPOT>, by default 1] [--fast-budget <tPOT>, --watch only, by default the cap]
+  fast mode, for release and release --watch: --confirmations <n> (1 to 64; 3 or more for --watch --send) [--fast-cap <tPOT>, by default 1] [--fast-budget <tPOT>, --watch only, by default the cap]
+    (above 10 tPOT, --fast-cap and --fast-budget take --fast-cap-override)
   npm run release -- fund --member <1|2|3> | --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]
   npm run release -- status
   more options: --rpc <wss url>, --evm <http(s) url>, --priority-fee <gwei> and --max-fee <gwei> (burn)
@@ -572,13 +576,21 @@ function ruleOf(v: Record<string, string | boolean | undefined>): Rule {
   if (confirmationsText === undefined) {
     if (capText !== undefined) usage("--fast-cap is for fast mode: add --confirmations <n>");
     if (budgetText !== undefined) usage("--fast-budget is for fast mode: add --confirmations <n>");
+    if (v["fast-cap-override"] === true) usage("--fast-cap-override is for fast mode: add --confirmations <n>");
     return FINALITY;
   }
   const fastCap = capText === undefined ? DEFAULT_FAST_CAP : option("--fast-cap", () => parseTpot(capText));
+  const fastBudget = budgetText === undefined ? fastCap : option("--fast-budget", () => parseTpot(budgetText));
+  // A typo such as --fast-cap 1000 would make every burn fast: above 10 tPOT takes --fast-cap-override.
+  if (v["fast-cap-override"] !== true) {
+    for (const [name, value] of [["--fast-cap", fastCap], ["--fast-budget", fastBudget]] as const) {
+      if (value > FAST_LIMIT) usage(`${name}: ${formatTpot(value)} is above ${formatTpot(FAST_LIMIT)}; add --fast-cap-override if that much may be released before finality`);
+    }
+  }
   return {
     confirmations: option("--confirmations", () => parseConfirmations(confirmationsText)),
     fastCap,
-    fastBudget: budgetText === undefined ? fastCap : option("--fast-budget", () => parseTpot(budgetText)),
+    fastBudget,
   };
 }
 
@@ -605,6 +617,7 @@ function releaseOptions(args: string[]): ReleaseOptions | WatchOptions {
     confirmations: { type: "string" },
     "fast-cap": { type: "string" },
     "fast-budget": { type: "string" },
+    "fast-cap-override": { type: "boolean", default: false },
     watch: { type: "string" },
     rounds: { type: "string" },
     "member-keys": { type: "string" },
@@ -660,6 +673,10 @@ function watchOptions(v: Record<string, string | boolean | undefined>): WatchOpt
   const passwordText = str(v["password-file"]);
   if (send && !(keysText && passwordText)) usage("--watch --send needs --member-keys <k>:<member json>,<j>:<member json> and --password-file <path>, which opens both");
   if (!send && (keysText !== undefined || passwordText !== undefined)) usage("--member-keys and --password-file are for --send; a dry run signs nothing");
+  const rule = ruleOf(v);
+  if (send && rule.confirmations !== null && rule.confirmations < MIN_WATCH_CONFIRMATIONS) {
+    usage(`--watch --send takes --confirmations ${MIN_WATCH_CONFIRMATIONS} or more: reorgs of one or two blocks happen on Sepolia`);
+  }
   const roundsText = str(v.rounds);
   const memberKeys = keysText === undefined
     ? [{ member: 1 as Member, path: null }, { member: 2 as Member, path: null }]
@@ -668,7 +685,7 @@ function watchOptions(v: Record<string, string | boolean | undefined>): WatchOpt
     ...parseCommon(v),
     watch: option("--watch", () => wholeIn(str(v.watch)!, MIN_WATCH_SECONDS, MAX_WATCH_SECONDS)),
     rounds: roundsText === undefined ? null : option("--rounds", () => wholeIn(roundsText, 1, Number.MAX_SAFE_INTEGER)),
-    rule: ruleOf(v),
+    rule,
     send,
     memberKeys,
     passwordFile: secretPath(passwordText, "--password-file"),

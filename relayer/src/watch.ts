@@ -20,6 +20,12 @@ export const MAX_CONFIRMATIONS = 64;
 /** The default --fast-cap: 1 tPOT, in native base units (wtPOT units). */
 export const DEFAULT_FAST_CAP = 10n ** 14n;
 
+/** The largest --fast-cap and --fast-budget taken without --fast-cap-override: 10 tPOT. */
+export const FAST_LIMIT = 10n * DEFAULT_FAST_CAP;
+
+/** The fewest confirmations the watcher takes with --send: reorgs of one or two blocks happen on Sepolia. */
+export const MIN_WATCH_CONFIRMATIONS = 3;
+
 /**
  * How a burn is read before its release: at Sepolia's finalized block (confirmations null, the
  * default), or, in fast mode, at the block `confirmations` below the latest, for a burn of at most
