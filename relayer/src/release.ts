@@ -80,41 +80,57 @@
 // prints the trade-off every time: "fast mode: the committee releases before Sepolia finalizes this
 // burn; a reorg deeper than n blocks could undo the burn after the release". Only a burn of at most
 // --fast-cap (by default 1 tPOT) is released that way; a larger one waits for finality (exit code 3
-// until then). The receipt of the burn's transaction has to be in the block its log is in. The
-// default stays finality (watch.ts has the rule).
+// until then). A block that is not final is read by its hash (EIP-1898, canonical only), and for a
+// burn that is not final the receipt's block hash must be the log's, that block the canonical one
+// of its number, and the block read still the canonical one after the reads. A cap or a budget
+// above 10 tPOT takes --fast-cap-override. The default stays finality (watch.ts has the rule).
 //
 // release --watch <seconds> is the auto-release watcher: a round every <seconds> (10 to 86,400),
-// --rounds n of them, or until stopped. Each round reads the record again and Sepolia's heads, and
-// takes every burn from the last one the record has released (checked again) to burnCount at the
-// latest block: a burn the record released, from the record; any other from its BurnRequested log,
-// searched from the latest block back to the last released burn's block. A burn released on V3 is
-// left alone; one that does not qualify yet (finality, or the fast-mode rule above) waits; for one
-// that qualifies, watch.ts nextStep says what comes next, and each approval runs through this tool
-// as --approve --member k does, every check first (the burn read again at the block its rule
-// gives, its id, amount and recipient as the round saw them, the payee, the vault's code, the
-// committee, released[burnId], outstanding, the dry run and the call trace, the member's balance):
-// nothing open, the lower of the two members opens it; open, the member that has not approved runs
-// it, and the checks of the execution (released[burnId], outstanding, the payee's balance) and the
-// record follow as with --send. It never approves twice: a member that approved (on chain, or in
-// the record) does not approve again, an approval the record holds as submitted is settled before
-// anything else (a round stops while one is on its way, exit code 3), and a burn whose execution ran
-// without releasing it, with a cancelled round, with an approval that ran on chain and failed its
-// checks, or with an open operation that is another call, is left to the members. A half-done
-// release (opened, not run) is resumed by the other member. Without --send each burn's next approval
-// is dry-run, members 1 and 2 standing for the two keys. --send takes the two members' polkadot-js
+// --rounds n of them, or until stopped. Each round reads the record again; settles the approvals
+// it holds as submitted, first (a round stops while one is on its way, exit code 3); reads Sepolia's
+// heads; checks each release made in fast mode whose burn's block is final now against
+// BurnRequested(n) on the final chain (the same transaction, burn id, payee and amount; recorded as
+// finalizedCheck; a mismatch is a fatal stop); and takes every burn from the last one the record
+// has released (checked again) to burnCount one block below the latest: a burn the record
+// released, from the record; one the burn cache has, from the cache; any other from its
+// BurnRequested log, searched from the latest block back to the last released burn's block, and
+// cached once its block is final. A burn whose log the RPC refuses or does not serve yet waits,
+// and the round goes on. A burn released on V3 is left alone; one that does not qualify yet
+// (finality, or the fast-mode rule above, and in fast mode the budget: the burns released fast
+// whose blocks are not final yet stay within --fast-budget in all, by default the cap) waits; for
+// one that qualifies, watch.ts nextStep says what comes next, and each approval runs through this
+// tool as --approve --member k does, every check first (the record read again; the burn read again
+// at the block its rule gives, first in the block the round saw its log in, by eth_getLogs over
+// that block or its transaction's receipt, which works when the RPC has pruned older logs; its id,
+// amount and recipient as the round saw them; the payee, the vault's code, the committee,
+// released[burnId], outstanding, the dry run and the call trace, the member's balance): nothing
+// open, the lower of the two members opens it; open, the member that has not approved runs it,
+// and the checks of the execution (released[burnId], outstanding, the payee's balance) and the
+// record follow as with --send. Each release records how its burn qualified (by: fast or finality)
+// and the burn's block hash. It never approves twice: a member that approved (on chain, or in the
+// record) does not approve again, an approval the record holds as submitted is settled before
+// anything else, an extrinsic the node may still include (reported invalid, dropped or usurped
+// after it took it, or 1013 or 1014 at submission) stays submitted and is settled by its nonce,
+// and a burn whose execution ran without releasing it, with a cancelled round, with an approval
+// that ran on chain and failed its checks, or with an open operation that is another call, is left
+// to the members. A half-done release (opened, not run) is resumed by the other member. Without
+// --send each burn's next approval is dry-run, members 1 and 2 standing for the two keys, and no
+// file is written. --send (with --confirmations 3 or more) takes the two members' polkadot-js
 // keystores (--member-keys k:<path>,j:<path>, opened with one --password-file, neither printed) and
 // holds the lock release-watch-<multisig>.lock in .bridge-zero in the home directory, whatever
 // --state-dir is, relay.ts's scheme: one watcher per committee and machine, checked before each
-// signing. --state-dir (by default that same folder) holds the halt file and the burn cache. An
-// approval or a cancellation by hand with --send takes the same lock, and is refused while a
-// watcher holds it. After a round an RPC failed, the wait doubles, up to an hour. A fatal stop ends the
-// watcher with exit code 4: a sent approval that fails its checks on chain, an approval an earlier
-// run submitted that is in none of the blocks searched though its sender's nonce is used, a lost
-// lock, a key file or a record that cannot be written. With --send it first writes
-// release-watch-<multisig>.halt in --state-dir (the reason, the burn, the extrinsic, the time), and no
-// watcher with --send starts while that file is there: a member looks, then removes it. Otherwise a
-// round ends 0 when nothing was refused, 1 when a burn was refused or left to the members, 2 when a
-// node could not be reached, 3 when something sent is not final yet.
+// signing. --state-dir (by default that same folder) holds the halt file and the burn cache
+// (release-watch-<multisig>.burns.json). An approval or a cancellation by hand with --send takes
+// the same lock, and is refused while a watcher holds it. After a round with trouble reaching or
+// reading an RPC, the wait doubles, up to an hour. A fatal stop ends the watcher with exit code 4:
+// a sent approval that fails its checks on chain, an approval an earlier run submitted that is in
+// none of the blocks searched though its sender's nonce is used, a fast release that does not
+// stand on the final chain, a lost lock, a key file or a record that cannot be written. With
+// --send it first writes release-watch-<multisig>.halt in --state-dir (the reason, the burn, the
+// extrinsic, the time), and no watcher with --send starts while that file is there (exit code 4):
+// a member looks, then removes it. Otherwise a round ends 0 when nothing was refused, 1 when a burn
+// was refused or left to the members, 2 when a node could not be reached, 3 when something sent is
+// not final yet.
 //
 // fund dry-runs balances.transferKeepAlive of --amount tPOT from --from (by default the testnet
 // account 5ERJ…) to member k or to the multisig account, with its fee and what the member needs for
@@ -131,7 +147,8 @@
 // anything reaches the wire (bridge.ts installDryRunGuard), and the V3 node's provider refuses
 // author_submit* unless the command signs on V3 with --send (bridge.ts guardProvider). Exit code 0
 // when the dry run passed, the transaction is done and checked, or status found nothing wrong; 1
-// when a check fails or the tool refuses; 2 when a node cannot be reached; 3 when a sent
+// when a check fails or the tool refuses; 2 when a node cannot be reached; 4 when the watcher
+// stopped for good (above); 3 when a sent
 // transaction or extrinsic is not final yet, or the burn is not final on Sepolia yet (in fast mode,
 // not --confirmations deep yet, or above --fast-cap and not final).
 

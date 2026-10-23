@@ -354,8 +354,8 @@ promise that the committee releases (D1).
 | `release --burn-nonce <n> --rehearse --amount <wtPOT> --to <h160>` | The same V3 side for a burn that is not on Sepolia yet (the vault does not look at Sepolia), under `burnIdOf(n)`; with `--approve --member <k>`, member k's approval too. Nothing can be sent. |
 | `release --burn-nonce <n> --approve --member <1\|2\|3> [--send --key-file <member json> --password-file <path>]` | Member k's approval: `asMulti` without a timepoint when nothing is open (it opens the operation), with the timepoint when the other member approved (it runs the call). Prints the fee and refuses a member whose free balance does not cover it, the deposit and the existential deposit. `--send` signs with the member's polkadot-js keystore (decoded with the password file, never printed), records the approval in `deployments/v3-testnet.json` (`releases`) before it submits, waits for finality and checks the events; after the second approval, `released[burnId]`, `outstanding` and the payee's balance (its `System.Account` at the block and its parent; through the EVM RPC too while that still serves the block's state, about 256 blocks). An approval a later run settles but cannot check stays submitted, with a warning, and does not hold up the command. |
 | `release --burn-nonce <n> --cancel --member <k> [--send ...]` | The opener's `cancelAsMulti`, which gives its deposit back. |
-| `release ... --confirmations <c> [--fast-cap <tPOT>]` | Fast mode: the burn read and checked `c` blocks below Sepolia's latest instead of at its finalized block, for a burn of at most the cap (1 tPOT by default); a larger one waits for finality. The trade-off is printed every time ([below](#fast-mode-and-the-auto-release-watcher)). |
-| `release --watch <seconds> [--confirmations <c>] [--send --member-keys 1:<path>,2:<path> --password-file <path>]` | The auto-release watcher: each round, every burn that qualifies gets every check, then member 1's and member 2's approvals, checked and recorded; idempotent, crash-safe, one per committee ([below](#fast-mode-and-the-auto-release-watcher)). |
+| `release ... --confirmations <c> [--fast-cap <tPOT>]` | Fast mode: the burn read and checked `c` blocks below Sepolia's latest instead of at its finalized block, for a burn of at most the cap (1 tPOT by default); a larger one waits for finality. Above 10 tPOT the cap takes `--fast-cap-override`. The trade-off is printed every time ([below](#fast-mode-and-the-auto-release-watcher)). |
+| `release --watch <seconds> [--confirmations <c> [--fast-budget <tPOT>]] [--state-dir <path>] [--send --member-keys 1:<path>,2:<path> --password-file <path>]` | The auto-release watcher: each round settles what was on its way, then every burn that qualifies gets every check, then member 1's and member 2's approvals, checked and recorded; the fast releases not final yet stay within the budget; one per committee (its lock in `~/.bridge-zero`); a fatal stop leaves a halt file and exit code 4 ([below](#fast-mode-and-the-auto-release-watcher)). |
 | `fund --member <1\|2\|3> \| --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]` | `balances.transferKeepAlive` from the testnet account `5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7` (or `--from`) to a member or to the multisig, with the fee and what the member needs; `--send` signs with a key file in `v3-vault deploy`'s format (`.substrate.mnemonic`) and records the transfer (`committeeFunding`). |
 | `status` | The burns on Sepolia (logs in windows, or `burnCount` and `burnIdOf` when the RPC refuses old logs) with the release state of each on V3 (`released[burnId]`, the record, the multisig's open operations), the members' and the multisig's balances, and the accounting: `outstanding` covers the wtPOT supply and the burns not released yet. |
 
@@ -471,9 +471,10 @@ and the round starts again.
 The way back above waits for Sepolia's finality (13 to 20 minutes) and for two people. Two options
 of `release` shorten it; the header of `release.ts` and `relayer/src/watch.ts` have the details.
 
-**Fast mode, `--confirmations <n>`** (1 to 64). The burn is read and checked at the block `n` below
-Sepolia's latest instead of the finalized block; every other check stays. The tool prints the
-trade-off every time it is on:
+**Fast mode, `--confirmations <n>`** (1 to 64; 3 or more for the watcher with `--send`). The burn is
+read and checked at the block `n` below Sepolia's latest instead of the finalized block, by that
+block's hash; every other check stays, and for a burn that is not final the receipt, the log and the
+block read must be one canonical chain. The tool prints the trade-off every time it is on:
 
 > fast mode: the committee releases before Sepolia finalizes this burn; a reorg deeper than n
 > blocks could undo the burn after the release
@@ -481,39 +482,71 @@ trade-off every time it is on:
 If that happens, the vault has paid and the wtPOT is back on Sepolia: `outstanding` no longer
 covers the supply, by the burn's amount, and the burn id is spent, so a burn that takes its nonce
 after the reorg cannot be released either. On Sepolia since the merge, reorgs are rarely more than a
-block or two deep; finality is the only guarantee. **The cap** bounds what one burn can cost:
-fast mode releases a burn of at most `--fast-cap <tPOT>` (by default 1 tPOT), and a larger one waits
-for finality (exit code 3 until then). The cap is per burn: several burns inside the same few
-blocks each count up to it. The default, without `--confirmations`, stays finality.
+block or two deep; finality is the only guarantee. Two limits bound what fast mode can cost:
 
-**The watcher, `release --watch <seconds>`.** A round every `<seconds>`: every burn from the last
-one the record has released to the latest block; for each burn that qualifies (final, or fast mode
-within the cap), every check of the release tool, then member 1's approval (it opens the operation)
-and member 2's (it runs it), each signed, sent, waited on until final and checked as `--approve
---send` does, then `released[burnId]`, `outstanding` and the payee's balance, all recorded in
-`deployments/v3-testnet.json` as before. A burn whose payee nobody is shown to control, or whose
-dry run fails, is refused and the round goes on; a burn already released is left alone.
+- **The cap.** Fast mode releases a burn of at most `--fast-cap <tPOT>` (by default 1 tPOT); a
+  larger one waits for finality (exit code 3 until then).
+- **The budget** (the watcher). The burns it released fast whose blocks are not final yet stay
+  within `--fast-budget <tPOT>` in all (by default the cap): splitting 10 wtPOT into ten burns gets
+  one released fast, and the rest wait for finality until the first one's block is final.
+
+A cap or a budget above 10 tPOT takes `--fast-cap-override`, so a typo cannot make every burn fast.
+The default, without `--confirmations`, stays finality. Once Sepolia finalizes a fast release's
+burn block, the watcher checks the release against `BurnRequested(n)` on the final chain (the same
+transaction, burn id, payee and amount) and records it (`finalizedCheck`); a mismatch is a fatal
+stop (below).
+
+**The watcher, `release --watch <seconds>`.** A round every `<seconds>`: first the approvals the
+record holds as submitted are settled; then every burn from the last one the record has released to
+`burnCount` one block below the latest; for each burn that qualifies (final, or fast mode within the
+cap and the budget), every check of the release tool, then member 1's approval (it opens the
+operation) and member 2's (it runs it), each signed, sent, waited on until final and checked as
+`--approve --send` does, then `released[burnId]`, `outstanding` and the payee's balance, all
+recorded in `deployments/v3-testnet.json` as before, with how the burn qualified (`by`). A burn whose
+payee nobody is shown to control, or whose dry run fails, is refused and the round goes on; a burn
+already released is left alone; a burn whose log the RPC refuses or does not serve yet waits.
 
 - **Never twice.** A member that approved (on chain or in the record) does not approve again; an
-  approval the record holds as submitted is settled before anything is signed; a burn whose
-  execution ran without releasing it, whose round a member cancelled, or whose open operation is
-  another call, is left to the members. The vault pays once per burn id in any case.
-- **Crash-safe.** Each approval is in the record before it is submitted. After a restart the
-  watcher settles what was on its way, and a release left half done (opened, not run) is run by
-  the other member.
+  approval the record holds as submitted is settled before anything is signed, and one the node
+  may still include (reported dropped or invalid after it took it, 1013, 1014) stays submitted and
+  is settled by its nonce; a burn whose execution ran without releasing it, whose round a member
+  cancelled, or whose open operation is another call, is left to the members. The vault pays once
+  per burn id in any case.
+- **Crash-safe.** Each approval is in the record before it is submitted. Every round, a restart's
+  first one included, settles what was on its way before anything else (found final and checked,
+  or dropped), and a release left half done (opened, not run) is run by the other member. Every
+  save of the record takes `deployments/v3-testnet.json.lock` and merges what other processes
+  wrote meanwhile (`v3-vault lock`, `release fund`), so none of it is lost.
 - **One per committee.** With `--send` the watcher holds `release-watch-<multisig>.lock` in
-  `--state-dir` (by default `~/.bridge-zero`), checked before each signing; a lock whose process is
-  gone, or not refreshed for 10 minutes, is taken over. It works on one machine. Do not approve the
-  same burns by hand while it runs.
-- **RPC trouble.** A round an RPC fails in is retried after `--watch` seconds, then twice that, up
-  to an hour. A sent approval that fails its checks, a lost lock or an unwritable record stops it.
+  `~/.bridge-zero`, whatever `--state-dir` is, checked before each signing; a lock whose process is
+  gone, or not refreshed for 10 minutes, is taken over. An approval or a cancellation by hand with
+  `--send` takes the same lock, so it is refused while the watcher runs. It works on one machine.
+- **The public RPC.** The watcher finds a new burn in recent logs, and reads it again before each
+  approval in the block it saw it in (`eth_getLogs` over that block, or its transaction's receipt),
+  so a burn released within about 33 hours works on the public RPC, which keeps logs and receipts
+  that long (code 4444 after). The logs of final burns go into `release-watch-<multisig>.burns.json`
+  in `--state-dir` (with `--send`), so a burn left to the members is never searched for again and
+  never holds up the burns after it. A burn older than that is refused each round, with the reason,
+  or waits when its log was never found, until `SEPOLIA_RPC_URL` names an RPC that keeps the
+  minter's logs and receipts from its deploy block (an archive RPC; `sepolia.drpc.org` served burn
+  0's); so does `release --burn-nonce <n>` by hand for such a burn.
+- **RPC trouble.** A round in which an RPC cannot be reached or answers with an error is retried
+  after `--watch` seconds, then twice that, up to an hour; other errors are retried after
+  `--watch` seconds.
+- **Fatal stops.** A sent approval that fails its checks on chain, an approval the record holds
+  as submitted that is in none of the blocks searched though its sender's nonce is used, a fast
+  release that does not stand on the final chain, a lost lock or an unwritable record ends the
+  watcher with **exit code 4**. With `--send` it first writes `release-watch-<multisig>.halt` in
+  `--state-dir` (the reason, the burn, the extrinsic, the time); no watcher with `--send` starts
+  while that file is there (exit code 4 again). A member looks at what happened, then removes it.
 
 **What it trusts.** The committee is still a 2-of-3 multisig on chain, but the watcher holds two
 members' keys on one machine: whoever controls that machine or its password file can release up to
 `outstanding` (D1, more concentrated). Keep member 3's key elsewhere, as the one that can still
 cancel or step in.
 
-**Running it 24/7**, from `relayer/` (the dry run first; `--rounds 1` stops after one round):
+**Running it 24/7**, from `relayer/` (the dry run first; `--rounds 1` stops after one round; a dry
+run writes no file):
 
 ```
 npm run release -- release --watch 15 --confirmations 3 --rounds 1
@@ -521,14 +554,14 @@ npm run release -- release --watch 15 --confirmations 3 --send --member-keys 1:<
 ```
 
 Run the second line under something that restarts it (a Windows scheduled task at logon that
-repeats, or a service wrapper); a restart is safe. Set `SEPOLIA_RPC_URL` to an RPC that keeps logs
-(the public one keeps about 33 hours; a burn older than that needs an archive RPC). Member 1 needs
-9.403 tPOT free for each release it opens (9.27 tPOT of it comes back when the release runs), member
-2 about 0.134 tPOT per release, and the multisig up to 3.9415 tPOT of storage deposit per release
-(`release -- status` shows the balances, `fund` tops them up). A member short of funds makes the
-dry run refuse that burn until it is funded. With 3 confirmations (about 36 seconds) and the two
-approvals each final on V3 within about half a minute, a burn of up to 1 wtPOT is back on V3 in a
-minute or two, instead of about 20; not yet measured on chain.
+repeats, or a service wrapper), **except after exit code 4**: a restart after any other exit is
+safe, as the next round settles what was on its way first. Member 1 needs 9.403 tPOT free for each
+release it opens (9.27 tPOT of it comes back when the release runs), member 2 about 0.134 tPOT per
+release, and the multisig up to 3.9415 tPOT of storage deposit per release (`release -- status`
+shows the balances, `fund` tops them up). A member short of funds makes the dry run refuse that burn
+until it is funded. With 3 confirmations (about 36 seconds) and the two approvals each final on V3
+within about half a minute, a burn of up to 1 wtPOT is back on V3 in a minute or two, instead of
+about 20; not yet measured on chain.
 
 ## What the minter trusts
 
