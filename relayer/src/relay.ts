@@ -1492,7 +1492,7 @@ interface RelayRecord {
 }
 
 /** The sender's record (relay-sepolia-<sender>.json in the state directory), the history its settled transactions move to (.jsonl), and the run's lock. */
-interface Ledger {
+export interface Ledger {
   path: string;
   history: string;
   record: RelayRecord;
@@ -2289,7 +2289,8 @@ function fenced(l: Ledger): boolean {
  * allows), once the client, read at the latest block (from Sepolia block `after` on), still is
  * where the step expects it. Every signing first checks the sender's lock. Returns PENDING after
  * RECEIPT_TIMEOUT, FAILED when the client moved or the lock was lost; else the mined transaction,
- * its outcome, and the fees the next step is signed with.
+ * its outcome, and the fees the next step is signed with. `publish` signs and broadcasts
+ * (signAndPublish; a stand-in in the tests).
  */
 async function sendStep(
   rest: Step[],
@@ -2298,6 +2299,7 @@ async function sendStep(
   o: Options,
   l: Ledger,
   after: number,
+  publish: typeof signAndPublish,
 ): Promise<number | { entry: RelayEntry; outcome: Outcome; fees: Fees }> {
   const s = rest[0];
   const limit = dry.limits.get(s.index)!;
@@ -2327,7 +2329,7 @@ async function sendStep(
       ok: null,
     };
     const args = mktxArgs(s.label, { to: ctx.client, data: s.data, nonce: s.nonce, gasLimit: limit, fees, account: o.account!, passwordFile: o.passwordFile! });
-    const hash = signAndPublish(args, `${tag(s)} ${s.label}`, (signed) => {
+    const hash = publish(args, `${tag(s)} ${s.label}`, (signed) => {
       // Signed again with the same fees, a transaction keeps its hash: it replaces nothing.
       const replacing = replaces !== undefined && replaces !== signed ? replaces : undefined;
       log(
@@ -2441,9 +2443,9 @@ export async function heldBackBeforePlan(
  * latest block once the RPC has the previous receipt's; the next base fee there must be within the
  * step's gate (else the rest waits for a later run: OK, or PENDING while the record has an open
  * transaction); and the step's nonce must be the sender's next, with nothing pending but what it
- * replaces.
+ * replaces. `publish` signs and broadcasts each transaction (signAndPublish; a stand-in in the tests).
  */
-async function sendPlan(steps: Step[], dry: DryRun, ctx: Context, o: Options, l: Ledger): Promise<number> {
+export async function sendPlan(steps: Step[], dry: DryRun, ctx: Context, o: Options, l: Ledger, publish = signAndPublish): Promise<number> {
   let after = Number(BigInt(ctx.block.number));
   let fees = ctx.fees;
   for (const [i, s] of steps.entries()) {
@@ -2468,7 +2470,7 @@ async function sendPlan(steps: Step[], dry: DryRun, ctx: Context, o: Options, l:
     // A step after the first is signed with the fees of the one before (raised when it was signed
     // again), but never above its own cap: a head after a set change pays at most the head's.
     if (i > 0) fees = clampFees(fees, feeCap(o, atNow, gateOf(s, o)));
-    const sent = await sendStep(steps.slice(i), dry, { ...ctx, fees }, o, l, after);
+    const sent = await sendStep(steps.slice(i), dry, { ...ctx, fees }, o, l, after, publish);
     if (typeof sent === "number") return sent;
     const { entry, outcome } = sent;
     fees = sent.fees;

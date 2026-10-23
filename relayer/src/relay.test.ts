@@ -1,12 +1,15 @@
 // Unit tests of relay.ts, offline: the fees it signs and simulates with, how it reads RPC errors,
-// the state directory, and how it settles a transaction whose receipt or state an RPC no longer
-// serves (against a stand-in for fetch, so no request leaves the machine).
+// the state directory, how it settles a transaction whose receipt or state an RPC no longer serves,
+// and how it dry-runs and sends a plan (against stand-ins for fetch and for signAndPublish, so no
+// request leaves the machine and nothing is signed; the send test rewrites two scratch files in
+// the system's temp directory, bridge-zero-relay-test/).
 //
 //   npm test
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
@@ -29,13 +32,16 @@ import {
   pruned,
   raised,
   resetChecks,
+  sendPlan,
   senderOf,
   servesSepolia,
   transient,
   upfrontOf,
   type ClientState,
   type Context,
+  type DryRun,
   type LegacyFacts,
+  type Ledger,
   type Options,
   type Plan,
   type RelayEntry,
@@ -578,11 +584,13 @@ describe("the entry point (nit 4)", () => {
   });
 });
 
-describe("a plan on a stand-in Sepolia RPC (finding 1)", () => {
+describe("a plan on a stand-in Sepolia RPC (findings 1 and 5)", () => {
   // eth_simulateV1 as a node runs the plan: each import uses mainnet's gas (6.1 million a set change,
   // 0.6 million the head), returns its block hash and emits its events, the probe reads the sender's
   // balance and the client's views read as the plan leaves them; with validation on, a call whose gas
-  // limit at its max fee is more than the sender holds is refused for funds.
+  // limit at its max fee is more than the sender holds is refused for funds. For a send, the client,
+  // the fees, the sender's nonce and receipts: a transaction the stand-in for signAndPublish signs
+  // (no key, no cast) is mined at once in the next block, and the client imports its header.
   const CLIENT = "0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6" as const;
   const SENDER = "0x00000000000000000000000000000000000a11ce" as const;
   const BASE = 16n;
@@ -644,11 +652,56 @@ describe("a plan on a stand-in Sepolia RPC (finding 1)", () => {
     balance: bigint;
     /** Each eth_simulateV1 request: its steps and the max fee they ran at. */
     simulations: { steps: number[]; maxFee: bigint }[];
+    head: number;
+    client: { hash: Hex; number: number; setId: bigint };
+    nonce: number;
+    receipts: Map<string, Receipt>;
+    /** The cast mktx arguments of each transaction signed. */
+    signed: string[][];
   }
   let chain: Chain;
   const start = (plan: Plan, balance: bigint) => {
-    chain = { steps: new Map(plan.steps.map((s) => [s.data, s])), balance, simulations: [] };
+    const first = plan.steps[0];
+    chain = {
+      steps: new Map(plan.steps.map((s) => [s.data, s])),
+      balance,
+      simulations: [],
+      head: 0xa00000,
+      client: { ...first.before, setId: first.setBefore },
+      nonce: first.nonce,
+      receipts: new Map(),
+      signed: [],
+    };
     resetChecks();
+  };
+  const sel = (signature: string) => bytesToHex(keccak256(utf8(signature)).slice(0, 4));
+  const views = new Map<string, () => string>([
+    [sel("latestFinalized()"), () => `0x${chain.client.hash.slice(2)}${hex32(chain.client.number)}`],
+    [sel("currentSetId()"), () => `0x${hex32(chain.client.setId)}`],
+    [sel("halted()"), () => `0x${hex32(0)}`],
+    [sel("paused()"), () => `0x${hex32(0)}`],
+  ]);
+  const answer = (method: string, params: unknown[]): object => {
+    if (method === "eth_simulateV1") return simulateV1(params);
+    if (method === "eth_blockNumber") return { result: qty(chain.head) };
+    if (method === "eth_call") return { result: views.get((params[0] as { data: string }).data)!() };
+    if (method === "eth_feeHistory") return { result: { baseFeePerGas: [qty(BASE), qty(BASE)] } };
+    if (method === "eth_gasPrice") return { result: qty(BASE + 1_000n) };
+    if (method === "eth_getTransactionCount") return { result: qty(chain.nonce) };
+    if (method === "eth_getTransactionReceipt") return { result: chain.receipts.get(params[0] as string) ?? null };
+    return { error: { code: -32601, message: "Method not found" } };
+  };
+  /** The stand-in for signAndPublish: records the arguments, and the transaction is mined in the next block. */
+  const publish = (args: string[], _label: string, signed: (hash: Hex) => void): Hex | null => {
+    chain.signed.push(args);
+    const hash = bytesToHex(keccak256(utf8(args.join(" "))));
+    signed(hash);
+    const s = [...chain.steps.values()].find((x) => x.nonce === Number(args[args.indexOf("--nonce") + 1]))!;
+    chain.head += 1;
+    chain.nonce += 1;
+    chain.client = { hash: s.hash, number: s.number, setId: s.setAfter };
+    chain.receipts.set(hash, { status: "0x1", blockNumber: qty(chain.head), gasUsed: qty(gasOf(s)), effectiveGasPrice: qty(BASE + 1_000n), transactionHash: hash, logs: logsOf(s) });
+    return hash;
   };
   const simulateV1 = (params: unknown[]): object => {
     const [{ blockStateCalls }] = params as [{ blockStateCalls: { stateOverrides: Record<string, { balance?: string }>; calls: Call[] }[] }];
@@ -681,8 +734,7 @@ describe("a plan on a stand-in Sepolia RPC (finding 1)", () => {
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
       assert.equal(String(url), RPC, "only the Sepolia RPC is asked");
-      const answer = body.method === "eth_simulateV1" ? simulateV1(body.params) : { error: { code: -32601, message: "Method not found" } };
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, ...answer }));
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, ...answer(body.method, body.params) }));
     }) as typeof fetch;
   });
   after(() => {
@@ -736,5 +788,76 @@ describe("a plan on a stand-in Sepolia RPC (finding 1)", () => {
       assert.ok(run.lines.some((l) => l.startsWith("FAIL cost at the current fees")));
       assert.equal(plan.steps.length, steps, "the plan is not cut");
     }
+  });
+
+  it("signs a step after the first at most at its own cap, and the first at the fees it was given (finding 5)", async () => {
+    // X5 (a): the set change re-signed at 13.5 gwei over a dropped one, then the head at a base fee of 16 wei.
+    const plan = planOf(1);
+    start(plan, ETH);
+    const given = { ...fees(BASE), maxFee: 13_500_001_125n, tip: 1_125n };
+    const dry: DryRun = {
+      limits: new Map([
+        [0, 6_710_000],
+        [1, 660_000],
+      ]),
+      gas: new Map([
+        [0, 6_100_000],
+        [1, 600_000],
+      ]),
+    };
+    // The same two scratch files every run: the record is rewritten, the history starts empty.
+    const dir = join(tmpdir(), "bridge-zero-relay-test");
+    mkdirSync(dir, { recursive: true });
+    const ledger: Ledger = {
+      path: join(dir, "relay-sepolia-test.json"),
+      history: join(dir, "relay-sepolia-test.jsonl"),
+      record: { network: "sepolia", chainId: 11_155_111, sender: SENDER, open: [] },
+      lock: null,
+    };
+    writeFileSync(ledger.history, "");
+    const o = options({ chain: "mainnet", account: "no-key", passwordFile: "no-password" });
+    const run = await printed(() => sendPlan(plan.steps, dry, ctxOf(ETH, given), o, ledger, publish));
+    assert.equal(run.error, undefined);
+    assert.equal(run.result, 0, "every transaction mined and checked");
+    const flag = (args: string[], name: string) => args[args.indexOf(name) + 1];
+    assert.deepEqual(
+      chain.signed.map((a) => [flag(a, "--nonce"), flag(a, "--gas-price"), flag(a, "--priority-gas-price")]),
+      [
+        ["20", "13500001125", "1125"],
+        ["21", "500001000", "1125"],
+      ],
+    );
+    assert.ok(!run.lines.some((l) => l.startsWith("FAIL")));
+    assert.equal(ledger.record.open.length, 0);
+    assert.equal(readFileSync(ledger.history, "utf8").trim().split("\n").length, 2);
+  });
+
+  it("prices a dry run above both gates at the max fee a --send run uses at the gate, and ends a refusal for funds OK (finding 5)", async () => {
+    // Both gates at 1 wei, the next base fee at 16 wei: the max fee at the gate is feesAt's floor, 10,000,000 wei.
+    const o = options({ send: false, maxBaseFee: 1n, maxBaseFeeChange: 1n });
+    const now = fees(BASE, 1_000n, 10_000_000n);
+    const plan = planOf(0);
+    start(plan, ETH / 10n);
+    const run = await printed(() => dryRunPlan(plan, ctxOf(ETH / 10n, now), o, "the client", now));
+    assert.equal(run.error, undefined);
+    assert.ok(typeof run.result === "object", "the dry run passes, so the run exits 0");
+    assert.ok(run.lines.some((l) => /^ok {3}cost at the current fees .* at the max fee a --send run uses at the gate, 10,000,000 wei, with --keep 0\.05 ETH left/.test(l)));
+    // Both passes at the lowest valid fees: twice the base fee plus the priority fee.
+    assert.deepEqual(
+      chain.simulations.map((r) => r.maxFee),
+      [1_032n, 1_032n],
+    );
+
+    // A node that refuses the plan for funds at the current fees: OK, as a --send run would send nothing now.
+    start(plan, 1_000n);
+    const refused = await printed(() => dryRunPlan(plan, ctxOf(1_000n, now), o, "the client", now));
+    assert.equal(refused.result, 0);
+    assert.ok(refused.lines.some((l) => l.includes("The dry run stops here, as a --send run sends nothing while the base fee is above the gate")));
+    assert.ok(!refused.lines.some((l) => l.startsWith("FAIL")));
+    // Below the gates the same refusal is Underfunded.
+    start(plan, 1_000n);
+    const below = await printed(() => dryRunPlan(plan, ctxOf(1_000n, now), options({ send: false }), "the client", now));
+    assert.equal(below.error?.name, "Blocked");
+    assert.match(below.error?.message ?? "", /too little for the plan at its max fee/);
   });
 });
