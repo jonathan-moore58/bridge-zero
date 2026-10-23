@@ -3,7 +3,9 @@
 The send-safety and ops follow-ups of the v0.1 reviews (F1 to F10, and the ops lens's nits 1 to 5),
 fixed on branch `relayer-hardening`. Lines are in `relayer/src/relay.ts` unless noted; tests are in
 `relayer/src/relay.test.ts` (`npm test`). The review numbered its findings F1 to F10: there is no F11
-or F12. Ops nit 1 is the same as F9.
+or F12. Ops nit 1 is the same as F9. The lines in this first table are as of `dbee66a`; the second
+review's six findings, fixed on branch `relayer-hardening-2`, follow under
+[Second review](#second-review).
 
 | Finding | Fix (file:line) | Test | Not changed, and why |
 |---|---|---|---|
@@ -22,7 +24,7 @@ or F12. Ops nit 1 is the same as F9.
 | **Ops nit 4** a state directory that cannot be created was FAILED at full rate under `--watch` | `makeStateDir` 2628, used at 2642: Blocked, so `--watch` backs off. | "blocks a run whose state directory cannot be created (nit 4)": a directory under a file; nothing created. | — |
 | **Ops nit 5** the earlier-record check refused dry runs, which never read the record | `legacyRecordMoved(sender, o.send)` 2671: a dry run prints the advice as notes and goes on; a `--send` run is still refused. | The refuse/note split is in `legacyAdvice`'s tests; the call itself by reading. | — |
 | Also (crypto lens nit) NotNewer read only from a hex `error.data`; an object `data` threw a TypeError | `notNewerIn` 1872 finds the selector in `data`, after text, or in the message; `importedNothing` passes only string data to `revertText`. | "read NotNewer wherever an RPC puts the revert data"; the object-data case in the replay test. | — |
-| Testability | `relay.ts` runs `main()` only as the entry point (2694-2701), so the tests import it. | All of `relay.test.ts`. | — |
+| Testability | `relay.ts` runs `main()` only as the entry point (2694-2701), so the tests import it. Since replaced by `relay-main.ts` (second review, #4). | All of `relay.test.ts`. | — |
 
 ## Results
 
@@ -36,3 +38,31 @@ or F12. Ops nit 1 is the same as F9.
 - The `--keep` check still prices every step at the run's max fee (ten times the base fee), by design.
 - The archive RPCs are public endpoints trusted as much as the default Sepolia RPC; set `SEPOLIA_ARCHIVE_RPC_URLS` to replace them.
 - A malformed finality proof (its block and justification target differ) still stops the run before the scan (crypto lens nit 3, pre-existing, not in this list).
+
+## Second review
+
+A strict send-safety review of the branch above found no blocker or major issue and left six
+findings (two minor, four nits), fixed on branch `relayer-hardening-2`, one commit each. Lines are
+in `relayer/src/relay.ts` as of that branch.
+
+| # | Finding | Fix (file:line) | Test | Departs from the suggested fix, and why |
+|---|---|---|---|---|
+| 1 | (minor) A backlog of set changes was Underfunded, sending nothing, whenever the balance did not pay for the whole plan at its max fee with `--keep` left: a 0.2 ETH key waited, backing off up to an hour, exactly when set changes had piled up. | `dryRun` 1381: when the cost check is the only failure, it returns how many of the first steps the balance pays for (`upfrontOf` of each start, `--keep` left, 1428-1440) instead of FAIL. `dryRunPlan` 2657 (relay()'s dry run, moved out of it): with at least one step paid for, it notes the cost and that the rest is left for a later run, cuts the plan to that start and dry-runs it again alone (once); with none, it prints the cost as FAIL and is Underfunded, as before. The funding note (MAX_BASE_FEE_CHANGE, 217-231) and the header (41-45) now say what a 0.2 ETH key pays for: one mainnet set change at the gate, about two at 1 gwei, the rest in later runs. | "sends the longest start of a backlog the balance pays for …": three set changes and the head at 1 gwei, 0.2 ETH: the first two, dry-run again alone at the run's max fee, no FAIL. "is Underfunded when the balance pays for not even the first transaction": a backlog at 0.1 ETH and a lone head, the plan not cut. Both against a stand-in eth_simulateV1. | None: the suggested fix, done inside `dryRun` so the cost line is printed once (as a note when a start is sent, as FAIL when none is), and the failure count stays clean for the second dry run. A node that refuses the plan for funds (each transaction's own gas limit at its max fee above the balance) is still Underfunded: no start would pass it either. |
+| 2 | (minor) A passing failure at an archive RPC (no answer, an HTTP error page, a rate limit, an internal error) counted as "it has no such data": a revert could settle as superseded from the latest block, a receipt as pruned, its events unchecked; and `servesSepolia` kept a failed `eth_chainId` as "not Sepolia" for the whole process. | `fromArchives` 1830: an archive that throws, or answers with a transient error that is not "pruned", is remembered; when none was usable and one failed that way it throws Unreachable ("Sepolia archive RPCs unreachable", exit code 2, the next run asks again). The latest-block fallback and `receiptPruned` are used only when every archive answered that it lacks the data. `servesSepolia` 1809 keeps only a chain id it was answered. `findMined` 1999 settles a nonce on the one transaction found mined even when an archive failed on another at that nonce, and is Unreachable otherwise. Header 90-96. | "end the run unreachable when an archive RPC fails for a while and none had the data": offline and rate-limited, for the old state (callAt and the replay in importedNothing), the receipt, and the transaction. "still settle a nonce on the one found mined …". "keep only a chain id an archive RPC answered": asked again after a rate limit, another chain's id kept. | `servesSepolia` throws on a failure instead of returning false for that call: returning false would make `fromArchives` skip the archive silently, the very case the finding is about; thrown, it counts as a passing failure. The `findMined` refinement is an addition: at most one transaction at a nonce is mined, so one found settles the nonce whatever an archive gave for the others. |
+| 3 | (nit) `callAt` returned an error carrying `data` as a revert before asking whether it was a pruned state. | `callAt` 1870: pruned first (1878), then data or a non-transient error is the answer. | "ask the archives when the Sepolia RPC puts data on its pruned-state error": the call goes to the archive, and a replay there that reverts with NotNewer is superseded. | The optional part ("missing trie node" as pruned more than 128 blocks below the head) is not done: see Left open. |
+| 4 | (nit) The entry-point guard (argv[1] against the module's path) could exit 0 silently when they differed (a symlink, an 8.3 path, a wrapper). | `src/relay-main.ts` runs `main()` and nothing else; `relay.ts` exports `main`, `exit`, `check`, `errorText` and `FAILED`, and has no guard. `package.json`: `"relay": "tsx src/relay-main.ts"`, so `npm run relay -- …` works as before. | "the entry point": relay-main.ts started by a relative and an absolute path prints the usage and exits 1 (no `--chain`, so nothing is read or sent); the npm script points at it. | None. A process started on `src/relay.ts` directly now does nothing: the npm script and the docs only ever start it through `npm run relay`. |
+| 5 | (nit) The F2 and F6 tests covered the helpers, not their call sites. | `sendPlan` 2448 is exported and takes the signer (`signAndPublish` by default) so a test can stand in for it; `dryRunPlan` holds relay()'s `atGate` path; `resetChecks` 271. | "signs a step after the first at most at its own cap …": a set change at 13.5 gwei, then the head, against stand-ins for the RPC and the signer (no key, no cast): the set change is signed at 13,500,001,125 / 1,125, the head at 500,001,000 / 1,125 (the clamp at 2472), both mined and checked. "prices a dry run above both gates …": both gates at 1 wei, the cost priced at 10,000,000 wei, both passes at 1,032 wei; a node refusing the plan for funds ends it OK, and below the gates the same refusal is Underfunded. | relay() itself is not run in a test: it needs the client's recorded code on Sepolia and a Portaldot node. The test covers `dryRunPlan`, which relay() calls; relay() maps its DryRun to exit 0 in a dry run. `legacyRecordMoved`'s refuse/note split (named in the finding's problem, not its fix) is still covered by `legacyAdvice`'s tests only. |
+| 6 | (nit) `feeCap =(` | 2227: `feeCap = (`. | — | — |
+
+### Results
+
+- `npm test`: 118 tests, 118 passed (108 before, 10 new in `relay.test.ts`); `npm run typecheck` clean. Each new test was also run against the code without its fix (or with the fix undone by hand) and failed there.
+- `npm run check`: mainnet 46/46, mainnet-pre-v3 46/46, v3-testnet 48 passed and 1 skipped, westend-asset-hub-revive 31/31.
+- `npm run relay -- --chain v3 --dry-run` and `--chain mainnet --dry-run` against the live chains, with `--state-dir` in a scratch folder of the worktree (never created: a dry run writes nothing): v3 up to date, exit 0; mainnet plans the head, the dry run passes, exit 0. Also mainnet with both gates at 1 wei: priced at 10,000,000 wei, exit 0. Nothing was signed or sent.
+
+### Left open
+
+- No backlog was due on either chain, so the prefix has run only against the stand-in, not live.
+- A hash-scheme geth's "missing trie node" for an old block is still transient on the Sepolia RPC (10 tries, then exit 2 on every run); publicnode, the default, answers with code 4444, which is pruned. Counting it as pruned needs the head's number in `callAt`, and its retries take 30 s to test.
+- An archive RPC that stays down (or whose host is gone) now ends every run that needs it with exit 2 until it answers or `SEPOLIA_ARCHIVE_RPC_URLS` replaces it. That is the point of the fix, but `--watch` does not back off on exit 2.
+- The send test rewrites two scratch files in the system's temp directory (`bridge-zero-relay-test/`), the same two every run.
