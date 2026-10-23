@@ -32,7 +32,8 @@
 //
 // --dry-run (the default) has a Sepolia node run the plan with eth_simulateV1 (validation on), on
 // top of its latest block, from the sender with its nonce and balance on chain: every transaction
-// first with the 16,777,216 cap as gas limit, then with the limit it is sent with (its gas + 10%).
+// first with the 16,777,216 cap as gas limit, at a max fee of twice the base fee (what it uses does
+// not depend on the price), then with the limit and max fee it is sent with (its gas + 10%).
 // Every import must emit HeaderImported, a set change also AuthoritySetChanged, and none Halted.
 // Each request stays within the gas a node lets one request use; a request starts from the
 // client's storage as the one before left it (the slots its imports wrote, read back in that
@@ -190,12 +191,16 @@ const MAX_BACKOFF_SECONDS = 3_600;
 /**
  * The default --max-base-fee-change, the gate of a set change (the head's, --max-base-fee, is 0.05
  * gwei). In the 30 days to 2026-10-18 the next base fee on Sepolia sat near 1 gwei for three weeks
- * (median 0.98 gwei, 99th percentile 1.30) and was at most 1.5 gwei in 99.7% of blocks, never above
- * it for more than 40 minutes. Replayed on those blocks, --watch on both chains (a key of its own per
- * chain, 1 ETH each) imports every set change within the hour and spends at most 0.024 ETH in a day,
- * 0.43 ETH in the 30 days; at the 0.05 gwei gate alone, set changes waited up to 18 days. Near the
- * gate a set change needs its gas limit at the max fee (ten times the base fee) on hand above
- * --keep: about 0.1 ETH on mainnet, 0.04 ETH on V3.
+ * (median 0.97 gwei, 99th percentile 1.30) and was at most 1.5 gwei in 99.7% of blocks, never above
+ * it for more than 40 minutes. Replayed on those blocks (about 60 set changes on mainnet and 120 on
+ * V3, one every 12 and every 6 hours), --watch on both chains (a key of its own per chain) imports
+ * every set change within the hour and spends at most 0.026 ETH in a day, 0.40 ETH in the 30 days;
+ * at the 0.05 gwei gate alone, set changes waited up to 17 days. Near the gate a set change needs its
+ * gas limit at the max fee (ten times the base fee) on hand above --keep: about 0.1 ETH on mainnet
+ * (6.7 million gas at 15 gwei), 0.04 ETH on V3 (2.6 million gas). The dry run's first pass, at the
+ * 16,777,216 cap and twice the base fee (measureFees), needs about 0.05 ETH there, with no --keep on
+ * top, so it asks no more than the send does: with --keep 0.05 ETH, a key of 0.2 ETH relays one set
+ * change at a time at any base fee up to the gate.
  */
 const MAX_BASE_FEE_CHANGE = "1.5";
 /** Grandpa.CurrentSetId, read (without a proof) to tell whether a set change is due before a run scans. */
@@ -1236,6 +1241,19 @@ interface DryRun {
   gas: Map<number, number>;
 }
 
+/**
+ * The fees the first pass of a dry run measures with: a max fee of twice the next base fee plus the
+ * priority fee, or the run's own when that is lower. The gas a transaction uses does not depend on
+ * its price, while a node wants each one's whole gas limit at its max fee on hand: at the 16,777,216
+ * cap and the run's max fee (ten times the base fee) the measure alone would ask several times what
+ * the plan needs (0.25 ETH at a base fee of 1.5 gwei). The second pass and the cost check keep the
+ * run's max fee.
+ */
+export function measureFees(fees: Fees): Fees {
+  const low = 2n * fees.base + fees.tip;
+  return low < fees.maxFee ? { ...fees, maxFee: low } : fees;
+}
+
 /** Runs the plan on the node; null when a check fails, "underfunded" when the cost check is the only one that fails. */
 async function dryRun(steps: Step[], ctx: Context, title: string): Promise<DryRun | "underfunded" | null> {
   const { fees } = ctx;
@@ -1245,11 +1263,11 @@ async function dryRun(steps: Step[], ctx: Context, title: string): Promise<DryRu
   );
   if (!check(fees.maxFee >= fees.base && fees.maxFee >= fees.tip, "the max fee covers the next base fee and the priority fee")) return null;
 
-  // 1. Measure, with the cap as gas limit.
-  const first = await simulate(steps, () => CAP, () => CAP, ctx);
+  // 1. Measure, with the cap as gas limit, at a max fee of twice the base fee (measureFees).
+  const first = await simulate(steps, () => CAP, () => CAP, { ...ctx, fees: measureFees(fees) });
   const measured = steps.flatMap((s) => judge(s, first.results.get(s.index), CAP, ctx.client));
   if ([...measured, ...first.views].some(([ok]) => !ok)) {
-    log(`\nWith gas limit 16,777,216 (requests ${groups(first.requests)}):`);
+    log(`\nWith gas limit 16,777,216 and max fee ${fmt(measureFees(fees).maxFee)} wei (requests ${groups(first.requests)}):`);
     for (const [ok, what] of [...measured, ...first.views]) check(ok, what);
     return null;
   }
@@ -1258,7 +1276,10 @@ async function dryRun(steps: Step[], ctx: Context, title: string): Promise<DryRu
 
   // 2. The exact plan: every step with the gas limit it is sent with.
   const run = await simulate(steps, (s) => limits.get(s.index)!, (s) => gas.get(s.index)!, ctx);
-  log(`Requests: ${groups(first.requests)} with gas limit 16,777,216, then ${groups(run.requests)} with the gas limits below.`);
+  log(
+    `Requests: ${groups(first.requests)} with gas limit 16,777,216 and max fee ${fmt(measureFees(fees).maxFee)} wei, ` +
+      `then ${groups(run.requests)} with the gas limits below and max fee ${fmt(fees.maxFee)} wei.`,
+  );
   log(`\nOn ${title}:`);
   let total = 0;
   let largest = 0;
