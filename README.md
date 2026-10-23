@@ -40,8 +40,8 @@ chains that have the BLAKE2F precompile.
 | **Lock 0 minted** (row 32) | Sepolia transaction [`0x91714c84…`](https://sepolia.etherscan.io/tx/0x91714c8422a7058c161f5592ff7c59eb62399bc99d5f02d6a9ebc1506c955cba) | One transaction verified V3 block #108,424 with both V3 validators' signatures, bound the vault, proved lock 0's commitment from the vault's storage and minted 1 wtPOT. Its Logs tab lists `HeaderImported`, `VaultBound`, `Transfer` and `Minted`. |
 | **Lock to mint in 48 seconds** (rows 54 and 55) | Sepolia transaction [`0xb9134dd7…`](https://sepolia.etherscan.io/tx/0xb9134dd793b84ff53375cd6b5ec8fb51940fea0a5cce2b5924f674b530d7f943); the lock in V3 block [#118,636](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/118636) | Lock 1, Oct 20: 1 tPOT locked on V3 and minted on Sepolia, the mint's block 36 seconds after the lock's by the block timestamps; 48 seconds from sending the lock to the mint's receipt with the tools' own checks. |
 | `BridgeMinter` | Sepolia [`0x8287…cB9E`](https://sepolia.etherscan.io/address/0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E) | The minter, source-verified, with no owner and no admin. Rows 32 to 38 and 47 are sent to it: the mint, then five tampered copies, each reverted with the error that names what was changed, a replay, reverted with `NonceAlreadyUsed(0)`, and burn 0, the trusted way back. |
-| The V3 light client | Sepolia [`0x4471…dcb0`](https://sepolia.etherscan.io/address/0x447171c4885ad725ee4772e8e3c228adee50dcb0) (`GrandpaLightClient` #2) | Follows the V3 testnet's finality from a checkpoint at validator set 19: every set change from 19 to 33, imported in order, each with both validators' signatures (rows 5, 6, 18 to 23, 26 to 31, 44 to 46, 52). It is as current as the relayer's last run (see Known limits). |
-| The vault and lock 0 | V3 testnet: vault `0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd`, lock transaction `0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051` (block #101,009) | 1 tPOT locked for Sepolia; the vault stores the commitment `0x9eba08c9…41e23435` that the mint proved. We found no indexed explorer for the V3 testnet: the Portaldot Node Console shows the [deployment block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/100955) and the [lock's block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/101009), and [cast](#verify-it-yourself) reads the vault. |
+| The V3 light client | Sepolia [`0x4471…dcb0`](https://sepolia.etherscan.io/address/0x447171c4885ad725ee4772e8e3c228adee50dcb0) (`GrandpaLightClient` #2) | Follows the V3 testnet's finality from a checkpoint at validator set 19: every set change from 19 to 46, imported in order, each with both validators' signatures (rows 5, 6, 18 to 23, 26 to 31, 44 to 46 and 52; the later runs are in [`deployments/relay-sepolia-0xd983….jsonl`](deployments/relay-sepolia-0xd9838a86cf83c28ee486544060d1ca4ca2971071.jsonl)). It is as current as the relayer's last run (see Known limits). |
+| The vault and lock 0 | V3 testnet: vault `0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd`, lock transaction `0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051` (block #101,009) | 1 tPOT locked for Sepolia; the vault stores the commitment `0x9eba08c9…41e23435` that the mint proved. The official V3 testnet explorer shows the [deployment](https://scanner-testnet-v3.portaldot.dev/#/extrinsics/100955-1) and [lock 0's event](https://scanner-testnet-v3.portaldot.dev/#/events/101009-4); the Portaldot Node Console shows the [deployment block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/100955) and the [lock's block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/101009), and [cast](#verify-it-yourself) reads the vault. |
 | **The way back, run once** (rows 47 to 51, trusted) | Sepolia burn [`0x42d70ae9…`](https://sepolia.etherscan.io/tx/0x42d70ae96cd010ed114a62178b88bf2cfcfe85933448aa6010c4f0d1b22dc1d7); the release in V3 block [#117,701](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117701) | 0.5 wtPOT burned on Sepolia for `0xD983…1071` on V3; 2 of the 3 committee members approved the release through pallet-multisig, and the vault paid that address 0.5 tPOT once, for that burn id. No contract checks the release against the burn: the committee is trusted, and on the testnet one operator holds all three of its keys. |
 | **Old mainnet, 7 of 10** (row 3) | Sepolia transaction [`0x8ddd807e…`](https://sepolia.etherscan.io/tx/0x8ddd807e2880b51b397cfac898b857740f7bfd081cddd32dcc71d405ea980696) | The same light client code verified old-mainnet block #2,726,202 with 7 of its 10 validators' signatures and proved an account balance from that block's state root (Logs: `HeaderImported` with `signatures` 7, then `BalanceProven`). The old mainnet's explorer shows the same block hash and state root: [#2,726,202](https://portalscan.portaldot.io/#/blocks/2726202). |
 
@@ -238,8 +238,9 @@ cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "outstanding()(uint256)" --
 
 The `Locked` event's data is the destination chain (`0xaa36a7`, 11155111), the minter, the amount
 (`0x5af3107a4000`, 10^14 native units) and the commitment; its topics are the event, nonce 0, the
-sender and the recipient. The V3 EVM RPC no longer serves the lock's transaction or receipt
-(`eth_getTransactionReceipt` returns null) but still returns its log. For the Sepolia rows,
+sender and the recipient. The V3 EVM RPC returns the lock's log. For some days it did not serve
+the lock's receipt; on Oct 23 `cast receipt 0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051 --rpc-url $V3`
+returned it again (status 1, to the vault, block 101009). For the Sepolia rows,
 Etherscan has every receipt; the public RPC above returns none for the older rows. In a browser,
 the Portaldot Node Console, a Polkadot.js Apps interface that reads the V3 node directly (it is
 not an indexed explorer), shows block
@@ -360,6 +361,8 @@ Plans, not promises: a step counts once it runs on chain and is in the [evidence
 
 **Next, before Nov 6**
 
+- **A web app for the bridge.** Lock, mint and burn from a wallet, with the mint's proofs built in
+  the browser.
 - The relayer kept running (`--watch`), so the V3 light client stays at V3's current validator set
   and a mint needs only V3's finality and one Sepolia transaction (48 seconds for lock 1).
 - The proof kit, packaged for other builders: the light client, the proof libraries and the
@@ -388,8 +391,6 @@ Plans, not promises: a step counts once it runs on chain and is in the [evidence
 
 **After the event**
 
-- **A web app for the bridge.** Lock, mint and burn from a wallet, with the proofs read in the
-  browser.
 - **A proven way back.** An Ethereum light client on Portaldot, so that the vault checks a burn
   instead of trusting the committee.
 - **Portaldot's V3 mainnet,** once it is live. The Portaldot Node Console already lists a network
@@ -426,6 +427,14 @@ From the git history, in UTC (the time zone Etherscan shows). Rows are the [evid
   0.5 wtPOT burned on Sepolia (row 47), committee members 1 and 2 funded, and the release opened by
   member 1 and run by member 2 on V3 (rows 48 to 51). Then the relayer imported V3's next
   validator set, and lock 1 was sent on V3 and minted on Sepolia 48 seconds later (rows 52 to 55).
+  Later, both light clients relayed again (V3 #121,505, set 33; old mainnet #2,734,895, set 3907),
+  and the live, read-only page (`site/`) deployed to GitHub Pages by `.github/workflows/pages.yml`.
+- **Oct 21.** The Bridge Zero mark and favicon on the page.
+- **Oct 23.** After Portaldot's V3.0 announcement, a check that the V3 testnet is the same chain
+  (the same genesis, block #100,955's hash, the vault's code and lock 0's log), then both light
+  clients brought to the live heads: V3 sets 33 to 46 and head #165,089 (14 transactions), old
+  mainnet sets 3907 to 3913 and head #2,739,249 (7 transactions, 7 of 10 signatures each). These
+  runs are in `deployments/relay-sepolia-0xd983….jsonl`, outside the numbered rows.
 
 ## Evidence
 
@@ -433,7 +442,8 @@ Sepolia, from [`0xD983…1071`](https://sepolia.etherscan.io/address/0xD9838A86c
 the captured chain data in [`fixtures/`](fixtures), each step is recorded in
 [`deployments/sepolia.json`](deployments/sepolia.json), and
 `node contracts/script/deploy-sepolia.mjs` replays the plan on a Sepolia node without sending
-anything. All eight contracts are source-verified on Etherscan.
+anything. All eight have their source on Etherscan: six as an Exact Match, and GrandpaLightClient
+#2 and ProvenBalance #2 as a Similar Match to #1, whose source they share.
 
 | # | What it shows | Transaction | Block | Result |
 |---|---|---|---|---|
@@ -639,5 +649,5 @@ pinned commit and licence. Commits that add third-party code start with `vendor:
 
 ## Licence
 
-The project licence (Apache-2.0) will be added with the final submission. Third-party
+The project licence (Apache-2.0) is planned for the final submission. Third-party
 code keeps its own licence, listed in [NOTICE.md](NOTICE.md).
