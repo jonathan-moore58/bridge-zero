@@ -43,16 +43,16 @@ import {
 } from "./watch.js";
 
 const TPOT = 10n ** 14n;
-const FAST3: Rule = { confirmations: 3, fastCap: DEFAULT_FAST_CAP };
+const FAST3: Rule = { confirmations: 3, fastCap: DEFAULT_FAST_CAP, fastBudget: DEFAULT_FAST_CAP };
 const HEADS = { latest: 1_000, finalized: 930 };
 
 describe("the confirmation rule", () => {
   it("reads a burn at the finalized block by default, and n below the latest in fast mode", () => {
     assert.equal(checkBlock(HEADS, FINALITY), 930);
     assert.equal(checkBlock(HEADS, FAST3), 997);
-    assert.equal(checkBlock(HEADS, { confirmations: 64, fastCap: TPOT }), 936);
+    assert.equal(checkBlock(HEADS, { ...FAST3, confirmations: 64 }), 936);
     // n below the latest is under the finalized block: the finalized block, which is never less safe.
-    assert.equal(checkBlock({ latest: 1_000, finalized: 990 }, { confirmations: 64, fastCap: TPOT }), 990);
+    assert.equal(checkBlock({ latest: 1_000, finalized: 990 }, { ...FAST3, confirmations: 64 }), 990);
     assert.throws(() => checkBlock({ latest: 900, finalized: 930 }, FAST3), RangeError);
   });
 
@@ -109,8 +109,44 @@ describe("the fast cap", () => {
     const final = qualification({ block: 930, amount: TPOT + 1n }, HEADS, FAST3);
     assert.ok(final.ok && final.by === "finality");
     // Another cap.
-    const capped = qualification({ block: deep, amount: 3n * TPOT }, HEADS, { confirmations: 3, fastCap: 5n * TPOT });
+    const capped = qualification({ block: deep, amount: 3n * TPOT }, HEADS, { confirmations: 3, fastCap: 5n * TPOT, fastBudget: 5n * TPOT });
     assert.ok(capped.ok && capped.by === "fast");
+  });
+});
+
+describe("the fast budget", () => {
+  const SIX = (6n * TPOT) / 10n;
+
+  it("keeps what is released fast and not final yet within the budget", () => {
+    assert.ok(qualification({ block: 990, amount: SIX }, HEADS, FAST3, 0n).ok);
+    const over = qualification({ block: 990, amount: SIX }, HEADS, FAST3, SIX);
+    assert.equal(over.ok, false);
+    assert.match(over.why, /above the fast budget.*waits for finality/);
+    assert.ok(qualification({ block: 990, amount: TPOT - SIX }, HEADS, FAST3, SIX).ok, "up to the budget exactly");
+    // A final burn does not count against it.
+    assert.ok(qualification({ block: 930, amount: SIX }, HEADS, FAST3, TPOT).ok);
+  });
+
+  it("releases the first of two 0.6 tPOT burns fast, and lets the second wait for finality", async () => {
+    const chain = new FakeChain(HEADS, [burn(0n, 990, SIX), burn(1n, 991, SIX)]);
+    const r = await watchRound(chain.ports(), FAST3, SEND);
+    assert.deepEqual(chain.calls, ["0:open:1:fast", "0:execute:2:fast"]);
+    assert.equal(r.released, 1);
+    assert.equal(r.waiting, 1);
+    assert.ok(chain.lines.some((l) => /^burn 1 .*waits: .*above the fast budget/.test(l)));
+  });
+
+  it("counts the fast releases of earlier rounds until their blocks are final", async () => {
+    const chain = new FakeChain(HEADS, [burn(1n, 991, SIX)]);
+    chain.fast.push({ amount: SIX, block: 985 });
+    const r = await watchRound(chain.ports(), FAST3, SEND);
+    assert.deepEqual(chain.calls, []);
+    assert.equal(r.waiting, 1);
+    // Block 985 is final now: burn 1 goes fast.
+    const later = new FakeChain({ latest: 1_000, finalized: 985 }, [burn(1n, 991, SIX)]);
+    later.fast.push({ amount: SIX, block: 985 });
+    assert.equal((await watchRound(later.ports(), FAST3, SEND)).released, 1);
+    assert.deepEqual(later.calls, ["1:open:1:fast", "1:execute:2:fast"]);
   });
 });
 
@@ -184,6 +220,8 @@ class FakeChain {
   /** What settle() says instead of settling, once each: still on its way, or not to be found. */
   readonly settleOutcomes: ({ kind: "pending"; why: string } | { kind: "fatal"; why: string })[] = [];
   settled = 0;
+  /** The releases made fast: what fastReleases() returns. */
+  readonly fast: { amount: bigint; block: number }[] = [];
 
   constructor(
     readonly heads = HEADS,
@@ -214,6 +252,7 @@ class FakeChain {
       },
       heads: async () => this.heads,
       burns: async () => this.burnList,
+      fastReleases: async () => this.fast,
       state: async (b) => structuredClone(this.state(b.burnNonce)),
       approve: async (b, by, step) => {
         this.calls.push(`${b.burnNonce}:${step.kind}:${step.member}:${by}`);
@@ -237,6 +276,7 @@ class FakeChain {
           s.released = true;
           s.rounds.at(-1)!.approvals.push(approval(step.member, "execute", "final"));
           s.rounds.at(-1)!.status = "released";
+          if (by === "fast") this.fast.push({ amount: b.amount, block: b.block });
         }
         return { kind: "ok" };
       },

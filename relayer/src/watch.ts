@@ -23,14 +23,16 @@ export const DEFAULT_FAST_CAP = 10n ** 14n;
 /**
  * How a burn is read before its release: at Sepolia's finalized block (confirmations null, the
  * default), or, in fast mode, at the block `confirmations` below the latest, for a burn of at most
- * `fastCap`; a larger burn waits for finality.
+ * `fastCap`; a larger burn waits for finality. The watcher also keeps the burns it released fast
+ * whose blocks are not final yet to `fastBudget` in all: what a reorg could undo at most.
  */
 export interface Rule {
   confirmations: number | null;
   fastCap: bigint;
+  fastBudget: bigint;
 }
 
-export const FINALITY: Rule = { confirmations: null, fastCap: DEFAULT_FAST_CAP };
+export const FINALITY: Rule = { confirmations: null, fastCap: DEFAULT_FAST_CAP, fastBudget: DEFAULT_FAST_CAP };
 
 /** --confirmations: a whole number of blocks, 1 to MAX_CONFIRMATIONS. */
 export function parseConfirmations(text: string): number {
@@ -66,12 +68,16 @@ export type Qualification = { ok: true; by: "finality" | "fast"; why: string } |
 /**
  * Whether a burn in block `block` of `amount` may be released now: when its block is final, or in
  * fast mode when it has at least `confirmations` blocks on top of it (its block is at most the
- * latest minus confirmations) and its amount is at most the cap.
+ * latest minus confirmations), its amount is at most the cap, and with the burns released fast
+ * whose blocks are not final yet (`exposed`, in all) it stays within the budget.
  */
-export function qualification(burn: { block: number; amount: bigint }, heads: Heads, rule: Rule): Qualification {
+export function qualification(burn: { block: number; amount: bigint }, heads: Heads, rule: Rule, exposed = 0n): Qualification {
   if (burn.block <= heads.finalized) return { ok: true, by: "finality", why: `its block #${burn.block} is final (finalized #${heads.finalized})` };
   if (rule.confirmations === null) return { ok: false, why: `its block #${burn.block} is not final yet (finalized #${heads.finalized}): the committee releases a burn once it is final` };
   if (burn.amount > rule.fastCap) return { ok: false, why: `its amount is above the fast cap (${burn.amount} > ${rule.fastCap} base units): it waits for finality (its block #${burn.block}, finalized #${heads.finalized})` };
+  if (exposed + burn.amount > rule.fastBudget) {
+    return { ok: false, why: `the burns released fast whose blocks are not final yet hold ${exposed} base units; with its ${burn.amount} that is above the fast budget of ${rule.fastBudget}: it waits for finality (its block #${burn.block}, finalized #${heads.finalized})` };
+  }
   const depth = heads.latest - burn.block;
   if (depth >= rule.confirmations) return { ok: true, by: "fast", why: `${depth} blocks on top of its block #${burn.block}, at least ${rule.confirmations} (fast mode, up to the cap)` };
   return { ok: false, why: `${Math.max(depth, 0)} of ${rule.confirmations} blocks on top of its block #${burn.block} so far (fast mode)` };
@@ -216,6 +222,8 @@ export interface Ports<B extends SeenBurn = SeenBurn> {
   heads(): Promise<Heads>;
   /** Every BurnRequested since the last burn handled, at the latest block, in nonce order. */
   burns(): Promise<B[]>;
+  /** The releases the record has made in fast mode: each burn's amount and block. */
+  fastReleases(): Promise<{ amount: bigint; block: number }[]>;
   /** The burn's state on V3 at the finalized head, and in the record. */
   state(burn: B): Promise<BurnState>;
   /**
@@ -292,6 +300,9 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
   p.log(`Sepolia: latest #${heads.latest}, finalized #${heads.finalized}`);
   const burns = await p.burns();
   p.log(`${burns.length} burn${burns.length === 1 ? "" : "s"} from the last one handled`);
+  // What a reorg could still undo: the burns released fast whose blocks are not final yet.
+  let exposed = (await p.fastReleases()).filter((x) => x.block > heads.finalized).reduce((sum, x) => sum + x.amount, 0n);
+  if (rule.confirmations !== null) p.log(`released fast and not final yet: ${exposed} of the fast budget's ${rule.fastBudget} base units`);
   for (const burn of burns) {
     if (burn.missing !== undefined) {
       p.log(`burn ${burn.burnNonce}: waits: ${burn.missing}`);
@@ -304,7 +315,7 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
       p.log(`${name}: released already; nothing to do`);
       continue;
     }
-    const q = qualification(burn, heads, rule);
+    const q = qualification(burn, heads, rule, exposed);
     if (!q.ok) {
       p.log(`${name}: waits: ${q.why}`);
       r.waiting += 1;
@@ -315,7 +326,10 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
     for (let i = 0; ; i++) {
       const next = nextStep(state, o.keyed, o.threshold);
       if (next.kind === "done") {
-        if (i > 0) r.released += 1;
+        if (i > 0) {
+          r.released += 1;
+          if (q.by === "fast") exposed += burn.amount;
+        }
         p.log(`${name}: ${next.why}`);
         break;
       }
@@ -456,9 +470,9 @@ export const MAX_BACKOFF_SECONDS = 3_600;
 
 /**
  * Whether a round's error is trouble with an RPC, after which the wait doubles: a node that did not
- * answer (Unreachable) or an RPC that answered a read with an error (RpcError for Sepolia, EvmRpcError
- * for V3's EVM RPC). Anything else (a
- * check, a burn) is retried after --watch seconds, as the next round would anyway.
+ * answer (Unreachable) or an RPC that answered a read with an error (RpcError for Sepolia,
+ * EvmRpcError for V3's EVM RPC). Anything else (a check, a burn) is retried after --watch seconds,
+ * as the next round would anyway.
  */
 export const rpcTrouble = (error: unknown): boolean => error instanceof Error && (error.name === "Unreachable" || error.name === "RpcError" || error.name === "EvmRpcError");
 

@@ -12,7 +12,7 @@
 //   npm run release -- release --watch <seconds> --send --member-keys <k>:<member json>,<j>:<member json> --password-file <path>
 //   npm run release -- fund --member <1|2|3> | --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]
 //   npm run release -- status
-//   fast mode, for release and release --watch: --confirmations <n> (1 to 64) [--fast-cap <tPOT>]
+//   fast mode, for release and release --watch: --confirmations <n> (1 to 64) [--fast-cap <tPOT>] [--fast-budget <tPOT>, --watch]
 //   more options: --rpc <wss url> (the V3 node), --evm <http(s) url> (its EVM RPC), --priority-fee
 //   <gwei> and --max-fee <gwei> (burn)
 //
@@ -371,7 +371,7 @@ const USAGE = `usage (from relayer/):
   npm run release -- release --burn-nonce <n> --rehearse --amount <wtPOT> --to <h160> [--approve --member <1|2|3>]
   npm run release -- release --burn-nonce <n> --approve|--cancel --member <1|2|3> [--send --key-file <member json> --password-file <path>]
   npm run release -- release --watch <seconds> [--rounds <n>] [--state-dir <path>] [--send --member-keys <k>:<member json>,<j>:<member json> --password-file <path>]
-  fast mode, for release and release --watch: --confirmations <n> (1 to 64) [--fast-cap <tPOT>, by default 1]
+  fast mode, for release and release --watch: --confirmations <n> (1 to 64) [--fast-cap <tPOT>, by default 1] [--fast-budget <tPOT>, --watch only, by default the cap]
   npm run release -- fund --member <1|2|3> | --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]
   npm run release -- status
   more options: --rpc <wss url>, --evm <http(s) url>, --priority-fee <gwei> and --max-fee <gwei> (burn)
@@ -555,17 +555,21 @@ function burnOptions(args: string[]): BurnOptions {
   };
 }
 
-/** --confirmations and --fast-cap: the rule a burn is read by. */
+/** --confirmations, --fast-cap and --fast-budget (by default the cap): the rule a burn is read by. */
 function ruleOf(v: Record<string, string | boolean | undefined>): Rule {
   const confirmationsText = str(v.confirmations);
   const capText = str(v["fast-cap"]);
+  const budgetText = str(v["fast-budget"]);
   if (confirmationsText === undefined) {
     if (capText !== undefined) usage("--fast-cap is for fast mode: add --confirmations <n>");
+    if (budgetText !== undefined) usage("--fast-budget is for fast mode: add --confirmations <n>");
     return FINALITY;
   }
+  const fastCap = capText === undefined ? DEFAULT_FAST_CAP : option("--fast-cap", () => parseTpot(capText));
   return {
     confirmations: option("--confirmations", () => parseConfirmations(confirmationsText)),
-    fastCap: capText === undefined ? DEFAULT_FAST_CAP : option("--fast-cap", () => parseTpot(capText)),
+    fastCap,
+    fastBudget: budgetText === undefined ? fastCap : option("--fast-budget", () => parseTpot(budgetText)),
   };
 }
 
@@ -591,6 +595,7 @@ function releaseOptions(args: string[]): ReleaseOptions | WatchOptions {
     "password-file": { type: "string" },
     confirmations: { type: "string" },
     "fast-cap": { type: "string" },
+    "fast-budget": { type: "string" },
     watch: { type: "string" },
     rounds: { type: "string" },
     "member-keys": { type: "string" },
@@ -598,7 +603,7 @@ function releaseOptions(args: string[]): ReleaseOptions | WatchOptions {
     ...COMMON,
   });
   if (str(v.watch) !== undefined) return watchOptions(v);
-  for (const name of ["rounds", "member-keys", "state-dir"]) if (v[name] !== undefined) usage(`--${name} is for --watch`);
+  for (const name of ["rounds", "member-keys", "state-dir", "fast-budget"]) if (v[name] !== undefined) usage(`--${name} is for --watch`);
   const nonceText = str(v["burn-nonce"]);
   if (nonceText === undefined) usage("release needs --burn-nonce <n>, the burn on Sepolia to release, or --watch <seconds>");
   const rehearse = v.rehearse === true;
@@ -819,6 +824,8 @@ interface ApprovalEntry {
 interface ReleaseEntry {
   /** open: approved, not run yet. released: run and checked. failed: run with an error, or its checks failed. cancelled. */
   status: "open" | "released" | "failed" | "cancelled";
+  /** How the burn qualified at the round's last approval: final on Sepolia, or fast mode before finality. */
+  by?: "fast" | "finality";
   trust: string;
   burn: { chainId: string; minter: Hex; burnNonce: string; burnId: Hex; from: Hex; v3Recipient: Hex; amount: string; txHash: Hex; block: number; blockHash?: Hex | null };
   vault: Hex;
@@ -1796,6 +1803,8 @@ async function burnCommand(o: BurnOptions): Promise<number> {
 
 /** A burn to release: the one on Sepolia, or, for a rehearsal, the one --amount and --to describe. */
 interface BurnToRelease {
+  /** Its block is final at the block it was read at (always, without fast mode). */
+  final: boolean;
   burnNonce: bigint;
   burnId: Uint8Array;
   from: Uint8Array | null;
@@ -2056,10 +2065,11 @@ async function deployed(): Promise<Deployed> {
   return { b, record, keyring, v: vaultFacts(record, keyring) };
 }
 
-const ruleText = (rule: Rule) =>
+const ruleText = (rule: Rule, watch = false) =>
   rule.confirmations === null
     ? "the burn is read at Sepolia's finalized block"
-    : `${tradeOff(rule.confirmations)}. A burn of at most --fast-cap ${formatTpot(rule.fastCap)} is read ${rule.confirmations} block${rule.confirmations === 1 ? "" : "s"} below Sepolia's latest; a larger one waits for finality`;
+    : `${tradeOff(rule.confirmations)}. A burn of at most --fast-cap ${formatTpot(rule.fastCap)} is read ${rule.confirmations} block${rule.confirmations === 1 ? "" : "s"} below Sepolia's latest; a larger one waits for finality` +
+      (watch ? `, and so does one that would take the burns released fast whose blocks are not final yet above --fast-budget ${formatTpot(rule.fastBudget)} in all` : "");
 
 async function releaseCommand(o: ReleaseOptions): Promise<number> {
   const what = o.action === "approve" ? `member ${o.member}'s approval of` : o.action === "cancel" ? `member ${o.member}'s cancellation of` : "the release of";
@@ -2115,7 +2125,7 @@ async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease 
   let burn: BurnToRelease;
   if (o.rehearse) {
     if (n < state.burnCount) throw new Stop(`burn ${n} is on Sepolia: release it without --rehearse`);
-    burn = { burnNonce: n, burnId: id, from: null, v3Recipient: o.to!, amount: o.amount!, txHash: null, block: null, blockHash: null };
+    burn = { final: true, burnNonce: n, burnId: id, from: null, v3Recipient: o.to!, amount: o.amount!, txHash: null, block: null, blockHash: null };
     log(`     rehearsal: burn ${n} is not on Sepolia; the V3 side runs as if it burned ${formatWtpot(burn.amount)} for ${checksumAddress(burn.v3Recipient)}. Nothing can be sent for it.`);
   } else {
     if (n >= state.burnCount) {
@@ -2154,7 +2164,7 @@ async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease 
       }
       log(`     ${tradeOff(c!)}`);
     }
-    burn = found;
+    burn = { ...found, final };
   }
   return failures > 0 ? FAILED : burn;
 }
@@ -2378,6 +2388,7 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
       events: [],
     };
     round.approvals.push(approval);
+    round.by = burn.final ? "finality" : "fast";
     saveV3Record(record);
     log(`\nSigned ${tx.method.section}.${tx.method.method} ${approval.extrinsicHash} as member ${k} at nonce ${nonce}, recorded in ${V3_RECORD}; submitting`);
     let final: Final | "pending";
@@ -2668,6 +2679,8 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
         return heads;
       },
       burns: () => burnsSince(d, heads, cache),
+      fastReleases: async () =>
+        (d.record.releases ?? []).filter((r) => r.status === "released" && r.by === "fast" && r.burn.minter === d.b.minter).map((r) => ({ amount: BigInt(r.amountNative), block: r.burn.block })),
       state: (burn) => burnStateOf(api, d, burn),
       approve: (burn, by, step) => approveFor({ d, api, evm, o, keys: keys.pairs, lock }, burn, by, step),
       log,
@@ -2690,7 +2703,7 @@ async function watchCommand(o: WatchOptions): Promise<number> {
   const keyed = o.memberKeys.map((k) => k.member).join(" and ");
   log(`${new Date().toISOString()}: the auto-release watcher of ${V3.title}, a round every ${o.watch} s; members ${keyed} approve${o.send ? "" : " (dry run)"}`);
   log(`     the return path is ${TRUST}`);
-  log(`     ${ruleText(o.rule)}`);
+  log(`     ${ruleText(o.rule, true)}`);
   const { Keyring } = await polkadot();
   const keyring = new Keyring({ type: "sr25519", ss58Format: V3.ss58 });
   const v = vaultFacts(readV3Record(), keyring);
