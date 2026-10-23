@@ -69,11 +69,17 @@
 // another at its nonce) moves to relay-sepolia-<sender>.jsonl, a line appended, so the JSON stays
 // small and the history is never rewritten. Before planning, a run settles what the JSON left open.
 // An earlier version kept them in deployments/ of the checkout: while that record holds open
-// transactions nothing runs (exit code 1), and a run says what to move where.
+// transactions no --send run runs (exit code 1), and a run, a dry run too, says what to move where;
+// a history left there is to be added to the state directory's. Only --send creates the directory
+// (a directory it cannot create blocks the run, see --watch).
 // Only one --send run per sender at a time holds relay-sepolia-<sender>.lock: the holder refreshes it
 // every 30 s, a lock whose process is gone or which was not refreshed for 10 minutes is taken over,
 // and a run checks before every signing and record write that the lock still holds its own token
-// (exit code 1 when it does not). takeLock tells the lock's limits.
+// (exit code 1 when it does not). takeLock tells the lock's limits. So keep one state directory per
+// sender, on one machine: runs of one sender with two state directories, or on two machines, do not
+// exclude each other, can sign at one nonce, and the one that loses stops on its next run (Fatal).
+// An earlier version's lock was elsewhere (the system's temp directory): stop its runs for a sender
+// before this version runs for it.
 // --watch starts the next run <seconds> (10 to 86,400) after each run ends, a failed one too; after
 // runs in a row that stop on something only the client's admin or the operator can clear (a halt,
 // a pause, a ForcedChange, the scan limit, too small a balance, ...), the wait doubles each time, up
@@ -483,7 +489,7 @@ function deployment(chain: ChainName): Deployment {
 }
 
 /** Who signs and pays: the address (lower case), how a run prints it, and its record, history and lock in the state directory. */
-interface Sender {
+export interface Sender {
   address: Hex;
   name: string;
   record: string;
@@ -491,39 +497,91 @@ interface Sender {
   lock: string;
 }
 
-function senderOf(address: Hex, name: string, stateDir: string): Sender {
+export function senderOf(address: Hex, name: string, stateDir: string): Sender {
   const file = join(stateDir, `relay-sepolia-${address}`);
   return { address, name, record: `${file}.json`, history: `${file}.jsonl`, lock: `${file}.lock` };
 }
 
+/** What legacyAdvice goes by: the earlier version's record and history in deployments/, and the state directory's. */
+export interface LegacyFacts {
+  record: string;
+  history: string;
+  recordExists: boolean;
+  /** The earlier record's open transactions; null when it cannot be read (it may hold some). */
+  open: number | null;
+  historyExists: boolean;
+  newRecordExists: boolean;
+  newHistoryExists: boolean;
+  stateDirExists: boolean;
+  /** The state directory is deployments/ itself (--state-dir pointing there): nothing is earlier. */
+  sameDir: boolean;
+}
+
 /**
  * An earlier version kept the sender's record and history in deployments/ of the checkout. While
- * that record holds open transactions, nothing runs: printed is what to move where, so that none
- * is lost. A record with none open is left alone.
+ * that record holds open transactions, no --send run runs (refuse): the lines say what to move
+ * where, so that none is lost. A record with none open is left alone; a history left there, with or
+ * without a record, is to be added to the state directory's, so the history stays in one place.
  */
-function legacyRecordMoved(s: Sender): boolean {
+export function legacyAdvice(s: Sender, f: LegacyFacts): { refuse: boolean; lines: string[] } {
+  if (f.sameDir) return { refuse: false, lines: [] };
+  const dir = dirname(s.record);
+  const create = f.stateDirExists ? "" : ` (create the directory ${dir} first)`;
+  const history = f.newHistoryExists ? `add the lines of ${f.history} to the end of ${s.history}, then delete ${f.history}` : `move ${f.history} to ${s.history}`;
+  if (!f.recordExists || f.open === 0) {
+    if (!f.historyExists) return { refuse: false, lines: [] };
+    return { refuse: false, lines: [`${f.history} is the history of an earlier version of this relayer: ${history}${f.newHistoryExists ? "" : create}`] };
+  }
+  const lines = [
+    `${f.record} is the record of an earlier version of this relayer and ${f.open === null ? "cannot be read; it may hold" : `holds ${f.open}`} open ` +
+      `transaction${f.open === 1 ? "" : "s"} of ${s.address}: no --send run runs until it is moved to the state directory ${dir}`,
+    f.newRecordExists
+      ? `${s.record} exists too: add the entries of "open" in ${f.record} to its "open" list, then delete ${f.record}`
+      : `move ${f.record} to ${s.record}${create}`,
+  ];
+  if (f.historyExists) lines.push(`and ${history}`);
+  return { refuse: true, lines };
+}
+
+/** Same path, as Windows compares them (any case). */
+const samePath = (a: string, b: string) => (process.platform === "win32" ? resolve(a).toLowerCase() === resolve(b).toLowerCase() : resolve(a) === resolve(b));
+
+/**
+ * legacyAdvice on the files as they are. A --send run that it refuses prints FAIL and the lines
+ * (false); a dry run, which never reads the record, prints them as a note and goes on.
+ */
+function legacyRecordMoved(s: Sender, send: boolean): boolean {
   const record = join(DEPLOYMENTS, `relay-sepolia-${s.address}.json`);
   const history = join(DEPLOYMENTS, `relay-sepolia-${s.address}.jsonl`);
-  if (!existsSync(record)) return true;
   let open: number | null = null;
-  try {
-    const old = JSON.parse(readFileSync(record, "utf8")) as { open?: unknown };
-    open = Array.isArray(old.open) ? old.open.length : null;
-  } catch {
-    // unreadable: it may hold open transactions
+  const recordExists = existsSync(record);
+  if (recordExists) {
+    try {
+      const old = JSON.parse(readFileSync(record, "utf8")) as { open?: unknown };
+      open = Array.isArray(old.open) ? old.open.length : null;
+    } catch {
+      // unreadable: it may hold open transactions
+    }
   }
-  if (open === 0) return true;
-  check(
-    false,
-    `${record} is the record of an earlier version of this relayer and ${open === null ? "cannot be read; it may hold" : `holds ${open}`} open ` +
-      `transaction${open === 1 ? "" : "s"} of ${s.address}: nothing runs until it is moved to the state directory ${dirname(s.record)}`,
-  );
-  if (existsSync(s.record)) log(`     ${s.record} exists too: add the entries of "open" in ${record} to its "open" list, then delete ${record}`);
-  else log(`     move ${record} to ${s.record}`);
-  if (existsSync(history)) {
-    log(existsSync(s.history) ? `     and add the lines of ${history} to the end of ${s.history}, then delete ${history}` : `     and move ${history} to ${s.history}`);
+  const advice = legacyAdvice(s, {
+    record,
+    history,
+    recordExists,
+    open,
+    historyExists: existsSync(history),
+    newRecordExists: existsSync(s.record),
+    newHistoryExists: existsSync(s.history),
+    stateDirExists: existsSync(dirname(s.record)),
+    sameDir: samePath(dirname(s.record), DEPLOYMENTS),
+  });
+  if (advice.lines.length === 0) return true;
+  if (advice.refuse && send) {
+    check(false, advice.lines[0]);
+    for (const line of advice.lines.slice(1)) log(`     ${line}`);
+    return false;
   }
-  return false;
+  for (const line of advice.lines) log(`     note: ${line}`);
+  return true;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2331,13 +2389,25 @@ interface Run {
   blocked: boolean;
 }
 
+/**
+ * Creates the state directory for a --send run. One that cannot be created (the path is a file, or
+ * no permission) is Blocked: only the operator can clear it, so --watch waits longer after each.
+ */
+export function makeStateDir(dir: string): void {
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch (error) {
+    throw new Blocked(`the state directory ${dir} cannot be created (${errorText(error)}): give --state-dir a directory this account can write`);
+  }
+}
+
 /** One run; with --send, under the sender's lock. Fatal problems propagate, everything else becomes an exit code. */
 async function runOnce(o: Options, sender: Sender): Promise<Run> {
   failures = 0;
   let lock: Lock | null = null;
   try {
     if (o.send) {
-      mkdirSync(dirname(sender.lock), { recursive: true });
+      makeStateDir(dirname(sender.lock));
       lock = takeLock(sender.lock);
       if (!lock) return { code: FAILED, blocked: false };
     }
@@ -2366,7 +2436,7 @@ async function main(): Promise<number> {
     if (!unlocked) return FAILED;
     sender = senderOf(unlocked.toLowerCase() as Hex, `${unlocked} (keystore ${o.account})`, o.stateDir);
   } else sender = o.from ? senderOf(o.from, o.from, o.stateDir) : senderOf(deployer, `${deployerName} (the deployer)`, o.stateDir);
-  if (!legacyRecordMoved(sender)) return FAILED;
+  if (!legacyRecordMoved(sender, o.send)) return FAILED;
   let wait = o.watch ?? 0;
   for (;;) {
     const run = await runOnce(o, sender);

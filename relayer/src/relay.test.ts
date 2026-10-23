@@ -5,9 +5,27 @@
 //   npm test
 
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import type { Fees } from "../../contracts/script/lib/sepolia.mjs";
-import { clampFees, feeCap, heldBackBeforePlan, maxFeeAt, measureFees, raised, transient, upfrontOf, type ClientState, type Options } from "./relay.js";
+import {
+  clampFees,
+  feeCap,
+  heldBackBeforePlan,
+  legacyAdvice,
+  makeStateDir,
+  maxFeeAt,
+  measureFees,
+  raised,
+  senderOf,
+  transient,
+  upfrontOf,
+  type ClientState,
+  type LegacyFacts,
+  type Options,
+} from "./relay.js";
 
 const GWEI = 10n ** 9n;
 const fees = (base: bigint, tip = 1_000n, maxFee = 10n * base + tip): Fees => ({ base, tip, maxFee, gasPrice: base + tip });
@@ -184,5 +202,74 @@ describe("a dry run above the gates (F6)", () => {
     assert.equal(upfrontOf([], fee), 0n);
     // A mainnet set change at the gate: about 0.1 ETH, as the funding note says.
     assert.ok(upfrontOf(steps.slice(0, 1), fee) < 101n * 10n ** 15n);
+  });
+});
+
+describe("the state directory and an earlier version's files (F7, F8, ops nits 2-5)", () => {
+  const ADDRESS = "0xd9838a86cf83c28ee486544060d1ca4ca2971071" as const;
+  const state = join("C:", "state");
+  const deployments = join("C:", "checkout", "deployments");
+  const s = senderOf(ADDRESS, ADDRESS, state);
+  const facts = (more: Partial<LegacyFacts> = {}): LegacyFacts => ({
+    record: join(deployments, `relay-sepolia-${ADDRESS}.json`),
+    history: join(deployments, `relay-sepolia-${ADDRESS}.jsonl`),
+    recordExists: false,
+    open: null,
+    historyExists: false,
+    newRecordExists: false,
+    newHistoryExists: false,
+    stateDirExists: true,
+    sameDir: false,
+    ...more,
+  });
+
+  it("keeps the sender's record, history and lock side by side", () => {
+    assert.equal(s.record, join(state, `relay-sepolia-${ADDRESS}.json`));
+    assert.equal(s.history, join(state, `relay-sepolia-${ADDRESS}.jsonl`));
+    assert.equal(s.lock, join(state, `relay-sepolia-${ADDRESS}.lock`));
+  });
+
+  it("says nothing when there is nothing earlier", () => {
+    assert.deepEqual(legacyAdvice(s, facts()), { refuse: false, lines: [] });
+    assert.deepEqual(legacyAdvice(s, facts({ recordExists: true, open: 0 })), { refuse: false, lines: [] });
+  });
+
+  it("refuses a --send run while the earlier record holds open transactions, and says what to move", () => {
+    const a = legacyAdvice(s, facts({ recordExists: true, open: 2, historyExists: true }));
+    assert.equal(a.refuse, true);
+    assert.match(a.lines[0], /holds 2 open transactions/);
+    assert.equal(a.lines[1], `move ${facts().record} to ${s.record}`);
+    assert.equal(a.lines[2], `and move ${facts().history} to ${s.history}`);
+    const b = legacyAdvice(s, facts({ recordExists: true, open: null, newRecordExists: true, newHistoryExists: true, historyExists: true }));
+    assert.match(b.lines[0], /cannot be read; it may hold open transactions/);
+    assert.match(b.lines[1], /add the entries of "open"/);
+    assert.match(b.lines[2], /add the lines of .* to the end of/);
+  });
+
+  it("does not refuse its own record when --state-dir is deployments/ (F8)", () => {
+    assert.deepEqual(legacyAdvice(s, facts({ sameDir: true, recordExists: true, open: 3, historyExists: true })), { refuse: false, lines: [] });
+  });
+
+  it("points at an earlier history left without a record (nit 2)", () => {
+    const a = legacyAdvice(s, facts({ historyExists: true }));
+    assert.equal(a.refuse, false);
+    assert.deepEqual(a.lines, [`${facts().history} is the history of an earlier version of this relayer: move ${facts().history} to ${s.history}`]);
+    const b = legacyAdvice(s, facts({ historyExists: true, newHistoryExists: true, recordExists: true, open: 0 }));
+    assert.match(b.lines[0], new RegExp(`add the lines of .* to the end of .*relay-sepolia-${ADDRESS}\.jsonl, then delete`));
+  });
+
+  it("says to create the state directory first when it does not exist (nit 3)", () => {
+    const a = legacyAdvice(s, facts({ recordExists: true, open: 1, stateDirExists: false }));
+    assert.match(a.lines[1], /\(create the directory .* first\)$/);
+    assert.match(a.lines[0], /holds 1 open transaction of/);
+    const b = legacyAdvice(s, facts({ historyExists: true, stateDirExists: false }));
+    assert.match(b.lines[0], /\(create the directory .* first\)$/);
+  });
+
+  it("blocks a run whose state directory cannot be created (nit 4)", () => {
+    // A directory under a file cannot be made; nothing is created.
+    const under = join(fileURLToPath(import.meta.url), "state");
+    assert.throws(() => makeStateDir(under), (error: Error) => error.name === "Blocked" && /cannot be created/.test(error.message));
+    assert.equal(existsSync(under), false);
   });
 });
