@@ -244,12 +244,12 @@ const DUMPER_CODE = "0x5f5b8036111560145780355481526020016001565b365ff3";
 const dumpGas = (slots: number) => 50_000 + 3_000 * slots;
 
 const OK = 0;
-const FAILED = 1;
+export const FAILED = 1;
 const UNREACHABLE = 2;
 const PENDING = 3;
 
 const log = (message = "") => console.log(message);
-const errorText = (error: unknown) => redact(error instanceof Error ? error.message : String(error));
+export const errorText = (error: unknown) => redact(error instanceof Error ? error.message : String(error));
 const tag = (s: Step) => `[${String(s.index).padStart(2)}]`;
 const max = (...values: bigint[]) => values.reduce((a, b) => (b > a ? b : a));
 /** A synchronous pause, for the lock (as writeJsonAtomic waits). */
@@ -257,7 +257,7 @@ const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(
 
 /** Checks of the current run, printed as the Sepolia scripts print theirs. */
 let failures = 0;
-function check(ok: boolean, what: string): boolean {
+export function check(ok: boolean, what: string): boolean {
   log(`${ok ? "ok  " : "FAIL"} ${what}`);
   if (!ok) failures += 1;
   return ok;
@@ -2688,7 +2688,8 @@ async function runOnce(o: Options, sender: Sender): Promise<Run> {
   }
 }
 
-async function main(): Promise<number> {
+/** The relayer: one run, or with --watch one run after another. relay-main.ts runs it (npm run relay). */
+export async function main(): Promise<number> {
   const o = options();
   redactAlso(o.passwordFile, o.rpc === CHAINS[o.chain].rpc ? undefined : o.rpc, ...(process.env.SEPOLIA_ARCHIVE_RPC_URLS ? ARCHIVE_RPCS : []));
   const { deployer, deployerName } = deployment(o.chain);
@@ -2716,16 +2717,7 @@ async function main(): Promise<number> {
  * Ends the process with `code` once nothing is left to run, or 10 s later at the latest: exiting at
  * once while a socket still closes can fail an assertion in libuv on Windows (exit code 127).
  */
-function exit(code: number): void {
+export function exit(code: number): void {
   process.exitCode = code;
   setTimeout(() => process.exit(code), 10_000).unref();
-}
-
-// Run as the relayer (npm run relay); relay.test.ts imports it without running it.
-const entry = process.argv[1] !== undefined && resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
-if (entry) {
-  main().then(exit, (error: unknown) => {
-    check(false, errorText(error));
-    exit(FAILED);
-  });
 }

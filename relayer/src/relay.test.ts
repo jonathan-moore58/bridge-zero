@@ -5,8 +5,9 @@
 //   npm test
 
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
 import { keccak256, RPC, type Fees, type Receipt } from "../../contracts/script/lib/sepolia.mjs";
@@ -552,5 +553,22 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
     assert.equal(await servesSepolia("https://other.example"), false);
     assert.equal(await servesSepolia("https://other.example"), false);
     assert.equal(world.asked.filter((a) => a === "other.example eth_chainId").length, 1, "another chain's id is kept");
+  });
+});
+
+describe("the entry point (nit 4)", () => {
+  it("relay-main.ts runs the relayer, whatever path starts it: never a silent exit 0", () => {
+    // No --chain: the relayer prints its usage and exits 1, before it reads or sends anything.
+    const relayer = dirname(dirname(fileURLToPath(import.meta.url)));
+    for (const file of ["src/relay-main.ts", join(relayer, "src", "relay-main.ts")]) {
+      const run = spawnSync(process.execPath, ["--import", "tsx", file], { cwd: relayer, encoding: "utf8", windowsHide: true, timeout: 60_000 });
+      assert.equal(run.status, 1, file);
+      assert.match(run.stdout, /--chain must be mainnet or v3\nusage \(from relayer\/\):/);
+    }
+  });
+
+  it("npm run relay starts relay-main.ts", () => {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { scripts: Record<string, string> };
+    assert.equal(pkg.scripts.relay, "tsx src/relay-main.ts");
   });
 });
