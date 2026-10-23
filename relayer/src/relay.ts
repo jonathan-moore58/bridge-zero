@@ -204,6 +204,8 @@ const MAX_BACKOFF_SECONDS = 3_600;
  * change at a time at any base fee up to the gate.
  */
 const MAX_BASE_FEE_CHANGE = "1.5";
+/** The lowest max fee feesAt sets (0.01 gwei), whatever the base fee below it. */
+const MIN_MAX_FEE = 10_000_000n;
 /** Grandpa.CurrentSetId, read (without a proof) to tell whether a set change is due before a run scans. */
 const SET_ID_KEY = bytesToHex(storageKey("Grandpa", "CurrentSetId"));
 /** With --watch, set changes held back by the base fee for this long make a run warn. */
@@ -1257,8 +1259,28 @@ export function measureFees(fees: Fees): Fees {
   return low < fees.maxFee ? { ...fees, maxFee: low } : fees;
 }
 
-/** Runs the plan on the node; null when a check fails, "underfunded" when the cost check is the only one that fails. */
-async function dryRun(steps: Step[], ctx: Context, title: string): Promise<DryRun | "underfunded" | null> {
+/**
+ * The most the sender must hold for a plan sent in order at `maxFee`: before each transaction its
+ * gas limit at the max fee, after every earlier one paid the max fee for the gas it used.
+ */
+export function upfrontOf(steps: { limit: number; gas: number }[], maxFee: bigint): bigint {
+  let need = 0n;
+  let paid = 0n;
+  for (const s of steps) {
+    const upfront = paid + BigInt(s.limit) * maxFee;
+    if (upfront > need) need = upfront;
+    paid += BigInt(s.gas) * maxFee;
+  }
+  return need;
+}
+
+/**
+ * Runs the plan on the node; null when a check fails, "underfunded" when the cost check is the only
+ * one that fails. With `costFee` (a dry run while the base fee is above the first step's gate, when a
+ * --send run would send nothing), both passes run at measureFees and the cost is priced at
+ * `costFee`, the max fee a --send run would use once the base fee is at that gate.
+ */
+async function dryRun(steps: Step[], ctx: Context, title: string, costFee?: bigint): Promise<DryRun | "underfunded" | null> {
   const { fees } = ctx;
   log(
     `Fees: next base fee ${fmt(fees.base)} wei, priority fee ${fmt(fees.tip)} wei, max fee ${fmt(fees.maxFee)} wei` +
@@ -1278,10 +1300,11 @@ async function dryRun(steps: Step[], ctx: Context, title: string): Promise<DryRu
   const limits = new Map(steps.map((s) => [s.index, withHeadroom(gas.get(s.index)!)]));
 
   // 2. The exact plan: every step with the gas limit it is sent with.
-  const run = await simulate(steps, (s) => limits.get(s.index)!, (s) => gas.get(s.index)!, ctx);
+  const second = costFee === undefined ? fees : measureFees(fees);
+  const run = await simulate(steps, (s) => limits.get(s.index)!, (s) => gas.get(s.index)!, { ...ctx, fees: second });
   log(
     `Requests: ${groups(first.requests)} with gas limit 16,777,216 and max fee ${fmt(measureFees(fees).maxFee)} wei, ` +
-      `then ${groups(run.requests)} with the gas limits below and max fee ${fmt(fees.maxFee)} wei.`,
+      `then ${groups(run.requests)} with the gas limits below and max fee ${fmt(second.maxFee)} wei.`,
   );
   log(`\nOn ${title}:`);
   let total = 0;
@@ -1303,18 +1326,14 @@ async function dryRun(steps: Step[], ctx: Context, title: string): Promise<DryRu
   check(top <= CAP, `every gas limit is within the 16,777,216 cap (the largest ${fmt(top)})`);
   const peak = Math.max(first.peak, run.peak);
   check(peak <= REQUEST_GAS, `the largest request needs ${fmt(peak)} of the ${fmt(REQUEST_GAS)} gas one request may use`);
-  let need = 0n;
-  let paid = 0n;
-  for (const s of steps) {
-    const upfront = paid + BigInt(limits.get(s.index)!) * fees.maxFee;
-    if (upfront > need) need = upfront;
-    paid += BigInt(gas.get(s.index)!) * fees.maxFee;
-  }
+  const priced = costFee ?? fees.maxFee;
+  const need = upfrontOf(steps.map((s) => ({ limit: limits.get(s.index)!, gas: gas.get(s.index)! })), priced);
   const othersFailed = failures > 0;
   const funded = check(
     need + ctx.keep <= ctx.balance,
     `cost at the current fees ${eth(ctx.balance - run.balance)} (base fee ${fmt(run.baseFee)} wei + priority fee, as simulated);` +
-      ` at most ${eth(need)} at the max fee, with --keep ${eth(ctx.keep)} left; the sender has ${eth(ctx.balance)}`,
+      ` at most ${eth(need)} at ${costFee === undefined ? "the max fee" : `the max fee a --send run uses at the gate, ${fmt(priced)} wei`},` +
+      ` with --keep ${eth(ctx.keep)} left; the sender has ${eth(ctx.balance)}`,
   );
   if (failures === 0) return { limits, gas };
   return funded || othersFailed ? null : "underfunded";
@@ -1855,12 +1874,15 @@ export function raised(old: { maxFee: bigint; tip: bigint }, now: Fees, cap: big
   return maxFee <= cap ? { ...now, tip, maxFee } : null;
 }
 
+/** The max fee feesAt sets at base fee `base`: ten times it plus the priority fee, at least MIN_MAX_FEE; --max-fee when given. */
+export const maxFeeAt = (o: Options, base: bigint, tip: bigint) => o.maxFee ?? max(10n * base + tip, MIN_MAX_FEE);
+
 /**
  * The most a replacement offers per gas: the max fee a run would use at a base fee of the step's
  * gate (ten times it plus the priority fee, at least the run's own at a base fee not above it), or
  * --max-fee when it is given, which no transaction passes.
  */
-export const feeCap = (o: Options, now: Fees, gate: bigint) => o.maxFee ?? max(10n * gate + now.tip, now.maxFee);
+export const feeCap =(o: Options, now: Fees, gate: bigint) => o.maxFee ?? max(10n * gate + now.tip, now.maxFee);
 
 /** `fees` with the max fee, and the priority fee, at most `cap`: lowering them keeps the dry run's cost check. */
 export function clampFees(fees: Fees, cap: bigint): Fees {
@@ -2226,7 +2248,12 @@ async function relay(o: Options, sender: Sender, lock: Lock | null = null): Prom
     const s = plan.steps[cut];
     const what = `the next base fee is ${fmt(current.base)} wei, above ${gateName(s)} ${fmt(gateOf(s, o))} wei`;
     if (!o.send) {
-      log(`     (${what}: a --send run would ${cut === 0 ? "send nothing now" : `send the first ${cut} transaction${cut === 1 ? "" : "s"} and leave the rest for a later run`})`);
+      log(
+        `     (${what}: a --send run would ` +
+          (cut === 0
+            ? `send nothing now; this dry run prices the plan at ${fmt(maxFeeAt(o, gateOf(s, o), current.tip))} wei, the max fee at that gate)`
+            : `send the first ${cut} transaction${cut === 1 ? "" : "s"} and leave the rest for a later run)`),
+      );
     } else if (cut === 0) {
       if (s.setAfter !== s.setBefore) heldBack(current.base, o, { setId: client.setId, behind: (plan.head ?? s.number) - client.latestNumber });
       else heldBackSince = undefined;
@@ -2264,14 +2291,23 @@ async function relay(o: Options, sender: Sender, lock: Lock | null = null): Prom
   }
 
   const ctx: Context = { block, fees, balance, sender: sender.address, client: address, keep: o.keep, head: plan.head };
+  // A dry run while the base fee holds back the first step, when a --send run would send nothing:
+  // the plan is run at the lowest valid fees, and priced at the max fee a --send run uses at the gate.
+  const atGate = !o.send && cut === 0 ? maxFeeAt(o, gateOf(plan.steps[0], o), current.tip) : undefined;
   let dry: DryRun | "underfunded" | null = null;
   try {
-    dry = await dryRun(plan.steps, ctx, title);
+    dry = await dryRun(plan.steps, ctx, title, atGate);
   } catch (error) {
     if (error instanceof Unreachable) throw error;
-    check(false, errorText(error));
     // A node refuses to simulate a transaction the sender cannot pay for at its max fee.
-    if (failures === 1 && /insufficient funds/i.test(errorText(error))) dry = "underfunded";
+    const funds = failures === 0 && /insufficient funds/i.test(errorText(error));
+    if (funds && atGate !== undefined) {
+      log(`     (the node cannot run the plan from the sender's balance at the current base fee: ${errorText(error)})`);
+      log("\nThe dry run stops here, as a --send run sends nothing while the base fee is above the gate. Nothing was signed or sent.");
+      return OK;
+    }
+    check(false, errorText(error));
+    if (funds) dry = "underfunded";
   }
   if (dry === "underfunded") {
     log("\nThe dry run failed on the sender's balance alone: nothing can be sent until it is funded.");

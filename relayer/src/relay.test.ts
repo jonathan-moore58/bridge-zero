@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Fees } from "../../contracts/script/lib/sepolia.mjs";
-import { clampFees, feeCap, heldBackBeforePlan, measureFees, raised, transient, type ClientState, type Options } from "./relay.js";
+import { clampFees, feeCap, heldBackBeforePlan, maxFeeAt, measureFees, raised, transient, upfrontOf, type ClientState, type Options } from "./relay.js";
 
 const GWEI = 10n ** 9n;
 const fees = (base: bigint, tip = 1_000n, maxFee = 10n * base + tip): Fees => ({ base, tip, maxFee, gasPrice: base + tip });
@@ -161,5 +161,28 @@ describe("the check before a send run scans (F5)", () => {
   it("plans when the node does not say", async () => {
     const silent = { setIdAtHead: async () => null, blockHash: async () => GENESIS as `0x${string}` };
     assert.equal(await heldBackBeforePlan(silent, client, high, options()), false);
+  });
+});
+
+describe("a dry run above the gates (F6)", () => {
+  it("prices the plan at the max fee a --send run uses at the gate", () => {
+    assert.equal(maxFeeAt(options(), 1_500_000_000n, 1_000n), 15_000_001_000n);
+    assert.equal(maxFeeAt(options(), 50_000_000n, 1_000n), 500_001_000n);
+    // feesAt's floor of 0.01 gwei, and --max-fee.
+    assert.equal(maxFeeAt(options(), 16n, 1_000n), 10_000_000n);
+    assert.equal(maxFeeAt(options({ maxFee: 3n * GWEI }), 1_500_000_000n, 1_000n), 3n * GWEI);
+  });
+
+  it("asks before each transaction its gas limit at the max fee, after what the earlier ones paid", () => {
+    const steps = [
+      { limit: 6_700_000, gas: 6_100_000 },
+      { limit: 6_356_454, gas: 5_778_594 },
+    ];
+    const fee = 15_000_001_000n;
+    assert.equal(upfrontOf(steps, fee), (6_100_000n + 6_356_454n) * fee);
+    assert.equal(upfrontOf(steps.slice(0, 1), fee), 6_700_000n * fee);
+    assert.equal(upfrontOf([], fee), 0n);
+    // A mainnet set change at the gate: about 0.1 ETH, as the funding note says.
+    assert.ok(upfrontOf(steps.slice(0, 1), fee) < 101n * 10n ** 15n);
   });
 });
