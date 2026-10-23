@@ -175,6 +175,41 @@ export function submitErrorVerdict(text: string): "rejected" | "pending" | "erro
 }
 
 // ---------------------------------------------------------------------------------------
+// After finality: a release made in fast mode, checked against its burn on the final chain
+
+/** A burn's facts, as the record has them for a release and as its log has them at the finalized block (hex in any case). */
+export interface BurnFacts {
+  txHash: string;
+  /** Null when the record has no block hash for it. */
+  blockHash: string | null;
+  block: number;
+  payee: string;
+  amount: bigint;
+  burnId: string;
+}
+
+/**
+ * Whether a release made in fast mode stands once its burn's block is final: BurnRequested(n) on the
+ * final chain is the same transaction, burn id, payee and amount as the burn the release paid for.
+ * The same transaction in another block (a reorg moved it) still stands, with a note.
+ */
+export function reconcileVerdict(recorded: BurnFacts, final: BurnFacts | null): { ok: boolean; why: string } {
+  if (!final) return { ok: false, why: "the final chain has no BurnRequested log of this burn nonce" };
+  const lower = (x: string) => x.toLowerCase();
+  const differs: string[] = [];
+  if (lower(final.txHash) !== lower(recorded.txHash)) differs.push(`transaction ${final.txHash}, not ${recorded.txHash}`);
+  if (lower(final.burnId) !== lower(recorded.burnId)) differs.push(`burn id ${final.burnId}, not ${recorded.burnId}`);
+  if (lower(final.payee) !== lower(recorded.payee)) differs.push(`payee ${final.payee}, not ${recorded.payee}`);
+  if (final.amount !== recorded.amount) differs.push(`amount ${final.amount}, not ${recorded.amount}`);
+  if (differs.length > 0) return { ok: false, why: `the final chain's burn has ${differs.join("; ")}` };
+  const moved = final.block !== recorded.block || (recorded.blockHash !== null && final.blockHash !== null && lower(final.blockHash) !== lower(recorded.blockHash));
+  return {
+    ok: true,
+    why: moved ? `the same burn, moved by a reorg from #${recorded.block} to #${final.block} (final)` : `the same burn in final block #${final.block}`,
+  };
+}
+
+// ---------------------------------------------------------------------------------------
 // One round
 
 /** A burn as its BurnRequested log has it. */
@@ -224,6 +259,12 @@ export interface Ports<B extends SeenBurn = SeenBurn> {
   burns(): Promise<B[]>;
   /** The releases the record has made in fast mode: each burn's amount and block. */
   fastReleases(): Promise<{ amount: bigint; block: number }[]>;
+  /**
+   * Checks each release made in fast mode whose burn's block is final now, and not checked yet,
+   * against BurnRequested(n) on the final chain (reconcileVerdict), and records it; fatal on a
+   * mismatch: the vault paid for a burn a reorg changed or undid.
+   */
+  reconcile(heads: Heads): Promise<{ checked: number; fatal: FatalStop | null }>;
   /** The burn's state on V3 at the finalized head, and in the record. */
   state(burn: B): Promise<BurnState>;
   /**
@@ -298,6 +339,12 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
   }
   const heads = await p.heads();
   p.log(`Sepolia: latest #${heads.latest}, finalized #${heads.finalized}`);
+  const reconciled = await p.reconcile(heads);
+  if (reconciled.checked > 0) p.log(`${reconciled.checked} release${reconciled.checked === 1 ? "" : "s"} made in fast mode checked against Sepolia's final blocks`);
+  if (reconciled.fatal) {
+    r.fatal = reconciled.fatal;
+    return r;
+  }
   const burns = await p.burns();
   p.log(`${burns.length} burn${burns.length === 1 ? "" : "s"} from the last one handled`);
   // What a reorg could still undo: the burns released fast whose blocks are not final yet.

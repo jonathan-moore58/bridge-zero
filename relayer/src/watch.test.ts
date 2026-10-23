@@ -26,6 +26,7 @@ import {
   qualification,
   readBurnCache,
   readHalt,
+  reconcileVerdict,
   rpcTrouble,
   submitErrorVerdict,
   takeLock,
@@ -34,6 +35,7 @@ import {
   writeBurnCache,
   writeHalt,
   type BurnState,
+  type FatalStop,
   type Outcome,
   type Ports,
   type RecordedApproval,
@@ -222,6 +224,8 @@ class FakeChain {
   settled = 0;
   /** The releases made fast: what fastReleases() returns. */
   readonly fast: { amount: bigint; block: number }[] = [];
+  /** What reconcile() says. */
+  reconciled: { checked: number; fatal: FatalStop | null } = { checked: 0, fatal: null };
 
   constructor(
     readonly heads = HEADS,
@@ -253,6 +257,7 @@ class FakeChain {
       heads: async () => this.heads,
       burns: async () => this.burnList,
       fastReleases: async () => this.fast,
+      reconcile: async () => this.reconciled,
       state: async (b) => structuredClone(this.state(b.burnNonce)),
       approve: async (b, by, step) => {
         this.calls.push(`${b.burnNonce}:${step.kind}:${step.member}:${by}`);
@@ -441,6 +446,32 @@ describe("where the watcher looks, and when", () => {
     assert.throws(() => parseMemberKeys("1:a.json,4:b.json"), /<member>:<key file>/);
     assert.throws(() => parseMemberKeys("1:a.json,2:a.json"), /same key file/);
     assert.throws(() => parseMemberKeys("1:a.json,2:b.json,3:c.json"), /two members/);
+  });
+});
+
+describe("a fast release once its burn's block is final", () => {
+  const recorded = { txHash: `0x${"aa".repeat(32)}`, blockHash: `0x${"bb".repeat(32)}`, block: 990, payee: "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071", amount: TPOT / 2n, burnId: `0x${"0b".repeat(32)}` };
+
+  it("stands when the final chain has the same burn, in its block or moved by a reorg", () => {
+    assert.deepEqual(reconcileVerdict(recorded, { ...recorded, payee: recorded.payee.toLowerCase(), txHash: recorded.txHash.toUpperCase().replace("0X", "0x") }), { ok: true, why: "the same burn in final block #990" });
+    const moved = reconcileVerdict(recorded, { ...recorded, block: 992, blockHash: `0x${"cc".repeat(32)}` });
+    assert.ok(moved.ok);
+    assert.match(moved.why, /moved by a reorg from #990 to #992/);
+  });
+
+  it("does not stand when a reorg undid the burn or another burn took its nonce", () => {
+    assert.deepEqual(reconcileVerdict(recorded, null), { ok: false, why: "the final chain has no BurnRequested log of this burn nonce" });
+    const other = reconcileVerdict(recorded, { ...recorded, txHash: `0x${"dd".repeat(32)}`, payee: "0x0000000000000000000000000000000000000001", amount: TPOT });
+    assert.equal(other.ok, false);
+    assert.match(other.why, /transaction 0xdd.*payee 0x0+1.*amount 100000000000000, not 50000000000000/);
+  });
+
+  it("stops the watcher before it approves anything when a fast release does not stand", async () => {
+    const chain = new FakeChain(HEADS, [burn(1n, 900)]);
+    chain.reconciled = { checked: 1, fatal: { why: "the fast release of burn 0 does not stand", burn: "0", extrinsicHash: "0xfeed" } };
+    const r = await watchRound(chain.ports(), FAST3, SEND);
+    assert.deepEqual(r.fatal, { why: "the fast release of burn 0 does not stand", burn: "0", extrinsicHash: "0xfeed" });
+    assert.deepEqual(chain.calls, []);
   });
 });
 

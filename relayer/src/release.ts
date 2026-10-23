@@ -252,6 +252,7 @@ import {
   parseMemberKeys,
   readBurnCache,
   readHalt,
+  reconcileVerdict,
   rpcTrouble,
   submitErrorVerdict,
   takeLock,
@@ -826,6 +827,8 @@ interface ReleaseEntry {
   status: "open" | "released" | "failed" | "cancelled";
   /** How the burn qualified at the round's last approval: final on Sepolia, or fast mode before finality. */
   by?: "fast" | "finality";
+  /** For a release made in fast mode: the check of its burn on Sepolia's final chain, once its block was final (the watcher's). */
+  finalizedCheck?: { block: number; ok: boolean; why: string; at: string };
   trust: string;
   burn: { chainId: string; minter: Hex; burnNonce: string; burnId: Hex; from: Hex; v3Recipient: Hex; amount: string; txHash: Hex; block: number; blockHash?: Hex | null };
   vault: Hex;
@@ -2640,6 +2643,52 @@ async function approveFor(
   }
 }
 
+/**
+ * The releases made in fast mode whose burns' blocks are final now and that are not checked yet:
+ * BurnRequested(n) on the final chain (eth_getLogs from 128 blocks below the recorded block to the
+ * finalized block, the log's block canonical), compared with the record (reconcileVerdict) and the
+ * check recorded with --send. A release that does not stand is fatal. One whose log the RPC refuses
+ * is checked in a later round.
+ */
+async function reconcileFast(d: Deployed, h: Heads, send: boolean): Promise<{ checked: number; fatal: FatalStop | null }> {
+  const { b } = d;
+  let checked = 0;
+  for (const round of d.record.releases ?? []) {
+    if (round.status !== "released" || round.by !== "fast" || round.finalizedCheck || round.burn.minter !== b.minter || round.burn.block > h.finalized) continue;
+    const n = BigInt(round.burn.burnNonce);
+    const found = await recentBurn(b, n, Math.max(b.deployBlock, round.burn.block - 128), h.finalized);
+    if (found !== null && "refused" in found) {
+      warn(`the release of burn ${n}, made in fast mode, is not checked against Sepolia's final chain yet: the RPC refuses eth_getLogs (${found.refused}); a later round tries again`);
+      continue;
+    }
+    if (found) {
+      const canonical = await sepolia("block", () => rpc<{ hash: string } | null>("eth_getBlockByNumber", [qty(found.block), false]));
+      if (!canonical || !found.blockHash || canonical.hash.toLowerCase() !== found.blockHash) {
+        warn(`burn ${n}'s log at #${fmt(found.block)} is not from the canonical block yet (an RPC behind?): a later round checks its fast release`);
+        continue;
+      }
+    }
+    const verdict = reconcileVerdict(
+      { txHash: round.burn.txHash, blockHash: round.burn.blockHash ?? null, block: round.burn.block, payee: round.payee, amount: BigInt(round.amountNative), burnId: round.burn.burnId },
+      found && { txHash: found.txHash, blockHash: found.blockHash, block: found.block, payee: bytesToHex(found.v3Recipient), amount: found.amount, burnId: bytesToHex(found.burnId) },
+    );
+    checked += 1;
+    log(`${verdict.ok ? "ok  " : "FAIL"} the release of burn ${n}, made in fast mode, against Sepolia's finalized block #${fmt(h.finalized)}: ${verdict.why}`);
+    if (send) {
+      round.finalizedCheck = { block: h.finalized, ok: verdict.ok, why: verdict.why, at: new Date().toISOString() };
+      saveV3Record(d.record);
+    }
+    if (!verdict.ok) {
+      const executed = round.approvals.filter((a) => a.action === "execute" && a.block).at(-1);
+      return {
+        checked,
+        fatal: { why: `the release of burn ${n}, made in fast mode, does not stand on Sepolia's final chain: ${verdict.why}; the vault paid ${formatTpot(BigInt(round.amountNative))} for a burn a reorg changed or undid`, burn: n.toString(), extrinsicHash: executed?.extrinsicHash ?? null },
+      };
+    }
+  }
+  return { checked, fatal: null };
+}
+
 /** One round: the record read again, Sepolia's heads and the burns since the last one handled, V3 connected for the round. */
 async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<number, Pair> | null }, lock: Lock | null): Promise<RoundResult> {
   const record = readV3Record();
@@ -2681,6 +2730,7 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
       burns: () => burnsSince(d, heads, cache),
       fastReleases: async () =>
         (d.record.releases ?? []).filter((r) => r.status === "released" && r.by === "fast" && r.burn.minter === d.b.minter).map((r) => ({ amount: BigInt(r.amountNative), block: r.burn.block })),
+      reconcile: (h) => reconcileFast(d, h, o.send),
       state: (burn) => burnStateOf(api, d, burn),
       approve: (burn, by, step) => approveFor({ d, api, evm, o, keys: keys.pairs, lock }, burn, by, step),
       log,
