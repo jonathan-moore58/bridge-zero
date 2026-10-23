@@ -88,13 +88,15 @@
 // The Sepolia RPC is SEPOLIA_RPC_URL when set, else the public endpoint; of it and of a --rpc URL
 // (which has no #fragment) only the host is printed. What it no longer serves (the public endpoint
 // prunes receipts and state after about 33 hours), a run asks of SEPOLIA_ARCHIVE_RPC_URLS (comma
-// separated; by default two public RPCs that keep all), and when none serves it either, settles a
-// transaction the RPC still knows mined from the client's state at the latest block. Exit code 0
-// when the client is up to date, the dry run passed, the plan was sent and checked, or the base fee
-// is too high to send; 1 when a check fails or nothing can be relayed; 2 when an RPC cannot be
-// reached, a read keeps failing, or the Portaldot node is behind the client; 3 when a sent
-// transaction is still pending, or one of the record is open at the next nonce. With --watch, only a
-// sent transaction that fails its checks, or a signing or record problem, ends the loop.
+// separated; by default two public RPCs that keep all), and when every one answers that it does not
+// serve it either, settles a transaction the RPC still knows mined from the client's state at the
+// latest block; when one fails for a while instead (no answer, a rate limit), the run ends with exit
+// code 2 and the next run asks again. Exit code 0 when the client is up to date, the dry run passed,
+// the plan was sent and checked, or the base fee is too high to send; 1 when a check fails or
+// nothing can be relayed; 2 when an RPC cannot be reached, a read keeps failing, or the Portaldot
+// node is behind the client; 3 when a sent transaction is still pending, or one of the record is
+// open at the next nonce. With --watch, only a sent transaction that fails its checks, or a signing
+// or record problem, ends the loop.
 
 import { randomUUID } from "node:crypto";
 import {
@@ -1775,27 +1777,36 @@ async function rpcBodyAt(url: string, method: string, params: unknown[]): Promis
 
 const hostOf = (url: string) => new URL(url).host;
 
-/** Whether each archive RPC answers Sepolia's chain id, asked once per process. */
+/** Whether each archive RPC answers Sepolia's chain id: a chain id it answered is kept for the process. */
 const archives = new Map<string, Promise<boolean>>();
-function servesSepolia(url: string): Promise<boolean> {
+/**
+ * Whether `url` serves Sepolia, by its chain id. One that gives no chain id (no answer, an HTTP error
+ * page, an error such as a rate limit) throws, and is asked again next time: only a chain id it
+ * answered is kept.
+ */
+export function servesSepolia(url: string): Promise<boolean> {
   if (!archives.has(url)) {
-    archives.set(
-      url,
-      rpcBodyAt(url, "eth_chainId", []).then(
-        (a) => typeof a.result === "string" && BigInt(a.result) === SEPOLIA_CHAIN_ID,
-        () => false,
-      ),
-    );
+    const asked = rpcBodyAt(url, "eth_chainId", []).then((a) => {
+      if (typeof a.result !== "string" || !/^0x[0-9a-f]+$/i.test(a.result)) throw new Error(`eth_chainId: ${JSON.stringify(a.error ?? a.result ?? null)}`);
+      return BigInt(a.result) === SEPOLIA_CHAIN_ID;
+    });
+    archives.set(url, asked);
+    asked.catch(() => archives.delete(url));
   }
   return archives.get(url)!;
 }
 
 /**
  * `method` asked of each archive RPC (ARCHIVE_RPCS) that serves Sepolia, in turn, for what the
- * Sepolia RPC no longer serves: the first answer `usable` takes, or null. An RPC is printed by its
- * host only.
+ * Sepolia RPC no longer serves: the first answer `usable` takes, or null when every one answered
+ * without it (a null result, a pruned state, a missing method). When none was usable and one failed
+ * the way an RPC fails for a while (no answer, an HTTP error page, a rate limit, a timeout, an
+ * internal error), it is Unreachable: the run ends with exit code 2 and the next run asks again, so
+ * that a transaction is never settled from the latest block, or its receipt counted as pruned,
+ * because of a passing failure. An RPC is printed by its host only.
  */
 async function fromArchives(method: string, params: unknown[], usable: (a: RpcAnswer) => boolean, what: string): Promise<RpcAnswer | null> {
+  let failed: string | undefined;
   for (const url of ARCHIVE_RPCS) {
     try {
       if (!(await servesSepolia(url))) continue;
@@ -1804,10 +1815,17 @@ async function fromArchives(method: string, params: unknown[], usable: (a: RpcAn
         log(`     (${what} from ${hostOf(url)}: ${hostOf(RPC)} no longer serves it)`);
         return answer;
       }
+      const error = answer.error ? new Error(JSON.stringify(answer.error)) : undefined;
+      if (error && transient(error) && !pruned(error)) {
+        failed = `${hostOf(url)}: ${errorText(error)}`;
+        log(`     (${failed})`);
+      }
     } catch (error) {
-      log(`     (${hostOf(url)}: ${errorText(error)})`);
+      failed = `${hostOf(url)}: ${errorText(error)}`;
+      log(`     (${failed})`);
     }
   }
+  if (failed !== undefined) throw new Unreachable(`Sepolia archive RPCs unreachable (${what}; ${failed})`);
   return null;
 }
 
@@ -1952,16 +1970,27 @@ async function transactionOf(hash: Hex): Promise<Transaction | null> {
  * Which of `atNonce`, the record's transactions at a nonce used on chain, was mined when the Sepolia
  * RPC serves the receipt of none (it prunes them after about 33 hours): the one an RPC says is in a
  * block, with its receipt from an archive RPC (in that same block) when one serves it. Null when no
- * RPC knows any of them mined.
+ * RPC knows any of them mined. Unreachable when an archive RPC failed for a while (fromArchives):
+ * on the receipt of the mined one, or on the others when none was found mined (at most one
+ * transaction at a nonce is mined, so one found mined settles the nonce whatever the others gave).
  */
 export async function findMined(atNonce: RelayEntry[]): Promise<{ entry: RelayEntry; receipt: Receipt | null; block: number } | null> {
+  let unreachable: Unreachable | undefined;
   for (const entry of atNonce) {
-    const tx = await transactionOf(entry.txHash);
+    let tx: Transaction | null;
+    try {
+      tx = await transactionOf(entry.txHash);
+    } catch (error) {
+      if (!(error instanceof Unreachable)) throw error;
+      unreachable = error;
+      continue;
+    }
     if (!tx?.blockHash || !tx.blockNumber) continue;
     const receipt = await archivedReceipt(entry.txHash);
     const same = receipt !== null && (receipt as Receipt & { blockHash?: string }).blockHash?.toLowerCase() === tx.blockHash.toLowerCase();
     return { entry, receipt: same ? receipt : null, block: Number(BigInt(tx.blockNumber)) };
   }
+  if (unreachable) throw unreachable;
   return null;
 }
 

@@ -27,6 +27,7 @@ import {
   pruned,
   raised,
   senderOf,
+  servesSepolia,
   transient,
   upfrontOf,
   type ClientState,
@@ -317,6 +318,10 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
     txOnPrimary: boolean;
     /** The Sepolia RPC puts revert-like data on its pruned-state error. */
     prunedData?: boolean;
+    /** How sepolia.drpc.org fails a request for a while (it answers eth_chainId): no answer, or a rate limit. */
+    archiveDown?: (method: string, params: unknown[]) => "offline" | "rate-limited" | undefined;
+    /** How many times flaky.example fails eth_chainId before it answers Sepolia's. */
+    chainIdFailures: number;
     asked: string[];
   }
   let world: World;
@@ -329,6 +334,7 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
       receiptBlockHash: BLOCK_HASH,
       txMined: true,
       txOnPrimary: true,
+      chainIdFailures: 0,
       asked: [],
       ...more,
     };
@@ -339,8 +345,13 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
     const host = new URL(url).host;
     world.asked.push(`${host} ${method}`);
     const primary = url === RPC;
-    if (host === "sepolia.gateway.tenderly.co") return method === "eth_chainId" ? { result: "0x1" } : { result: null };
+    if (host === "sepolia.gateway.tenderly.co" || host === "other.example") return method === "eth_chainId" ? { result: "0x1" } : { result: null };
+    if (host === "flaky.example" && world.chainIdFailures > 0) {
+      world.chainIdFailures -= 1;
+      return { error: { code: 429, message: "Too Many Requests" } };
+    }
     if (method === "eth_chainId") return { result: "0xaa36a7" };
+    if (host === "sepolia.drpc.org" && world.archiveDown?.(method, params) === "rate-limited") return { error: { code: 429, message: "Too Many Requests" } };
     const tx = { from: "0xd9838a86cf83c28ee486544060d1ca4ca2971071", to: CLIENT, input: "0x1234", gas: "0x6a2a65", blockHash: world.txMined ? BLOCK_HASH : null, blockNumber: world.txMined ? OLD : null };
     if (method === "eth_getTransactionByHash") return { result: params[0] === TX && (!primary || world.txOnPrimary) ? tx : null };
     if (method === "eth_getTransactionReceipt") {
@@ -360,6 +371,10 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
   before(() => {
     globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
+      if (new URL(String(url)).host === "sepolia.drpc.org" && world.archiveDown?.(body.method, body.params) === "offline") {
+        world.asked.push(`sepolia.drpc.org ${body.method} (no answer)`);
+        throw new TypeError("fetch failed");
+      }
       return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, ...answer(String(url), body.method, body.params) }));
     }) as typeof fetch;
   });
@@ -496,5 +511,46 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
     const a = await importedNothing(entry(), receipt("0x1"), 1, 0x100000);
     assert.equal(a.superseded, true);
     assert.match(a.why, /held the header already, at #2,726,491/);
+  });
+
+  const unreachable = (error: Error) => error.name === "Unreachable" && /Sepolia archive RPCs unreachable/.test(error.message);
+  const down = (how: "offline" | "rate-limited", only?: { method: string; hash?: string }) => (method: string, params: unknown[]) =>
+    method !== "eth_chainId" && (!only || (method === only.method && (!only.hash || params[0] === only.hash))) ? how : undefined;
+
+  it("end the run unreachable when an archive RPC fails for a while and none had the data (finding 2)", async () => {
+    // The old state: no fall back to the latest block, where the revert would read as superseded.
+    for (const how of ["offline", "rate-limited"] as const) {
+      reset({ archiveDown: down(how), latest: { number: 2_727_000, imported: false } });
+      await assert.rejects(callAt({ to: CLIENT, data: LATEST }, OLD, "client state"), unreachable);
+      reset({ archiveDown: down(how), latest: { number: 2_727_000, imported: false } });
+      await assert.rejects(importedNothing(entry(), receipt("0x0"), 0, 0x100000), unreachable);
+    }
+    // The receipt: not settled as pruned, its events unchecked.
+    reset({ archiveDown: down("offline", { method: "eth_getTransactionReceipt" }) });
+    await assert.rejects(findMined([entry()]), unreachable);
+    // The transaction, when the Sepolia RPC no longer has it either.
+    reset({ archiveDown: down("rate-limited", { method: "eth_getTransactionByHash" }), txOnPrimary: false });
+    await assert.rejects(findMined([entry()]), unreachable);
+  });
+
+  it("still settle a nonce on the one found mined, whatever an archive gave for the others", async () => {
+    reset({ archiveDown: down("offline", { method: "eth_getTransactionByHash", hash: OTHER }) });
+    const found = await findMined([entry({ txHash: OTHER }), entry()]);
+    assert.equal(found?.entry.txHash, TX);
+    assert.equal(found?.receipt?.transactionHash, TX);
+    reset({ archiveDown: down("offline", { method: "eth_getTransactionByHash", hash: OTHER }) });
+    await assert.rejects(findMined([entry({ txHash: OTHER })]), unreachable);
+  });
+
+  it("keep only a chain id an archive RPC answered (finding 2)", async () => {
+    reset({ chainIdFailures: 1 });
+    await assert.rejects(servesSepolia("https://flaky.example"));
+    assert.equal(await servesSepolia("https://flaky.example"), true, "asked again after a failure");
+    assert.equal(await servesSepolia("https://flaky.example"), true);
+    assert.equal(world.asked.filter((a) => a === "flaky.example eth_chainId").length, 2);
+    reset();
+    assert.equal(await servesSepolia("https://other.example"), false);
+    assert.equal(await servesSepolia("https://other.example"), false);
+    assert.equal(world.asked.filter((a) => a === "other.example eth_chainId").length, 1, "another chain's id is kept");
   });
 });
