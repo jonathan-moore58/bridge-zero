@@ -530,7 +530,14 @@ export function legacyAdvice(s: Sender, f: LegacyFacts): { refuse: boolean; line
   const history = f.newHistoryExists ? `add the lines of ${f.history} to the end of ${s.history}, then delete ${f.history}` : `move ${f.history} to ${s.history}`;
   if (!f.recordExists || f.open === 0) {
     if (!f.historyExists) return { refuse: false, lines: [] };
-    return { refuse: false, lines: [`${f.history} is the history of an earlier version of this relayer: ${history}${f.newHistoryExists ? "" : create}`] };
+    // Kept where it is (a checkout may publish it): only where the new lines go is said.
+    return {
+      refuse: false,
+      lines: [
+        `${f.history} is the history of an earlier version of this relayer, and is not written any more: the sender's settled transactions go to ${s.history}` +
+          `${f.newHistoryExists ? "" : ", which a --send run starts"}; add the earlier lines at its start to keep one history`,
+      ],
+    };
   }
   const lines = [
     `${f.record} is the record of an earlier version of this relayer and ${f.open === null ? "cannot be read; it may hold" : `holds ${f.open}`} open ` +

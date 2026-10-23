@@ -253,17 +253,21 @@ describe("the state directory and an earlier version's files (F7, F8, ops nits 2
   it("points at an earlier history left without a record (nit 2)", () => {
     const a = legacyAdvice(s, facts({ historyExists: true }));
     assert.equal(a.refuse, false);
-    assert.deepEqual(a.lines, [`${facts().history} is the history of an earlier version of this relayer: move ${facts().history} to ${s.history}`]);
+    assert.equal(a.lines.length, 1);
+    assert.ok(a.lines[0].startsWith(`${facts().history} is the history of an earlier version of this relayer, and is not written any more: the sender's settled transactions go to ${s.history}, which a --send run starts`));
+    // It is never to be deleted: a checkout may publish it.
+    assert.doesNotMatch(a.lines[0], /delete|move/);
     const b = legacyAdvice(s, facts({ historyExists: true, newHistoryExists: true, recordExists: true, open: 0 }));
-    assert.match(b.lines[0], new RegExp(`add the lines of .* to the end of .*relay-sepolia-${ADDRESS}\.jsonl, then delete`));
+    assert.match(b.lines[0], /go to .*\.jsonl; add the earlier lines at its start to keep one history$/);
   });
 
   it("says to create the state directory first when it does not exist (nit 3)", () => {
     const a = legacyAdvice(s, facts({ recordExists: true, open: 1, stateDirExists: false }));
     assert.match(a.lines[1], /\(create the directory .* first\)$/);
     assert.match(a.lines[0], /holds 1 open transaction of/);
-    const b = legacyAdvice(s, facts({ historyExists: true, stateDirExists: false }));
-    assert.match(b.lines[0], /\(create the directory .* first\)$/);
+    const b = legacyAdvice(s, facts({ recordExists: true, open: 2, historyExists: true, stateDirExists: false }));
+    assert.match(b.lines[1], /^move .* \(create the directory .* first\)$/);
+    assert.equal(b.lines[2], `and move ${facts().history} to ${s.history}`);
   });
 
   it("blocks a run whose state directory cannot be created (nit 4)", () => {
