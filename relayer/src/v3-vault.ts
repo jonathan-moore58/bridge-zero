@@ -106,7 +106,8 @@ import {
   type LogJson,
   type VaultBuild,
 } from "./vault.js";
-import { cast, keystoreAddress, redact, redactAlso, sleep, writeJsonAtomic } from "../../contracts/script/lib/sepolia.mjs";
+import { cast, keystoreAddress, redact, redactAlso, sleep } from "../../contracts/script/lib/sepolia.mjs";
+import { saveMerged } from "./records.js";
 
 /** The Portaldot V3 testnet. */
 const V3 = {
@@ -458,9 +459,14 @@ function readRecord(): VaultRecord | null {
   return record;
 }
 
+/**
+ * Saves the record: under deployments/v3-testnet.json.lock, the file read again and merged into
+ * `record` (records.ts mergeV3Record: the releases and transfers release.ts added or settled since
+ * are kept), then written atomically. The vault is this tool's.
+ */
 function saveRecord(record: VaultRecord): void {
   try {
-    writeJsonAtomic(at(RECORD), record);
+    saveMerged(at(RECORD), record, { vault: "mine" });
   } catch (error) {
     throw new Stop(`${RECORD} could not be written: ${errorText(error)}`);
   }

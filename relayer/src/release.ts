@@ -63,7 +63,9 @@
 // reserve and the existential deposit. --cancel --member k builds the depositor's cancelAsMulti.
 // Every release and fund run first settles the approvals and transfers an earlier --send run left
 // submitted: each is looked for in the final blocks after the one it was submitted at, then
-// checked as below (exit code 3 while one is still on its way).
+// checked as below (exit code 3 while one is still on its way). Each save of the record takes
+// deployments/v3-testnet.json.lock, reads the file again and merges it in (records.ts), so what
+// v3-vault.ts or another run of this tool wrote meanwhile is kept.
 // --send reads --key-file (the member's polkadot-js JSON keystore, sr25519) with --password-file,
 // never printed, requires the account to be member k, records the approval in
 // deployments/v3-testnet.json (releases) before it submits, waits for finalization and checks the
@@ -271,6 +273,7 @@ import {
   type Rule,
   type SeenBurn,
 } from "./watch.js";
+import { saveMerged } from "./records.js";
 
 /** The Portaldot V3 testnet, where the vault and the committee's multisig are. */
 const V3 = {
@@ -911,9 +914,14 @@ class RecordError extends Stop {
   override name = "RecordError";
 }
 
+/**
+ * Saves the record: under deployments/v3-testnet.json.lock, the file read again and merged into
+ * `record` (records.ts mergeV3Record: what another process added or settled is kept), then written
+ * atomically. The vault is the file's: this tool never changes it.
+ */
 function saveV3Record(record: VaultRecord): void {
   try {
-    writeJsonAtomic(at(V3_RECORD), record);
+    saveMerged(at(V3_RECORD), record, { vault: "disk" });
   } catch (error) {
     throw new RecordError(`${V3_RECORD} could not be written: ${errorText(error)}`);
   }
@@ -2601,6 +2609,8 @@ async function approveFor(
 ): Promise<Outcome> {
   const { d, api, evm, o, keys, lock } = ctx;
   failures = 0;
+  // The record as it is now: another tool may have saved it since the round read it.
+  d.record = readV3Record();
   if (!burn.onChain) throw new Error(`burn ${burn.burnNonce}: no log`);
   const onChain = burn.onChain;
   const id = bytesToHex(onChain.burnId);

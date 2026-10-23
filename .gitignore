@@ -14,6 +14,9 @@ dist/
 # Sepolia deployment build (FOUNDRY_PROFILE=sepolia) and an interrupted record write
 out-sepolia/
 deployments/*.tmp
+# The lock a tool holds while it writes deployments/v3-testnet.json (relayer/src/records.ts)
+deployments/*.lock
+deployments/*.lock.*
 
 # V3 testnet build (FOUNDRY_PROFILE=v3)
 out-v3/
