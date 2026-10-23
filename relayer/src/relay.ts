@@ -294,7 +294,7 @@ const transient = (error: unknown) =>
 // ---------------------------------------------------------------------------------------
 // Options
 
-interface Options {
+export interface Options {
   chain: ChainName;
   send: boolean;
   account?: string;
@@ -1824,7 +1824,7 @@ const highest = (entries: RelayEntry[]) => ({ maxFee: max(...entries.map((e) => 
  * at least 1/8 above the old ones (which nodes require of a replacement) and at least the current
  * ones; null when the max fee would pass `cap`.
  */
-function raised(old: { maxFee: bigint; tip: bigint }, now: Fees, cap: bigint): Fees | null {
+export function raised(old: { maxFee: bigint; tip: bigint }, now: Fees, cap: bigint): Fees | null {
   const up = (x: bigint) => x + (x + 7n) / 8n;
   const tip = max(up(old.tip), now.tip);
   const maxFee = max(up(old.maxFee), now.maxFee, tip);
@@ -1836,7 +1836,7 @@ function raised(old: { maxFee: bigint; tip: bigint }, now: Fees, cap: bigint): F
  * gate (ten times it plus the priority fee, at least the run's own at a base fee not above it), or
  * --max-fee when it is given, which no transaction passes.
  */
-const feeCap = (o: Options, now: Fees, gate: bigint) => o.maxFee ?? max(10n * gate + now.tip, now.maxFee);
+export const feeCap = (o: Options, now: Fees, gate: bigint) => o.maxFee ?? max(10n * gate + now.tip, now.maxFee);
 
 /**
  * Waits, up to a minute for a lagging RPC, until `nonce` is the sender's next nonce and nothing is
@@ -2310,7 +2310,11 @@ function exit(code: number): void {
   setTimeout(() => process.exit(code), 10_000).unref();
 }
 
-main().then(exit, (error: unknown) => {
-  check(false, errorText(error));
-  exit(FAILED);
-});
+// Run as the relayer (npm run relay); relay.test.ts imports it without running it.
+const entry = process.argv[1] !== undefined && resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
+if (entry) {
+  main().then(exit, (error: unknown) => {
+    check(false, errorText(error));
+    exit(FAILED);
+  });
+}
