@@ -2172,7 +2172,7 @@ export const maxFeeAt = (o: Options, base: bigint, tip: bigint) => o.maxFee ?? m
  * gate (ten times it plus the priority fee, at least the run's own at a base fee not above it), or
  * --max-fee when it is given, which no transaction passes.
  */
-export const feeCap =(o: Options, now: Fees, gate: bigint) => o.maxFee ?? max(10n * gate + now.tip, now.maxFee);
+export const feeCap = (o: Options, now: Fees, gate: bigint) => o.maxFee ?? max(10n * gate + now.tip, now.maxFee);
 
 /** `fees` with the max fee, and the priority fee, at most `cap`: lowering them keeps the dry run's cost check. */
 export function clampFees(fees: Fees, cap: bigint): Fees {
