@@ -55,8 +55,9 @@
 // signed again at its nonce, once the client still reads as the step expects, with its max fee and
 // priority fee raised by at least 1/8, never above the max fee a run would use at the step's gate,
 // nor above --max-fee when it is given (a --priority-fee above --max-base-fee needs --max-fee); one
-// of the record left at the next nonce, pending or dropped, is outbid the same way. All transactions
-// for one import share its nonce, so at most one of them is mined. One mined without importing is
+// of the record left at the next nonce, pending or dropped, is outbid the same way. A later step of
+// the plan keeps the fees of the step before, never above that max fee at its own gate (a head after
+// a set change pays at most the head's). All transactions for one import share its nonce, so at most one of them is mined. One mined without importing is
 // superseded (another relayer imported its header or a later one first, and the next run plans
 // again) when the client held the header at its block, or when it reverted and, replayed with
 // eth_call on the state its block left, it reverts with NotNewer; out of gas, or any other revert,
@@ -1859,6 +1860,11 @@ export function raised(old: { maxFee: bigint; tip: bigint }, now: Fees, cap: big
  */
 export const feeCap = (o: Options, now: Fees, gate: bigint) => o.maxFee ?? max(10n * gate + now.tip, now.maxFee);
 
+/** `fees` with the max fee, and the priority fee, at most `cap`: lowering them keeps the dry run's cost check. */
+export function clampFees(fees: Fees, cap: bigint): Fees {
+  return fees.maxFee > cap ? { ...fees, maxFee: cap, tip: fees.tip > cap ? cap : fees.tip } : fees;
+}
+
 /**
  * Waits, up to a minute for a lagging RPC, until `nonce` is the sender's next nonce and nothing is
  * pending but, when `replacing`, the transaction this one replaces. False, printed, otherwise.
@@ -2074,7 +2080,8 @@ async function sendPlan(steps: Step[], dry: DryRun, ctx: Context, o: Options, l:
       check(false, `the client is at #${fmt(now.number)} ${shortHex(now.hash)}, set ${now.setId}, not where step ${s.index} expects it: the next run plans again`);
       return FAILED;
     }
-    const base = (await sepolia("fees", () => feesAt({ number: qty(now.block) }, { priorityFee: o.priorityFee, maxFee: o.maxFee }))).base;
+    const atNow = await sepolia("fees", () => feesAt({ number: qty(now.block) }, { priorityFee: o.priorityFee, maxFee: o.maxFee }));
+    const base = atNow.base;
     if (base > gateOf(s, o)) {
       log(`     the next base fee is ${fmt(base)} wei, above ${gateName(s)} ${fmt(gateOf(s, o))} wei: ${i === 0 ? "the plan is" : "the rest of the plan is"} left for a later run`);
       if (s.setAfter !== s.setBefore) heldBack(base, o, { setId: s.setBefore, behind: (ctx.head ?? s.number) - s.before.number });
@@ -2082,6 +2089,9 @@ async function sendPlan(steps: Step[], dry: DryRun, ctx: Context, o: Options, l:
     }
     const replacing = l.record.open.some((e) => e.nonce === s.nonce && !e.dropped);
     if (!(await nonceIsNext(ctx.sender, s.nonce, replacing))) return FAILED;
+    // A step after the first is signed with the fees of the one before (raised when it was signed
+    // again), but never above its own cap: a head after a set change pays at most the head's.
+    if (i > 0) fees = clampFees(fees, feeCap(o, atNow, gateOf(s, o)));
     const sent = await sendStep(steps.slice(i), dry, { ...ctx, fees }, o, l, after);
     if (typeof sent === "number") return sent;
     const { entry, outcome } = sent;

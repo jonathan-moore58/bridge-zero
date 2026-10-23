@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Fees } from "../../contracts/script/lib/sepolia.mjs";
-import { feeCap, measureFees, raised, type Options } from "./relay.js";
+import { clampFees, feeCap, measureFees, raised, type Options } from "./relay.js";
 
 const GWEI = 10n ** 9n;
 const fees = (base: bigint, tip = 1_000n, maxFee = 10n * base + tip): Fees => ({ base, tip, maxFee, gasPrice: base + tip });
@@ -71,5 +71,32 @@ describe("the dry run's first pass (F1)", () => {
   it("keeps a lower max fee the run was given", () => {
     const now = fees(1_500_000_000n, 1_000n, 2n * GWEI);
     assert.equal(measureFees(now), now);
+  });
+});
+
+describe("a later step's fees (F2)", () => {
+  const head = (now: Fees, o = options()) => feeCap(o, now, o.maxBaseFee);
+
+  it("a head after a re-signed set change pays at most the head's cap", () => {
+    // X5 (a): the run's fees were raised over a dropped 12 gwei set change.
+    const carried = { ...fees(16n), maxFee: 13_500_001_125n, tip: 1_125n };
+    const signed = clampFees(carried, head(fees(16n)));
+    assert.equal(signed.maxFee, 500_001_000n);
+    assert.equal(signed.tip, 1_125n);
+    // X5 (b): step 0 re-signed at 10,000,001,000 at a 1 gwei base fee, the head then at 16 wei.
+    assert.equal(clampFees({ ...fees(16n), maxFee: 10_000_001_000n }, head(fees(16n))).maxFee, 500_001_000n);
+  });
+
+  it("never raises fees, and lowers a priority fee above the cap with the max fee", () => {
+    const low = fees(16n, 1_000n, 10_000_000n);
+    assert.equal(clampFees(low, head(fees(16n))), low);
+    const tipped = clampFees({ ...fees(16n), maxFee: 3n * GWEI, tip: 2n * GWEI }, 1n * GWEI);
+    assert.equal(tipped.maxFee, GWEI);
+    assert.equal(tipped.tip, GWEI);
+  });
+
+  it("follows --max-fee when it is given", () => {
+    const o = options({ maxFee: 2n * GWEI });
+    assert.equal(clampFees({ ...fees(16n), maxFee: 5n * GWEI }, head(fees(16n), o)).maxFee, 2n * GWEI);
   });
 });
