@@ -454,6 +454,11 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
     const b = await importedNothing(entry(), receipt("0x0"), 0, 0x100000);
     assert.equal(b.superseded, false);
     assert.match(b.why, /InvalidSignature\(3, 5\)/);
+    // An archive RPC's revert without data is a revert, not a state it lacks.
+    reset({ replay: { error: { code: 3, message: "execution reverted" } }, latest: { number: 2_727_000, imported: false } });
+    const c = await importedNothing(entry(), receipt("0x0"), 0, 0x100000);
+    assert.equal(c.superseded, false);
+    assert.equal(c.why, "replayed on its block it execution reverted");
     // Revert data an RPC gives as an object no longer throws.
     reset({ replay: { error: { code: 3, message: "execution reverted", data: { reason: "x" } } } });
     assert.equal((await importedNothing(entry(), receipt("0x0"), 0, 0x100000)).superseded, false);

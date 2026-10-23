@@ -1844,7 +1844,11 @@ export async function callAt(call: object, block: string, what: string): Promise
     log(`     (${what}: ${errorText(failure)}; retrying)`);
     await sleep(3_000);
   }
-  const served = (a: RpcAnswer) => !a.error || (a.error.data !== undefined && !pruned(new Error(JSON.stringify(a.error))));
+  // An archive RPC's revert counts, with or without data (not every RPC returns it); its pruned or passing errors do not.
+  const served = (a: RpcAnswer) => {
+    const error = new Error(JSON.stringify(a.error));
+    return !a.error || !(pruned(error) || transient(error));
+  };
   return fromArchives("eth_call", [call, block], served, `${what} at Sepolia block ${fmt(Number(BigInt(block)))}`);
 }
 
