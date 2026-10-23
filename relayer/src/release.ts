@@ -104,7 +104,9 @@
 // keystores (--member-keys k:<path>,j:<path>, opened with one --password-file, neither printed) and
 // holds the lock release-watch-<multisig>.lock in .bridge-zero in the home directory, whatever
 // --state-dir is, relay.ts's scheme: one watcher per committee and machine, checked before each
-// signing. --state-dir (by default that same folder) holds the halt file and the burn cache. After a round an RPC failed, the wait doubles, up to an hour. A fatal stop ends the
+// signing. --state-dir (by default that same folder) holds the halt file and the burn cache. An
+// approval or a cancellation by hand with --send takes the same lock, and is refused while a
+// watcher holds it. After a round an RPC failed, the wait doubles, up to an hour. A fatal stop ends the
 // watcher with exit code 4: a sent approval that fails its checks on chain, an approval an earlier
 // run submitted that is in none of the blocks searched though its sender's nonce is used, a lost
 // lock, a key file or a record that cannot be written. With --send it first writes
@@ -2090,14 +2092,34 @@ async function releaseCommand(o: ReleaseOptions): Promise<number> {
   log(`     the return path is ${TRUST}`);
   if (o.rule.confirmations !== null) log(`     ${ruleText(o.rule)}`);
   const d = await deployed();
-  const burn = await burnOnSepolia(d, o);
-  if (typeof burn === "number") return burn;
-  const evm = new EvmRpc(o.evm);
-  const api = await connectV3(o.rpc, o.send);
+  // An approval or a cancellation by hand takes the committee's watcher lock, as the watcher does:
+  // never while a watcher with --send runs, and no watcher starts while it signs.
+  let lock: Lock | null = null;
+  if (o.send) {
+    try {
+      mkdirSync(STATE_DIR, { recursive: true });
+    } catch (error) {
+      throw new Stop(`${STATE_DIR} cannot be created: ${errorText(error)}`);
+    }
+    lock = takeLock(watchLockPath(d.v.multisig), log);
+    if (!lock) throw new Stop("a watcher of this committee runs with --send: nothing is signed by hand while it does (stop it first)");
+    const held = lock;
+    o.guard = () => {
+      if (!held.held()) throw new Stop(`${held.path} no longer holds this run's token: a watcher took the lock over, and nothing is signed`);
+    };
+  }
   try {
-    return await releaseOnV3(d, api, evm, o, burn);
+    const burn = await burnOnSepolia(d, o);
+    if (typeof burn === "number") return burn;
+    const evm = new EvmRpc(o.evm);
+    const api = await connectV3(o.rpc, o.send);
+    try {
+      return await releaseOnV3(d, api, evm, o, burn);
+    } finally {
+      await api.disconnect();
+    }
   } finally {
-    await api.disconnect();
+    lock?.release();
   }
 }
 

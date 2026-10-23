@@ -185,6 +185,17 @@ describe("the watcher's lock, in the home folder", () => {
   });
 });
 
+describe("an approval by hand while a watcher runs", () => {
+  it("is refused with --send, before any request", { timeout: 120_000 }, async () => {
+    const keys = keyFiles();
+    const { code, out } = await run([...RELEASE, "--approve", "--member", "2", "--send", "--key-file", keys[1].split(",")[1].slice(2), "--password-file", keys[3], ...OFFLINE], homeWithLock());
+    assert.equal(code, 1, out);
+    assert.match(out, new RegExp(`another watcher \\(process ${process.pid}\\) runs for this committee`));
+    assert.match(out, /nothing is signed by hand while it does/);
+    assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
+  });
+});
+
 describe("release --watch after a fatal stop", () => {
   it("refuses to start with --send while the halt file is there, with exit code 4 and before any request", { timeout: 120_000 }, async () => {
     const stateDir = join(SCRATCH, "halted");
