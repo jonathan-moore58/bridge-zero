@@ -6,7 +6,7 @@
 // between rounds. release.ts and watch.test.ts use it.
 
 import { randomUUID } from "node:crypto";
-import { closeSync, openSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 
 // ---------------------------------------------------------------------------------------
 // The confirmation rule
@@ -193,7 +193,7 @@ export type Outcome =
   /** The node refused the extrinsic: it was never included, and a later round may send it again. */
   | { kind: "rejected"; why: string }
   /** An approval ran on chain and failed its checks: the watcher stops. */
-  | { kind: "failed"; why: string };
+  | { kind: "failed"; why: string; extrinsicHash?: string };
 
 /** What settling the approvals an earlier run left submitted ended with. */
 export type Settled =
@@ -237,8 +237,15 @@ export interface RoundResult {
   planned: number;
   /** Something sent is not final yet: the round stopped there, and the next round settles it first. */
   pending: boolean;
-  /** An approval failed its checks on chain: the watcher stops. */
-  fatal: string | null;
+  /** An approval failed its checks on chain, or what ran cannot be known: the watcher stops, and leaves a halt file. */
+  fatal: FatalStop | null;
+}
+
+/** Why the watcher stops for good: the reason, and the burn and the extrinsic when there is one. */
+export interface FatalStop {
+  why: string;
+  burn: string | null;
+  extrinsicHash: string | null;
 }
 
 /**
@@ -271,7 +278,7 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
   const r: RoundResult = { released: 0, waiting: 0, refused: 0, held: 0, planned: 0, pending: false, fatal: null };
   const settled = await p.settle();
   if (settled.kind === "fatal") {
-    r.fatal = settled.why;
+    r.fatal = { why: settled.why, burn: null, extrinsicHash: null };
     return r;
   }
   if (settled.kind === "pending") {
@@ -312,7 +319,7 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
         break;
       }
       if (i === STEPS) {
-        r.fatal = `${name}: still not released after ${STEPS} approvals in one round`;
+        r.fatal = { why: `${name}: still not released after ${STEPS} approvals in one round`, burn: String(burn.burnNonce), extrinsicHash: null };
         return r;
       }
       p.log(`${name}: ${next.why}${o.send ? "" : " (dry run)"}`);
@@ -333,7 +340,7 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
         return r;
       }
       if (out.kind === "failed") {
-        r.fatal = `${name}: member ${next.member}'s approval failed its checks: ${out.why}`;
+        r.fatal = { why: `${name}: member ${next.member}'s approval failed its checks: ${out.why}`, burn: String(burn.burnNonce), extrinsicHash: out.extrinsicHash ?? null };
         return r;
       }
       if (!o.send) {
@@ -346,6 +353,40 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
   }
   return r;
 }
+
+// ---------------------------------------------------------------------------------------
+// The halt file: after a fatal stop, no watcher of the committee starts again until a member looks
+
+/** What the halt file holds. */
+export interface Halt {
+  reason: string;
+  burn: string | null;
+  extrinsicHash: string | null;
+  /** When the watcher stopped, ISO 8601. */
+  at: string;
+}
+
+/** Writes the halt file (through a temporary file, then a rename). */
+export function writeHalt(path: string, halt: Halt): void {
+  writeFileSync(`${path}.tmp`, `${JSON.stringify(halt, null, 2)}
+`);
+  renameSync(`${path}.tmp`, path);
+}
+
+/** The halt file at `path`, or null when there is none; one that does not parse still halts. */
+export function readHalt(path: string): Halt | null {
+  if (!existsSync(path)) return null;
+  try {
+    const h = JSON.parse(readFileSync(path, "utf8")) as Partial<Halt>;
+    return { reason: String(h.reason ?? "no reason recorded"), burn: h.burn ?? null, extrinsicHash: h.extrinsicHash ?? null, at: String(h.at ?? "an unknown time") };
+  } catch {
+    return { reason: "the halt file does not parse", burn: null, extrinsicHash: null, at: "an unknown time" };
+  }
+}
+
+/** Why a watcher refuses to start while the halt file is there. */
+export const haltRefusal = (h: Halt, path: string) =>
+  `a fatal stop at ${h.at}: ${h.reason}${h.burn === null ? "" : ` (burn ${h.burn}${h.extrinsicHash ? `, extrinsic ${h.extrinsicHash}` : ""})`}; look at it, then remove ${path}`;
 
 // ---------------------------------------------------------------------------------------
 // The wait between rounds

@@ -102,10 +102,14 @@
 // keystores (--member-keys k:<path>,j:<path>, opened with one --password-file, neither printed) and
 // holds the lock release-watch-<multisig>.lock in --state-dir (by default .bridge-zero in the home
 // directory), relay.ts's scheme: one watcher per committee and machine, checked before each
-// signing. After a round an RPC failed, the wait doubles, up to an hour. A sent approval that fails
-// its checks on chain, a lost lock, a key file and a record that cannot be written end the watcher
-// (exit code 1); otherwise a round ends 0 when nothing was refused, 1 when a burn was refused or
-// left to the members, 2 when a node could not be reached, 3 when something sent is not final yet.
+// signing. After a round an RPC failed, the wait doubles, up to an hour. A fatal stop ends the
+// watcher with exit code 4: a sent approval that fails its checks on chain, an approval an earlier
+// run submitted that is in none of the blocks searched though its sender's nonce is used, a lost
+// lock, a key file or a record that cannot be written. With --send it first writes
+// release-watch-<multisig>.halt in --state-dir (the reason, the burn, the extrinsic, the time), and no
+// watcher with --send starts while that file is there: a member looks, then removes it. Otherwise a
+// round ends 0 when nothing was refused, 1 when a burn was refused or left to the members, 2 when a
+// node could not be reached, 3 when something sent is not final yet.
 //
 // fund dry-runs balances.transferKeepAlive of --amount tPOT from --from (by default the testnet
 // account 5ERJ…) to member k or to the multisig account, with its fee and what the member needs for
@@ -240,16 +244,20 @@ import {
   cursorOf,
   DEFAULT_FAST_CAP,
   FINALITY,
+  haltRefusal,
   MAX_WATCH_SECONDS,
   MIN_WATCH_SECONDS,
   nextWait,
   parseConfirmations,
   parseMemberKeys,
+  readHalt,
   submitErrorVerdict,
   takeLock,
   tradeOff,
   watchRound,
+  writeHalt,
   type BurnState,
+  type FatalStop,
   type Lock,
   type Outcome,
   type Ports,
@@ -297,6 +305,8 @@ const OK = 0;
 const FAILED = 1;
 const UNREACHABLE = 2;
 const PENDING = 3;
+/** The watcher stopped for good (a fatal stop) and left its halt file: whatever restarts it must not. */
+const HALTED = 4;
 
 const log = (message = "") => console.log(message);
 const errorText = (error: unknown) => redact(error instanceof Error ? error.message : String(error));
@@ -2519,7 +2529,7 @@ async function approveFor(
     if (code === OK) return { kind: "ok" };
     if (code === PENDING) return { kind: "pending", why: "an approval is not final yet" };
     const sent = approvalsOf().filter((a) => !before.has(a)).at(-1);
-    if (sent?.block) return { kind: "failed", why: `${sent.extrinsicHash} in #${fmt(sent.block.number)} failed its checks` };
+    if (sent?.block) return { kind: "failed", why: `${sent.extrinsicHash} in #${fmt(sent.block.number)} failed its checks`, extrinsicHash: sent.extrinsicHash };
     if (sent) return { kind: "rejected", why: sent.note ?? "never included" };
     return { kind: "refused", why: `${failures} check${failures === 1 ? "" : "s"} failed` };
   } catch (error) {
@@ -2578,8 +2588,10 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
 /**
  * release --watch: a round every --watch seconds (watchRound), each burn that qualifies released by
  * two members' approvals; after rounds in a row an RPC failed, the wait doubles, up to an hour.
- * With --send one watcher per committee holds the lock in --state-dir. A sent approval that fails
- * its checks, a lost lock, a key file or a record that cannot be written ends it (exit code 1).
+ * With --send one watcher per committee holds the lock in --state-dir. A fatal stop (a sent approval
+ * that fails its checks, an approval that cannot be found though its nonce is used, a lost lock, a
+ * key file or a record that cannot be written) ends it with exit code 4 and, with --send, leaves
+ * release-watch-<multisig>.halt in --state-dir; no watcher with --send starts while it is there.
  */
 async function watchCommand(o: WatchOptions): Promise<number> {
   const keyed = o.memberKeys.map((k) => k.member).join(" and ");
@@ -2589,6 +2601,29 @@ async function watchCommand(o: WatchOptions): Promise<number> {
   const { Keyring } = await polkadot();
   const keyring = new Keyring({ type: "sr25519", ss58Format: V3.ss58 });
   const v = vaultFacts(readV3Record(), keyring);
+  const haltPath = join(o.stateDir, `release-watch-${v.multisig}.halt`);
+  const halted = readHalt(haltPath);
+  if (halted) {
+    if (o.send) {
+      check(false, `the watcher does not start: ${haltRefusal(halted, haltPath)}`);
+      return HALTED;
+    }
+    warn(`${haltRefusal(halted, haltPath)}; a watcher with --send does not start until then (this dry run goes on)`);
+  }
+  /** A fatal stop: the halt file first (with --send), then exit code 4, which a restarting wrapper must not restart. */
+  const halt = (f: FatalStop): number => {
+    check(false, f.why);
+    if (o.send) {
+      try {
+        mkdirSync(o.stateDir, { recursive: true });
+        writeHalt(haltPath, { reason: f.why, burn: f.burn, extrinsicHash: f.extrinsicHash, at: new Date().toISOString() });
+        log(`     the watcher stopped for good: ${haltPath} holds why; no watcher of ${v.multisig} with --send starts until a member looks at it and removes it (exit code ${HALTED})`);
+      } catch (error) {
+        log(`FAIL the halt file ${haltPath} could not be written (${errorText(error)}): do not restart the watcher before a member looks (exit code ${HALTED})`);
+      }
+    }
+    return HALTED;
+  };
   let lock: Lock | null = null;
   if (o.send) {
     try {
@@ -2614,15 +2649,11 @@ async function watchCommand(o: WatchOptions): Promise<number> {
           `\nRound ${round}: ${r.released} released, ${r.waiting} waiting, ${r.refused} refused, ${r.held} left to the members` +
             `${o.send ? "" : `, ${r.planned} approval${r.planned === 1 ? "" : "s"} dry-run; nothing was signed or sent`}${r.pending ? "; something sent is not final yet" : ""}`,
         );
-        if (r.fatal) {
-          check(false, r.fatal);
-          return FAILED;
-        }
+        if (r.fatal) return halt(r.fatal);
         code = r.pending ? PENDING : r.refused + r.held > 0 ? FAILED : OK;
       } catch (error) {
         if (error instanceof LockLost || error instanceof Fatal || error instanceof RecordError || error instanceof DryRunViolation) {
-          check(false, errorText(error));
-          return FAILED;
+          return halt({ why: errorText(error), burn: null, extrinsicHash: null });
         }
         trouble = true;
         if (error instanceof Unreachable) {

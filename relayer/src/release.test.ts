@@ -6,6 +6,9 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 
@@ -106,11 +109,11 @@ interface Run {
 }
 
 /** The tool with `args`, every network endpoint a closed local port. */
-function run(args: string[]): Promise<Run> {
+function run(args: string[], env: Record<string, string> = {}): Promise<Run> {
   return new Promise((done, fail) => {
     const child = spawn(process.execPath, ["--import", "tsx", "src/release.ts", ...args], {
       cwd: RELAYER,
-      env: { ...process.env, SEPOLIA_RPC_URL: "http://127.0.0.1:9" },
+      env: { ...process.env, SEPOLIA_RPC_URL: "http://127.0.0.1:9", ...env },
       windowsHide: true,
     });
     let out = "";
@@ -147,5 +150,30 @@ describe("release.ts command lines", () => {
       assert.match(out, /usage \(from relayer\/\):/, `${line}: no usage\n${out}`);
       assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, `${line}: a request was made\n${out}`);
     });
+  });
+});
+
+/** Files the tests below hand the tool, in one folder for every run, written over each time: nothing to clean up. */
+const SCRATCH = join(tmpdir(), "bz-release-test");
+const MULTISIG = (JSON.parse(readFileSync(join(RELAYER, "..", "deployments", "v3-testnet.json"), "utf8")) as { vault: { committee: { multisig: string } } }).vault.committee.multisig;
+const OFFLINE = ["--rpc", "ws://127.0.0.1:9", "--evm", "http://127.0.0.1:9"];
+
+/** Stand-ins for the key files and the password file: the tool refuses before it opens them. */
+function keyFiles(): string[] {
+  mkdirSync(SCRATCH, { recursive: true });
+  for (const name of ["member-1.json", "member-2.json", "password.txt"]) writeFileSync(join(SCRATCH, name), "{}");
+  return ["--member-keys", `1:${join(SCRATCH, "member-1.json")},2:${join(SCRATCH, "member-2.json")}`, "--password-file", join(SCRATCH, "password.txt")];
+}
+
+describe("release --watch after a fatal stop", () => {
+  it("refuses to start with --send while the halt file is there, with exit code 4 and before any request", { timeout: 120_000 }, async () => {
+    const stateDir = join(SCRATCH, "halted");
+    mkdirSync(stateDir, { recursive: true });
+    const halt = join(stateDir, `release-watch-${MULTISIG}.halt`);
+    writeFileSync(halt, JSON.stringify({ reason: "member 2's approval failed its checks", burn: "3", extrinsicHash: "0xfeed", at: "2026-10-24T10:00:00.000Z" }));
+    const { code, out } = await run(["release", "--watch", "10", "--send", ...keyFiles(), "--state-dir", stateDir, ...OFFLINE]);
+    assert.equal(code, 4, out);
+    assert.match(out, /the watcher does not start: a fatal stop at 2026-10-24T10:00:00.000Z: member 2's approval failed its checks \(burn 3, extrinsic 0xfeed\); look at it, then remove /);
+    assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
   });
 });

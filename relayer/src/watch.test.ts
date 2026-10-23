@@ -7,7 +7,7 @@
 //   npm test
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -16,6 +16,7 @@ import {
   cursorOf,
   DEFAULT_FAST_CAP,
   FINALITY,
+  haltRefusal,
   LOCK_STALE,
   MAX_BACKOFF_SECONDS,
   nextStep,
@@ -23,10 +24,12 @@ import {
   parseConfirmations,
   parseMemberKeys,
   qualification,
+  readHalt,
   submitErrorVerdict,
   takeLock,
   tradeOff,
   watchRound,
+  writeHalt,
   type BurnState,
   type Outcome,
   type Ports,
@@ -286,7 +289,7 @@ describe("a round of the watcher", () => {
     const chain = new FakeChain(HEADS, [burn(0n, 900)]);
     chain.settleOutcomes.push({ kind: "fatal", why: "member 1's nonce 7 is used, but 0xabc is not in the blocks searched" });
     const r = await watchRound(chain.ports(), FINALITY, SEND);
-    assert.match(r.fatal ?? "", /nonce 7 is used/);
+    assert.match(r.fatal?.why ?? "", /nonce 7 is used/);
     assert.deepEqual(chain.calls, []);
   });
 
@@ -320,9 +323,11 @@ describe("a round of the watcher", () => {
 
   it("stops at an approval that failed its checks on chain, and touches no later burn", async () => {
     const chain = new FakeChain(HEADS, [burn(0n, 900), burn(1n, 905)]);
-    chain.outcomes.set(0n, [{ kind: "failed", why: "MultisigExecuted with an error" }]);
+    chain.outcomes.set(0n, [{ kind: "failed", why: "MultisigExecuted with an error", extrinsicHash: "0xfeed" }]);
     const r = await watchRound(chain.ports(), FINALITY, SEND);
-    assert.match(r.fatal ?? "", /failed its checks: MultisigExecuted/);
+    assert.match(r.fatal?.why ?? "", /failed its checks: MultisigExecuted/);
+    assert.equal(r.fatal?.burn, "0");
+    assert.equal(r.fatal?.extrinsicHash, "0xfeed");
     assert.deepEqual(chain.calls, ["0:open:1:finality"]);
   });
 
@@ -374,6 +379,27 @@ describe("where the watcher looks, and when", () => {
     assert.throws(() => parseMemberKeys("1:a.json,4:b.json"), /<member>:<key file>/);
     assert.throws(() => parseMemberKeys("1:a.json,2:a.json"), /same key file/);
     assert.throws(() => parseMemberKeys("1:a.json,2:b.json,3:c.json"), /two members/);
+  });
+});
+
+describe("the halt file", () => {
+  // One folder for every run, its files written over: nothing to clean up.
+  const dir = join(tmpdir(), "bz-watch-test");
+  mkdirSync(dir, { recursive: true });
+
+  it("keeps why a watcher stopped, and says what to do", () => {
+    const path = join(dir, "release-watch-5Fmultisig.halt");
+    writeHalt(path, { reason: "member 2's approval failed its checks", burn: "4", extrinsicHash: "0xfeed", at: "2026-10-24T10:00:00.000Z" });
+    const h = readHalt(path);
+    assert.deepEqual(h, { reason: "member 2's approval failed its checks", burn: "4", extrinsicHash: "0xfeed", at: "2026-10-24T10:00:00.000Z" });
+    assert.equal(haltRefusal(h!, path), `a fatal stop at 2026-10-24T10:00:00.000Z: member 2's approval failed its checks (burn 4, extrinsic 0xfeed); look at it, then remove ${path}`);
+  });
+
+  it("halts on a halt file that does not parse, and not without one", () => {
+    const path = join(dir, "garbled.halt");
+    writeFileSync(path, "{ not json");
+    assert.match(readHalt(path)!.reason, /does not parse/);
+    assert.equal(readHalt(join(dir, "never-written.halt")), null);
   });
 });
 
