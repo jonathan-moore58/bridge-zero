@@ -174,6 +174,9 @@ class FakeChain {
   readonly outcomes = new Map<bigint, Outcome[]>();
   /** An approval sent and not final yet: approve() records it as submitted and returns pending. */
   pendingNext = false;
+  /** What settle() says instead of settling, once each: still on its way, or not to be found. */
+  readonly settleOutcomes: ({ kind: "pending"; why: string } | { kind: "fatal"; why: string })[] = [];
+  settled = 0;
 
   constructor(
     readonly heads = HEADS,
@@ -188,6 +191,20 @@ class FakeChain {
 
   ports(): Ports {
     return {
+      // As settleSubmitted: an approval the record holds as submitted is found final; an opening then holds the operation open on chain.
+      settle: async () => {
+        const queued = this.settleOutcomes.shift();
+        if (queued) return queued;
+        for (const s of this.states.values()) {
+          for (const a of s.rounds.flatMap((r) => r.approvals).filter((x) => x.status === "submitted")) {
+            a.status = "final";
+            a.onChain = true;
+            this.settled += 1;
+            if (a.action === "open") s.op = { approvals: [a.member], depositor: a.member, matches: true };
+          }
+        }
+        return { kind: "ok" };
+      },
       heads: async () => this.heads,
       burns: async () => this.burnList,
       state: async (b) => structuredClone(this.state(b.burnNonce)),
@@ -246,23 +263,30 @@ describe("a round of the watcher", () => {
     assert.equal(r.released, 1);
   });
 
-  it("after a crash with an opening sent and not final, waits for it to settle and never opens again", async () => {
+  it("after a crash with an opening sent and not final, settles it first and never opens again", async () => {
     const chain = new FakeChain(HEADS, [burn(0n, 900)]);
     chain.pendingNext = true;
     const first = await watchRound(chain.ports(), FINALITY, SEND);
     assert.equal(first.pending, true);
     assert.deepEqual(chain.calls, ["0:open:1:finality"]);
-    // A restart: the record holds the opening as submitted, so nothing is approved.
+    // A restart while the opening is still on its way: the round settles first, finds it pending, and approves nothing.
+    chain.settleOutcomes.push({ kind: "pending", why: "the node's pool holds it" });
     const second = await watchRound(chain.ports(), FINALITY, SEND);
+    assert.equal(second.pending, true);
     assert.deepEqual(chain.calls, ["0:open:1:finality"]);
-    assert.equal(second.waiting, 1);
-    // The next run settles it: final, and the operation is open on chain. Member 2 runs it; member 1 never opens again.
-    const s = chain.state(0n);
-    s.rounds[0].approvals[0] = approval(1, "open", "final");
-    s.op = { approvals: [1], depositor: 1, matches: true };
+    // The next round settles it (final, the operation open on chain) by itself: member 2 runs it; member 1 never opens again.
     const third = await watchRound(chain.ports(), FINALITY, SEND);
+    assert.equal(chain.settled, 1);
     assert.deepEqual(chain.calls, ["0:open:1:finality", "0:execute:2:finality"]);
     assert.equal(third.released, 1);
+  });
+
+  it("stops when an approval an earlier run submitted cannot be found though its nonce is used", async () => {
+    const chain = new FakeChain(HEADS, [burn(0n, 900)]);
+    chain.settleOutcomes.push({ kind: "fatal", why: "member 1's nonce 7 is used, but 0xabc is not in the blocks searched" });
+    const r = await watchRound(chain.ports(), FINALITY, SEND);
+    assert.match(r.fatal ?? "", /nonce 7 is used/);
+    assert.deepEqual(chain.calls, []);
   });
 
   it("refuses a burn whose payee the checks refuse, signs nothing for it, and goes on with the next burn", async () => {

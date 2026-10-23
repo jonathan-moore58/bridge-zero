@@ -178,8 +178,22 @@ export type Outcome =
   /** An approval ran on chain and failed its checks: the watcher stops. */
   | { kind: "failed"; why: string };
 
+/** What settling the approvals an earlier run left submitted ended with. */
+export type Settled =
+  /** Nothing is on its way any more: each is final (and checked), failed or dropped. */
+  | { kind: "ok" }
+  /** One is still on its way: nothing more is signed until it is final. */
+  | { kind: "pending"; why: string }
+  /** One cannot be found though its sender's nonce is used: the watcher stops. */
+  | { kind: "fatal"; why: string };
+
 /** What a round reads and does, through the tool: release.ts fills them with the chains, the tests with stand-ins. */
 export interface Ports<B extends SeenBurn = SeenBurn> {
+  /**
+   * Settles every approval the record holds as submitted (an earlier run crashed, timed out, or lost
+   * the node while it was on its way): found final and checked, or dropped. Runs first in each round.
+   */
+  settle(): Promise<Settled>;
   heads(): Promise<Heads>;
   /** Every BurnRequested since the last burn handled, at the latest block, in nonce order. */
   burns(): Promise<B[]>;
@@ -230,13 +244,24 @@ export function cursorOf(handled: { burnNonce: bigint; block: number }[], deploy
 const STEPS = 2;
 
 /**
- * One round of the watcher: for each burn since the last one handled, in order, nothing when it is
+ * One round of the watcher: first the approvals an earlier run left submitted are settled (the round
+ * ends there while one is on its way); then, for each burn since the last one handled, in order, nothing when it is
  * released; a wait while it does not qualify; else the committee's next step, run through the tool
  * (every check first), then the next one, until it is released, refused, or left to the members.
  * Without `send` each burn's next approval is dry-run, and nothing more.
  */
 export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o: { send: boolean; keyed: number[]; threshold: number }): Promise<RoundResult> {
   const r: RoundResult = { released: 0, waiting: 0, refused: 0, held: 0, planned: 0, pending: false, fatal: null };
+  const settled = await p.settle();
+  if (settled.kind === "fatal") {
+    r.fatal = settled.why;
+    return r;
+  }
+  if (settled.kind === "pending") {
+    p.log(`an approval an earlier run submitted is still on its way (${settled.why}): nothing is signed until it is final`);
+    r.pending = true;
+    return r;
+  }
   const heads = await p.heads();
   p.log(`Sepolia: latest #${heads.latest}, finalized #${heads.finalized}`);
   const burns = await p.burns();

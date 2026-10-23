@@ -323,6 +323,11 @@ class Unreachable extends Error {
   override name = "Unreachable";
 }
 
+/** An RPC answered a read with an error (exit code 1, as any Stop): for the watcher, trouble with the RPC, not with the burn. */
+class RpcError extends Stop {
+  override name = "RpcError";
+}
+
 /** The request never got an answer (fetch failed, timed out, or no JSON came back), as opposed to an error the RPC returned. */
 const offline = (error: unknown) =>
   error instanceof TypeError || error instanceof SyntaxError || (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"));
@@ -334,7 +339,7 @@ async function sepolia<R>(what: string, read: () => Promise<R>): Promise<R> {
   } catch (error) {
     if (error instanceof DryRunViolation) throw error;
     if (offline(error)) throw new Unreachable(`Sepolia RPC unreachable (${what}: ${errorText(error)})`);
-    throw new Stop(`Sepolia RPC: ${what}: ${errorText(error)}`);
+    throw new RpcError(`Sepolia RPC: ${what}: ${errorText(error)}`);
   }
 }
 
@@ -2536,6 +2541,16 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
     }
     let latest = 0;
     const ports: Ports<WatchedBurn> = {
+      settle: async () => {
+        try {
+          return (await settleSubmitted(api, evm, keyring, d.v, d.record)) === PENDING ? { kind: "pending", why: "the node's pool holds it, or a block not final yet used its nonce" } : { kind: "ok" };
+        } catch (error) {
+          // A Stop here is an approval whose sender's nonce is used while it is in none of the blocks
+          // searched: nobody knows what ran, and the watcher signs nothing more.
+          if (error instanceof Stop && !(error instanceof RpcError)) return { kind: "fatal", why: `settling the approvals an earlier run submitted: ${errorText(error)}` };
+          throw error;
+        }
+      },
       heads: async () => {
         const [l, f] = await Promise.all(
           ["latest", "finalized"].map((tag) => sepolia(`${tag} block`, () => rpc<{ number: string }>("eth_getBlockByNumber", [tag, false]))),
