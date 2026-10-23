@@ -40,7 +40,9 @@
 // simulation), and from the sender's nonce and remaining balance; one the node fails the way a
 // load-balanced RPC can (an unknown block, a timeout, an HTTP error) is sent again. With every
 // transaction at its max fee, the sender must still keep --keep (default 0.05 ETH); a run whose only
-// failure is the sender's balance counts as blocked (see --watch).
+// failure is the sender's balance goes on with the longest start of the plan the balance pays for
+// (run again alone), the rest left for a later run, and counts as blocked (see --watch) when it pays
+// for none.
 // --send runs the same dry run, then sends the plan one transaction at a time the way
 // contracts/script/deploy-sepolia.mjs sends its steps (cast mktx with the keystore, the hash
 // recorded, cast publish, the receipt and its events checked), each after checking, at the latest
@@ -222,8 +224,10 @@ const MAX_BACKOFF_SECONDS = 3_600;
  * gas limit at the max fee (ten times the base fee) on hand above --keep: about 0.1 ETH on mainnet
  * (6.7 million gas at 15 gwei), 0.04 ETH on V3 (2.6 million gas). The dry run's first pass, at the
  * 16,777,216 cap and twice the base fee (measureFees), needs about 0.05 ETH there, with no --keep on
- * top, so it asks no more than the send does: with --keep 0.05 ETH, a key of 0.2 ETH relays one set
- * change at a time at any base fee up to the gate.
+ * top, so it asks no more than the send does: with --keep 0.05 ETH, a key of 0.2 ETH pays for one
+ * mainnet set change at the gate, or about two at 1 gwei. A larger backlog (after the relayer was
+ * down for a day, say) is relayed as many set changes a run as the balance pays for, the rest left
+ * for the next run (dryRunPlan); it waits on the balance (Underfunded) only when not even one fits.
  */
 const MAX_BASE_FEE_CHANGE = "1.5";
 /** The lowest max fee feesAt sets (0.01 gwei), whatever the base fee below it. */
@@ -261,6 +265,11 @@ export function check(ok: boolean, what: string): boolean {
   log(`${ok ? "ok  " : "FAIL"} ${what}`);
   if (!ok) failures += 1;
   return ok;
+}
+
+/** Starts the count of failed checks again, as each run does. */
+export function resetChecks(): void {
+  failures = 0;
 }
 
 /** Why the client cannot be brought up to date in this run. */
@@ -838,7 +847,7 @@ function writesOf(hash: Hex, change: { setIndex: number; genesis: Hex; setId: bi
 // ---------------------------------------------------------------------------------------
 // The plan
 
-interface Step {
+export interface Step {
   index: number;
   nonce: number;
   method: "importHeader" | "importFinalityProof";
@@ -857,7 +866,7 @@ interface Step {
   label: string;
 }
 
-interface Plan {
+export interface Plan {
   steps: Step[];
   /** Why the plan stops short of the finalized head, if it does. */
   notes: string[];
@@ -1120,7 +1129,7 @@ interface SimBlock {
   calls: SimCall[];
 }
 
-interface Context {
+export interface Context {
   block: { number: string; hash: string };
   fees: Fees;
   balance: bigint;
@@ -1321,10 +1330,18 @@ function judge(s: Step, r: SimCall | undefined, limit: number, client: Hex): [bo
 
 const groups = (requests: Step[][]) => requests.map((r) => `[${r.map((s) => s.index).join(",")}]`).join(" ");
 
-interface DryRun {
+export interface DryRun {
   /** Per step: the gas limit it is sent with and its simulated gas. */
   limits: Map<number, number>;
   gas: Map<number, number>;
+}
+
+/** A dry run whose one failed check is the cost: the sender's balance pays for the first `funded` steps (0 to all but one) with --keep left. */
+interface Short {
+  short: DryRun;
+  funded: number;
+  /** The cost check's line. */
+  cost: string;
 }
 
 /**
@@ -1356,12 +1373,12 @@ export function upfrontOf(steps: { limit: number; gas: number }[], maxFee: bigin
 }
 
 /**
- * Runs the plan on the node; null when a check fails, "underfunded" when the cost check is the only
- * one that fails. With `costFee` (a dry run while the base fee is above the first step's gate, when a
- * --send run would send nothing), both passes run at measureFees and the cost is priced at
- * `costFee`, the max fee a --send run would use once the base fee is at that gate.
+ * Runs the plan on the node; null when a check fails, Short (its line not printed yet) when the cost
+ * check is the only one that fails. With `costFee` (a dry run while the base fee is above the first
+ * step's gate, when a --send run would send nothing), both passes run at measureFees and the cost is
+ * priced at `costFee`, the max fee a --send run would use once the base fee is at that gate.
  */
-async function dryRun(steps: Step[], ctx: Context, title: string, costFee?: bigint): Promise<DryRun | "underfunded" | null> {
+async function dryRun(steps: Step[], ctx: Context, title: string, costFee?: bigint): Promise<DryRun | Short | null> {
   const { fees } = ctx;
   log(
     `Fees: next base fee ${fmt(fees.base)} wei, priority fee ${fmt(fees.tip)} wei, max fee ${fmt(fees.maxFee)} wei` +
@@ -1408,16 +1425,21 @@ async function dryRun(steps: Step[], ctx: Context, title: string, costFee?: bigi
   const peak = Math.max(first.peak, run.peak);
   check(peak <= REQUEST_GAS, `the largest request needs ${fmt(peak)} of the ${fmt(REQUEST_GAS)} gas one request may use`);
   const priced = costFee ?? fees.maxFee;
-  const need = upfrontOf(steps.map((s) => ({ limit: limits.get(s.index)!, gas: gas.get(s.index)! })), priced);
-  const othersFailed = failures > 0;
-  const funded = check(
-    need + ctx.keep <= ctx.balance,
+  /** What the first `n` steps need, sent in order. */
+  const needOf = (n: number) => upfrontOf(steps.slice(0, n).map((s) => ({ limit: limits.get(s.index)!, gas: gas.get(s.index)! })), priced);
+  const need = needOf(steps.length);
+  const cost =
     `cost at the current fees ${eth(ctx.balance - run.balance)} (base fee ${fmt(run.baseFee)} wei + priority fee, as simulated);` +
-      ` at most ${eth(need)} at ${costFee === undefined ? "the max fee" : `the max fee a --send run uses at the gate, ${fmt(priced)} wei`},` +
-      ` with --keep ${eth(ctx.keep)} left; the sender has ${eth(ctx.balance)}`,
-  );
-  if (failures === 0) return { limits, gas };
-  return funded || othersFailed ? null : "underfunded";
+    ` at most ${eth(need)} at ${costFee === undefined ? "the max fee" : `the max fee a --send run uses at the gate, ${fmt(priced)} wei`},` +
+    ` with --keep ${eth(ctx.keep)} left; the sender has ${eth(ctx.balance)}`;
+  if (failures === 0 && need + ctx.keep > ctx.balance) {
+    // The cost alone fails: the longest start of the plan the balance pays for, --keep left.
+    let funded = 0;
+    while (funded < steps.length - 1 && needOf(funded + 1) + ctx.keep <= ctx.balance) funded += 1;
+    return { short: { limits, gas }, funded, cost };
+  }
+  check(need + ctx.keep <= ctx.balance, cost);
+  return failures === 0 ? { limits, gas } : null;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -2611,38 +2633,69 @@ async function relay(o: Options, sender: Sender, lock: Lock | null = null): Prom
   }
 
   const ctx: Context = { block, fees, balance, sender: sender.address, client: address, keep: o.keep, head: plan.head };
-  // A dry run while the base fee holds back the first step, when a --send run would send nothing:
-  // the plan is run at the lowest valid fees, and priced at the max fee a --send run uses at the gate.
-  const atGate = !o.send && cut === 0 ? maxFeeAt(o, gateOf(plan.steps[0], o), current.tip) : undefined;
-  let dry: DryRun | "underfunded" | null = null;
-  try {
-    dry = await dryRun(plan.steps, ctx, title, atGate);
-  } catch (error) {
-    if (error instanceof Unreachable) throw error;
-    // A node refuses to simulate a transaction the sender cannot pay for at its max fee.
-    const funds = failures === 0 && /insufficient funds/i.test(errorText(error));
-    if (funds && atGate !== undefined) {
-      log(`     (the node cannot run the plan from the sender's balance at the current base fee: ${errorText(error)})`);
-      log("\nThe dry run stops here, as a --send run sends nothing while the base fee is above the gate. Nothing was signed or sent.");
-      return OK;
-    }
-    check(false, errorText(error));
-    if (funds) dry = "underfunded";
-  }
-  if (dry === "underfunded") {
-    log("\nThe dry run failed on the sender's balance alone: nothing can be sent until it is funded.");
-    throw new Underfunded(`the sender has ${eth(balance)}, too little for the plan at its max fee with --keep ${eth(o.keep)} left`);
-  }
-  if (!dry) {
-    log("\nThe dry run failed: nothing can be sent.");
-    return FAILED;
-  }
+  const dry = await dryRunPlan(plan, ctx, o, title, current);
+  if (typeof dry === "number") return dry;
   if (!o.send) {
     log("\nThe dry run passed. Nothing was signed or sent.");
     return OK;
   }
   log("\nThe dry run passed. Sending:");
   return sendPlan(plan.steps, dry, ctx, o, ledger!);
+}
+
+/**
+ * The dry run of a run's plan (dryRun): the DryRun to send it with, or the code the run ends with.
+ * While the base fee is above the first step's gate (`current`, the next base fee), a dry run, where
+ * a --send run would send nothing, runs the plan at the lowest valid fees and prices it at the max
+ * fee a --send run uses at that gate; a node that then refuses it for funds ends it OK. When the
+ * sender's balance alone fails, with --keep left, the plan is cut to the longest start the balance
+ * pays for (a backlog of set changes is relayed a few at a time, the rest left for a later run) and
+ * run again alone; when it pays for none (or the node refuses the plan for funds), Underfunded.
+ */
+export async function dryRunPlan(plan: Plan, ctx: Context, o: Options, title: string, current: Fees): Promise<DryRun | number> {
+  const gate = gateOf(plan.steps[0], o);
+  const atGate = !o.send && current.base > gate ? maxFeeAt(o, gate, current.tip) : undefined;
+  const underfunded = (what: string) => {
+    log("\nThe dry run failed on the sender's balance alone: nothing can be sent until it is funded.");
+    return new Underfunded(`the sender has ${eth(ctx.balance)}, too little for ${what} at its max fee with --keep ${eth(ctx.keep)} left`);
+  };
+  for (let again = false; ; again = true) {
+    let dry: DryRun | Short | null;
+    try {
+      dry = await dryRun(plan.steps, ctx, title, atGate);
+    } catch (error) {
+      if (error instanceof Unreachable) throw error;
+      // A node refuses to simulate a transaction the sender cannot pay for at its max fee.
+      const funds = failures === 0 && /insufficient funds/i.test(errorText(error));
+      if (funds && atGate !== undefined) {
+        log(`     (the node cannot run the plan from the sender's balance at the current base fee: ${errorText(error)})`);
+        log("\nThe dry run stops here, as a --send run sends nothing while the base fee is above the gate. Nothing was signed or sent.");
+        return OK;
+      }
+      check(false, errorText(error));
+      if (funds) throw underfunded("the plan");
+      dry = null;
+    }
+    if (dry && "short" in dry) {
+      if (!again && dry.funded >= 1) {
+        const n = plan.steps.length;
+        log(`     note: ${dry.cost}`);
+        log(
+          `     note: the balance pays for the first ${dry.funded} of the ${n} transactions with --keep left: ` +
+            `${o.send ? "those are sent" : "a --send run sends those"}, and the rest is left for a later run. The first ${dry.funded} again, alone:`,
+        );
+        plan.steps = plan.steps.slice(0, dry.funded);
+        continue;
+      }
+      check(false, dry.cost);
+      throw underfunded(again ? "the start of the plan it paid for" : plan.steps.length === 1 ? "the plan" : "even the plan's first transaction");
+    }
+    if (!dry) {
+      log("\nThe dry run failed: nothing can be sent.");
+      return FAILED;
+    }
+    return dry;
+  }
 }
 
 /** One run's exit code, and whether it stopped on something only the admin or the operator can clear. */
@@ -2665,7 +2718,7 @@ export function makeStateDir(dir: string): void {
 
 /** One run; with --send, under the sender's lock. Fatal problems propagate, everything else becomes an exit code. */
 async function runOnce(o: Options, sender: Sender): Promise<Run> {
-  failures = 0;
+  resetChecks();
   let lock: Lock | null = null;
   try {
     if (o.send) {

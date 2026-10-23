@@ -10,11 +10,12 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { keccak256, RPC, type Fees, type Receipt } from "../../contracts/script/lib/sepolia.mjs";
-import { bytesToHex, utf8 } from "./bytes.js";
+import { keccak256, RPC, topic, type Fees, type Log, type Receipt } from "../../contracts/script/lib/sepolia.mjs";
+import { bytesToHex, concatBytes, utf8, type Hex } from "./bytes.js";
 import {
   callAt,
   clampFees,
+  dryRunPlan,
   feeCap,
   findMined,
   heldBackBeforePlan,
@@ -27,14 +28,18 @@ import {
   outcomeAtLatest,
   pruned,
   raised,
+  resetChecks,
   senderOf,
   servesSepolia,
   transient,
   upfrontOf,
   type ClientState,
+  type Context,
   type LegacyFacts,
   type Options,
+  type Plan,
   type RelayEntry,
+  type Step,
 } from "./relay.js";
 
 const GWEI = 10n ** 9n;
@@ -570,5 +575,166 @@ describe("the entry point (nit 4)", () => {
   it("npm run relay starts relay-main.ts", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { scripts: Record<string, string> };
     assert.equal(pkg.scripts.relay, "tsx src/relay-main.ts");
+  });
+});
+
+describe("a plan on a stand-in Sepolia RPC (finding 1)", () => {
+  // eth_simulateV1 as a node runs the plan: each import uses mainnet's gas (6.1 million a set change,
+  // 0.6 million the head), returns its block hash and emits its events, the probe reads the sender's
+  // balance and the client's views read as the plan leaves them; with validation on, a call whose gas
+  // limit at its max fee is more than the sender holds is refused for funds.
+  const CLIENT = "0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6" as const;
+  const SENDER = "0x00000000000000000000000000000000000a11ce" as const;
+  const BASE = 16n;
+  const ETH = 10n ** 18n;
+  const KEEP = 5n * 10n ** 16n;
+  const hex32 = (n: bigint | number) => BigInt(n).toString(16).padStart(64, "0");
+  const qty = (n: bigint | number) => `0x${BigInt(n).toString(16)}`;
+  const key = (i: number) => new Uint8Array(32).fill(0x40 + i);
+  const IMPORTED = topic("HeaderImported(bytes32,uint32,bytes32,uint64,uint256)");
+  const CHANGED = topic("AuthoritySetChanged(uint64,uint64,bytes32,uint256,uint32)");
+  const gasOf = (s: Step) => (s.setAfter !== s.setBefore ? 6_100_000n : 600_000n);
+
+  /** `changes` set changes from set 46 on, then the head. */
+  const planOf = (changes: number): Plan => {
+    const steps: Step[] = [];
+    let before = { hash: `0x${"14".repeat(32)}` as Hex, number: 165_089 };
+    for (let i = 0; i <= changes; i++) {
+      const head = i === changes;
+      const setBefore = 46n + BigInt(i);
+      const hash = `0x${(0xa0 + i).toString(16).repeat(32)}` as Hex;
+      const number = before.number + 300;
+      steps.push({
+        index: i,
+        nonce: 20 + i,
+        method: head ? "importFinalityProof" : "importHeader",
+        number,
+        hash,
+        setBefore,
+        setAfter: head ? setBefore : setBefore + 1n,
+        keysAfter: [key(head ? i - 1 : i)],
+        signatures: 7,
+        before,
+        data: `0x0a${hex32(i)}`,
+        writes: [],
+        label: `${head ? "importFinalityProof" : "importHeader"} #${number}`,
+      });
+      before = { hash, number };
+    }
+    return { steps, notes: [] };
+  };
+  const logsOf = (s: Step): Log[] => {
+    const logs: Log[] = [{ address: CLIENT, topics: [IMPORTED, s.hash, `0x${hex32(s.number)}`], data: `0x${hex32(0)}${hex32(s.setBefore)}${hex32(s.signatures)}` }];
+    if (s.setAfter !== s.setBefore) {
+      const list = bytesToHex(keccak256(concatBytes(...s.keysAfter))).slice(2);
+      logs.push({ address: CLIENT, topics: [CHANGED, `0x${hex32(s.setBefore)}`, `0x${hex32(s.setAfter)}`], data: `0x${list}${hex32(s.keysAfter.length)}${hex32(s.number)}` });
+    }
+    return logs;
+  };
+
+  interface Call {
+    from: string;
+    gas: string;
+    maxFeePerGas: string;
+    maxPriorityFeePerGas: string;
+    data: string;
+  }
+  interface Chain {
+    steps: Map<string, Step>;
+    balance: bigint;
+    /** Each eth_simulateV1 request: its steps and the max fee they ran at. */
+    simulations: { steps: number[]; maxFee: bigint }[];
+  }
+  let chain: Chain;
+  const start = (plan: Plan, balance: bigint) => {
+    chain = { steps: new Map(plan.steps.map((s) => [s.data, s])), balance, simulations: [] };
+    resetChecks();
+  };
+  const simulateV1 = (params: unknown[]): object => {
+    const [{ blockStateCalls }] = params as [{ blockStateCalls: { stateOverrides: Record<string, { balance?: string }>; calls: Call[] }[] }];
+    const { stateOverrides, calls } = blockStateCalls[0];
+    let balance = BigInt(stateOverrides[SENDER]?.balance ?? chain.balance);
+    const imports = calls.filter((c) => c.from === SENDER).map((c) => ({ c, s: chain.steps.get(c.data)! }));
+    const out: object[] = [];
+    for (const { c, s } of imports) {
+      const maxFee = BigInt(c.maxFeePerGas);
+      if (BigInt(c.gas) * maxFee > balance) return { error: { code: -38014, message: `insufficient funds for gas * price + value: have ${balance} want ${BigInt(c.gas) * maxFee}` } };
+      const price = BASE + BigInt(c.maxPriorityFeePerGas) < maxFee ? BASE + BigInt(c.maxPriorityFeePerGas) : maxFee;
+      balance -= gasOf(s) * price;
+      out.push({ status: "0x1", gasUsed: qty(gasOf(s)), returnData: s.hash, logs: logsOf(s) });
+    }
+    const end = imports.at(-1)!.s;
+    out.push(
+      { status: "0x1", gasUsed: "0x5208", returnData: `0x${hex32(0)}${hex32(balance)}` },
+      { status: "0x1", gasUsed: "0x1000", returnData: `0x${hex32(end.setAfter)}` },
+      { status: "0x1", gasUsed: "0x1000", returnData: `0x${end.hash.slice(2)}${hex32(end.number)}` },
+      { status: "0x1", gasUsed: "0x1000", returnData: `0x${hex32(32)}${hex32(end.keysAfter.length)}${end.keysAfter.map((k) => bytesToHex(k).slice(2)).join("")}` },
+    );
+    chain.simulations.push({ steps: imports.map(({ s }) => s.index), maxFee: BigInt(imports[0].c.maxFeePerGas) });
+    const blocks = [{ baseFeePerGas: qty(BASE), calls: out }];
+    // The storage read back after a request that is not the last (no slots in these plans).
+    if (blockStateCalls[1]) blocks.push({ baseFeePerGas: qty(BASE), calls: [{ status: "0x1", gasUsed: "0x5208", returnData: "0x" }] });
+    return { result: blocks };
+  };
+  const real = { fetch: globalThis.fetch, log: console.log };
+  before(() => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string; params: unknown[] };
+      assert.equal(String(url), RPC, "only the Sepolia RPC is asked");
+      const answer = body.method === "eth_simulateV1" ? simulateV1(body.params) : { error: { code: -32601, message: "Method not found" } };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, ...answer }));
+    }) as typeof fetch;
+  });
+  after(() => {
+    globalThis.fetch = real.fetch;
+  });
+  /** What `run` prints, and what it returns or throws. */
+  const printed = async <R>(run: () => Promise<R>): Promise<{ lines: string[]; result?: R; error?: Error }> => {
+    const lines: string[] = [];
+    console.log = (line?: unknown) => void lines.push(String(line ?? ""));
+    try {
+      return { lines, result: await run() };
+    } catch (error) {
+      return { lines, error: error as Error };
+    } finally {
+      console.log = real.log;
+    }
+  };
+  const ctxOf = (balance: bigint, fees: Fees): Context => ({ block: { number: "0xa00000", hash: `0x${"77".repeat(32)}` }, fees, balance, sender: SENDER, client: CLIENT, keep: KEEP });
+
+  it("sends the longest start of a backlog the balance pays for, run again alone, and leaves the rest for a later run", async () => {
+    // Three set changes and the head at a base fee of 1 gwei (max fee 10 gwei): 0.2 ETH pays for two with --keep 0.05 ETH.
+    const plan = planOf(3);
+    const now = fees(GWEI);
+    start(plan, ETH / 5n);
+    const run = await printed(() => dryRunPlan(plan, ctxOf(ETH / 5n, now), options(), "the client", now));
+    assert.equal(run.error, undefined);
+    assert.ok(typeof run.result === "object");
+    assert.deepEqual([...run.result.limits.keys()], [0, 1]);
+    assert.deepEqual(
+      plan.steps.map((s) => s.index),
+      [0, 1],
+    );
+    assert.ok(run.lines.some((l) => l.includes("note: the balance pays for the first 2 of the 4 transactions with --keep left: those are sent, and the rest is left for a later run")));
+    assert.ok(run.lines.some((l) => /^ok {3}cost at the current fees .* at most 0\.128\d* ETH at the max fee, with --keep 0\.05 ETH left; the sender has 0\.2 ETH$/.test(l)));
+    assert.ok(!run.lines.some((l) => l.startsWith("FAIL")));
+    // The two were simulated again alone, the second pass at the run's max fee.
+    assert.deepEqual(chain.simulations.at(-1), { steps: [0, 1], maxFee: now.maxFee });
+  });
+
+  it("is Underfunded when the balance pays for not even the first transaction", async () => {
+    for (const [plan, balance, what] of [
+      [planOf(3), ETH / 10n, "even the plan's first transaction"],
+      [planOf(0), 55n * 10n ** 15n, "the plan"],
+    ] as const) {
+      start(plan, balance);
+      const now = fees(GWEI);
+      const steps = plan.steps.length;
+      const run = await printed(() => dryRunPlan(plan, ctxOf(balance, now), options(), "the client", now));
+      assert.equal(run.error?.name, "Blocked");
+      assert.match(run.error?.message ?? "", new RegExp(`too little for ${what} at its max fee`));
+      assert.ok(run.lines.some((l) => l.startsWith("FAIL cost at the current fees")));
+      assert.equal(plan.steps.length, steps, "the plan is not cut");
+    }
   });
 });
