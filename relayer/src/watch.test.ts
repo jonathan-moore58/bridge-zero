@@ -24,11 +24,13 @@ import {
   parseConfirmations,
   parseMemberKeys,
   qualification,
+  readBurnCache,
   readHalt,
   submitErrorVerdict,
   takeLock,
   tradeOff,
   watchRound,
+  writeBurnCache,
   writeHalt,
   type BurnState,
   type Outcome,
@@ -321,6 +323,16 @@ describe("a round of the watcher", () => {
     assert.deepEqual(chain.calls, ["2:open:1:fast", "2:execute:2:fast"]);
   });
 
+  it("lets a burn whose log the RPC does not serve wait, and goes on with the next burn", async () => {
+    const unread: SeenBurn = { burnNonce: 0n, amount: 0n, block: 0, payee: "?", missing: "the Sepolia RPC refuses eth_getLogs (code 4444) before its log is found" };
+    const chain = new FakeChain(HEADS, [unread, burn(1n, 905)]);
+    const r = await watchRound(chain.ports(), FINALITY, SEND);
+    assert.equal(r.waiting, 1);
+    assert.equal(r.released, 1);
+    assert.deepEqual(chain.calls, ["1:open:1:finality", "1:execute:2:finality"]);
+    assert.ok(chain.lines.some((l) => /^burn 0: waits: the Sepolia RPC refuses eth_getLogs/.test(l)));
+  });
+
   it("stops at an approval that failed its checks on chain, and touches no later burn", async () => {
     const chain = new FakeChain(HEADS, [burn(0n, 900), burn(1n, 905)]);
     chain.outcomes.set(0n, [{ kind: "failed", why: "MultisigExecuted with an error", extrinsicHash: "0xfeed" }]);
@@ -379,6 +391,40 @@ describe("where the watcher looks, and when", () => {
     assert.throws(() => parseMemberKeys("1:a.json,4:b.json"), /<member>:<key file>/);
     assert.throws(() => parseMemberKeys("1:a.json,2:a.json"), /same key file/);
     assert.throws(() => parseMemberKeys("1:a.json,2:b.json,3:c.json"), /two members/);
+  });
+});
+
+describe("the burn cache", () => {
+  const dir = join(tmpdir(), "bz-watch-test");
+  mkdirSync(dir, { recursive: true });
+  const MINTER = "0x1111111111111111111111111111111111111111";
+  const entry = {
+    block: 11_955_414,
+    blockHash: `0x${"ab".repeat(32)}`,
+    txHash: `0x${"cd".repeat(32)}`,
+    from: "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+    payee: "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+    amount: "50000000000000",
+    burnId: `0x${"0b".repeat(32)}`,
+  };
+
+  it("keeps the final burns' logs it is given, for its minter only", () => {
+    const path = join(dir, "release-watch-5Fmultisig.burns.json");
+    writeBurnCache(path, MINTER, new Map([["10", { ...entry, block: 12 }], ["2", entry]]));
+    const read = readBurnCache(path, MINTER.toUpperCase().replace("0X", "0x"));
+    assert.deepEqual([...read.keys()], ["2", "10"]);
+    assert.deepEqual(read.get("2"), entry);
+    assert.equal(readBurnCache(path, "0x2222222222222222222222222222222222222222").size, 0);
+  });
+
+  it("is empty when there is none or it does not parse, and leaves out an entry that is not whole", () => {
+    assert.equal(readBurnCache(join(dir, "never-written.burns.json"), MINTER).size, 0);
+    const garbled = join(dir, "garbled.burns.json");
+    writeFileSync(garbled, "{ not json");
+    assert.equal(readBurnCache(garbled, MINTER).size, 0);
+    const partial = join(dir, "partial.burns.json");
+    writeFileSync(partial, JSON.stringify({ minter: MINTER, burns: { "0": entry, "1": { ...entry, blockHash: "0x12" }, "2": { ...entry, amount: "-1" }, x: entry } }));
+    assert.deepEqual([...readBurnCache(partial, MINTER).keys()], ["0"]);
   });
 });
 

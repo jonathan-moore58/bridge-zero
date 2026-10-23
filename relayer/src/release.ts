@@ -250,13 +250,17 @@ import {
   nextWait,
   parseConfirmations,
   parseMemberKeys,
+  readBurnCache,
   readHalt,
   submitErrorVerdict,
   takeLock,
   tradeOff,
   watchRound,
+  writeBurnCache,
   writeHalt,
   type BurnState,
+  type CachedBurn,
+  type Heads,
   type FatalStop,
   type Lock,
   type Outcome,
@@ -414,6 +418,15 @@ interface ReleaseRun {
   guard?: () => void;
   /** The watcher runs it: it prints its own next steps. */
   watcher?: boolean;
+  /** Where the watcher saw the burn's log: findBurn looks there first, in that one block. */
+  hint?: BurnHint;
+}
+
+/** A burn's log as a round saw it: its block, its block's hash and its transaction. */
+interface BurnHint {
+  block: number;
+  blockHash: Hex | null;
+  txHash: Hex | null;
 }
 
 interface ReleaseOptions extends Common, ReleaseRun {}
@@ -806,7 +819,7 @@ interface ReleaseEntry {
   /** open: approved, not run yet. released: run and checked. failed: run with an error, or its checks failed. cancelled. */
   status: "open" | "released" | "failed" | "cancelled";
   trust: string;
-  burn: { chainId: string; minter: Hex; burnNonce: string; burnId: Hex; from: Hex; v3Recipient: Hex; amount: string; txHash: Hex; block: number };
+  burn: { chainId: string; minter: Hex; burnNonce: string; burnId: Hex; from: Hex; v3Recipient: Hex; amount: string; txHash: Hex; block: number; blockHash?: Hex | null };
   vault: Hex;
   payee: Hex;
   amountNative: string;
@@ -1004,9 +1017,32 @@ function burnOfLog(l: LogJson): BurnOnChain {
   return { ...e, txHash: (l.transactionHash ?? "0x").toLowerCase() as Hex, block: Number(BigInt(l.blockNumber ?? "0")), blockHash: l.blockHash ? (l.blockHash.toLowerCase() as Hex) : null };
 }
 
-/** BurnRequested(n), from the block the record names for it, or else from the minter's deploy block to `to`; null when there is none. */
-async function findBurn(b: Bridge, n: bigint, to: number): Promise<BurnOnChain | null> {
+/**
+ * BurnRequested(n): first in the block `hint` names (the watcher's, from its round), where the log
+ * counts only in the canonical block of that number (its block hash is eth_getBlockByNumber's), read
+ * with eth_getLogs over that one block or, when the RPC refuses that (pruned history), from its
+ * transaction's receipt; then from the block the record names for it; then from the minter's deploy
+ * block to `to`. Null when there is none.
+ */
+async function findBurn(b: Bridge, n: bigint, to: number, hint?: BurnHint): Promise<BurnOnChain | null> {
   const filter = { address: b.minter, topics: [BURN_REQUESTED_TOPIC, bytesToHex(uintWord(n))] };
+  if (hint && hint.block <= to) {
+    const ours = (logs: LogJson[]) =>
+      logs.filter((l) => l.address.toLowerCase() === b.minter && !(l as { removed?: boolean }).removed && l.topics[0]?.toLowerCase() === BURN_REQUESTED_TOPIC && l.topics[1]?.toLowerCase() === filter.topics[1]);
+    const canonical = await sepolia("block", () => rpc<{ hash: string } | null>("eth_getBlockByNumber", [qty(hint.block), false]));
+    let logs: LogJson[] | null = null;
+    const found = await sepoliaLogs(filter, hint.block, hint.block);
+    if (!("refused" in found)) logs = ours(found.logs);
+    else if (hint.txHash) {
+      const receipt = (await sepolia("receipt", () => receiptOf(hint.txHash!, false))) as { logs?: LogJson[] } | null;
+      if (receipt?.logs) logs = ours(receipt.logs);
+    }
+    if (logs && logs.length > 1) throw new Stop(`${logs.length} BurnRequested logs for burn ${n} in #${fmt(hint.block)}`);
+    const l = logs?.[0];
+    const hash = l?.blockHash?.toLowerCase();
+    if (l && hash && canonical && hash === canonical.hash.toLowerCase() && Number(BigInt(l.blockNumber ?? "-1")) === hint.block && (!hint.blockHash || hash === hint.blockHash)) return burnOfLog(l);
+    log(`     burn ${n}'s log is not in the canonical block #${fmt(hint.block)} where the round saw it${logs === null ? " (the RPC serves neither the logs nor the receipt there)" : ""}: searching for it`);
+  }
   const recorded = b.record.steps.find((s) => s.kind === "burn" && s.ok && s.burn?.burnNonce === n.toString() && s.block !== null && s.block <= to);
   for (const [from, until] of recorded ? [[recorded.block!, recorded.block!], [b.deployBlock, to]] : [[b.deployBlock, to]]) {
     const found = await sepoliaLogs(filter, from, until);
@@ -1766,6 +1802,8 @@ interface BurnToRelease {
   amount: bigint;
   txHash: Hex | null;
   block: number | null;
+  /** The log's block hash, when the RPC gave it. */
+  blockHash: Hex | null;
 }
 
 /** An open multisig operation of the committee, with its call when the record or the chain has it. */
@@ -2076,7 +2114,7 @@ async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease 
   let burn: BurnToRelease;
   if (o.rehearse) {
     if (n < state.burnCount) throw new Stop(`burn ${n} is on Sepolia: release it without --rehearse`);
-    burn = { burnNonce: n, burnId: id, from: null, v3Recipient: o.to!, amount: o.amount!, txHash: null, block: null };
+    burn = { burnNonce: n, burnId: id, from: null, v3Recipient: o.to!, amount: o.amount!, txHash: null, block: null, blockHash: null };
     log(`     rehearsal: burn ${n} is not on Sepolia; the V3 side runs as if it burned ${formatWtpot(burn.amount)} for ${checksumAddress(burn.v3Recipient)}. Nothing can be sent for it.`);
   } else {
     if (n >= state.burnCount) {
@@ -2089,7 +2127,7 @@ async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease 
       }
       throw new Stop(`there is no burn ${n} on Sepolia (burnCount ${count}); a dry run of one that is not there yet takes --rehearse --amount <wtPOT> --to <h160>`);
     }
-    const found = await findBurn(b, n, at.number);
+    const found = await findBurn(b, n, at.number, o.hint);
     if (!found) throw new Stop(`burnCount is ${state.burnCount} at #${fmt(at.number)}, but no BurnRequested log of burn ${n} is there from #${fmt(b.deployBlock)}`);
     const final = found.block <= F;
     check(
@@ -2311,6 +2349,7 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
         amount: burn.amount.toString(),
         txHash: burn.txHash!,
         block: burn.block!,
+        blockHash: burn.blockHash,
       },
       vault: bytesToHex(v.address),
       payee: bytesToHex(burn.v3Recipient),
@@ -2407,10 +2446,28 @@ class Fatal extends Error {
   override name = "Fatal";
 }
 
-/** A burn the watcher saw, with its log. */
+/** A burn the watcher saw, with its log (null when its log could not be read this round: it waits). */
 interface WatchedBurn extends SeenBurn {
-  onChain: BurnOnChain;
+  onChain: BurnOnChain | null;
 }
+
+/** The final burns' logs the watcher found, kept in <state-dir>/release-watch-<multisig>.burns.json (written with --send). */
+interface BurnCache {
+  path: string;
+  burns: Map<string, CachedBurn>;
+  write: boolean;
+}
+
+const cachedOf = (n: bigint, c: CachedBurn): BurnOnChain => ({
+  burnNonce: n,
+  from: hexToBytes(c.from),
+  v3Recipient: hexToBytes(c.payee),
+  amount: BigInt(c.amount),
+  burnId: hexToBytes(c.burnId),
+  txHash: c.txHash.toLowerCase() as Hex,
+  block: c.block,
+  blockHash: c.blockHash.toLowerCase() as Hex,
+});
 
 /**
  * BurnRequested(n), searched from `to` back to `from` in windows of at most 10,000 blocks, the
@@ -2431,10 +2488,13 @@ async function recentBurn(b: Bridge, n: bigint, from: number, to: number): Promi
 
 /**
  * Every burn from the last one handled (the record's releases, cursorOf), which is checked again,
- * to burnCount at the latest block: a burn the record has released, from the record; any other
- * from its BurnRequested log (recentBurn), between the last handled burn's block and the latest.
+ * to burnCount at the latest block: a burn the record has released, from the record; one the burn
+ * cache has, from the cache; any other from its BurnRequested log (recentBurn), between the last
+ * handled burn's block and the latest, and into the cache once its block is final. A burn whose log
+ * the RPC refuses or does not serve yet waits; the round goes on with the next.
  */
-async function burnsSince(d: Deployed, latest: number): Promise<WatchedBurn[]> {
+async function burnsSince(d: Deployed, heads: Heads, cache: BurnCache): Promise<WatchedBurn[]> {
+  const latest = heads.latest;
   const { b, record } = d;
   const releases = (record.releases ?? []).filter((r) => r.status === "released" && r.burn.minter === b.minter);
   const { nextNonce, fromBlock } = cursorOf(
@@ -2445,18 +2505,40 @@ async function burnsSince(d: Deployed, latest: number): Promise<WatchedBurn[]> {
   const count = uintAt(await sepoliaView(b.minter, callData(MINTER.burnCount), qty(latest)), 0);
   log(`     ${V3_RECORD} has ${nextNonce === 0n ? "no burn" : nextNonce === 1n ? "burn 0" : `burns 0 to ${nextNonce - 1n}`} released; burnCount ${count} at #${fmt(latest)}: the burns from nonce ${first}`);
   const out: WatchedBurn[] = [];
+  let added = 0;
   for (let n = first; n < count; n++) {
     const done = releases.find((r) => r.burn.burnNonce === n.toString());
-    let burn: BurnOnChain | null;
+    const cached = cache.burns.get(n.toString());
+    let burn: BurnOnChain;
     if (done) {
-      burn = { burnNonce: n, from: hexToBytes(done.burn.from), v3Recipient: hexToBytes(done.burn.v3Recipient), amount: BigInt(done.burn.amount), burnId: hexToBytes(done.burn.burnId), txHash: done.burn.txHash, block: done.burn.block, blockHash: null };
+      burn = { burnNonce: n, from: hexToBytes(done.burn.from), v3Recipient: hexToBytes(done.burn.v3Recipient), amount: BigInt(done.burn.amount), burnId: hexToBytes(done.burn.burnId), txHash: done.burn.txHash, block: done.burn.block, blockHash: done.burn.blockHash ?? null };
+    } else if (cached) {
+      burn = cachedOf(n, cached);
     } else {
       const found = await recentBurn(b, n, fromBlock, latest);
-      if (found !== null && "refused" in found) throw new Stop(`the Sepolia RPC refuses eth_getLogs (${found.refused}) before burn ${n}'s log is found; set SEPOLIA_RPC_URL to an RPC that keeps the minter's logs from #${fmt(fromBlock)}`);
+      if (found !== null && "refused" in found) {
+        out.push({ burnNonce: n, amount: 0n, block: 0, payee: "?", onChain: null, missing: `the Sepolia RPC refuses eth_getLogs (${found.refused}) before its log is found; an RPC that keeps the minter's logs from #${fmt(fromBlock)} finds it (SEPOLIA_RPC_URL)` });
+        continue;
+      }
+      if (found === null) {
+        out.push({ burnNonce: n, amount: 0n, block: 0, payee: "?", onChain: null, missing: `burnCount is ${count} at #${fmt(latest)}, but the RPC serves no BurnRequested log of it from #${fmt(fromBlock)} yet` });
+        continue;
+      }
       burn = found;
+      if (found.block <= heads.finalized && found.blockHash) {
+        cache.burns.set(n.toString(), { block: found.block, blockHash: found.blockHash, txHash: found.txHash, from: bytesToHex(found.from), payee: bytesToHex(found.v3Recipient), amount: found.amount.toString(), burnId: bytesToHex(found.burnId) });
+        added += 1;
+      }
     }
-    if (!burn) throw new Stop(`burnCount is ${count} at #${fmt(latest)}, but no BurnRequested log of burn ${n} is there from #${fmt(fromBlock)}`);
     out.push({ burnNonce: n, amount: burn.amount, amountText: formatWtpot(burn.amount), block: burn.block, payee: checksumAddress(burn.v3Recipient), onChain: burn });
+  }
+  if (added > 0 && cache.write) {
+    try {
+      writeBurnCache(cache.path, b.minter, cache.burns);
+      log(`     ${cache.path}: ${added} more final burn${added === 1 ? "" : "s"}, never searched for again`);
+    } catch (error) {
+      warn(`${cache.path} could not be written (${errorText(error)}): the next round searches for those burns again`);
+    }
   }
   return out;
 }
@@ -2464,10 +2546,12 @@ async function burnsSince(d: Deployed, latest: number): Promise<WatchedBurn[]> {
 /** The burn on V3 at the finalized head (released[burnId], the committee's open operation for it) and in the record. */
 async function burnStateOf(api: ApiPromise, d: Deployed, burn: WatchedBurn): Promise<BurnState> {
   const { v, record, keyring } = d;
+  if (!burn.onChain) throw new Error(`burn ${burn.burnNonce}: no log`);
+  const onChain = burn.onChain;
   const head = await finalizedHead(api);
-  const released = (await vaultWord(head, v.address, releasedSlot(burn.onChain.burnId))) !== 0n;
-  const ops = (await operations(api, head, v, record, api.tx.revive.call.callIndex)).filter((x) => x.release !== null && equalBytes(x.release.burnId, burn.onChain.burnId));
-  const id = bytesToHex(burn.onChain.burnId);
+  const released = (await vaultWord(head, v.address, releasedSlot(onChain.burnId))) !== 0n;
+  const ops = (await operations(api, head, v, record, api.tx.revive.call.callIndex)).filter((x) => x.release !== null && equalBytes(x.release.burnId, onChain.burnId));
+  const id = bytesToHex(onChain.burnId);
   const rounds = (record.releases ?? [])
     .filter((r) => r.burn.burnId === id)
     .map((r) => ({ status: r.status, approvals: r.approvals.map((a) => ({ member: a.member, action: a.action, status: a.status, onChain: a.block !== null })) }));
@@ -2478,7 +2562,7 @@ async function burnStateOf(api: ApiPromise, d: Deployed, burn: WatchedBurn): Pro
       ? {
           approvals: op.approvals.map((a) => memberOf(v, keyring, a) ?? 0),
           depositor: memberOf(v, keyring, op.depositor) ?? 0,
-          matches: ops.length === 1 && equalBytes(op.release!.to, burn.onChain.v3Recipient) && op.release!.amountNative === burn.amount,
+          matches: ops.length === 1 && equalBytes(op.release!.to, onChain.v3Recipient) && op.release!.amountNative === burn.amount,
         }
       : null,
     rounds,
@@ -2499,7 +2583,9 @@ async function approveFor(
 ): Promise<Outcome> {
   const { d, api, evm, o, keys, lock } = ctx;
   failures = 0;
-  const id = bytesToHex(burn.onChain.burnId);
+  if (!burn.onChain) throw new Error(`burn ${burn.burnNonce}: no log`);
+  const onChain = burn.onChain;
+  const id = bytesToHex(onChain.burnId);
   const approvalsOf = () => (d.record.releases ?? []).filter((r) => r.burn.burnId === id).flatMap((r) => r.approvals);
   const before = new Set(approvalsOf());
   const run: ReleaseRun = {
@@ -2516,13 +2602,14 @@ async function approveFor(
         }
       : undefined,
     watcher: true,
+    hint: { block: onChain.block, blockHash: onChain.blockHash, txHash: onChain.txHash },
   };
   log(`\n--- burn ${burn.burnNonce}: member ${step.member} ${step.kind === "open" ? "opens" : "runs"} its release${o.send ? "" : " (dry run)"}`);
   try {
     const read = await burnOnSepolia(d, run);
     if (read === PENDING) return { kind: "pending", why: "the burn is not as deep on Sepolia as the round saw it (a reorg, or an RPC behind)" };
     if (typeof read === "number") return { kind: "refused", why: "a check of the burn on Sepolia failed" };
-    if (!equalBytes(read.burnId, burn.onChain.burnId) || !equalBytes(read.v3Recipient, burn.onChain.v3Recipient) || read.amount !== burn.amount) {
+    if (!equalBytes(read.burnId, onChain.burnId) || !equalBytes(read.v3Recipient, onChain.v3Recipient) || read.amount !== burn.amount) {
       return { kind: "refused", why: "the burn on Sepolia is not the one the round saw (a reorg?)" };
     }
     const code = await releaseOnV3(d, api, evm, run, read);
@@ -2542,6 +2629,8 @@ async function approveFor(
 async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<number, Pair> | null }, lock: Lock | null): Promise<RoundResult> {
   const record = readV3Record();
   const d: Deployed = { b: readBridge(), record, keyring, v: vaultFacts(record, keyring) };
+  const cachePath = join(o.stateDir, `release-watch-${d.v.multisig}.burns.json`);
+  const cache: BurnCache = { path: cachePath, burns: readBurnCache(cachePath, d.b.minter), write: o.send };
   await checkSepolia();
   const evm = new EvmRpc(o.evm);
   const api = await connectV3(o.rpc, o.send);
@@ -2555,7 +2644,7 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
         throw new Fatal(`--member-keys: ${errorText(error)}`);
       }
     }
-    let latest = 0;
+    let heads: Heads = { latest: 0, finalized: 0 };
     const ports: Ports<WatchedBurn> = {
       settle: async () => {
         try {
@@ -2571,10 +2660,10 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
         const [l, f] = await Promise.all(
           ["latest", "finalized"].map((tag) => sepolia(`${tag} block`, () => rpc<{ number: string }>("eth_getBlockByNumber", [tag, false]))),
         );
-        latest = Number(BigInt(l.number));
-        return { latest, finalized: Number(BigInt(f.number)) };
+        heads = { latest: Number(BigInt(l.number)), finalized: Number(BigInt(f.number)) };
+        return heads;
       },
-      burns: () => burnsSince(d, latest),
+      burns: () => burnsSince(d, heads, cache),
       state: (burn) => burnStateOf(api, d, burn),
       approve: (burn, by, step) => approveFor({ d, api, evm, o, keys: keys.pairs, lock }, burn, by, step),
       log,

@@ -180,6 +180,8 @@ export interface SeenBurn {
   payee: string;
   /** For the log lines: the amount as the tool writes it. */
   amountText?: string;
+  /** Its log could not be read this round (the RPC refuses the range, or does not serve it yet): it waits, and the round goes on. */
+  missing?: string;
 }
 
 /** What a run of the release tool for one burn ended with. */
@@ -291,6 +293,11 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
   const burns = await p.burns();
   p.log(`${burns.length} burn${burns.length === 1 ? "" : "s"} from the last one handled`);
   for (const burn of burns) {
+    if (burn.missing !== undefined) {
+      p.log(`burn ${burn.burnNonce}: waits: ${burn.missing}`);
+      r.waiting += 1;
+      continue;
+    }
     const name = `burn ${burn.burnNonce} (${burn.amountText ?? `${burn.amount} base units`} for ${burn.payee}, #${burn.block})`;
     let state = await p.state(burn);
     if (state.released) {
@@ -352,6 +359,57 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
     }
   }
   return r;
+}
+
+// ---------------------------------------------------------------------------------------
+// The burn cache: the logs of final burns the watcher found, so that it never searches for one again
+
+/** A burn's BurnRequested log, as the cache keeps it (hex strings and decimal amounts). */
+export interface CachedBurn {
+  block: number;
+  blockHash: string;
+  txHash: string;
+  from: string;
+  payee: string;
+  amount: string;
+  burnId: string;
+}
+
+interface BurnCacheFile {
+  minter: string;
+  burns: Record<string, CachedBurn>;
+}
+
+const isHex = (x: unknown, bytes: number) => typeof x === "string" && new RegExp(`^0x[0-9a-fA-F]{${2 * bytes}}$`).test(x);
+
+/** The cache at `path` for `minter`, by burn nonce; empty when there is none, it does not parse, or it is another minter's. Entries that are not whole are left out. */
+export function readBurnCache(path: string, minter: string): Map<string, CachedBurn> {
+  try {
+    const f = JSON.parse(readFileSync(path, "utf8")) as BurnCacheFile;
+    if (typeof f.minter !== "string" || f.minter.toLowerCase() !== minter.toLowerCase() || typeof f.burns !== "object" || f.burns === null) return new Map();
+    return new Map(
+      Object.entries(f.burns).filter(
+        ([n, b]) =>
+          /^\d+$/.test(n) &&
+          Number.isSafeInteger(b?.block) &&
+          isHex(b.blockHash, 32) &&
+          isHex(b.txHash, 32) &&
+          isHex(b.from, 20) &&
+          isHex(b.payee, 20) &&
+          isHex(b.burnId, 32) &&
+          /^\d+$/.test(String(b.amount)),
+      ),
+    );
+  } catch {
+    return new Map();
+  }
+}
+
+/** Writes the cache (through a temporary file, then a rename). */
+export function writeBurnCache(path: string, minter: string, burns: Map<string, CachedBurn>): void {
+  const file: BurnCacheFile = { minter, burns: Object.fromEntries([...burns].sort(([a], [b]) => (BigInt(a) < BigInt(b) ? -1 : 1))) };
+  writeFileSync(`${path}.tmp`, `${JSON.stringify(file, null, 2)}\n`);
+  renameSync(`${path}.tmp`, path);
 }
 
 // ---------------------------------------------------------------------------------------
