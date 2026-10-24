@@ -3034,14 +3034,8 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
   const api = await connectV3(o.rpc, o.send);
   try {
     await checkV3(api, evm);
-    if (o.send && !keys.pairs) {
-      // The keys are read once the API is up: its sr25519 crypto is ready then.
-      try {
-        keys.pairs = new Map(o.memberKeys.map((k) => [k.member, loadMemberKey(k.path!, o.passwordFile!, d.v.members[k.member - 1], keyring)]));
-      } catch (error) {
-        throw new Fatal(`--member-keys: ${errorText(error)}`);
-      }
-    }
+    // watchCommand opened the keys before the first round.
+    if (o.send && !keys.pairs) throw new Fatal("the members' keys are not open");
     let heads: Heads = { latest: 0, finalized: 0 };
     const ports: Ports<WatchedBurn> = {
       // Without --send nothing is signed, and the dry run goes on as it started. With it, a fatal
@@ -3181,6 +3175,22 @@ async function watchCommand(o: WatchOptions): Promise<number> {
   }
   const keys: { pairs: Map<number, Pair> | null } = { pairs: null };
   try {
+    if (o.send) {
+      // The keys are opened before anything reaches a network. One that does not open (a wrong password,
+      // another member's keystore) ends the watcher before it signs anything: exit code 4, which a
+      // restarting wrapper must not restart, and no halt file, as nothing ran on chain for the members
+      // to look at. Fix the key file or the password file, then start it again.
+      const pairs = new Map<number, Pair>();
+      for (const k of o.memberKeys) {
+        try {
+          pairs.set(k.member, loadMemberKey(k.path!, o.passwordFile!, v.members[k.member - 1], keyring));
+        } catch (error) {
+          check(false, `--member-keys (member ${k.member}): ${errorText(error)}: the watcher does not start, and nothing was signed (no halt file is left)`);
+          return HALTED;
+        }
+      }
+      keys.pairs = pairs;
+    }
     let wait = o.watch;
     for (let round = 1; ; round++) {
       failures = 0;

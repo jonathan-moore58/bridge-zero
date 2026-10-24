@@ -6,11 +6,12 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
+import { Keyring } from "@polkadot/api";
 
 const RELAYER = fileURLToPath(new URL("..", import.meta.url));
 const ADDRESS = "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071";
@@ -292,5 +293,32 @@ describe("a fatal finding, written to the record", () => {
     assert.doesNotMatch(sent, /!o\.watcher/, "the watcher's own execution too");
     // A fast release whose check against Sepolia's final chain failed.
     assert.match(beforeSave(source, "async function reconcileFast("), /if \(fatal\) \{[^}]*leaveHalt\(d\.v\.multisig, fatal\)[^]*round\.finalizedCheck = \{/);
+  });
+});
+
+describe("a member key that does not open", () => {
+  it("ends the watcher with --send before any request, with exit code 4 and no halt file: nothing ran on chain", { timeout: 120_000 }, async () => {
+    const members = (JSON.parse(readFileSync(join(RELAYER, "..", "deployments", "v3-testnet.json"), "utf8")) as { vault: { committee: { members: string[] } } }).vault.committee.members;
+    mkdirSync(SCRATCH, { recursive: true });
+    // Keystores that name members 1 and 2, sealed with another password than the password file's.
+    const keyring = new Keyring({ type: "sr25519", ss58Format: 42 });
+    const files = [1, 2].map((k) => {
+      const path = join(SCRATCH, `sealed-member-${k}.json`);
+      writeFileSync(path, JSON.stringify({ ...keyring.addFromUri(`//bridge-zero-test-${k}`).toJson("another password"), address: members[k - 1] }));
+      return path;
+    });
+    writeFileSync(join(SCRATCH, "wrong-password.txt"), "not the password\n");
+    const home = join(SCRATCH, "home-keys");
+    mkdirSync(join(home, ".bridge-zero"), { recursive: true });
+    const haltFile = join(home, ".bridge-zero", `release-watch-${MULTISIG}.halt`);
+    assert.equal(existsSync(haltFile), false, `${haltFile} is not there before the run`);
+    const { code, out } = await run(
+      ["release", "--watch", "10", "--rounds", "1", "--send", "--confirmations", "3", "--member-keys", `1:${files[0]},2:${files[1]}`, "--password-file", join(SCRATCH, "wrong-password.txt"), ...OFFLINE],
+      { USERPROFILE: home, HOME: home },
+    );
+    assert.equal(code, 4, out);
+    assert.match(out, /--member-keys \(member 1\): the password file does not open --key-file: the watcher does not start, and nothing was signed \(no halt file is left\)/);
+    assert.equal(existsSync(haltFile), false, "no halt file: an approval by hand, and the watcher once the key opens, are not refused");
+    assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
   });
 });
