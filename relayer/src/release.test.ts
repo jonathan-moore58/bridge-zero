@@ -297,6 +297,15 @@ describe("a fatal finding, written to the record", () => {
   });
 });
 
+describe("the watcher's halted() port", () => {
+  it("is haltedOrRecorded: the halt file, then a fatal finding the record holds, whose halt file it leaves", () => {
+    const source = readFileSync(join(RELAYER, "src", "release.ts"), "utf8");
+    const once = source.slice(source.indexOf("async function watchOnce("), source.indexOf("function leaveHalt("));
+    assert.match(once, /\bhalted: \(\) => haltedOrRecorded\(o\.send, \(\) => haltedBy\(d\.v\.multisig\), findingsOf\(d\.record\), \(f\) => leaveHalt\(d\.v\.multisig, f\)\)/);
+    assert.match(source, /const findingsOf = \(record: VaultRecord\): RecordedFindings\[\] =>\s*\(record\.releases \?\? \[\]\)\.map\(\(r\) => \(\{ burn: r\.burn\.burnNonce, approvals: r\.approvals, finalizedCheck: r\.finalizedCheck \}\)\);/);
+  });
+});
+
 describe("the halt file's line, when a stop leaves it", () => {
   it("tells the members to acknowledge a finding the record holds before they remove it", () => {
     const source = readFileSync(join(RELAYER, "src", "release.ts"), "utf8");

@@ -427,6 +427,23 @@ export function recordedStop(rounds: RecordedFindings[]): FatalStop | null {
   return null;
 }
 
+/**
+ * The watcher's halted() port (release.ts watchOnce). Without `send` nothing is signed: null, and
+ * the dry run goes on as it started. With it, why the committee's halt file stops the watcher
+ * (`halt`, read again); with none, the first fatal finding the record holds and no member
+ * acknowledged (recordedStop), whether or not its halt file was written (a process that died
+ * first): the halt file is left for it now (`leave`), and the watcher stops on what it holds.
+ */
+export function haltedOrRecorded(send: boolean, halt: () => string | null, rounds: RecordedFindings[], leave: (f: FatalStop) => void): string | null {
+  if (!send) return null;
+  const left = halt();
+  if (left) return left;
+  const found = recordedStop(rounds);
+  if (!found) return null;
+  leave(found);
+  return halt() ?? found.why;
+}
+
 /** How a settling ended (settleOrHalt): its code, a fatal stop it found, or what it threw. */
 export type SettleEnd<T> = { kind: "settled"; code: T } | { kind: "fatal"; stop: FatalStop } | { kind: "threw"; error: unknown };
 

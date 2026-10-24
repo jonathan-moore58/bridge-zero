@@ -20,6 +20,7 @@ import {
   DEFAULT_FAST_CAP,
   fastReleaseChecked,
   FINALITY,
+  haltedOrRecorded,
   haltRefusal,
   LOCK_STALE,
   MAX_BACKOFF_SECONDS,
@@ -602,6 +603,49 @@ describe("a fatal finding the record holds", () => {
     assert.equal(recordedStop([{ burn: "5", approvals: [opened, { ...executed, status: "failed", acknowledged: "member 1, Oct 25: paid in full, checked by hand" }] }]), null);
     assert.equal(recordedStop([{ ...reorged, finalizedCheck: { ...reorged.finalizedCheck!, acknowledged: "member 2, Oct 25" } }]), null);
     assert.notEqual(recordedStop([{ ...reorged, finalizedCheck: { ...reorged.finalizedCheck!, acknowledged: "  " } }]), null, "a blank acknowledgement is none");
+  });
+
+  // The watcher's halted() port: the halt file, then the record (release.ts watchOnce).
+  const failed: RecordedFindings = { burn: "5", approvals: [opened, { ...executed, status: "failed" }] };
+  /** A halt file stand-in: `text` while it is there; `leave` writes one. */
+  function haltFile(text: string | null) {
+    const left: FatalStop[] = [];
+    let file = text;
+    return {
+      left,
+      halt: () => file,
+      leave: (f: FatalStop) => {
+        left.push(f);
+        file = `a fatal stop at now: ${f.why}`;
+      },
+    };
+  }
+
+  it("without --send, stops nothing and leaves no halt file, whatever the record holds", () => {
+    const h = haltFile(null);
+    assert.equal(haltedOrRecorded(false, h.halt, [released, failed], h.leave), null);
+    assert.deepEqual(h.left, []);
+  });
+
+  it("with --send, stops on a halt file another process left, and leaves none of its own", () => {
+    const h = haltFile("a fatal stop at 2026-10-24T10:00:00.000Z: the lock is not this watcher's any more; look at it, then remove x.halt");
+    assert.equal(haltedOrRecorded(true, h.halt, [released, failed], h.leave), "a fatal stop at 2026-10-24T10:00:00.000Z: the lock is not this watcher's any more; look at it, then remove x.halt");
+    assert.deepEqual(h.left, []);
+  });
+
+  it("with --send and no halt file, stops on an approval the record holds as failed on chain and unacknowledged, and leaves the halt file for it once", () => {
+    const h = haltFile(null);
+    const why = haltedOrRecorded(true, h.halt, [released, failed], h.leave);
+    assert.equal(h.left.length, 1);
+    assert.deepEqual({ burn: h.left[0].burn, extrinsicHash: h.left[0].extrinsicHash }, { burn: "5", extrinsicHash: "0xexec" });
+    assert.match(why!, /^a fatal stop at now: the record holds member 2's execute 0xexec \(burn 5\) as run on chain in #101 and failing its checks/);
+  });
+
+  it("with --send and no halt file, goes on once a member acknowledged it", () => {
+    const h = haltFile(null);
+    const seen: RecordedFindings = { burn: "5", approvals: [opened, { ...executed, status: "failed", acknowledged: "member 1, Oct 25: paid in full, checked by hand" }] };
+    assert.equal(haltedOrRecorded(true, h.halt, [released, seen], h.leave), null);
+    assert.deepEqual(h.left, []);
   });
 });
 

@@ -321,6 +321,7 @@ import {
   FAST_LIMIT,
   fastReleaseChecked,
   FINALITY,
+  haltedOrRecorded,
   haltRefusal,
   MAX_WATCH_SECONDS,
   MIN_WATCH_CONFIRMATIONS,
@@ -333,7 +334,6 @@ import {
   readHalt,
   receiptInLogBlock,
   reconcileVerdict,
-  recordedStop,
   rpcTrouble,
   settledOnChainFailure,
   settleOrHalt,
@@ -353,6 +353,7 @@ import {
   type Lock,
   type Outcome,
   type Ports,
+  type RecordedFindings,
   type RoundResult,
   type Rule,
   type SeenBurn,
@@ -2748,6 +2749,10 @@ class Halted extends Error {
   override name = "Halted";
 }
 
+/** The record's releases as recordedStop reads them: each burn, its approvals and its check against Sepolia's final chain. */
+const findingsOf = (record: VaultRecord): RecordedFindings[] =>
+  (record.releases ?? []).map((r) => ({ burn: r.burn.burnNonce, approvals: r.approvals, finalizedCheck: r.finalizedCheck }));
+
 /** Why the committee's halt file stops a run, or null when there is none. */
 function haltedBy(multisig: string): string | null {
   const path = haltPathOf(multisig);
@@ -3050,18 +3055,9 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
     if (o.send && !keys.pairs) throw new Fatal("the members' keys are not open");
     let heads: Heads = { latest: 0, finalized: 0 };
     const ports: Ports<WatchedBurn> = {
-      // Without --send nothing is signed, and the dry run goes on as it started. With it, a fatal
-      // finding the record holds and no member acknowledged stops the watcher too, whether or not its
-      // halt file was written (a process that died first): the halt file is left for it now.
-      halted: () => {
-        if (!o.send) return null;
-        const left = haltedBy(d.v.multisig);
-        if (left) return left;
-        const found = recordedStop((d.record.releases ?? []).map((r) => ({ burn: r.burn.burnNonce, approvals: r.approvals, finalizedCheck: r.finalizedCheck })));
-        if (!found) return null;
-        leaveHalt(d.v.multisig, found);
-        return haltedBy(d.v.multisig) ?? found.why;
-      },
+      // With --send, the halt file, or else a fatal finding the record holds and no member
+      // acknowledged, whose halt file is left for it now (haltedOrRecorded).
+      halted: () => haltedOrRecorded(o.send, () => haltedBy(d.v.multisig), findingsOf(d.record), (f) => leaveHalt(d.v.multisig, f)),
       settle: async () => {
         const before = submittedOf(d.record);
         // An approval found on chain and failing its checks is a fatal stop, as one sent in this round
