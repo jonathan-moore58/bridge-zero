@@ -29,6 +29,7 @@ import {
   receiptInLogBlock,
   reconcileVerdict,
   rpcTrouble,
+  settledOnChainFailure,
   submitErrorVerdict,
   takeLock,
   tradeOff,
@@ -43,6 +44,7 @@ import {
   type RecordedRound,
   type Rule,
   type SeenBurn,
+  type Settled,
 } from "./watch.js";
 
 const TPOT = 10n ** 14n;
@@ -233,7 +235,7 @@ class FakeChain {
   /** An approval sent and not final yet: approve() records it as submitted and returns pending. */
   pendingNext = false;
   /** What settle() says instead of settling, once each: still on its way, or not to be found. */
-  readonly settleOutcomes: ({ kind: "pending"; why: string } | { kind: "fatal"; why: string })[] = [];
+  readonly settleOutcomes: Exclude<Settled, { kind: "ok" }>[] = [];
   settled = 0;
   /** The releases made fast: what fastReleases() returns. */
   readonly fast: { amount: bigint; block: number }[] = [];
@@ -348,10 +350,21 @@ describe("a round of the watcher", () => {
 
   it("stops when an approval an earlier run submitted cannot be found though its nonce is used", async () => {
     const chain = new FakeChain(HEADS, [burn(0n, 900)]);
-    chain.settleOutcomes.push({ kind: "fatal", why: "member 1's nonce 7 is used, but 0xabc is not in the blocks searched" });
+    chain.settleOutcomes.push({ kind: "fatal", why: "member 1's nonce 7 is used, but 0xabc is not in the blocks searched", burn: null, extrinsicHash: null });
     const r = await watchRound(chain.ports(), FINALITY, SEND);
     assert.match(r.fatal?.why ?? "", /nonce 7 is used/);
     assert.deepEqual(chain.calls, []);
+  });
+
+  it("stops, as for one sent in the round, when an approval an earlier run submitted is found on chain and fails its checks", async () => {
+    // Member 2's execution of burn 0 timed out and stayed submitted; this round finds it in a final block, and its checks fail.
+    const chain = new FakeChain(HEADS, [burn(0n, 900), burn(1n, 905), burn(2n, 910)]);
+    chain.states.set(0n, { released: false, op: { approvals: [1], depositor: 1, matches: true }, rounds: [round("open", approval(1, "open", "final"), approval(2, "execute", "submitted"))] });
+    const why = "member 2's execute 0xfeed (burn 0) ran on chain in #4,100 and failed its checks";
+    chain.settleOutcomes.push({ kind: "fatal", why, burn: "0", extrinsicHash: "0xfeed" });
+    const r = await watchRound(chain.ports(), FINALITY, SEND);
+    assert.deepEqual(r.fatal, { why, burn: "0", extrinsicHash: "0xfeed" });
+    assert.deepEqual(chain.calls, [], "no burn is approved after it");
   });
 
   it("refuses a burn whose payee the checks refuse, signs nothing for it, and goes on with the next burn", async () => {
@@ -408,6 +421,34 @@ describe("a round of the watcher", () => {
     assert.equal(r.planned, 1);
     assert.deepEqual(chain.calls, ["0:open:1:finality"]);
     assert.ok(chain.lines.some((l) => /then member 2 runs it/.test(l)));
+  });
+});
+
+describe("settling what an earlier run submitted", () => {
+  const before = [
+    { key: "0xa1", burn: "0", extrinsicHash: "0xa1" },
+    { key: "0xa2", burn: "1", extrinsicHash: "0xa2" },
+    { key: "0xa3", burn: "2", extrinsicHash: "0xa3" },
+  ];
+
+  it("finds an approval that ran on chain and failed its checks", () => {
+    const after = new Map([
+      ["0xa1", { status: "final", onChain: true }],
+      ["0xa2", { status: "failed", onChain: true }],
+      ["0xa3", { status: "failed", onChain: true }],
+    ]);
+    assert.deepEqual(settledOnChainFailure(before, after), before[1]);
+  });
+
+  it("does not count one that never reached the chain, one still submitted, or one that passed", () => {
+    const after = new Map([
+      ["0xa1", { status: "failed", onChain: false }],
+      ["0xa2", { status: "submitted", onChain: true }],
+      ["0xa3", { status: "dropped", onChain: false }],
+    ]);
+    assert.equal(settledOnChainFailure(before, after), null);
+    assert.equal(settledOnChainFailure(before, new Map([["0xa1", { status: "final", onChain: true }]])), null);
+    assert.equal(settledOnChainFailure([], after), null);
   });
 });
 

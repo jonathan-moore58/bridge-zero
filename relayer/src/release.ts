@@ -279,6 +279,7 @@ import {
   receiptInLogBlock,
   reconcileVerdict,
   rpcTrouble,
+  settledOnChainFailure,
   submitErrorVerdict,
   takeLock,
   tradeOff,
@@ -2102,6 +2103,29 @@ async function settleSubmitted(api: ApiPromise, evm: EvmRpc, keyring: Keyring, v
   return OK;
 }
 
+/** The approvals the record holds as submitted, with their burns: what a settling may find on chain. */
+function submittedOf(record: VaultRecord): { key: string; burn: string; extrinsicHash: string; approval: ApprovalEntry }[] {
+  return (record.releases ?? []).flatMap((r) =>
+    r.approvals.filter((a) => a.status === "submitted").map((a) => ({ key: a.extrinsicHash, burn: r.burn.burnNonce, extrinsicHash: a.extrinsicHash, approval: a })),
+  );
+}
+
+/**
+ * Of the approvals `before` held as submitted, the first that the settling found on chain and
+ * failing its checks (watch.ts settledOnChainFailure), as a fatal stop: the same as an approval
+ * sent now that fails them. Null when there is none.
+ */
+function settledFailure(before: ReturnType<typeof submittedOf>): FatalStop | null {
+  const failed = settledOnChainFailure(before, new Map(before.map((s) => [s.key, { status: s.approval.status, onChain: s.approval.block !== null }])));
+  if (!failed) return null;
+  const a = failed.approval;
+  return {
+    why: `member ${a.member}'s ${a.action} ${a.extrinsicHash} (burn ${failed.burn}) ran on chain in #${fmt(a.block!.number)} and failed its checks`,
+    burn: failed.burn,
+    extrinsicHash: a.extrinsicHash,
+  };
+}
+
 /** The deployments a release reads: the bridge on Sepolia, the vault and its committee on V3. */
 interface Deployed {
   b: Bridge;
@@ -2258,8 +2282,18 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
   const n = o.burnNonce;
   {
     await checkV3(api, evm);
-    // What an earlier --send run left submitted is settled first, dry run or not.
-    if ((await settleSubmitted(api, evm, keyring, v, record)) === PENDING) return PENDING;
+    // What an earlier --send run left submitted is settled first, dry run or not; the watcher's round
+    // has just settled it (watchOnce, ports.settle), and stops there on an approval that fails.
+    if (!o.watcher) {
+      const before = submittedOf(record);
+      const settled = await settleSubmitted(api, evm, keyring, v, record);
+      const failed = settledFailure(before);
+      if (failed) {
+        check(false, `${failed.why}: the members look at it before anything more is signed`);
+        return FAILED;
+      }
+      if (settled === PENDING) return PENDING;
+    }
     const head = await finalizedHead(api);
     log(`V3, finalized block ${fmt(head.number)} (${head.hash}):`);
     await checkVault(api, evm, head, v);
@@ -2793,14 +2827,29 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
     let heads: Heads = { latest: 0, finalized: 0 };
     const ports: Ports<WatchedBurn> = {
       settle: async () => {
+        const before = submittedOf(d.record);
+        let code: number | null = null;
+        let thrown: unknown = null;
         try {
-          return (await settleSubmitted(api, evm, keyring, d.v, d.record)) === PENDING ? { kind: "pending", why: "the node's pool holds it, or a block not final yet used its nonce" } : { kind: "ok" };
+          code = await settleSubmitted(api, evm, keyring, d.v, d.record);
         } catch (error) {
+          thrown = error;
+        }
+        // An approval found on chain and failing its checks is a fatal stop, as one sent in this round
+        // is; first, even when the settling then stopped on another.
+        const failed = settledFailure(before);
+        if (failed) return { kind: "fatal", ...failed };
+        if (thrown !== null) {
           // A Stop here is an approval whose sender's nonce is used while it is in none of the blocks
           // searched: nobody knows what ran, and the watcher signs nothing more.
-          if (error instanceof Stop && !(error instanceof RpcError)) return { kind: "fatal", why: `settling the approvals an earlier run submitted: ${errorText(error)}` };
-          throw error;
+          if (thrown instanceof Stop && !(thrown instanceof RpcError)) return { kind: "fatal", why: `settling the approvals an earlier run submitted: ${errorText(thrown)}`, burn: null, extrinsicHash: null };
+          throw thrown;
         }
+        if (code === PENDING) return { kind: "pending", why: "the node's pool holds it, or a block not final yet used its nonce" };
+        // One final whose checks could not run stays submitted: nothing more is signed until they pass or fail.
+        const unchecked = before.find((s) => s.approval.status === "submitted");
+        if (unchecked) return { kind: "pending", why: `${unchecked.extrinsicHash} (burn ${unchecked.burn}) is final, but its checks could not run yet` };
+        return { kind: "ok" };
       },
       heads: async () => {
         const [l, f] = await Promise.all(

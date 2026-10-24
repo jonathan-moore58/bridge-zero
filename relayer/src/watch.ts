@@ -260,16 +260,39 @@ export type Outcome =
 export type Settled =
   /** Nothing is on its way any more: each is final (and checked), failed or dropped. */
   | { kind: "ok" }
-  /** One is still on its way: nothing more is signed until it is final. */
+  /** One is still on its way, or final and not checked yet: nothing more is signed until it is settled. */
   | { kind: "pending"; why: string }
-  /** One cannot be found though its sender's nonce is used: the watcher stops. */
-  | { kind: "fatal"; why: string };
+  /**
+   * One ran on chain and failed its checks, as a sent approval can (the same fatal stop), or one
+   * cannot be found though its sender's nonce is used: the watcher stops.
+   */
+  | { kind: "fatal"; why: string; burn: string | null; extrinsicHash: string | null };
+
+/** An approval the record held as submitted before a settling: its key in `after`, its burn nonce and its extrinsic. */
+export interface Submitted {
+  key: string;
+  burn: string;
+  extrinsicHash: string;
+}
+
+/**
+ * The first of the approvals the record held as submitted (`before`) that the settling found on
+ * chain and failing its checks (`after`, by key: its status now, and whether it is in a block):
+ * the same fatal stop as an approval sent in this round that fails them. Null when there is none.
+ */
+export function settledOnChainFailure<S extends Submitted>(before: S[], after: Map<string, { status: string; onChain: boolean }>): S | null {
+  return before.find((s) => {
+    const now = after.get(s.key);
+    return now !== undefined && now.status === "failed" && now.onChain;
+  }) ?? null;
+}
 
 /** What a round reads and does, through the tool: release.ts fills them with the chains, the tests with stand-ins. */
 export interface Ports<B extends SeenBurn = SeenBurn> {
   /**
    * Settles every approval the record holds as submitted (an earlier run crashed, timed out, or lost
-   * the node while it was on its way): found final and checked, or dropped. Runs first in each round.
+   * the node while it was on its way): found final and checked, or dropped. Runs first in each round;
+   * fatal when one ran on chain and failed its checks (settledOnChainFailure).
    */
   settle(): Promise<Settled>;
   heads(): Promise<Heads>;
@@ -347,7 +370,7 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
   const r: RoundResult = { released: 0, waiting: 0, refused: 0, held: 0, planned: 0, pending: false, fatal: null };
   const settled = await p.settle();
   if (settled.kind === "fatal") {
-    r.fatal = { why: settled.why, burn: null, extrinsicHash: null };
+    r.fatal = { why: settled.why, burn: settled.burn, extrinsicHash: settled.extrinsicHash };
     return r;
   }
   if (settled.kind === "pending") {
