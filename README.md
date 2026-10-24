@@ -450,9 +450,10 @@ From the git history, in UTC (the time zone Etherscan shows). Rows are the [evid
   clients brought to the live heads: V3 sets 33 to 46 and head #165,089 (14 transactions), old
   mainnet sets 3907 to 3913 and head #2,739,249 (7 transactions, 7 of 10 signatures each). These
   runs are in `deployments/relay-sepolia-0xd983….jsonl`, outside the numbered rows.
-- **Oct 24.** The relayer in watch mode since Oct 23, 22:15, one key per chain: by 07:57 it had
-  imported V3 sets 46 to 48 and 4 V3 heads, and old mainnet set 3913 to 3914 and 4 heads (11
-  transactions). The page reads every sender's history in `deployments/`.
+- **Oct 24.** The relayer in watch mode, one key per chain: on V3 since Oct 23, 22:15, and on the
+  old mainnet since 23:36, once its key was funded. By 07:57 it had imported V3 sets 46 to 48 and
+  4 V3 heads, and old mainnet set 3913 to 3914 and 4 heads (11 transactions). The page reads every
+  sender's history in `deployments/`.
 
 ## Evidence
 
