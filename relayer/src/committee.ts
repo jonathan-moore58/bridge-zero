@@ -10,7 +10,7 @@ import { bytesToHex, concatBytes, equalBytes } from "./bytes.js";
 import { callData, MINTER, WTPOT_DECIMALS } from "./bridge.js";
 import { blake2_256 } from "./hash.js";
 import { encodeCompact, Reader } from "./scale.js";
-import { addressWord, decodeReleased, releaseCalldata, RELEASED_TOPIC, selector, SIGNATURES, uintWord, wordToAddress, type LogJson } from "./vault.js";
+import { addressWord, decodeReleased, formatEvmTpot, formatTpot, releaseCalldata, RELEASED_TOPIC, selector, SIGNATURES, uintWord, wordToAddress, type LogJson } from "./vault.js";
 
 // ---------------------------------------------------------------------------------------
 // Amounts
@@ -311,6 +311,43 @@ export function traceOf(json: unknown): { trace: CallTrace | null; problem: stri
   const r = json as { ok?: { call?: CallTrace }; err?: unknown } | null;
   if (r?.ok?.call) return { trace: r.ok.call, problem: null };
   return { trace: null, problem: `reviveApi.traceCall returned ${JSON.stringify(r?.err ?? json).slice(0, 300)}` };
+}
+
+// ---------------------------------------------------------------------------------------
+// The checks of a release's execution on V3
+
+/** What the chain says about the extrinsic that ran a release, and about its block. */
+export interface ExecutionFacts {
+  /** Its block's number. */
+  block: number;
+  amountNative: bigint;
+  /** The vault's outstanding at the block's parent and at the block. */
+  outstanding: { before: bigint; after: bigint };
+  /** The payee's account (System.Account) at the block's parent: whether it existed; then how much its free balance went up over the block. */
+  payeeExisted: boolean;
+  credited: bigint;
+  existentialDeposit: bigint;
+  /** How much the payee's balance went up over the block through the EVM RPC (null: not served any more), and the payout in EVM units (amount x the ratio). */
+  received: bigint | null;
+  value: bigint;
+  ratio: bigint;
+}
+
+/**
+ * The checks of a release's execution after its events: outstanding down by the amount, the payee's
+ * free balance up by it (and by the existential deposit where the release creates its account), and
+ * its balance through the EVM RPC up by the payout, while that RPC serves the block's state.
+ */
+export function executionChecks(f: ExecutionFacts): { checks: [boolean, string][]; warnings: string[] } {
+  const checks: [boolean, string][] = [];
+  checks.push([f.outstanding.before - f.outstanding.after === f.amountNative, `outstanding went from ${formatTpot(f.outstanding.before)} to ${formatTpot(f.outstanding.after)}`]);
+  const expected = f.amountNative + (f.payeeExisted ? 0n : f.existentialDeposit);
+  checks.push([
+    f.credited === expected,
+    `System.Account: the payee's free balance went up by ${formatTpot(f.credited)}, the amount${f.payeeExisted ? "" : ` plus the existential deposit ${formatTpot(f.existentialDeposit)} of the account the release created`}`,
+  ]);
+  if (f.received !== null) checks.push([f.received === f.value, `the payee's balance through the EVM RPC went up by ${f.received.toLocaleString("en-US")} wei (${formatEvmTpot(f.received, f.ratio)}), amount x ${f.ratio}`]);
+  return { checks, warnings: [] };
 }
 
 // ---------------------------------------------------------------------------------------

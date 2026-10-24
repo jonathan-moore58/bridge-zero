@@ -3,7 +3,7 @@
 // Sepolia, the release's calldata, its revive.call as polkadot-js encoded it from the V3 testnet's
 // metadata on Oct 20 (and its call hash), the other signatories and the deposit pallet-multisig
 // takes, the limits a release is approved with, the payee rule, and the checks of the release's
-// call trace on a trace reviveApi.traceCall returned on V3.
+// call trace on a trace reviveApi.traceCall returned on V3, and the checks of a release's execution.
 //
 //   npm test
 
@@ -19,6 +19,7 @@ import {
   encodeReviveCall,
   encodeWeight,
   evmValue,
+  executionChecks,
   isDelegation,
   limitsProblem,
   multisigDeposit,
@@ -31,6 +32,7 @@ import {
   releaseTraceChecks,
   traceOf,
   type CallTrace,
+  type ExecutionFacts,
   type PayeeFacts,
   type ReviveCall,
 } from "./committee.js";
@@ -307,5 +309,36 @@ describe("the release's call trace", () => {
     assert.equal(failing({ ...trace, calls: [{ ...trace.calls![0], value: "0x1" }] }), 1, "another payout");
     assert.equal(failing(trace, { ...expect, release: { ...expect.release, amountNative: 1n } }), 2, "another amount: the log and the payout");
     assert.equal(failing(trace, { ...expect, ratio: 1n }), 1, "another ratio");
+  });
+});
+
+describe("the checks of a release's execution", () => {
+  /** Burn 0's execution in V3 block #117,701: 0.5 tPOT to a payee whose account existed. */
+  const ED = 10n ** 13n;
+  const facts: ExecutionFacts = {
+    block: 117_701,
+    amountNative: 50_000_000_000_000n,
+    outstanding: { before: 3n * TPOT, after: 3n * TPOT - 50_000_000_000_000n },
+    payeeExisted: true,
+    credited: 50_000_000_000_000n,
+    existentialDeposit: ED,
+    received: 50_000_000_000_000n * 10_000n,
+    value: 50_000_000_000_000n * 10_000n,
+    ratio: 10_000n,
+  };
+  const failing = (f: ExecutionFacts) => executionChecks(f).checks.filter(([ok]) => !ok).map(([, what]) => what);
+
+  it("pass on an execution alone in its block: outstanding down by the amount, the payee up by it", () => {
+    const { checks, warnings } = executionChecks(facts);
+    assert.equal(checks.length, 3);
+    for (const [ok, what] of checks) assert.ok(ok, what);
+    assert.deepEqual(warnings, []);
+    // A payee whose account the release creates gets the existential deposit too; the EVM RPC may not serve the block any more.
+    assert.deepEqual(failing({ ...facts, payeeExisted: false, credited: facts.credited + ED, received: null }), []);
+  });
+
+  it("fail on a payout that is not the amount", () => {
+    assert.equal(failing({ ...facts, outstanding: { ...facts.outstanding, after: facts.outstanding.after - 1n } }).length, 1, "outstanding down by more");
+    assert.equal(failing({ ...facts, credited: facts.credited - 1n, received: facts.received! - 10_000n }).length, 2, "the payee paid less");
   });
 });

@@ -231,6 +231,7 @@ import {
   decodeReviveCall,
   encodeReviveCall,
   evmValue,
+  executionChecks,
   isDelegation,
   limitsProblem,
   multisigDeposit,
@@ -2085,7 +2086,6 @@ async function checkApproval(
   const before = await vaultWord(parentAt, v.address, SLOTS.outstanding);
   const after = await vaultWord(atBlock, v.address, SLOTS.outstanding);
   ok = check(flag === 1n, `released[${shortHex(ctx.burn.burnId)}] is true at #${fmt(final.number)}`) && ok;
-  ok = check(before - after === ctx.burn.amount, `outstanding went from ${formatTpot(before)} to ${formatTpot(after)}`) && ok;
   // The payout, from the payee's account at the block and its parent: the node keeps that state, while V3's EVM RPC
   // answers "State already discarded" once the block is about 256 blocks old. The free balance goes up by the amount,
   // and by the existential deposit too where the release creates the account.
@@ -2094,7 +2094,6 @@ async function checkApproval(
   const was = await accountState(parentAt.apiAt, account);
   const credited = (await accountState(apiAt, account)).free - was.free;
   const ed = api.consts.balances.existentialDeposit.toBigInt();
-  ok = check(credited === ctx.burn.amount + (was.exists ? 0n : ed), `System.Account: the payee's free balance went up by ${formatTpot(credited)}, the amount${was.exists ? "" : ` plus the existential deposit ${formatTpot(ed)} of the account the release created`}`) && ok;
   // The same through the EVM RPC, while it still serves that state.
   const value = evmValue(ctx.burn.amount, v.ratio);
   let received: bigint | null = null;
@@ -2102,9 +2101,11 @@ async function checkApproval(
     received = (await evm.balance(ctx.burn.payee, final.number)) - (await evm.balance(ctx.burn.payee, final.number - 1));
   } catch (error) {
     if (!(error instanceof EvmRpcError)) throw error;
-    warn(`the EVM RPC does not serve the state of #${fmt(final.number)} any more (${errorText(error)}): the System.Account check above stands for it`);
+    warn(`the EVM RPC does not serve the state of #${fmt(final.number)} any more (${errorText(error)}): the System.Account check below stands for it`);
   }
-  if (received !== null) ok = check(received === value, `the payee's balance through the EVM RPC went up by ${fmt(received)} wei (${formatEvmTpot(received, v.ratio)}), amount x ${v.ratio}`) && ok;
+  const execution = executionChecks({ block: final.number, amountNative: ctx.burn.amount, outstanding: { before, after }, payeeExisted: was.exists, credited, existentialDeposit: ed, received, value, ratio: v.ratio });
+  for (const [passed, what] of execution.checks) ok = check(passed, what) && ok;
+  for (const what of execution.warnings) warn(what);
   const logs = await evm.logs({ address: bytesToHex(v.address), topics: [RELEASED_TOPIC, bytesToHex(ctx.burn.burnId)] }, final.number, final.number);
   const served = logs !== null && logs.length === 1 && equalBytes(decodeReleased(logs[0]).to, ctx.burn.payee) && decodeReleased(logs[0]).amountNative === ctx.burn.amount;
   if (served) check(true, "the Released log through eth_getLogs");
