@@ -237,6 +237,12 @@ describe("after a fatal stop", () => {
     assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
   });
 
+  it("the watcher's first lines say the fast budget counts the fast releases not checked against the final chain yet, with --send", { timeout: 120_000 }, async () => {
+    const { code, out } = await run(["release", "--watch", "10", "--rounds", "1", "--send", "--confirmations", "3", ...keyFiles(), ...OFFLINE], homeWithHalt());
+    assert.equal(code, 4, out);
+    assert.match(out, /and so does one that would take the burns released fast and not final yet \(with --send: or not checked against Sepolia's final chain yet\) above --fast-budget 1 tPOT in all/);
+  });
+
   it("nothing is signed by hand with --send while the halt file is there, with exit code 4 and before any request", { timeout: 120_000 }, async () => {
     const keys = keyFiles();
     const { code, out } = await run([...RELEASE, "--approve", "--member", "2", "--send", "--key-file", keys[1].split(",")[1].slice(2), "--password-file", keys[3], ...OFFLINE], homeWithHalt());

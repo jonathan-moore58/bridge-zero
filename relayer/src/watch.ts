@@ -30,7 +30,8 @@ export const MIN_WATCH_CONFIRMATIONS = 3;
  * How a burn is read before its release: at Sepolia's finalized block (confirmations null, the
  * default), or, in fast mode, at the block `confirmations` below the latest, for a burn of at most
  * `fastCap`; a larger burn waits for finality. The watcher also keeps the burns it released fast
- * whose blocks are not final yet to `fastBudget` in all: what a reorg could undo at most.
+ * whose blocks are not final yet (with --send, and those not checked against Sepolia's final chain
+ * yet) to `fastBudget` in all: what a reorg could undo at most.
  */
 export interface Rule {
   confirmations: number | null;
@@ -75,14 +76,18 @@ export type Qualification = { ok: true; by: "finality" | "fast"; why: string } |
  * Whether a burn in block `block` of `amount` may be released now: when its block is final, or in
  * fast mode when it has at least `confirmations` blocks on top of it (its block is at most the
  * latest minus confirmations), its amount is at most the cap, and with the burns released fast
- * whose blocks are not final yet (`exposed`, in all) it stays within the budget.
+ * whose blocks are not final yet, or (with --send) not checked against Sepolia's final chain yet
+ * (`exposed`, in all), it stays within the budget.
  */
 export function qualification(burn: { block: number; amount: bigint }, heads: Heads, rule: Rule, exposed = 0n): Qualification {
   if (burn.block <= heads.finalized) return { ok: true, by: "finality", why: `its block #${burn.block} is final (finalized #${heads.finalized})` };
   if (rule.confirmations === null) return { ok: false, why: `its block #${burn.block} is not final yet (finalized #${heads.finalized}): the committee releases a burn once it is final` };
   if (burn.amount > rule.fastCap) return { ok: false, why: `its amount is above the fast cap (${burn.amount} > ${rule.fastCap} base units): it waits for finality (its block #${burn.block}, finalized #${heads.finalized})` };
   if (exposed + burn.amount > rule.fastBudget) {
-    return { ok: false, why: `the burns released fast whose blocks are not final yet hold ${exposed} base units; with its ${burn.amount} that is above the fast budget of ${rule.fastBudget}: it waits for finality (its block #${burn.block}, finalized #${heads.finalized})` };
+    return {
+      ok: false,
+      why: `the burns released fast and not final, or not checked against Sepolia's final chain, yet hold ${exposed} base units; with its ${burn.amount} that is above the fast budget of ${rule.fastBudget}: it waits for finality (its block #${burn.block}, finalized #${heads.finalized})`,
+    };
   }
   const depth = heads.latest - burn.block;
   if (depth >= rule.confirmations) return { ok: true, by: "fast", why: `${depth} blocks on top of its block #${burn.block}, at least ${rule.confirmations} (fast mode, up to the cap)` };

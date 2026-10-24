@@ -2218,7 +2218,7 @@ const ruleText = (rule: Rule, watch = false) =>
   rule.confirmations === null
     ? "the burn is read at Sepolia's finalized block"
     : `${tradeOff(rule.confirmations)}. A burn of at most --fast-cap ${formatTpot(rule.fastCap)} is read ${rule.confirmations} block${rule.confirmations === 1 ? "" : "s"} below Sepolia's latest; a larger one waits for finality` +
-      (watch ? `, and so does one that would take the burns released fast whose blocks are not final yet above --fast-budget ${formatTpot(rule.fastBudget)} in all` : "");
+      (watch ? `, and so does one that would take the burns released fast and not final yet (with --send: or not checked against Sepolia's final chain yet) above --fast-budget ${formatTpot(rule.fastBudget)} in all` : "");
 
 async function releaseCommand(o: ReleaseOptions): Promise<number> {
   const what = o.action === "approve" ? `member ${o.member}'s approval of` : o.action === "cancel" ? `member ${o.member}'s cancellation of` : "the release of";

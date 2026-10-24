@@ -180,6 +180,11 @@ describe("the fast budget", () => {
     assert.deepEqual(chain.calls, []);
     assert.equal(r.waiting, 1);
     assert.ok(chain.lines.some((l) => /^burn 1 .*waits: .*above the fast budget/.test(l)));
+    // It says why: the release of block 920 is final, and not checked yet.
+    assert.ok(
+      chain.lines.some((l) => l.includes("waits: the burns released fast and not final, or not checked against Sepolia's final chain, yet hold 60000000000000 base units")),
+      chain.lines.join("\n"),
+    );
     // Without --send nothing is checked or recorded: the block alone counts, and burn 1's approval is dry-run.
     const dry = new FakeChain(HEADS, [burn(1n, 991, SIX)]);
     dry.fast.push({ amount: SIX, block: 920, checked: false });
