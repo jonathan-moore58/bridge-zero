@@ -10,7 +10,7 @@ import { bytesToHex, concatBytes, equalBytes } from "./bytes.js";
 import { callData, MINTER, WTPOT_DECIMALS } from "./bridge.js";
 import { blake2_256 } from "./hash.js";
 import { encodeCompact, Reader } from "./scale.js";
-import { addressWord, decodeReleased, formatEvmTpot, formatTpot, releaseCalldata, RELEASED_TOPIC, selector, SIGNATURES, uintWord, wordToAddress, type LogJson } from "./vault.js";
+import { addressWord, decodeLocked, decodeReleased, formatEvmTpot, formatTpot, LOCKED_TOPIC, releaseCalldata, RELEASED_TOPIC, selector, SIGNATURES, uintWord, wordToAddress, type LogJson } from "./vault.js";
 
 // ---------------------------------------------------------------------------------------
 // Amounts
@@ -316,13 +316,36 @@ export function traceOf(json: unknown): { trace: CallTrace | null; problem: stri
 // ---------------------------------------------------------------------------------------
 // The checks of a release's execution on V3
 
+/** An event the vault emitted (revive.ContractEmitted), and the extrinsic of the block it is in (null: none, as at the block's initialization). */
+export interface VaultEvent {
+  extrinsic: number | null;
+  topics: string[];
+  data: string;
+}
+
+/** A balances.Transfer: from and to as AccountId32, the amount in native base units. */
+export interface BalanceTransfer {
+  from: Uint8Array;
+  to: Uint8Array;
+  amount: bigint;
+}
+
 /** What the chain says about the extrinsic that ran a release, and about its block. */
 export interface ExecutionFacts {
-  /** Its block's number. */
+  /** Its block's number, and its index in the block. */
   block: number;
+  index: number;
   amountNative: bigint;
+  /** The vault's account and the payee's (AccountId32). */
+  vaultAccount: Uint8Array;
+  payeeAccount: Uint8Array;
   /** The vault's outstanding at the block's parent and at the block. */
   outstanding: { before: bigint; after: bigint };
+  /** Every event the vault emitted in the block, whatever extrinsic it is in: the locks and releases of other extrinsics move outstanding too. */
+  vaultEvents: VaultEvent[];
+  /** The extrinsic's own balances.Transfer events, and the accounts its balances.Endowed events created. */
+  transfers: BalanceTransfer[];
+  endowed: Uint8Array[];
   /** The payee's account (System.Account) at the block's parent: whether it existed; then how much its free balance went up over the block. */
   payeeExisted: boolean;
   credited: bigint;
@@ -333,21 +356,52 @@ export interface ExecutionFacts {
   ratio: bigint;
 }
 
+const topic0 = (e: VaultEvent) => (e.topics[0] ?? "").toLowerCase();
+
 /**
- * The checks of a release's execution after its events: outstanding down by the amount, the payee's
- * free balance up by it (and by the existential deposit where the release creates its account), and
- * its balance through the EVM RPC up by the payout, while that RPC serves the block's state.
+ * The checks of a release's execution after its events, which hold for it whatever else its block
+ * holds: outstanding down by the amount once the block's locks (LOCKED_TOPIC, in any extrinsic) are
+ * added back and the releases of other extrinsics taken off; and the extrinsic's own
+ * balances.Transfer of the amount from the vault's account to the payee's, the payout itself
+ * (with balances.Endowed where it created the payee's account). The payee's balance over the whole
+ * block, in System.Account and through the EVM RPC (while it serves the block's state), is checked
+ * too; when that payout is in the extrinsic's events and another extrinsic of the block moved the
+ * payee's balance (anyone can send to it), a difference there is a warning, not a failure.
  */
 export function executionChecks(f: ExecutionFacts): { checks: [boolean, string][]; warnings: string[] } {
   const checks: [boolean, string][] = [];
-  checks.push([f.outstanding.before - f.outstanding.after === f.amountNative, `outstanding went from ${formatTpot(f.outstanding.before)} to ${formatTpot(f.outstanding.after)}`]);
-  const expected = f.amountNative + (f.payeeExisted ? 0n : f.existentialDeposit);
+  const warnings: string[] = [];
+  const at = `#${f.block.toLocaleString("en-US")}`;
+  const locked = f.vaultEvents.filter((e) => topic0(e) === LOCKED_TOPIC).reduce((sum, e) => sum + decodeLocked({ address: "0x", topics: e.topics, data: e.data }).amountNative, 0n);
+  const releasedElsewhere = f.vaultEvents
+    .filter((e) => topic0(e) === RELEASED_TOPIC && e.extrinsic !== f.index)
+    .reduce((sum, e) => sum + decodeReleased({ address: "0x", topics: e.topics, data: e.data }).amountNative, 0n);
+  const others = [locked > 0n ? `${formatTpot(locked)} locked in ${at} added back` : "", releasedElsewhere > 0n ? `${formatTpot(releasedElsewhere)} released by other extrinsics of ${at} taken off` : ""].filter(Boolean);
   checks.push([
-    f.credited === expected,
-    `System.Account: the payee's free balance went up by ${formatTpot(f.credited)}, the amount${f.payeeExisted ? "" : ` plus the existential deposit ${formatTpot(f.existentialDeposit)} of the account the release created`}`,
+    f.outstanding.before + locked - releasedElsewhere - f.outstanding.after === f.amountNative,
+    `outstanding went from ${formatTpot(f.outstanding.before)} to ${formatTpot(f.outstanding.after)}${others.length > 0 ? ` (${others.join(", ")}): down by ${formatTpot(f.outstanding.before + locked - releasedElsewhere - f.outstanding.after)}` : ""}`,
   ]);
-  if (f.received !== null) checks.push([f.received === f.value, `the payee's balance through the EVM RPC went up by ${f.received.toLocaleString("en-US")} wei (${formatEvmTpot(f.received, f.ratio)}), amount x ${f.ratio}`]);
-  return { checks, warnings: [] };
+  const payouts = f.transfers.filter((t) => equalBytes(t.from, f.vaultAccount) && equalBytes(t.to, f.payeeAccount));
+  const paid = payouts.length === 1 && payouts[0].amount === f.amountNative;
+  checks.push([paid, `balances.Transfer of ${formatTpot(f.amountNative)} from the vault's account to the payee's ${bytesToHex(f.payeeAccount)}, in the extrinsic's events (${payouts.length} found)`]);
+  if (!f.payeeExisted) {
+    if (f.endowed.some((a) => equalBytes(a, f.payeeAccount))) checks.push([true, "balances.Endowed: the release created the payee's account"]);
+    else warnings.push(`the payee's account did not exist at #${(f.block - 1).toLocaleString("en-US")}, and the extrinsic did not create it: another extrinsic of ${at} did`);
+  }
+  // Over the whole block: another extrinsic of it may have sent to the payee, or created its account.
+  const moved = (what: string) => `another extrinsic in ${at} moved the payee's balance: ${what}; the extrinsic's own balances.Transfer above is the payout`;
+  const expected = f.amountNative + (f.payeeExisted ? 0n : f.existentialDeposit);
+  const accountText = `System.Account: the payee's free balance went up by ${formatTpot(f.credited)}, the amount${f.payeeExisted ? "" : ` plus the existential deposit ${formatTpot(f.existentialDeposit)} of the account the release created`}`;
+  if (f.credited === expected) checks.push([true, accountText]);
+  else if (paid) warnings.push(moved(`System.Account has its free balance up by ${formatTpot(f.credited)} over the block, not ${formatTpot(expected)}`));
+  else checks.push([false, accountText]);
+  if (f.received !== null) {
+    const evmText = `the payee's balance through the EVM RPC went up by ${f.received.toLocaleString("en-US")} wei (${formatEvmTpot(f.received, f.ratio)}), amount x ${f.ratio}`;
+    if (f.received === f.value) checks.push([true, evmText]);
+    else if (paid) warnings.push(moved(`through the EVM RPC its balance went up by ${f.received.toLocaleString("en-US")} wei over the block, not ${f.value.toLocaleString("en-US")}`));
+    else checks.push([false, evmText]);
+  }
+  return { checks, warnings };
 }
 
 // ---------------------------------------------------------------------------------------

@@ -1351,6 +1351,12 @@ async function accountState(apiAt: ApiAt, id: Uint8Array | string): Promise<Acco
   return { nonce: a.nonce.toNumber(), free: a.data.free.toBigInt(), reserved: a.data.reserved.toBigInt(), exists: a.providers.toNumber() > 0 || a.sufficients.toNumber() > 0 };
 }
 
+/** The AccountId32 of an H160 on V3: the Substrate account mapped to it (revive.originalAccount), else the address and twelve 0xEE bytes. */
+async function accountIdOf(apiAt: ApiAt, address: Uint8Array): Promise<Uint8Array> {
+  const original = (await apiAt.query.revive.originalAccount(bytesToHex(address))) as unknown as { isSome: boolean; unwrap(): Codec };
+  return original.isSome ? original.unwrap().toU8a() : ethAccountId(address);
+}
+
 /** What V3 and Sepolia say about the payee, and the account the vault's payout goes to. */
 async function payeeFacts(evm: EvmRpc, head: V3Head, payee: Uint8Array, burner: Uint8Array | null): Promise<{ facts: PayeeFacts; account: Uint8Array; exists: boolean }> {
   const original = (await head.apiAt.query.revive.originalAccount(bytesToHex(payee))) as unknown as { isSome: boolean; unwrap(): Codec };
@@ -2024,8 +2030,11 @@ const resultText = (api: ApiPromise, result: unknown): string => {
  * The checks of an approval that is final: ExtrinsicSuccess; for an opening, NewMultisig and the
  * operation in storage at its block (the timepoint, the depositor, the deposit); for the
  * execution, MultisigExecuted with result Ok, the vault's ContractEmitted Released event, then
- * released[burnId], outstanding and the payee's EVM balance at the block, and the Released log
- * through eth_getLogs; for a cancellation, MultisigCancelled and the operation gone.
+ * released[burnId] at the block, and committee.ts executionChecks: outstanding down by the amount
+ * with the block's other locks and releases counted, the extrinsic's own balances.Transfer of the
+ * amount from the vault to the payee, and the payee's balance over the block (a difference there is
+ * a warning when another extrinsic of the block moved it); and the Released log through
+ * eth_getLogs; for a cancellation, MultisigCancelled and the operation gone.
  */
 async function checkApproval(
   ctx: { api: ApiPromise; evm: EvmRpc; keyring: Keyring; v: VaultFacts; burn: { burnId: Uint8Array; payee: Uint8Array; amount: bigint } },
@@ -2086,11 +2095,12 @@ async function checkApproval(
   const before = await vaultWord(parentAt, v.address, SLOTS.outstanding);
   const after = await vaultWord(atBlock, v.address, SLOTS.outstanding);
   ok = check(flag === 1n, `released[${shortHex(ctx.burn.burnId)}] is true at #${fmt(final.number)}`) && ok;
-  // The payout, from the payee's account at the block and its parent: the node keeps that state, while V3's EVM RPC
-  // answers "State already discarded" once the block is about 256 blocks old. The free balance goes up by the amount,
-  // and by the existential deposit too where the release creates the account.
-  const original = (await apiAt.query.revive.originalAccount(bytesToHex(ctx.burn.payee))) as unknown as { isSome: boolean; unwrap(): Codec };
-  const account = original.isSome ? original.unwrap().toU8a() : ethAccountId(ctx.burn.payee);
+  // The payout: the extrinsic's own balances.Transfer from the vault's account to the payee's. Then the payee's account
+  // at the block and its parent: the node keeps that state, while V3's EVM RPC answers "State already discarded" once the
+  // block is about 256 blocks old. The free balance goes up by the amount, and by the existential deposit too where the
+  // release creates the account, unless another extrinsic of the block moved it (anyone can send to the payee).
+  const account = await accountIdOf(apiAt, ctx.burn.payee);
+  const vaultAccount = await accountIdOf(apiAt, v.address);
   const was = await accountState(parentAt.apiAt, account);
   const credited = (await accountState(apiAt, account)).free - was.free;
   const ed = api.consts.balances.existentialDeposit.toBigInt();
@@ -2103,7 +2113,34 @@ async function checkApproval(
     if (!(error instanceof EvmRpcError)) throw error;
     warn(`the EVM RPC does not serve the state of #${fmt(final.number)} any more (${errorText(error)}): the System.Account check below stands for it`);
   }
-  const execution = executionChecks({ block: final.number, amountNative: ctx.burn.amount, outstanding: { before, after }, payeeExisted: was.exists, credited, existentialDeposit: ed, received, value, ratio: v.ratio });
+  // Every event of the block, of every extrinsic: a lock in another one (the vault's lock() is open to anyone) moves
+  // outstanding too.
+  const vaultEvents = ((await apiAt.query.system.events()) as unknown as EventRecord[]).flatMap((r) => {
+    if (r.event.section !== "revive" || r.event.method !== "ContractEmitted") return [];
+    const [contract, data, topics] = r.event.data as unknown as [Codec, { toU8a(isBare: boolean): Uint8Array }, Codec[]];
+    if (!equalBytes(contract.toU8a(), v.address)) return [];
+    return [{ extrinsic: r.phase.isApplyExtrinsic ? r.phase.asApplyExtrinsic.toNumber() : null, topics: [...topics].map((t) => t.toHex()), data: bytesToHex(data.toU8a(true)) }];
+  });
+  const balancesEvents = (method: string) => final.records.filter((r) => r.event.section === "balances" && r.event.method === method).map((r) => r.event.data as unknown as Codec[]);
+  const transfers = balancesEvents("Transfer").map(([from, to, amount]) => ({ from: from.toU8a(), to: to.toU8a(), amount: (amount as unknown as { toBigInt(): bigint }).toBigInt() }));
+  const endowed = balancesEvents("Endowed").map(([who]) => who.toU8a());
+  const execution = executionChecks({
+    block: final.number,
+    index: final.index,
+    amountNative: ctx.burn.amount,
+    vaultAccount,
+    payeeAccount: account,
+    outstanding: { before, after },
+    vaultEvents,
+    transfers,
+    endowed,
+    payeeExisted: was.exists,
+    credited,
+    existentialDeposit: ed,
+    received,
+    value,
+    ratio: v.ratio,
+  });
   for (const [passed, what] of execution.checks) ok = check(passed, what) && ok;
   for (const what of execution.warnings) warn(what);
   const logs = await evm.logs({ address: bytesToHex(v.address), topics: [RELEASED_TOPIC, bytesToHex(ctx.burn.burnId)] }, final.number, final.number);

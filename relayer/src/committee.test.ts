@@ -35,8 +35,10 @@ import {
   type ExecutionFacts,
   type PayeeFacts,
   type ReviveCall,
+  type VaultEvent,
 } from "./committee.js";
-import { burnId, releaseCalldata, RELEASED_TOPIC } from "./vault.js";
+import { addressWord, burnId, ethAccountId, LOCKED_TOPIC, releaseCalldata, RELEASED_TOPIC, uintWord } from "./vault.js";
+import { settledOnChainFailure, settleOrHalt } from "./watch.js";
 
 const SEPOLIA = 11_155_111n;
 const MINTER = hexToBytes("0x8287b3baf205ca8456f98346f13064aa7fcdcb9e");
@@ -313,32 +315,91 @@ describe("the release's call trace", () => {
 });
 
 describe("the checks of a release's execution", () => {
-  /** Burn 0's execution in V3 block #117,701: 0.5 tPOT to a payee whose account existed. */
+  /** Burn 0's execution, extrinsic 1 of V3 block #117,701: 0.5 tPOT to a payee whose account existed, its events as V3 has them. */
   const ED = 10n ** 13n;
+  const AMOUNT = 50_000_000_000_000n;
+  const VAULT_ACCOUNT = ethAccountId(VAULT);
+  const PAYEE_ACCOUNT = ethAccountId(PAYEE);
+  const released: VaultEvent = { extrinsic: 1, topics: [RELEASED_TOPIC, BURN_ID_0, bytesToHex(addressWord(PAYEE))], data: bytesToHex(uintWord(AMOUNT)) };
+  /** Someone's lock of `amount` (vault.lock, open to anyone) in extrinsic `extrinsic` of the block. */
+  const lockOf = (amount: bigint, extrinsic: number): VaultEvent => ({
+    extrinsic,
+    topics: [LOCKED_TOPIC, bytesToHex(uintWord(7n)), bytesToHex(addressWord(RELEASER)), bytesToHex(addressWord(RELEASER))],
+    data: bytesToHex(concatBytes(uintWord(SEPOLIA), addressWord(MINTER), uintWord(amount), new Uint8Array(32).fill(0xab))),
+  });
   const facts: ExecutionFacts = {
     block: 117_701,
-    amountNative: 50_000_000_000_000n,
-    outstanding: { before: 3n * TPOT, after: 3n * TPOT - 50_000_000_000_000n },
+    index: 1,
+    amountNative: AMOUNT,
+    vaultAccount: VAULT_ACCOUNT,
+    payeeAccount: PAYEE_ACCOUNT,
+    outstanding: { before: 3n * TPOT, after: 3n * TPOT - AMOUNT },
+    vaultEvents: [released],
+    transfers: [{ from: VAULT_ACCOUNT, to: PAYEE_ACCOUNT, amount: AMOUNT }],
+    endowed: [],
     payeeExisted: true,
-    credited: 50_000_000_000_000n,
+    credited: AMOUNT,
     existentialDeposit: ED,
-    received: 50_000_000_000_000n * 10_000n,
-    value: 50_000_000_000_000n * 10_000n,
+    received: AMOUNT * 10_000n,
+    value: AMOUNT * 10_000n,
     ratio: 10_000n,
   };
   const failing = (f: ExecutionFacts) => executionChecks(f).checks.filter(([ok]) => !ok).map(([, what]) => what);
 
-  it("pass on an execution alone in its block: outstanding down by the amount, the payee up by it", () => {
+  /** The approval's status as release.ts sets it from its checks, settled (watch.ts settleOrHalt): whether the committee's halt file is left. */
+  async function settled(f: ExecutionFacts): Promise<{ status: string; halted: boolean }> {
+    const status = executionChecks(f).checks.every(([ok]) => ok) ? "final" : "failed";
+    const before = [{ key: "0xexecute", burn: "7", extrinsicHash: "0xexecute" }];
+    let halted = false;
+    await settleOrHalt(
+      async () => 0,
+      () => (settledOnChainFailure(before, new Map([["0xexecute", { status, onChain: true }]])) ? { why: "failed", burn: "7", extrinsicHash: "0xexecute" } : null),
+      () => (halted = true),
+    );
+    return { status, halted };
+  }
+
+  it("pass on an execution alone in its block: outstanding down by the amount, the vault's Transfer to the payee, the payee up by it", () => {
     const { checks, warnings } = executionChecks(facts);
-    assert.equal(checks.length, 3);
+    assert.equal(checks.length, 4);
     for (const [ok, what] of checks) assert.ok(ok, what);
     assert.deepEqual(warnings, []);
     // A payee whose account the release creates gets the existential deposit too; the EVM RPC may not serve the block any more.
-    assert.deepEqual(failing({ ...facts, payeeExisted: false, credited: facts.credited + ED, received: null }), []);
+    assert.deepEqual(failing({ ...facts, payeeExisted: false, endowed: [PAYEE_ACCOUNT], credited: AMOUNT + ED, received: null }), []);
   });
 
-  it("fail on a payout that is not the amount", () => {
+  it("settle as final, with no halt file, when another extrinsic of the block locks in the vault", async () => {
+    // Anyone's vault.lock in extrinsic 2 of the same block: outstanding is down by the amount less the lock.
+    const lock = 3n;
+    const f = { ...facts, vaultEvents: [released, lockOf(lock, 2)], outstanding: { before: facts.outstanding.before, after: facts.outstanding.before - AMOUNT + lock } };
+    assert.deepEqual(failing(f), []);
+    assert.match(executionChecks(f).checks[0][1], /0\.00000000000003 tPOT locked in #117,701 added back/);
+    assert.deepEqual(await settled(f), { status: "final", halted: false });
+    // So does a lock before it in the block, and another release of the committee's in it.
+    const g = { ...f, vaultEvents: [lockOf(lock, 0), released, { ...released, extrinsic: 3 }], outstanding: { before: f.outstanding.before, after: f.outstanding.before - 2n * AMOUNT + lock } };
+    assert.deepEqual(failing(g), []);
+  });
+
+  it("settle as final, with no halt file, when another extrinsic of the block sends to the payee: a warning says so", async () => {
+    const f = { ...facts, credited: AMOUNT + 1n, received: (AMOUNT + 1n) * 10_000n };
+    assert.deepEqual(failing(f), []);
+    const { warnings } = executionChecks(f);
+    assert.equal(warnings.length, 2);
+    for (const w of warnings) assert.match(w, /another extrinsic in #117,701 moved the payee's balance/);
+    assert.deepEqual(await settled(f), { status: "final", halted: false });
+    // A payee whose account another extrinsic of the block created before the release: no Endowed in the release's events.
+    const created = { ...f, payeeExisted: false, credited: AMOUNT + ED };
+    assert.deepEqual(failing(created), []);
+    assert.match(executionChecks(created).warnings.join("\n"), /did not exist at #117,700, and the extrinsic did not create it/);
+  });
+
+  it("fail on a payout that is not the amount, whatever else the block holds", async () => {
     assert.equal(failing({ ...facts, outstanding: { ...facts.outstanding, after: facts.outstanding.after - 1n } }).length, 1, "outstanding down by more");
-    assert.equal(failing({ ...facts, credited: facts.credited - 1n, received: facts.received! - 10_000n }).length, 2, "the payee paid less");
+    assert.equal(failing({ ...facts, vaultEvents: [released, lockOf(5n, 2)] }).length, 1, "a lock in the block, and outstanding down by the amount all the same");
+    assert.equal(failing({ ...facts, transfers: [] }).length, 1, "no Transfer from the vault in the extrinsic");
+    assert.equal(failing({ ...facts, transfers: [{ from: VAULT_ACCOUNT, to: PAYEE_ACCOUNT, amount: AMOUNT - 1n }] }).length, 1, "a Transfer of less");
+    assert.equal(failing({ ...facts, transfers: [{ from: PAYEE_ACCOUNT, to: PAYEE_ACCOUNT, amount: AMOUNT }] }).length, 1, "a Transfer from another account");
+    assert.equal(failing({ ...facts, transfers: [], credited: AMOUNT - 1n, received: (AMOUNT - 1n) * 10_000n }).length, 3, "no payout: the payee's balance counts again");
+    assert.deepEqual(await settled({ ...facts, transfers: [] }), { status: "failed", halted: true });
   });
 });
