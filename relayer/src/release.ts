@@ -65,8 +65,10 @@
 // Every release and fund run first settles the approvals and transfers an earlier --send run left
 // submitted: each is looked for in the final blocks after the one it was submitted at, then checked
 // as below (exit code 3 while one is still on its way). An approval that settling finds on chain
-// and failing its checks stops a release run before anything is signed: with --send it leaves the
-// committee's halt file (below) and ends with exit code 4, without it with exit code 1. Each save
+// and failing its checks stops a release or fund run (and the watcher) before anything is signed,
+// and leaves the committee's halt file (below), with or without --send: writing it signs nothing,
+// and the record holds that approval as failed from then on, so no later run would see it fail.
+// It ends with exit code 4. Each save
 // of the record takes deployments/v3-testnet.json.lock, reads the file again and merges it in
 // (records.ts), so what v3-vault.ts or another run of this tool wrote meanwhile is kept. A save
 // holds that lock for milliseconds and waits up to 30 s for it; a lock not refreshed for a minute
@@ -80,7 +82,8 @@
 // waits for finalization and checks the events: NewMultisig, or MultisigExecuted with its result Ok
 // and the vault's revive.ContractEmitted Released event, then released[burnId], outstanding and the
 // payee's balance on the EVM side (eth_getBalance) up by amount x 10^4 wei, and the Released log
-// through eth_getLogs, which V3's EVM RPC may not serve for a Substrate extrinsic.
+// through eth_getLogs, which V3's EVM RPC may not serve for a Substrate extrinsic. An approval by
+// hand that ran on chain and failed those checks leaves the halt file too (exit code 4).
 //
 // Fast mode: release with --confirmations n (1 to 64) reads and checks the burn at the block n below
 // Sepolia's latest (the finalized block when that is higher) instead of the finalized block, and
@@ -148,7 +151,8 @@
 // settling finds on chain and failing its checks, an approval an earlier run submitted that is in
 // none of the blocks searched though its sender's nonce is used, a fast release that does not stand
 // on the final chain, a lost lock, a key file or a record that cannot be written. With --send it
-// first writes the halt file (the reason, the burn, the extrinsic, the time). While it is there no
+// first writes the halt file (the reason, the burn, the extrinsic, the time); the settling of an
+// approval found on chain and failing its checks writes it without --send too. While it is there no
 // watcher with --send starts (exit code 4; --despite-halt is refused for the watcher), and an
 // approval or a cancellation by hand with --send is refused (exit code 4) unless --despite-halt
 // says a member looked: a member looks, then removes it. Otherwise a round ends 0 when nothing was
@@ -305,6 +309,7 @@ import {
   reconcileVerdict,
   rpcTrouble,
   settledOnChainFailure,
+  settleOrHalt,
   submitErrorVerdict,
   takeLock,
   tradeOff,
@@ -2161,13 +2166,31 @@ function submittedOf(record: VaultRecord): { key: string; burn: string; extrinsi
  */
 function settledFailure(before: ReturnType<typeof submittedOf>): FatalStop | null {
   const failed = settledOnChainFailure(before, new Map(before.map((s) => [s.key, { status: s.approval.status, onChain: s.approval.block !== null }])));
-  if (!failed) return null;
-  const a = failed.approval;
-  return {
-    why: `member ${a.member}'s ${a.action} ${a.extrinsicHash} (burn ${failed.burn}) ran on chain in #${fmt(a.block!.number)} and failed its checks`,
-    burn: failed.burn,
-    extrinsicHash: a.extrinsicHash,
-  };
+  return failed ? onChainFailure(failed.burn, failed.approval) : null;
+}
+
+/** An approval of burn `burn` that ran on chain (in a block) and failed its checks, as a fatal stop. */
+const onChainFailure = (burn: string, a: ApprovalEntry): FatalStop => ({
+  why: `member ${a.member}'s ${a.action} ${a.extrinsicHash} (burn ${burn}) ran on chain in #${fmt(a.block!.number)} and failed its checks`,
+  burn,
+  extrinsicHash: a.extrinsicHash,
+});
+
+/**
+ * Settles what an earlier --send run left submitted (settleSubmitted), dry run or not, through
+ * settleOrHalt: an approval it finds on chain and failing its checks leaves the committee's halt
+ * file, whatever the command and the mode, and is a fatal stop.
+ */
+async function settleOrStop(api: ApiPromise, evm: EvmRpc, keyring: Keyring, v: VaultFacts, record: VaultRecord) {
+  const before = submittedOf(record);
+  return settleOrHalt(
+    () => settleSubmitted(api, evm, keyring, v, record),
+    () => settledFailure(before),
+    (f) => {
+      check(false, `${f.why}: the members look at it before anything more is signed`);
+      leaveHalt(v.multisig, f);
+    },
+  );
 }
 
 /** The deployments a release reads: the bridge on Sepolia, the vault and its committee on V3. */
@@ -2346,18 +2369,13 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
         return PENDING;
       }
     } else {
-      const before = submittedOf(record);
-      const settled = await settleSubmitted(api, evm, keyring, v, record);
-      const failed = settledFailure(before);
-      if (failed) {
-        // As the watcher stops on it: with --send, the halt file too, so that no watcher starts and
-        // nothing more is signed by hand until a member has looked.
-        check(false, `${failed.why}: the members look at it before anything more is signed`);
-        if (!o.send) return FAILED;
-        leaveHalt(v.multisig, failed);
-        return HALTED;
-      }
-      if (settled === PENDING) return PENDING;
+      // As the watcher stops on it, with or without --send: the halt file too, so that no watcher
+      // starts and nothing more is signed by hand until a member has looked. The record holds the
+      // approval as failed from now on, and no later run would see it fail.
+      const end = await settleOrStop(api, evm, keyring, v, record);
+      if (end.kind === "fatal") return HALTED;
+      if (end.kind === "threw") throw end.error;
+      if (end.code === PENDING) return PENDING;
     }
     const head = await finalizedHead(api);
     log(`V3, finalized block ${fmt(head.number)} (${head.hash}):`);
@@ -2591,7 +2609,15 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
     const ok = await checkApproval({ api, evm, keyring, v, burn: { burnId: burn.burnId, payee: burn.v3Recipient, amount: burn.amount } }, round, approval, final);
     approval.status = ok ? "final" : "failed";
     saveV3Record(record);
-    if (!ok) return FAILED;
+    if (!ok) {
+      // An approval by hand that ran on chain and failed its checks stops everything, as one the
+      // watcher sends does (the watcher's round stops on this FAILED itself): the halt file.
+      if (!o.watcher && approval.block) {
+        leaveHalt(v.multisig, onChainFailure(n.toString(), approval));
+        return HALTED;
+      }
+      return FAILED;
+    }
     if (action === "open") {
       log(o.watcher ? `\nOpened by member ${k}.` : `\nOpened. Next: member ${left([k]).join(" or ")} runs it:\n${commands("approve", left([k]))}`);
     } else if (action === "execute") log(`\nBurn ${n} is released: ${formatTpot(burn.amount)} paid to ${checksumAddress(burn.v3Recipient)} on V3, checked; ${V3_RECORD} records the round.`);
@@ -2937,17 +2963,13 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
     const ports: Ports<WatchedBurn> = {
       settle: async () => {
         const before = submittedOf(d.record);
-        let code: number | null = null;
-        let thrown: unknown = null;
-        try {
-          code = await settleSubmitted(api, evm, keyring, d.v, d.record);
-        } catch (error) {
-          thrown = error;
-        }
         // An approval found on chain and failing its checks is a fatal stop, as one sent in this round
-        // is; first, even when the settling then stopped on another.
-        const failed = settledFailure(before);
-        if (failed) return { kind: "fatal", ...failed };
+        // is; first, even when the settling then stopped on another. The settling leaves the halt
+        // file for it, dry run or not.
+        const end = await settleOrStop(api, evm, keyring, d.v, d.record);
+        if (end.kind === "fatal") return { kind: "fatal", ...end.stop };
+        const code = end.kind === "settled" ? end.code : null;
+        const thrown = end.kind === "threw" ? end.error : null;
         if (thrown !== null) {
           // A Stop here is an approval whose sender's nonce is used while it is in none of the blocks
           // searched: nobody knows what ran, and the watcher signs nothing more.
@@ -3024,13 +3046,14 @@ async function watchCommand(o: WatchOptions): Promise<number> {
     }
     warn(`${haltRefusal(halted, haltPath)}; a watcher with --send does not start until then (this dry run goes on)`);
   }
-  /** A fatal stop: the halt file first (with --send), then exit code 4, which a restarting wrapper must not restart. */
+  /**
+   * A fatal stop: the halt file first (with --send; a settling that found an approval that failed on
+   * chain left it already, dry run or not), then exit code 4, which a restarting wrapper must not restart.
+   */
   const halt = (f: FatalStop): number => {
-    check(false, f.why);
-    if (o.send) {
-      log("     the watcher stopped for good");
-      leaveHalt(v.multisig, f);
-    }
+    if (!f.left) check(false, f.why);
+    if (o.send) log("     the watcher stopped for good");
+    if (o.send && !f.left) leaveHalt(v.multisig, f);
     return HALTED;
   };
   let lock: Lock | null = null;
@@ -3103,8 +3126,12 @@ async function fundCommand(o: FundOptions): Promise<number> {
     await checkV3(api, evm);
     // The key is read once the API is up: its sr25519 crypto is ready then.
     const pair = o.send ? loadMnemonicKey(o.keyFile!, from, keyring) : null;
-    // What an earlier --send run left submitted is settled first, dry run or not.
-    if ((await settleSubmitted(api, evm, keyring, v, record)) === PENDING) return PENDING;
+    // What an earlier --send run left submitted is settled first, dry run or not; an approval found
+    // on chain and failing its checks leaves the halt file, as in a release run.
+    const end = await settleOrStop(api, evm, keyring, v, record);
+    if (end.kind === "fatal") return HALTED;
+    if (end.kind === "threw") throw end.error;
+    if (end.code === PENDING) return PENDING;
     const head = await finalizedHead(api);
     const ed = api.consts.balances.existentialDeposit.toBigInt();
     const sender = await accountState(head.apiAt, keyring.decodeAddress(from));

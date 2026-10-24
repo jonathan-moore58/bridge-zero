@@ -339,7 +339,7 @@ export type Settled =
    * One ran on chain and failed its checks, as a sent approval can (the same fatal stop), or one
    * cannot be found though its sender's nonce is used: the watcher stops.
    */
-  | { kind: "fatal"; why: string; burn: string | null; extrinsicHash: string | null };
+  | { kind: "fatal"; why: string; burn: string | null; extrinsicHash: string | null; left?: boolean };
 
 /** An approval the record held as submitted before a settling: its key in `after`, its burn nonce and its extrinsic. */
 export interface Submitted {
@@ -358,6 +358,32 @@ export function settledOnChainFailure<S extends Submitted>(before: S[], after: M
     const now = after.get(s.key);
     return now !== undefined && now.status === "failed" && now.onChain;
   }) ?? null;
+}
+
+/** How a settling ended (settleOrHalt): its code, a fatal stop it found, or what it threw. */
+export type SettleEnd<T> = { kind: "settled"; code: T } | { kind: "fatal"; stop: FatalStop } | { kind: "threw"; error: unknown };
+
+/**
+ * Runs a settling of what an earlier --send run left submitted (`settle`), then asks which approval
+ * it found on chain and failing its checks (`failure`). When there is one, `leave` writes the
+ * committee's halt file, whatever the command (the watcher, an approval by hand, fund) and with or
+ * without --send: writing it signs nothing, and the record keeps that approval as failed from then
+ * on, so the run that settled it is the only one that sees it fail. The run stops on it, even when
+ * the settling then threw. Otherwise the settling's code, or what it threw.
+ */
+export async function settleOrHalt<T>(settle: () => Promise<T>, failure: () => FatalStop | null, leave: (f: FatalStop) => void): Promise<SettleEnd<T>> {
+  let end: SettleEnd<T>;
+  try {
+    end = { kind: "settled", code: await settle() };
+  } catch (error) {
+    end = { kind: "threw", error };
+  }
+  const failed = failure();
+  if (failed) {
+    leave(failed);
+    return { kind: "fatal", stop: { ...failed, left: true } };
+  }
+  return end;
 }
 
 /** What a round reads and does, through the tool: release.ts fills them with the chains, the tests with stand-ins. */
@@ -414,6 +440,8 @@ export interface FatalStop {
   why: string;
   burn: string | null;
   extrinsicHash: string | null;
+  /** The halt file is written already: the settling that found it left it (settleOrHalt). */
+  left?: boolean;
 }
 
 /**
@@ -446,7 +474,7 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
   const r: RoundResult = { released: 0, waiting: 0, refused: 0, held: 0, planned: 0, pending: false, fatal: null };
   const settled = await p.settle();
   if (settled.kind === "fatal") {
-    r.fatal = { why: settled.why, burn: settled.burn, extrinsicHash: settled.extrinsicHash };
+    r.fatal = { why: settled.why, burn: settled.burn, extrinsicHash: settled.extrinsicHash, ...(settled.left ? { left: true } : {}) };
     return r;
   }
   if (settled.kind === "pending") {

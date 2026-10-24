@@ -33,6 +33,7 @@ import {
   reconcileVerdict,
   rpcTrouble,
   settledOnChainFailure,
+  settleOrHalt,
   submitErrorVerdict,
   takeLock,
   tradeOff,
@@ -476,6 +477,40 @@ describe("settling what an earlier run submitted", () => {
     assert.equal(settledOnChainFailure(before, after), null);
     assert.equal(settledOnChainFailure(before, new Map([["0xa1", { status: "final", onChain: true }]])), null);
     assert.equal(settledOnChainFailure([], after), null);
+  });
+
+  // Any command settles (the watcher, a dry run of it, an approval by hand, fund), and the record
+  // holds the approval as failed from then on: the run that settles it is the only one that sees it fail.
+  const stop: FatalStop = { why: "member 2's execute 0xfeed (burn 5) ran on chain in #4,100 and failed its checks", burn: "5", extrinsicHash: "0xfeed" };
+
+  it("leaves the halt file for an approval it finds on chain and failing its checks, whatever the command and the mode, even when the settling then threw", async () => {
+    const left: FatalStop[] = [];
+    const end = await settleOrHalt(async () => 0, () => stop, (f) => left.push(f));
+    assert.deepEqual(end, { kind: "fatal", stop: { ...stop, left: true } });
+    assert.deepEqual(left, [stop]);
+    const threw = await settleOrHalt(async () => {
+      throw new Error("member 1's nonce 7 is used, but 0xabc is not in the blocks searched");
+    }, () => stop, (f) => left.push(f));
+    assert.deepEqual(threw, { kind: "fatal", stop: { ...stop, left: true } });
+    assert.equal(left.length, 2);
+  });
+
+  it("leaves nothing when it finds none, and gives the settling's code or what it threw", async () => {
+    const left: FatalStop[] = [];
+    assert.deepEqual(await settleOrHalt(async () => 3, () => null, (f) => left.push(f)), { kind: "settled", code: 3 });
+    const error = new Error("unreachable");
+    assert.deepEqual(await settleOrHalt(async () => {
+      throw error;
+    }, () => null, (f) => left.push(f)), { kind: "threw", error });
+    assert.deepEqual(left, []);
+  });
+
+  it("tells the watcher that the settling left the halt file, so that it does not write it again", async () => {
+    const chain = new FakeChain(HEADS, [burn(0n, 900)]);
+    chain.settleOutcomes.push({ kind: "fatal", ...stop, left: true });
+    const r = await watchRound(chain.ports(), FINALITY, SEND);
+    assert.deepEqual(r.fatal, { ...stop, left: true });
+    assert.deepEqual(chain.calls, []);
   });
 });
 

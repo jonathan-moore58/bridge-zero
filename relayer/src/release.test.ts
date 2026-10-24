@@ -244,3 +244,13 @@ describe("after a fatal stop", () => {
     assert.equal(code, 2, out);
   });
 });
+
+describe("settling what an earlier --send run left submitted", () => {
+  it("runs through settleOrHalt alone, in every command: an approval found on chain and failing its checks leaves the halt file, dry run or not", () => {
+    const source = readFileSync(join(RELAYER, "src", "release.ts"), "utf8");
+    const calls = [...source.matchAll(/(?<!function )\bsettleSubmitted\(/g)].length;
+    assert.equal(calls, 1, "settleSubmitted is called from settleOrStop alone");
+    assert.match(source, /async function settleOrStop\([^]*?settleOrHalt\(\s*\(\) => settleSubmitted\(/);
+    assert.doesNotMatch(source, /if \(!o\.send\) return FAILED;\s*leaveHalt/, "a dry run that finds one leaves the halt file too");
+  });
+});
