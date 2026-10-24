@@ -121,7 +121,10 @@ interface Run {
   out: string;
 }
 
-/** The tool with `args`, every network endpoint a closed local port. */
+/**
+ * The tool with `args`, every network endpoint a closed local port. A child that runs past 90 s
+ * (a regression that lets a watcher loop on the closed port) is killed, so none outlives its test.
+ */
 function run(args: string[], env: Record<string, string> = {}): Promise<Run> {
   return new Promise((done, fail) => {
     const child = spawn(process.execPath, ["--import", "tsx", "src/release.ts", ...args], {
@@ -132,8 +135,15 @@ function run(args: string[], env: Record<string, string> = {}): Promise<Run> {
     let out = "";
     child.stdout.on("data", (d: Buffer) => (out += d.toString()));
     child.stderr.on("data", (d: Buffer) => (out += d.toString()));
-    child.on("error", fail);
-    child.on("close", (code) => done({ code, out }));
+    const kill = setTimeout(() => child.kill(), 90_000);
+    child.on("error", (error) => {
+      clearTimeout(kill);
+      fail(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(kill);
+      done({ code, out });
+    });
   });
 }
 
@@ -188,7 +198,7 @@ function homeWithLock(): Record<string, string> {
 
 describe("the watcher's lock, in the home folder", () => {
   it("keeps a second watcher of the committee from sending, whatever its --state-dir", { timeout: 120_000 }, async () => {
-    const { code, out } = await run(["release", "--watch", "10", "--send", ...keyFiles(), "--state-dir", join(SCRATCH, "elsewhere"), ...OFFLINE], homeWithLock());
+    const { code, out } = await run(["release", "--watch", "10", "--rounds", "1", "--send", ...keyFiles(), "--state-dir", join(SCRATCH, "elsewhere"), ...OFFLINE], homeWithLock());
     assert.equal(code, 1, out);
     assert.match(out, new RegExp(`another watcher \\(process ${process.pid}\\) runs for this committee`));
     assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
@@ -219,7 +229,7 @@ const HALT_REFUSAL = /a fatal stop at 2026-10-24T10:00:00.000Z: member 2's appro
 describe("after a fatal stop", () => {
   it("no watcher starts with --send while the halt file is there, whatever its --state-dir, with exit code 4 and before any request", { timeout: 120_000 }, async () => {
     // The halt file is next to the lock in the home folder; --state-dir is another folder, with none.
-    const { code, out } = await run(["release", "--watch", "10", "--send", ...keyFiles(), "--state-dir", join(SCRATCH, "elsewhere"), ...OFFLINE], homeWithHalt());
+    const { code, out } = await run(["release", "--watch", "10", "--rounds", "1", "--send", ...keyFiles(), "--state-dir", join(SCRATCH, "elsewhere"), ...OFFLINE], homeWithHalt());
     assert.equal(code, 4, out);
     assert.match(out, /the watcher does not start: /);
     assert.match(out, HALT_REFUSAL);
