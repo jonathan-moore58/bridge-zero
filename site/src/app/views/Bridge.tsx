@@ -33,14 +33,13 @@ import { readBalances, switchTo, wallet, walletCode, type WalletState } from "..
 
 interface Form {
   amount: string;
-  speed: Speed;
   details: boolean;
   /** The wallet refused to add V3: show the network's parameters to add by hand. */
   addHelp: boolean;
 }
 
 /** Kept across pages, so the amount survives a visit to Activity. */
-const form = new Box<Form>({ amount: "1", speed: "fast", details: false, addHelp: false });
+const form = new Box<Form>({ amount: "1", details: false, addHelp: false });
 
 const setForm = (p: Partial<Form>) => form.set((f) => ({ ...f, ...p }));
 
@@ -97,7 +96,10 @@ function work(dir: Dir, f: Form, w: WalletState): Facts {
   const bal = raw == null ? null : Number(raw) / 1e14;
   const eth = w.balances?.eth == null ? null : Number(w.balances.eth) / 1e18;
   const room = dir === "in" ? LOCK_CEILING : 0;
-  const speed: Speed = dir === "back" && f.speed === "fast" && value > FAST_CAP ? "std" : f.speed;
+  // The burn carries no speed: the watcher releases a burn of up to 1 tPOT fast (while no other fast
+  // release waits for finality), and a larger one after Sepolia's finality. So the card shows the
+  // speed the amount gets; it offers no choice the watcher would not honour.
+  const speed: Speed = value > FAST_CAP ? "std" : "fast";
   let max = "0";
   if (raw != null) max = dir === "back" ? units(raw, 14) : String(Math.max(0, Math.floor(((bal ?? 0) - room) * 100) / 100));
   return {
@@ -395,7 +397,7 @@ function openReview(k: Facts, address: string): void {
               <dt class="kv__k">Speed</dt>
               <dd class="kv__v">
                 <Icon id={k.speed === "fast" ? "i-bolt" : "i-clock"} cls="i--14 kv__ic" />
-                {SPEED_NAME[k.speed]} <span class="kv__note">· {k.speed === "fast" ? "after 3 confirmations" : "after Sepolia finality"}</span>
+                {SPEED_NAME[k.speed]} <span class="kv__note">· {k.speed === "fast" ? "after 3 confirmations" : "after Sepolia finality"} · set by the amount</span>
               </dd>
             </div>
           )}
@@ -704,15 +706,13 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
   const w = useBox(wallet);
   const [busy, setBusy] = useState<string | null>(null);
 
-  // Deep links: #/bridge/back?amount=0.5&speed=std&details=1 (and review=1 once connected).
+  // Deep links: #/bridge/back?amount=0.5&details=1 (and review=1 once connected).
   const query = route.q.toString();
   useEffect(() => {
     const q = new URLSearchParams(query);
     const p: Partial<Form> = {};
     const a = q.get("amount");
     if (a) p.amount = cleanAmount(a);
-    const s = q.get("speed");
-    if (s) p.speed = s === "fast" ? "fast" : "std";
     if (q.get("details")) p.details = true;
     if (Object.keys(p).length) setForm(p);
   }, [query]);
@@ -746,21 +746,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
     setForm({ amount: k.max });
     document.getElementById("amt")?.focus();
   };
-  const pickSpeed = (s: Speed) => {
-    if (s === "fast" && !k.fastOK) {
-      toast("trust", "Fast takes up to 1 tPOT per burn", "Lower the amount to 1 or less, or use Standard.");
-      return;
-    }
-    setForm({ speed: s });
-  };
-  const onSpeedKey = (e: KeyboardEvent) => {
-    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
-    e.preventDefault();
-    const next: Speed = k.speed === "fast" ? "std" : "fast";
-    if (next === "fast" && !k.fastOK) return;
-    setForm({ speed: next });
-    document.getElementById(next === "fast" ? "opt-fast" : "opt-std")?.focus();
-  };
+  const explainSpeed = () =>
+    toast("info", "The amount sets the speed", "Up to 1 tPOT goes Fast, after 3 Sepolia confirmations. More goes Standard, after Sepolia finality.");
 
   // The line under the amount: only before an amount is in, to say what 1 token becomes.
   const subShown = !(k.ready && k.value > 0 && !k.short);
@@ -958,22 +945,13 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               </p>
             </div>
             <Tip id="tip-back" label="About the committee">
-              Two of the three committee members must approve the release on V3. Both speeds are trusted. Fast releases after 3 Sepolia confirmations, before
-              finality: up to 1 tPOT per burn, and up to 1 tPOT in all across fast releases whose burn is not final yet. A reorg deeper than 3 blocks could undo a
-              burn on Sepolia after V3 has released, which would break the 1:1 backing. On the testnet one operator holds all three keys. Once sent, a burn
-              cannot be cancelled.
+              Two of the three committee members must approve the release on V3. Both speeds are trusted. The amount sets the speed: Fast releases after 3
+              Sepolia confirmations, before finality, up to 1 tPOT per burn and up to 1 tPOT in all across fast releases whose burn is not final yet; a larger burn
+              goes Standard, after finality. A reorg deeper than 3 blocks could undo a burn on Sepolia after V3 has released, which would break the 1:1 backing.
+              On the testnet one operator holds all three keys. Once sent, a burn cannot be cancelled.
             </Tip>
-            <div class="speed" role="radiogroup" aria-label="Release speed">
-              <button
-                class="opt opt--row"
-                type="button"
-                role="radio"
-                id="opt-std"
-                aria-checked={k.speed === "std"}
-                tabIndex={k.speed === "std" ? 0 : -1}
-                onClick={() => pickSpeed("std")}
-                onKeyDown={onSpeedKey}
-              >
+            <div class="speed" role="radiogroup" aria-readonly="true" aria-label="Release speed, set by the amount">
+              <button class="opt opt--row" type="button" role="radio" id="opt-std" aria-checked={k.speed === "std"} tabIndex={k.speed === "std" ? 0 : -1} onClick={explainSpeed}>
                 <span class="opt__head">
                   <span class="opt__icon" aria-hidden="true">
                     <Icon id="i-clock" />
@@ -996,8 +974,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                 aria-checked={k.speed === "fast"}
                 aria-disabled={!k.fastOK}
                 tabIndex={k.speed === "fast" ? 0 : -1}
-                onClick={() => pickSpeed("fast")}
-                onKeyDown={onSpeedKey}
+                onClick={explainSpeed}
               >
                 <span class="opt__head">
                   <span class="opt__icon" aria-hidden="true">
@@ -1021,9 +998,9 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                 type="button"
                 onClick={() => {
                   const amount = String(Math.min(FAST_CAP, k.bal ?? FAST_CAP));
-                  setForm({ amount, speed: "fast" });
-                  document.getElementById("opt-fast")?.focus();
-                  announce(`Amount set to ${amount} wtPOT. Fast selected.`);
+                  setForm({ amount });
+                  document.getElementById("amt")?.focus();
+                  announce(`Amount set to ${amount} wtPOT: it goes Fast.`);
                 }}
               >
                 Send 1 for Fast

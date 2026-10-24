@@ -512,3 +512,25 @@
     animation: none;
   }
 }
+
+/* ------------------------------------------------------------------ 9. the speed, set by the amount
+   The burn carries no speed, so the watcher, not the user, picks it: up to 1 tPOT goes fast, more
+   goes standard. The two tiles stay as the design has them, the speed that applies lit, but as a
+   read-only group: no hover or press that would invite a choice the watcher would not honour. */
+
+.speed[aria-readonly="true"] .opt {
+  cursor: default;
+}
+
+.speed[aria-readonly="true"] .opt:hover:not([aria-checked="true"]):not([aria-disabled="true"]) {
+  background: var(--surface-3);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
+
+.speed[aria-readonly="true"] .opt[aria-checked="true"]:hover {
+  background: var(--brand-tint);
+}
+
+.speed[aria-readonly="true"] .opt:active {
+  transform: none;
+}
