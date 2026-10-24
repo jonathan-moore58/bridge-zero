@@ -1613,18 +1613,27 @@ type Pair = ReturnType<Keyring["addFromJson"]>;
 
 /**
  * Member k's sr25519 pair from its polkadot-js JSON keystore, decoded with the password file (its
- * content less one trailing line end); refused unless it is `expected` and signs as it. Neither the
- * password nor any part of either file is printed, and errors are reported without their text.
+ * content less one trailing line end); refused unless it is `expected` and signs as it. `flag` is
+ * how the command line named the key file, which each refusal names: --key-file by hand, or
+ * --member-keys (member k) for the watcher, as its other messages name it (the key file's path is
+ * never printed). Neither the password nor any part of either file is printed, and errors are
+ * reported without their text.
  */
-function loadMemberKey(keyFile: string, passwordFile: string, expected: string, keyring: Keyring): Pair {
+function loadMemberKey(keyFile: string, passwordFile: string, expected: string, keyring: Keyring, flag: string): Pair {
   let json: { address?: unknown; encoded?: unknown; encoding?: { content?: unknown } };
   try {
     json = JSON.parse(readFileSync(keyFile, "utf8")) as typeof json;
   } catch {
-    throw new Stop("--key-file could not be read as JSON");
+    throw new Stop(`${flag} could not be read as JSON`);
   }
-  if (typeof json.encoded !== "string" || !Array.isArray(json.encoding?.content) || !json.encoding.content.includes("sr25519")) throw new Stop("--key-file is not a polkadot-js sr25519 keystore");
-  if (typeof json.address !== "string" || keyring.encodeAddress(keyring.decodeAddress(json.address), V3.ss58) !== expected) throw new Stop(`--key-file is not the keystore of ${expected}`);
+  if (typeof json.encoded !== "string" || !Array.isArray(json.encoding?.content) || !json.encoding.content.includes("sr25519")) throw new Stop(`${flag} is not a polkadot-js sr25519 keystore`);
+  let address: string | null = null;
+  try {
+    if (typeof json.address === "string") address = keyring.encodeAddress(keyring.decodeAddress(json.address), V3.ss58);
+  } catch {
+    // not an address
+  }
+  if (address !== expected) throw new Stop(`${flag} is not the keystore of ${expected}`);
   let password: string;
   try {
     password = readFileSync(passwordFile, "utf8").replace(/\r?\n$/, "");
@@ -1636,11 +1645,11 @@ function loadMemberKey(keyFile: string, passwordFile: string, expected: string, 
     pair = keyring.addFromJson(json as Parameters<Keyring["addFromJson"]>[0]);
     pair.decodePkcs8(password);
   } catch {
-    throw new Stop("the password file does not open --key-file");
+    throw new Stop(`${flag}: the password file does not open it`);
   }
   const message = new TextEncoder().encode("bridge-zero committee key check");
   if (!check(pair.address === expected && pair.verify(message, pair.sign(message), pair.publicKey), `the key file is member ${expected}'s, and signs as it`)) {
-    throw new Stop(`--key-file holds ${pair.address}, not ${expected}`);
+    throw new Stop(`${flag} holds ${pair.address}, not ${expected}`);
   }
   return pair;
 }
@@ -2642,7 +2651,7 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
     }
 
     // --send
-    const pair = o.pair ?? loadMemberKey(o.keyFile!, o.passwordFile!, account, keyring);
+    const pair = o.pair ?? loadMemberKey(o.keyFile!, o.passwordFile!, account, keyring, "--key-file");
     if (pair.address !== account) throw new Stop(`the key given for member ${k} is ${pair.address}, not ${account}`);
     // The watcher's lock is still its own: nothing is signed or recorded otherwise.
     o.guard?.();
@@ -3219,9 +3228,9 @@ async function watchCommand(o: WatchOptions): Promise<number> {
       const pairs = new Map<number, Pair>();
       for (const k of o.memberKeys) {
         try {
-          pairs.set(k.member, loadMemberKey(k.path!, o.passwordFile!, v.members[k.member - 1], keyring));
+          pairs.set(k.member, loadMemberKey(k.path!, o.passwordFile!, v.members[k.member - 1], keyring, `--member-keys (member ${k.member})`));
         } catch (error) {
-          check(false, `--member-keys (member ${k.member}): ${errorText(error)}: the watcher does not start, and nothing was signed (no halt file is left)`);
+          check(false, `${errorText(error)}: the watcher does not start, and nothing was signed (no halt file is left)`);
           return HALTED;
         }
       }

@@ -346,7 +346,9 @@ describe("a member key that does not open", () => {
       { USERPROFILE: home, HOME: home },
     );
     assert.equal(code, 4, out);
-    assert.match(out, /--member-keys \(member 1\): the password file does not open --key-file: the watcher does not start, and nothing was signed \(no halt file is left\)/);
+    // The message names the flag the command line used.
+    assert.match(out, /FAIL --member-keys \(member 1\): the password file does not open it: the watcher does not start, and nothing was signed \(no halt file is left\)/);
+    assert.doesNotMatch(out, /--key-file/, "the watcher takes no --key-file");
     assert.equal(existsSync(haltFile), false, "no halt file: an approval by hand, and the watcher once the key opens, are not refused");
     assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
   });
