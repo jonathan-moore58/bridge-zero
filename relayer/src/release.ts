@@ -6,8 +6,8 @@
 //   npm run release -- burn --amount <wtPOT> --v3-recipient <h160> --send --account <keystore> --password-file <path>
 //   npm run release -- release --burn-nonce <n> [--to <h160>]
 //   npm run release -- release --burn-nonce <n> --rehearse --amount <wtPOT> --to <h160> [--approve --member <1|2|3>]
-//   npm run release -- release --burn-nonce <n> --approve --member <1|2|3> [--send --key-file <member json> --password-file <path>]
-//   npm run release -- release --burn-nonce <n> --cancel --member <1|2|3> [--send --key-file <member json> --password-file <path>]
+//   npm run release -- release --burn-nonce <n> --approve --member <1|2|3> [--send --key-file <member json> --password-file <path> [--despite-halt]]
+//   npm run release -- release --burn-nonce <n> --cancel --member <1|2|3> [--send --key-file <member json> --password-file <path> [--despite-halt]]
 //   npm run release -- release --watch <seconds> [--rounds <n>] [--state-dir <path>]
 //   npm run release -- release --watch <seconds> --send --member-keys <k>:<member json>,<j>:<member json> --password-file <path>
 //   npm run release -- fund --member <1|2|3> | --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]
@@ -319,6 +319,11 @@ const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const STATE_DIR = join(homedir(), ".bridge-zero");
 /** The lock of the committee's watcher, in STATE_DIR whatever --state-dir is: two watchers of one committee on one machine never both send. */
 const watchLockPath = (multisig: string) => join(STATE_DIR, `release-watch-${multisig}.lock`);
+/**
+ * The committee's halt file, next to the lock whatever --state-dir is: after a fatal stop no watcher
+ * with --send starts, and nothing is signed by hand without --despite-halt, while it is there.
+ */
+const haltPathOf = (multisig: string) => join(STATE_DIR, `release-watch-${multisig}.halt`);
 const BRIDGE_RECORD = "deployments/sepolia-bridge.json";
 const V3_RECORD = "deployments/v3-testnet.json";
 const at = (path: string) => resolve(ROOT, path);
@@ -400,7 +405,7 @@ const USAGE = `usage (from relayer/):
   npm run release -- burn --amount <wtPOT> --v3-recipient <h160> [--from <address>] [--send --account <keystore> --password-file <path>]
   npm run release -- release --burn-nonce <n> [--to <h160>]
   npm run release -- release --burn-nonce <n> --rehearse --amount <wtPOT> --to <h160> [--approve --member <1|2|3>]
-  npm run release -- release --burn-nonce <n> --approve|--cancel --member <1|2|3> [--send --key-file <member json> --password-file <path>]
+  npm run release -- release --burn-nonce <n> --approve|--cancel --member <1|2|3> [--send --key-file <member json> --password-file <path> [--despite-halt]]
   npm run release -- release --watch <seconds> [--rounds <n>] [--state-dir <path>] [--send --member-keys <k>:<member json>,<j>:<member json> --password-file <path>]
   fast mode, for release and release --watch: --confirmations <n> (1 to 64; 3 or more with --send) [--fast-cap <tPOT>, by default 1] [--fast-budget <tPOT>, --watch only, by default the cap]
     (above 10 tPOT, --fast-cap and --fast-budget take --fast-cap-override)
@@ -462,7 +467,10 @@ interface BurnHint {
   txHash: Hex | null;
 }
 
-interface ReleaseOptions extends Common, ReleaseRun {}
+interface ReleaseOptions extends Common, ReleaseRun {
+  /** --despite-halt: sign by hand although the committee's halt file is there (a member looked). */
+  despiteHalt?: boolean;
+}
 
 /** release --watch: the auto-release watcher. */
 interface WatchOptions extends Common {
@@ -474,7 +482,7 @@ interface WatchOptions extends Common {
   /** The two members whose keys sign (--member-keys); without --send, members 1 and 2. */
   memberKeys: { member: Member; path: string | null }[];
   passwordFile?: string;
-  /** Where the halt file and the burn cache are (--state-dir), absolute; the lock is in STATE_DIR. */
+  /** Where the burn cache is (--state-dir), absolute; the lock and the halt file are in STATE_DIR. */
   stateDir: string;
 }
 
@@ -641,6 +649,7 @@ function releaseOptions(args: string[]): ReleaseOptions | WatchOptions {
     rounds: { type: "string" },
     "member-keys": { type: "string" },
     "state-dir": { type: "string" },
+    "despite-halt": { type: "boolean", default: false },
     ...COMMON,
   });
   if (str(v.watch) !== undefined) return watchOptions(v);
@@ -665,6 +674,7 @@ function releaseOptions(args: string[]): ReleaseOptions | WatchOptions {
   if (!approve && !cancel && memberText !== undefined) usage("--member is for --approve and --cancel");
   if (send && !approve && !cancel) usage("--send signs an approval or a cancellation: add --approve or --cancel with --member");
   if (send && !(keyText && passwordText)) usage("--send needs --key-file <member json> and --password-file <path>");
+  if (!send && v["despite-halt"] === true) usage("--despite-halt is for --send: a dry run signs nothing, halt file or not");
   if (!send && (keyText !== undefined || passwordText !== undefined)) usage("--key-file and --password-file are for --send; a dry run signs nothing");
   const rule = ruleOf(v);
   // As for the watcher: a reorg of one or two blocks could undo a burn released that shallow.
@@ -686,12 +696,14 @@ function releaseOptions(args: string[]): ReleaseOptions | WatchOptions {
     keyFile,
     passwordFile,
     rule,
+    despiteHalt: v["despite-halt"] === true,
   };
 }
 
 function watchOptions(v: Record<string, string | boolean | undefined>): WatchOptions {
   for (const name of ["burn-nonce", "to", "amount", "member", "key-file"]) if (v[name] !== undefined) usage(`--${name} is for a release of one burn: --watch releases every burn that qualifies`);
   for (const name of ["rehearse", "approve", "cancel"]) if (v[name] === true) usage(`--${name} is for a release of one burn: --watch releases every burn that qualifies`);
+  if (v["despite-halt"] === true) usage("--despite-halt is for an approval or a cancellation by hand: a watcher with --send starts once a member has removed the halt file");
   const send = v.send === true;
   const keysText = str(v["member-keys"]);
   const passwordText = str(v["password-file"]);
@@ -2160,6 +2172,16 @@ async function releaseCommand(o: ReleaseOptions): Promise<number> {
   log(`     the return path is ${TRUST}`);
   if (o.rule.confirmations !== null) log(`     ${ruleText(o.rule)}`);
   const d = await deployed();
+  // After a fatal stop, nothing is signed by hand either until a member looked (--despite-halt).
+  if (o.send) {
+    const haltPath = haltPathOf(d.v.multisig);
+    const halted = readHalt(haltPath);
+    if (halted && !o.despiteHalt) {
+      check(false, `nothing is signed: ${haltRefusal(halted, haltPath)}, or add --despite-halt once a member has looked at it`);
+      return HALTED;
+    }
+    if (halted) warn(`${haltRefusal(halted, haltPath)}; --despite-halt: this run signs anyway`);
+  }
   // An approval or a cancellation by hand takes the committee's watcher lock, as the watcher does:
   // never while a watcher with --send runs, and no watcher starts while it signs.
   let lock: Lock | null = null;
@@ -2302,8 +2324,12 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
       const settled = await settleSubmitted(api, evm, keyring, v, record);
       const failed = settledFailure(before);
       if (failed) {
+        // As the watcher stops on it: with --send, the halt file too, so that no watcher starts and
+        // nothing more is signed by hand until a member has looked.
         check(false, `${failed.why}: the members look at it before anything more is signed`);
-        return FAILED;
+        if (!o.send) return FAILED;
+        leaveHalt(v.multisig, failed);
+        return HALTED;
       }
       if (settled === PENDING) return PENDING;
     }
@@ -2887,12 +2913,28 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
 }
 
 /**
+ * Writes the committee's halt file (haltPathOf, in STATE_DIR) after a fatal stop: the reason, the
+ * burn, the extrinsic and the time. Never throws: when it cannot be written, it says so.
+ */
+function leaveHalt(multisig: string, f: FatalStop): void {
+  const path = haltPathOf(multisig);
+  try {
+    mkdirSync(STATE_DIR, { recursive: true });
+    writeHalt(path, { reason: f.why, burn: f.burn, extrinsicHash: f.extrinsicHash, at: new Date().toISOString() });
+    log(`     ${path} holds why: no watcher of ${multisig} with --send starts, and nothing is signed by hand without --despite-halt, until a member looks at it and removes it (exit code ${HALTED})`);
+  } catch (error) {
+    log(`FAIL the halt file ${path} could not be written (${errorText(error)}): do not restart the watcher or sign by hand before a member looks (exit code ${HALTED})`);
+  }
+}
+
+/**
  * release --watch: a round every --watch seconds (watchRound), each burn that qualifies released by
  * two members' approvals; after rounds in a row an RPC failed, the wait doubles, up to an hour.
  * With --send one watcher per committee holds the lock in STATE_DIR. A fatal stop (a sent approval
  * that fails its checks, an approval that cannot be found though its nonce is used, a lost lock, a
  * key file or a record that cannot be written) ends it with exit code 4 and, with --send, leaves
- * release-watch-<multisig>.halt in --state-dir; no watcher with --send starts while it is there.
+ * release-watch-<multisig>.halt in STATE_DIR, next to the lock, whatever --state-dir is; no watcher
+ * with --send starts while it is there.
  */
 async function watchCommand(o: WatchOptions): Promise<number> {
   const keyed = o.memberKeys.map((k) => k.member).join(" and ");
@@ -2902,7 +2944,7 @@ async function watchCommand(o: WatchOptions): Promise<number> {
   const { Keyring } = await polkadot();
   const keyring = new Keyring({ type: "sr25519", ss58Format: V3.ss58 });
   const v = vaultFacts(readV3Record(), keyring);
-  const haltPath = join(o.stateDir, `release-watch-${v.multisig}.halt`);
+  const haltPath = haltPathOf(v.multisig);
   const halted = readHalt(haltPath);
   if (halted) {
     if (o.send) {
@@ -2915,13 +2957,8 @@ async function watchCommand(o: WatchOptions): Promise<number> {
   const halt = (f: FatalStop): number => {
     check(false, f.why);
     if (o.send) {
-      try {
-        mkdirSync(o.stateDir, { recursive: true });
-        writeHalt(haltPath, { reason: f.why, burn: f.burn, extrinsicHash: f.extrinsicHash, at: new Date().toISOString() });
-        log(`     the watcher stopped for good: ${haltPath} holds why; no watcher of ${v.multisig} with --send starts until a member looks at it and removes it (exit code ${HALTED})`);
-      } catch (error) {
-        log(`FAIL the halt file ${haltPath} could not be written (${errorText(error)}): do not restart the watcher before a member looks (exit code ${HALTED})`);
-      }
+      log("     the watcher stopped for good");
+      leaveHalt(v.multisig, f);
     }
     return HALTED;
   };

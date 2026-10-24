@@ -64,6 +64,8 @@ const CASES: [string[], RegExp][] = [
   [[...RELEASE, "--approve", "--member", "1", "--key-file", "member-1.json"], /--key-file and --password-file are for --send; a dry run signs nothing/],
   [[...RELEASE, "--password-file", "pw.txt"], /--key-file and --password-file are for --send; a dry run signs nothing/],
   [[...RELEASE, "--approve", "--member", "1", "--send", "--key-file", "no-such-key.json", "--password-file", "no-such-file.txt"], /--key-file: no such file/],
+  [[...RELEASE, "--approve", "--member", "1", "--despite-halt"], /--despite-halt is for --send: a dry run signs nothing/],
+  [["release", "--watch", "10", "--despite-halt"], /--despite-halt is for an approval or a cancellation by hand/],
   [[...RELEASE, "--to", "0x1234"], /--to: --to must be 0x and 40 hex digits/],
   [[...RELEASE, "--to", "0x0000000000000000000000000000000000000000"], /--to: --to is the zero address/],
   [[...RELEASE, "--confirmations", "0"], /--confirmations: from 1 to 64 blocks/],
@@ -204,18 +206,41 @@ describe("an approval by hand while a watcher runs", () => {
   });
 });
 
-describe("release --watch after a fatal stop", () => {
-  it("refuses to start with --send while the halt file is there, with exit code 4 and before any request", { timeout: 120_000 }, async () => {
-    const stateDir = join(SCRATCH, "halted");
-    mkdirSync(stateDir, { recursive: true });
-    const halt = join(stateDir, `release-watch-${MULTISIG}.halt`);
-    writeFileSync(halt, JSON.stringify({ reason: "member 2's approval failed its checks", burn: "3", extrinsicHash: "0xfeed", at: "2026-10-24T10:00:00.000Z" }));
-    // A home folder of its own too: the real one's .bridge-zero is never touched.
-    const home = join(SCRATCH, "home-halted");
-    mkdirSync(home, { recursive: true });
-    const { code, out } = await run(["release", "--watch", "10", "--send", ...keyFiles(), "--state-dir", stateDir, ...OFFLINE], { USERPROFILE: home, HOME: home });
+/** A home folder of the tests' own whose .bridge-zero holds the committee's halt file, as a fatal stop leaves it. */
+function homeWithHalt(): Record<string, string> {
+  const home = join(SCRATCH, "home-halted");
+  mkdirSync(join(home, ".bridge-zero"), { recursive: true });
+  writeFileSync(join(home, ".bridge-zero", `release-watch-${MULTISIG}.halt`), JSON.stringify({ reason: "member 2's approval failed its checks", burn: "3", extrinsicHash: "0xfeed", at: "2026-10-24T10:00:00.000Z" }));
+  return { USERPROFILE: home, HOME: home };
+}
+
+const HALT_REFUSAL = /a fatal stop at 2026-10-24T10:00:00.000Z: member 2's approval failed its checks \(burn 3, extrinsic 0xfeed\); look at it, then remove .*home-halted.\.bridge-zero.release-watch-.*\.halt/;
+
+describe("after a fatal stop", () => {
+  it("no watcher starts with --send while the halt file is there, whatever its --state-dir, with exit code 4 and before any request", { timeout: 120_000 }, async () => {
+    // The halt file is next to the lock in the home folder; --state-dir is another folder, with none.
+    const { code, out } = await run(["release", "--watch", "10", "--send", ...keyFiles(), "--state-dir", join(SCRATCH, "elsewhere"), ...OFFLINE], homeWithHalt());
     assert.equal(code, 4, out);
-    assert.match(out, /the watcher does not start: a fatal stop at 2026-10-24T10:00:00.000Z: member 2's approval failed its checks \(burn 3, extrinsic 0xfeed\); look at it, then remove /);
+    assert.match(out, /the watcher does not start: /);
+    assert.match(out, HALT_REFUSAL);
     assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
+  });
+
+  it("nothing is signed by hand with --send while the halt file is there, with exit code 4 and before any request", { timeout: 120_000 }, async () => {
+    const keys = keyFiles();
+    const { code, out } = await run([...RELEASE, "--approve", "--member", "2", "--send", "--key-file", keys[1].split(",")[1].slice(2), "--password-file", keys[3], ...OFFLINE], homeWithHalt());
+    assert.equal(code, 4, out);
+    assert.match(out, /nothing is signed: /);
+    assert.match(out, HALT_REFUSAL);
+    assert.match(out, /or add --despite-halt once a member has looked at it/);
+    assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
+  });
+
+  it("--despite-halt signs by hand anyway, once a member has looked: the run goes on to its checks", { timeout: 120_000 }, async () => {
+    const keys = keyFiles();
+    const { code, out } = await run([...RELEASE, "--approve", "--member", "2", "--send", "--key-file", keys[1].split(",")[1].slice(2), "--password-file", keys[3], "--despite-halt", ...OFFLINE], homeWithHalt());
+    assert.match(out, /--despite-halt: this run signs anyway/);
+    // It reaches the network, a closed local port here: exit code 2.
+    assert.equal(code, 2, out);
   });
 });
