@@ -99,9 +99,11 @@ export interface BridgeRun {
   row: number | null;
 }
 
-/** One transaction of the relayer's record (deployments/relay-sepolia-*.jsonl). */
+/** One transaction of the relayer's record (deployments/relay-sepolia-<sender>.jsonl). */
 export interface RelayEntry {
   chain: "mainnet" | "v3";
+  /** The address that sent it: its history file's name. */
+  sender: Hex;
   client: Hex;
   method: string;
   block: { number: number; hash: Hex };
@@ -269,7 +271,7 @@ export interface LatestRun {
   } | null;
 }
 
-/** The relayer's latest run into one light client: the entries recorded within minutes of its last one. */
+/** The relayer's latest run into one light client: one sender's entries recorded within minutes of its last one. */
 export interface RelayRun {
   entries: RelayEntry[];
   settledAt: string | null;
@@ -298,7 +300,8 @@ export interface Records {
   bridge: BridgeRun;
   attacks: Attack[];
   lightClients: { mainnet: LightClientFacts; v3: LightClientFacts };
-  relay: { file: string; entries: RelayEntry[] };
+  /** Every sender's history in deployments/, merged: `files` are their paths, `entries` their transactions, each once. */
+  relay: { files: string[]; entries: RelayEntry[] };
   returnPath: ReturnPath;
   /** Totals from the records: the recorded fallback of the vault's and the token's live state. */
   totals: {

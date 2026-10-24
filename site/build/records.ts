@@ -377,7 +377,7 @@ function recordedTx(s: Json, file: string, what: string): RecordedTx {
 
 const ATTACK_PARTS = ["signature", "header", "proof", "amount", "recipient"] as const;
 
-function parseRelay(text: string, file: string): RelayEntry[] {
+function parseRelay(text: string, file: string, sender: Hex): RelayEntry[] {
   return text
     .split(/\r?\n/)
     .filter((l) => l.trim())
@@ -393,6 +393,7 @@ function parseRelay(text: string, file: string): RelayEntry[] {
       const block = obj(e.block, file, `line ${i + 1} block`);
       return {
         chain,
+        sender,
         client: hex(e.client, file, `line ${i + 1} client`, 20),
         method: str(e.method, file, `line ${i + 1} method`),
         block: { number: num(block.number, file, `line ${i + 1} block.number`), hash: hex(block.hash, file, `line ${i + 1} block.hash`, 32) },
@@ -409,17 +410,48 @@ function parseRelay(text: string, file: string): RelayEntry[] {
     });
 }
 
+/** A relayer history: one file per sender, relay-sepolia-<sender>.jsonl, the sender in lowercase. */
+const RELAY_FILE = /^relay-sepolia-(0x[0-9a-f]{40})\.jsonl$/;
+
+/**
+ * Every relayer history in `dir` (deployments/ by default), merged in the order of their file
+ * names: a transaction recorded twice (the same txHash) counts once. Each entry keeps its sender,
+ * from its file's name. `files` are the histories' paths from the repository root.
+ */
+function readRelayHistories(root: string, dir: string): { files: string[]; entries: RelayEntry[] } {
+  const names = existsSync(dir) ? readdirSync(dir).filter((f) => RELAY_FILE.test(f)).sort() : [];
+  const files: string[] = [];
+  const entries: RelayEntry[] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    const file = relative(root, join(dir, name)).split(sep).join("/");
+    files.push(file);
+    const sender = (RELAY_FILE.exec(name)?.[1] ?? fail(file, "no sender in the file name")) as Hex;
+    for (const e of parseRelay(readFileSync(join(dir, name), "utf8"), file, sender)) {
+      if (seen.has(e.txHash)) continue;
+      seen.add(e.txHash);
+      entries.push(e);
+    }
+  }
+  return { files, entries };
+}
+
 function latestOk(entries: RelayEntry[], chain: "mainnet" | "v3"): RelayEntry | null {
   const ok = entries.filter((e) => e.chain === chain && e.ok === true && e.status === 1);
   return ok.sort((a, b) => a.block.number - b.block.number).at(-1) ?? null;
 }
 
-/** The relayer's latest run into a client: its successful entries settled within 15 minutes of the last one. */
+/**
+ * The relayer's latest run into a client: the sender of the newest successful entry, and its
+ * successful entries settled within 15 minutes of that one. A run is one sender's: another
+ * sender's entries in those minutes are not part of it.
+ */
 function latestRelayRun(entries: RelayEntry[], chain: "mainnet" | "v3"): RelayRun | null {
   const ok = entries.filter((e) => e.chain === chain && e.ok === true && e.status === 1 && e.settledAt && !Number.isNaN(Date.parse(e.settledAt)));
   if (!ok.length) return null;
-  const last = Math.max(...ok.map((e) => Date.parse(e.settledAt ?? "")));
-  const run = ok.filter((e) => last - Date.parse(e.settledAt ?? "") <= 15 * 60 * 1000).sort((a, b) => a.block.number - b.block.number);
+  const at = (e: RelayEntry) => Date.parse(e.settledAt ?? "");
+  const newest = ok.reduce((a, b) => (at(b) > at(a) ? b : a));
+  const run = ok.filter((e) => e.sender === newest.sender && at(newest) - at(e) <= 15 * 60 * 1000).sort((a, b) => a.block.number - b.block.number);
   return { entries: run, settledAt: run.at(-1)?.settledAt ?? null };
 }
 
@@ -582,7 +614,8 @@ function gitCommit(root: string): string | null {
   }
 }
 
-export function buildRecords(root: string): Records {
+/** `relayDir` is where the relayer histories are read: deployments/ unless a test gives its own. */
+export function buildRecords(root: string, relayDir = join(root, "deployments")): Records {
 
   // Sepolia: the light clients and libraries
   const SEP = "deployments/sepolia.json";
@@ -827,10 +860,12 @@ export function buildRecords(root: string): Records {
       };
     });
 
-  // The relayer
-  const relayFile = readdirSync(join(root, "deployments")).find((f) => /^relay-sepolia-0x[0-9a-f]{40}\.jsonl$/.test(f));
-  const relayPath = relayFile ? `deployments/${relayFile}` : null;
-  const relayEntries = relayPath ? parseRelay(readFileSync(join(root, relayPath), "utf8"), relayPath) : [];
+  // The relayer: every sender's history, merged
+  const relay = readRelayHistories(root, relayDir);
+  const relayEntries = relay.entries;
+  const relayFileOf = (e: RelayEntry | null) => (e ? (relay.files.find((f) => f.endsWith(`relay-sepolia-${e.sender}.jsonl`)) ?? "") : "");
+  const latestMainnet = latestOk(relayEntries, "mainnet");
+  const latestV3 = latestOk(relayEntries, "v3");
 
   // Light client facts
   const MAIN_PROBE = "fixtures/probe/mainnet.portaldot.io.json";
@@ -863,8 +898,8 @@ export function buildRecords(root: string): Records {
       fixtureSet: { ...mainSet, from: MAIN_FIX },
       checkpointRow: initRow("#1"),
       sudo: mainProbe.sudo,
-      latestRelay: latestOk(relayEntries, "mainnet"),
-      latestImport: latestImportOf(latestOk(relayEntries, "mainnet"), relayPath ?? "", [], "mainnet"),
+      latestRelay: latestMainnet,
+      latestImport: latestImportOf(latestMainnet, relayFileOf(latestMainnet), [], "mainnet"),
     } satisfies LightClientFacts,
     v3: {
       key: "v3",
@@ -881,8 +916,8 @@ export function buildRecords(root: string): Records {
       fixtureSet: latestSigningSet,
       checkpointRow: initRow("#2"),
       sudo: v3Probe.sudo,
-      latestRelay: latestOk(relayEntries, "v3"),
-      latestImport: latestImportOf(latestOk(relayEntries, "v3"), relayPath ?? "", okMints, "v3"),
+      latestRelay: latestV3,
+      latestImport: latestImportOf(latestV3, relayFileOf(latestV3), okMints, "v3"),
     } satisfies LightClientFacts,
   };
   if (lightClients.v3.genesis !== String(v3.genesisHash).toLowerCase()) fail(V3F, "genesis differs from the V3 probe's");
@@ -1029,7 +1064,7 @@ export function buildRecords(root: string): Records {
     bridge,
     attacks,
     lightClients,
-    relay: { file: relayPath ?? "", entries: relayEntries },
+    relay: { files: relay.files, entries: relayEntries },
     returnPath,
     totals,
     abi,

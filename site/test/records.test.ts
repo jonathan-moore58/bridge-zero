@@ -125,6 +125,53 @@ test("the relayer's latest runs: V3 set 32 to 33, then its head", () => {
   assert.ok(r.relayRuns.mainnet && r.relayRuns.mainnet.entries.every((e) => e.signatures === 7));
 });
 
+test("every sender's relay history counts: the newest import and the latest run across them, one sender a run", () => {
+  // Three senders' histories (test/fixtures/relays): A into both clients, then B into V3 and C into
+  // the old mainnet; B's file holds one line twice.
+  const dir = join(here, "fixtures", "relays");
+  const f = buildRecords(repo, dir);
+  const A = `0x${"a".repeat(40)}`;
+  const B = `0x${"b".repeat(40)}`;
+  const C = `0x${"c".repeat(40)}`;
+  const tx = (b: string) => `0x${b.repeat(32)}`;
+  const fileOf = (s: string) => f.relay.files.find((x) => x.endsWith(`relay-sepolia-${s}.jsonl`));
+
+  // The newest import into each client is the newest in any file.
+  assert.equal(f.lightClients.v3.latestRelay?.txHash, tx("b3"));
+  assert.equal(f.lightClients.mainnet.latestRelay?.txHash, tx("c1"));
+  assert.deepEqual([f.lightClients.v3.latestImport?.via, f.lightClients.v3.latestImport?.number], ["relayer", 201700]);
+  assert.equal(f.lightClients.v3.latestImport?.from, fileOf(B));
+  assert.equal(f.lightClients.mainnet.latestImport?.from, fileOf(C));
+
+  // All three files, each transaction once.
+  assert.equal(f.relay.files.length, 3);
+  assert.deepEqual([A, B, C].map((s) => Boolean(fileOf(s))), [true, true, true]);
+  assert.deepEqual(
+    f.relay.entries.map((e) => [e.sender, e.txHash]),
+    [
+      [A, tx("a1")],
+      [A, tx("a2")],
+      [A, tx("a3")],
+      [A, tx("a4")],
+      [B, tx("b1")],
+      [B, tx("b2")],
+      [B, tx("b3")],
+      [C, tx("c1")],
+    ],
+  );
+
+  // Each client's last run is the newest across the senders, and holds one sender's entries: A's
+  // mainnet head 5 minutes before C's is not part of C's run.
+  assert.deepEqual(f.relayRuns.v3?.entries.map((e) => e.txHash), [tx("b2"), tx("b3")]);
+  assert.equal(f.relayRuns.v3?.settledAt, "2026-10-19T12:00:10.000Z");
+  assert.deepEqual(f.relayRuns.mainnet?.entries.map((e) => e.txHash), [tx("c1")]);
+  assert.equal(f.relayRuns.mainnet?.settledAt, "2026-10-19T12:10:00.000Z");
+
+  // The repository's own records: every history in deployments/ is read.
+  assert.ok(r.relay.files.length >= 1 && r.relay.files.every((x) => /^deployments\/relay-sepolia-0x[0-9a-f]{40}\.jsonl$/.test(x)));
+  assert.equal(new Set(r.relay.entries.map((e) => e.txHash)).size, r.relay.entries.length);
+});
+
 test("the way back's duration comes from the records' timestamps", () => {
   const t = r.returnPath.timing;
   assert.ok(t);

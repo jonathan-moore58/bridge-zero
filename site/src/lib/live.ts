@@ -390,7 +390,7 @@ const RECORDED: { [K in FieldKey]?: { value: Fields[K]; from: string } | null } 
   "set.v3": { value: { setId: BigInt(LC.v3.fixtureSet.setId), keys: LC.v3.fixtureSet.keys }, from: LC.v3.fixtureSet.from },
   "import.mainnet": (() => {
     const v = recordedImport();
-    return v ? { value: v, from: records.relay.file } : null;
+    return v ? { value: v, from: LC.mainnet.latestImport?.from ?? "deployments/" } : null;
   })(),
 };
 

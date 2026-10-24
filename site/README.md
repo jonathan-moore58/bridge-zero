@@ -34,7 +34,7 @@ as a check that passed. `build/records.ts` reads, at build time,
 | Source | What the page takes from it |
 |---|---|
 | `deployments/sepolia.json`, `sepolia-bridge.json`, `v3-testnet.json` | addresses, the mints (the newest one is the hero's card), the six reverted copies and their revert data, the locks, the vault, the burns, the committee's releases and funding |
-| `deployments/relay-sepolia-*.jsonl` | the relayer's latest runs, and each light client's newest import (with the mints' bundle blocks): the fallback for its state |
+| `deployments/relay-sepolia-*.jsonl` | every sender's history, merged: each client's latest run (one sender's) and newest import (with the mints' bundle blocks), the fallback for its state |
 | `fixtures/v3-testnet-hero/`, `fixtures/v3-testnet-lock1/` | the bundles lock 0 and lock 1 were minted with: header, precommits, signers hint, proofs |
 | `fixtures/mainnet/finality-proof-head.json`, `fixtures/probe/*.json` | the old mainnet's 10 keys (fallback for `authorities(setId)`), block times, sudo keys |
 | `README.md` | the evidence rows, the "Verify it yourself" commands with the outputs it records, and the roadmap, in its words |
