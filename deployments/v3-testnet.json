@@ -417,6 +417,12 @@
         "payeeCredited": "10000000000000",
         "payeeReceived": "100000000000000000",
         "releasedLog": "not served"
+      },
+      "finalizedCheck": {
+        "block": 11983049,
+        "ok": true,
+        "why": "the same burn in final block #11983026",
+        "at": "2026-10-24T10:09:52.235Z"
       }
     }
   ]
