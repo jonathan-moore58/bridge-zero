@@ -336,11 +336,21 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   error that names it, and a replay with `NonceAlreadyUsed(0)` (rows 33 to 38).
 - Lock to mint in 48 seconds, measured: lock 1, sent on V3 and minted on Sepolia, the mint's block
   36 seconds after the lock's by the block timestamps (rows 54 and 55).
-- The way back, trusted, run once: 0.5 wtPOT burned on Sepolia (row 47); 2 of the 3 committee
-  members approved its release on V3 through pallet-multisig, and the vault paid 0.5 tPOT to the
-  address the burn named (rows 48 to 51). `npm run release` checks the burn, dry-runs the release
-  from the multisig before anything is sent, and checks the payout
+- The way back, trusted: 0.5 wtPOT burned on Sepolia (row 47); 2 of the 3 committee members
+  approved its release on V3 through pallet-multisig, and the vault paid 0.5 tPOT to the address
+  the burn named (rows 48 to 51). `npm run release` checks the burn, dry-runs the release from the
+  multisig before anything is sent, and checks the payout
   ([docs/BRIDGE.md](docs/BRIDGE.md#the-release-tool)).
+- The auto-release watcher and fast mode, since about 09:50 UTC on Oct 24: `release --watch 15
+  --confirmations 3 --send`, with members 1 and 2's keys, on the same machine as the relayer. Every
+  15 seconds it looks for new burns, gives each every check of the release tool, and sends both
+  approvals. In fast mode it reads a burn at the block 3 below Sepolia's latest instead of waiting
+  for Sepolia's finality, for a burn of at most 1 tPOT (its cap), with the fast releases whose burn
+  is not final yet at most 1 tPOT in all (its budget); a larger burn waits for finality. Burn 1,
+  0.1 wtPOT, was released on V3 84 seconds after its Sepolia block, measured by the block
+  timestamps (rows 56 to 58). Fast mode is as trusted as the standard way back (the committee), and
+  a reorg deeper than 3 blocks could undo a burn after its release
+  ([docs/BRIDGE.md](docs/BRIDGE.md#fast-mode-and-the-auto-release-watcher)).
 - The live page, [jonathan-moore58.github.io/bridge-zero](https://jonathan-moore58.github.io/bridge-zero/) (`site/`), built and deployed
   by `.github/workflows/pages.yml` on every change to the records: both light clients, the vault
   and the bridge read live, the recorded runs as the fallback when an RPC is down, and the six
@@ -357,7 +367,9 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
 - The return path is trusted: whoever holds 2 of the 3 committee keys can release up to the
   vault's outstanding tPOT, to any address, or release nothing after a burn, and nothing on V3
   checks a release against a burn. On the testnet one operator holds all three keys: like the V3
-  validators, the committee shows the mechanics, not independent approvers.
+  validators, the committee shows the mechanics, not independent approvers. The watcher holds
+  members 1 and 2's keys on one machine, so whoever controls that machine and its password file can
+  release up to the vault's outstanding tPOT.
 - Each light client's admin (the deployer) set its checkpoint and can pause it and install a new
   checkpoint while it is paused or halted. Since it can pause at any time, it could make the
   client, and so the minter, accept a state root of its choosing: the admin is trusted like the
@@ -374,11 +386,15 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
 - The relayer runs on one machine, which starts it at logon: a light client is as current as its
   last run, and while that machine is off or asleep no run happens. The records hold a gap of about
   six hours: no import into either client from 00:38 to 06:56 UTC on Oct 24, while the machine
-  slept (00:45 to 06:52 UTC); after it woke, the relayer had both clients up to date by 07:03.
-- The way back waits for Sepolia's finality, about 13 to 15 minutes, before the committee releases,
-  so the recorded run took about 20 minutes from the burn to the release (rows 47 to 51). The
-  way in needs only V3's finality: 48 seconds for lock 1. The roadmap's fast mode and LP
-  fast-fill are planned for the way back.
+  slept (00:45 to 06:52 UTC); after it woke, the relayer had both clients up to date by 07:03. The
+  auto-release watcher runs on the same machine, like the relayer: while it is off or asleep, no
+  burn is released until a member runs the release by hand or the watcher starts again.
+- The way back, standard, waits for Sepolia's finality, about 13 to 15 minutes, before the
+  committee releases: the recorded run took about 20 minutes from the burn to the release (rows 47
+  to 51). Fast mode took 84 seconds from the burn's block to the release's, measured (rows 56 to
+  58), but only for a burn of up to 1 tPOT, still trusted (the committee), and a reorg deeper than
+  3 blocks could undo a burn after its release. The way in needs only V3's finality: 48 seconds
+  for lock 1. LP fast-fill is planned for the way back.
 
 ## Roadmap
 
