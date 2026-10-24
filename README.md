@@ -415,14 +415,20 @@ Plans, not promises: a step counts once it runs on chain and is in the [evidence
   address, so the contracts stay as they are. The provider carries the wait and the reorg risk and
   can charge for it, as the liquidity bridges on Ethereum mainnet do.
 - **Fast-fill for the way in.** A provider pays wtPOT on Sepolia at once and is repaid when the
-  lock's proven mint lands; this needs a minter that mints to the provider that filled.
-- **More EVM chains.** The same contracts can be deployed on EVM chains that have the BLAKE2F
-  precompile (EIP-152) and room for the light client's deployment (15,039,367 gas on Sepolia). On
-  Oct 20 a read-only call to that precompile returned the expected result for an EIP-152 test
-  vector on Base Sepolia, OP Sepolia, Arbitrum Sepolia, Polygon Amoy, the BNB Smart Chain testnet,
-  Avalanche Fuji and Linea Sepolia; zkSync Era Sepolia does not have it. Each chain gets its own
-  light client and minter; a lock's commitment already names the destination chain and minter, so
-  one vault on Portaldot can serve them all, and the liquidity providers can serve every route.
+  lock's proven mint lands. This needs new contracts on both sides: a vault that puts the fee the
+  user allows into the lock's commitment, a minter that mints to the provider that filled, and a
+  new wtPOT, because wtPOT's minter is fixed when it is deployed.
+- **More EVM chains.** The same contracts can be deployed on EVM chains whose transactions can call
+  the BLAKE2F precompile (EIP-152) and that have room for the light client's deployment
+  (15,039,367 gas on Sepolia). On Oct 24 the whole sequence (deploy, initialize, import a
+  validator-set change, prove a balance, and a tampered proof that must revert) passed in a
+  simulation, with no transaction sent, on Base Sepolia, OP Sepolia, Arbitrum Sepolia, Polygon
+  Amoy, the BNB Smart Chain testnet and Avalanche Fuji. Linea Sepolia is not on the list: its node
+  answers the precompile, but its sequencer refuses every transaction that calls it, so Linea would
+  need blake2b written in Solidity. zkSync Era Sepolia does not have the precompile. Each chain gets
+  its own light client and minter; a lock's commitment already names the destination chain and
+  minter, so one vault on Portaldot can serve them all, and the liquidity providers can serve every
+  route.
 
 **After the event**
 
