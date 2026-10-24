@@ -301,6 +301,7 @@ import {
   type Receipt,
 } from "../../contracts/script/lib/sepolia.mjs";
 import {
+  addHalt,
   approvalOutcome,
   checkBlock,
   cursorOf,
@@ -329,7 +330,6 @@ import {
   tradeOff,
   watchRound,
   writeBurnCache,
-  writeHalt,
   type BurnFacts as FinalBurn,
   type BurnReceipt,
   type BurnState,
@@ -3108,7 +3108,8 @@ function leaveHalt(multisig: string, f: FatalStop): void {
   const path = haltPathOf(multisig);
   try {
     mkdirSync(STATE_DIR, { recursive: true });
-    writeHalt(path, { reason: f.why, burn: f.burn, extrinsicHash: f.extrinsicHash, at: new Date().toISOString() });
+    // One there already keeps its reason: the file names this stop, then the earlier ones.
+    addHalt(path, { reason: f.why, burn: f.burn, extrinsicHash: f.extrinsicHash, at: new Date().toISOString() });
     log(`     ${path} holds why: no watcher of ${multisig} with --send starts, and nothing is signed by hand without --despite-halt, until a member looks at it and removes it (exit code ${HALTED})`);
   } catch (error) {
     log(`FAIL the halt file ${path} could not be written (${errorText(error)}): do not restart the watcher or sign by hand before a member looks (exit code ${HALTED})`);

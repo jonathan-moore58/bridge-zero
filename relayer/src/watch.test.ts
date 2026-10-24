@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
+  addHalt,
   approvalOutcome,
   checkBlock,
   cursorOf,
@@ -776,6 +777,30 @@ describe("the halt file", () => {
     const h = readHalt(path);
     assert.deepEqual(h, { reason: "member 2's approval failed its checks", burn: "4", extrinsicHash: "0xfeed", at: "2026-10-24T10:00:00.000Z" });
     assert.equal(haltRefusal(h!, path), `a fatal stop at 2026-10-24T10:00:00.000Z: member 2's approval failed its checks (burn 4, extrinsic 0xfeed); look at it, then remove ${path}`);
+  });
+
+  it("keeps the first fatal stop's reason when another is left: the file names the new one, then the earlier", () => {
+    const path = join(dir, "twice.halt");
+    // A fast release of burn 5 that a reorg undid; then, while the members look, a by-hand run finds another failure.
+    const reorg = { reason: "the release of burn 5, made in fast mode, does not stand on Sepolia's final chain", burn: "5", extrinsicHash: "0xexec5", at: "2026-10-24T10:00:00.000Z" };
+    writeHalt(path, reorg);
+    const second = { reason: "member 1's cancel 0xcancel6 (burn 6) ran on chain in #200 and failed its checks", burn: "6", extrinsicHash: "0xcancel6", at: "2026-10-24T11:00:00.000Z" };
+    const both = addHalt(path, second);
+    assert.deepEqual(readHalt(path), both);
+    assert.equal(both.burn, "6");
+    assert.equal(both.extrinsicHash, "0xcancel6");
+    assert.equal(
+      both.reason,
+      "member 1's cancel 0xcancel6 (burn 6) ran on chain in #200 and failed its checks; earlier: the release of burn 5, made in fast mode, does not stand on Sepolia's final chain (burn 5, extrinsic 0xexec5), at 2026-10-24T10:00:00.000Z",
+    );
+    // The same stop left again (a settling's, then the watcher's) keeps the file as it is.
+    assert.deepEqual(addHalt(path, { ...second, reason: "burn 6: member 1's approval failed its checks", at: "2026-10-24T11:00:01.000Z" }), both);
+    assert.deepEqual(readHalt(path), both);
+    // A stop with no extrinsic (a lost lock) is added once.
+    const lost = { reason: "the lock is not this watcher's any more", burn: null, extrinsicHash: null, at: "2026-10-24T12:00:00.000Z" };
+    const three = addHalt(path, lost);
+    assert.match(three.reason, /^the lock is not this watcher's any more; earlier: member 1's cancel 0xcancel6 .*; earlier: the release of burn 5/);
+    assert.deepEqual(addHalt(path, { ...lost, at: "2026-10-24T12:00:05.000Z" }), three);
   });
 
   it("halts on a halt file that does not parse, and not without one", () => {

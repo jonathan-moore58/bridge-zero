@@ -726,6 +726,21 @@ export function writeHalt(path: string, halt: Halt): void {
   renameSync(`${path}.tmp`, path);
 }
 
+/**
+ * Leaves a fatal stop in the halt file at `path` without dropping one already there: the file names
+ * the new stop, and the reasons of the earlier ones after it ("earlier: ..."), so the members see
+ * each. The same stop left again (the same burn and extrinsic, as a settling and the watcher both
+ * leave it, or the same reason) keeps the file as it is. Returns what the file holds.
+ */
+export function addHalt(path: string, halt: Halt): Halt {
+  const old = readHalt(path);
+  const same = old !== null && old.burn === halt.burn && old.extrinsicHash === halt.extrinsicHash && (halt.extrinsicHash !== null || old.reason.startsWith(halt.reason));
+  if (same) return old;
+  const next = old === null ? halt : { ...halt, reason: `${halt.reason}; earlier: ${old.reason}${old.burn === null ? "" : ` (burn ${old.burn}${old.extrinsicHash ? `, extrinsic ${old.extrinsicHash}` : ""})`}, at ${old.at}` };
+  writeHalt(path, next);
+  return next;
+}
+
 /** The halt file at `path`, or null when there is none; one that does not parse still halts. */
 export function readHalt(path: string): Halt | null {
   if (!existsSync(path)) return null;
