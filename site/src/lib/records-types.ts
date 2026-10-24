@@ -165,6 +165,8 @@ export interface ReleaseRecord {
   amountNative: string | null;
   approvals: { member: number; action: string; extrinsicHash: Hex; status: string; block: number | null; signedAt: string | null }[];
   releasedAt: { number: number; hash: Hex } | null;
+  /** How the burn qualified for the release, as the record says ("fast" for fast mode), when it says. */
+  by: string | null;
 }
 
 export interface FundingRecord {

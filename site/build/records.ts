@@ -964,6 +964,7 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"))
         };
       }),
       releasedAt: releasedBlock ? { number: num(releasedBlock.number, V3F, "released.block.number"), hash: hex(releasedBlock.hash, V3F, "released.block.hash", 32) } : null,
+      by: optStr(rel.by),
     };
   });
   const funding = (Array.isArray(v3.committeeFunding) ? v3.committeeFunding : []).map((f, i) => {

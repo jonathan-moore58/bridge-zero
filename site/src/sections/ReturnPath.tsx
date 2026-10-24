@@ -47,7 +47,13 @@ export function ReturnPath() {
   const recomputed = burn?.burnNonce !== null && burn ? computeBurnId(SEPOLIA_CHAIN_ID, MINTER, BigInt(burn.burnNonce ?? "0")) : null;
   const liveBurns = minter.status === "live" ? Number(minter.value?.burnCount ?? 0n) : null;
   const unrecorded = liveBurns !== null && liveBurns > burns.length;
-  const status = ran ? "run once" : burn ? "burned, release pending" : "built, not run yet";
+  const releasedAll = RP.releases.filter((r) => r.status === "released");
+  const status = ran ? (releasedAll.length > 1 ? `run ${releasedAll.length} times` : "run once") : burn ? "burned, release pending" : "built, not run yet";
+  // A release fast mode ran (the record's "by"), with its burn's and its execution's signing times.
+  const fast = releasedAll.find((r) => r.by === "fast") ?? null;
+  const fastBurn = fast ? (burns.find((b) => b.txHash === fast.burnTx) ?? null) : null;
+  const fastRun = fast?.approvals.find((a) => a.action === "execute") ?? null;
+  const fastRows = [rowOf(fast?.burnTx ?? null), rowOf(fastRun?.extrinsicHash ?? null)];
   const idState = checked && check?.onChain ? (check.onChain === burn?.burnId ? "is-ok" : "is-bad") : "is-wait";
   const relState = checked && check?.released === true ? "is-ok" : checked && check?.released === false ? "is-bad" : "is-wait";
 
@@ -146,12 +152,20 @@ export function ReturnPath() {
             <Clock />
           </span>
           <p class="small">
-            <strong>Why it takes minutes.</strong> The committee releases only once Sepolia has finalized the burn's block, about 13 to 15 minutes after it.
+            <strong>Why it takes minutes.</strong> Without fast mode, the committee releases only once Sepolia has finalized the burn's block, about 13 to 15 minutes after it.
             {RP.timing ? (
               <>
                 {" "}
                 That wait is why the recorded way back took about {formatDuration(RP.timing.seconds)}: the burn was sent at {hhmm(RP.timing.burnSentAt)} and the release ran at{" "}
                 {hhmm(RP.timing.releaseRunAt)}, by the records' timestamps.
+              </>
+            ) : null}
+            {fast && fastBurn?.signedAt && fastRun?.signedAt ? (
+              <>
+                {" "}
+                Fast mode releases a small burn after a few Sepolia confirmations instead, before Sepolia finalizes it: burn {fast.burnNonce} was sent at {hhmm(fastBurn.signedAt)} and its
+                release ran at {hhmm(fastRun.signedAt)}{fastRows[0] && fastRows[1] ? ` (rows ${fastRows[0]} to ${fastRows[1]})` : ""}. A reorg deeper than those confirmations could undo
+                a burn after its release.
               </>
             ) : null}{" "}
             And it is trusted: nothing on V3 checks the release against the burn.
