@@ -9,8 +9,12 @@ import { useBox } from "./store.ts";
 import { connectWallet, openNoWallet } from "./connect.tsx";
 import { useNet, type NetState } from "./net.ts";
 import { Announcer, CopyButton, Icon, Mark, SheetHost, Toasts, closeSheet, fmt, short, toast } from "./ui.tsx";
+import { ActivityView } from "./views/Activity.tsx";
 import { BridgeView } from "./views/Bridge.tsx";
-import { Soon } from "./views/Soon.tsx";
+import { LabView } from "./views/Lab.tsx";
+import { NetworkView } from "./views/Network.tsx";
+import { ReceiptView } from "./views/Receipt.tsx";
+import { TxView } from "./views/Tx.tsx";
 import { addV3, addWtpot, disconnect, wallet, walletCode, type Balances } from "./wallet.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -282,9 +286,14 @@ export function App() {
   const current = (key: string) => route.name === key || (key === "bridge" && (route.name === "tx" || route.name === "receipt"));
   const preview = w.status === "none" || w.status === "off";
 
-  let view;
-  if (route.name === "bridge") view = <BridgeView route={route} net={net} />;
-  else view = <Soon name={route.name} />;
+  const view = {
+    bridge: () => <BridgeView route={route} net={net} />,
+    tx: () => <TxView route={route} net={net} />,
+    receipt: () => <ReceiptView route={route} />,
+    activity: () => <ActivityView route={route} />,
+    network: () => <NetworkView net={net} />,
+    lab: () => <LabView route={route} />,
+  }[route.name]();
 
   return (
     <>

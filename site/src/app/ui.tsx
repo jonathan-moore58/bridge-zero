@@ -27,6 +27,36 @@ export const short = (h: string, head = 6, tail = 4): string => h.slice(0, head)
 /** A number as the app shows it: grouped, at most `max` decimals. */
 export const fmt = (n: number, max = 4): string => n.toLocaleString("en-US", { maximumFractionDigits: max });
 
+/** A whole number, grouped. */
+export const num = (n: number): string => n.toLocaleString("en-US");
+
+/** A countdown or a stopwatch: m:ss. */
+export function clock(s: number): string {
+  const t = Math.max(0, Math.floor(s));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+}
+
+/** A duration. Number and unit are joined by a narrow no-break space (U+202F). */
+export function dur(s: number): string {
+  const t = Math.round(s);
+  if (t < 60) return `${t} s`;
+  const r = t % 60;
+  return `${Math.floor(t / 60)} min${r ? ` ${r} s` : ""}`;
+}
+
+/** A measured time in seconds, said in seconds (84 s, never 1 min 24 s). */
+export const secs = (s: number): string => `${Math.round(s)} s`;
+
+/** A badge: a dot, an icon or nothing before its text. `kind` is the badge--<kind> modifier. */
+export function Chip({ kind, children, icon, cls = "" }: { kind: string; children: ComponentChildren; icon?: string; cls?: string }) {
+  return (
+    <span class={`badge badge--${kind} ${cls}`}>
+      {icon === "dot" ? <span class="badge__dot" aria-hidden="true" /> : icon ? <Icon id={icon} /> : null}
+      {children}
+    </span>
+  );
+}
+
 /** Keeps a phrase on one line. */
 export const Nb = ({ children }: { children: ComponentChildren }) => <span class="nowrap">{children}</span>;
 
