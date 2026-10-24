@@ -366,7 +366,7 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
 - The relayer runs on one machine, which starts it at logon: a light client is as current as its
   last run, and while that machine is off or asleep no run happens. The records hold a gap of about
   six hours: no import into either client from 00:38 to 06:56 UTC on Oct 24, while both chains
-  finalized blocks and Sepolia's base fee stayed near 16 wei.
+  finalized blocks and Sepolia's base fee stayed below 25 wei, far under its gates.
 - The way back waits for Sepolia's finality, about 13 to 15 minutes, before the committee releases,
   so the recorded run took about 20 minutes from the burn to the release (rows 47 to 51). The
   way in needs only V3's finality: 48 seconds for lock 1. The roadmap's fast mode and LP
