@@ -398,7 +398,9 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
 
 ## Roadmap
 
-Plans, not promises: a step counts once it runs on chain and is in the [evidence](#evidence).
+Plans, not promises: a step counts once it runs on chain and is in the [evidence](#evidence). Who
+the bridge is for, the fees it could charge, its running costs and the three months after the
+event are in [docs/BUSINESS.md](docs/BUSINESS.md).
 
 **Next, before Nov 6**
 
@@ -714,7 +716,7 @@ The bundle is [`fixtures/v3-testnet-lock1`](fixtures/v3-testnet-lock1).
 | `fixtures/` | Captured chain data used by the tests, each file with its source |
 | `site/` | The live page (Vite, TypeScript, Preact): reads the chains, with the records as the fallback; deployed to GitHub Pages by `.github/workflows/pages.yml` |
 | `deployments/` | Records of every Sepolia transaction, and on the V3 testnet of the vault's deployment, lock 0 and the return path: addresses, hashes, blocks, gas and fees |
-| `docs/` | Gas measurements, deployment notes, decisions |
+| `docs/` | Gas measurements, deployment notes, decisions, the business model |
 
 ## Third-party code
 
