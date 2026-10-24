@@ -471,7 +471,8 @@ and the round starts again.
 The way back above waits for Sepolia's finality (13 to 20 minutes) and for two people. Two options
 of `release` shorten it; the header of `release.ts` and `relayer/src/watch.ts` have the details.
 
-**Fast mode, `--confirmations <n>`** (1 to 64; 3 or more for the watcher with `--send`). The burn is
+**Fast mode, `--confirmations <n>`** (1 to 64; 3 or more with `--send`, for the watcher and for an
+approval or a cancellation by hand). The burn is
 read and checked at the block `n` below Sepolia's latest instead of the finalized block, by that
 block's hash; every other check stays, and for a burn that is not final the receipt, the log and the
 block read must be one canonical chain. The tool prints the trade-off every time it is on:
@@ -486,15 +487,23 @@ block or two deep; finality is the only guarantee. Two limits bound what fast mo
 
 - **The cap.** Fast mode releases a burn of at most `--fast-cap <tPOT>` (by default 1 tPOT); a
   larger one waits for finality (exit code 3 until then).
-- **The budget** (the watcher). The burns it released fast whose blocks are not final yet stay
-  within `--fast-budget <tPOT>` in all (by default the cap): splitting 10 wtPOT into ten burns gets
-  one released fast, and the rest wait for finality until the first one's block is final.
+- **The budget** (the watcher). The burns it released fast whose blocks are not final yet, and with
+  `--send` those whose check against the final chain (below) has not passed yet, stay within
+  `--fast-budget <tPOT>` in all (by default the cap): splitting 10 wtPOT into ten burns gets one
+  released fast, and the rest wait for finality until the first one's block is final and its check
+  passed.
 
 A cap or a budget above 10 tPOT takes `--fast-cap-override`, so a typo cannot make every burn fast.
 The default, without `--confirmations`, stays finality. Once Sepolia finalizes a fast release's
 burn block, the watcher checks the release against `BurnRequested(n)` on the final chain (the same
-transaction, burn id, payee and amount) and records it (`finalizedCheck`); a mismatch is a fatal
-stop (below).
+transaction, burn id, payee and amount) and records it (`finalizedCheck`); a mismatch, or a log of
+burn `n` from another transaction, is a fatal stop (below). When the final chain's logs do not show
+the burn (none, or the RPC refuses them), the burn transaction's receipt decides: in a final
+canonical block, its `BurnRequested(n)` log there is checked the same way; above the finalized
+block (a reorg moved it), in a block that is not the canonical one of its number yet, or with the
+logs refused, a later round looks again; with no receipt, or a reverted one, three rounds in a row,
+the release does not stand, a fatal stop. The watcher counts those rounds in memory, so a restart
+counts from zero.
 
 **The watcher, `release --watch <seconds>`.** A round every `<seconds>`: first the approvals the
 record holds as submitted are settled; then every burn from the last one the record has released to
@@ -509,18 +518,26 @@ already released is left alone; a burn whose log the RPC refuses or does not ser
 - **Never twice.** A member that approved (on chain or in the record) does not approve again; an
   approval the record holds as submitted is settled before anything is signed, and one the node
   may still include (reported dropped or invalid after it took it, 1013, 1014) stays submitted and
-  is settled by its nonce; a burn whose execution ran without releasing it, whose round a member
-  cancelled, or whose open operation is another call, is left to the members. The vault pays once
-  per burn id in any case.
+  is settled by its nonce. An approval sent in a round that is still submitted when its run refuses
+  or fails (its block not found, a check that stopped after it was sent) counts as pending: the
+  round signs nothing more, and the next one settles it first. So does one final whose checks could
+  not run yet. A burn whose execution ran without releasing it, whose round a member cancelled, or
+  whose open operation is another call, is left to the members. The vault pays once per burn id in
+  any case.
 - **Crash-safe.** Each approval is in the record before it is submitted. Every round, a restart's
   first one included, settles what was on its way before anything else (found final and checked,
   or dropped), and a release left half done (opened, not run) is run by the other member. Every
   save of the record takes `deployments/v3-testnet.json.lock` and merges what other processes
-  wrote meanwhile (`v3-vault lock`, `release fund`), so none of it is lost.
+  wrote meanwhile (`v3-vault lock`, `release fund`), so none of it is lost. A save holds that lock
+  for milliseconds and waits up to 30 s for it; a lock not refreshed for a minute is taken over even
+  when its process id runs, since Windows may give the id of a process that died holding it to
+  another process soon after.
 - **One per committee.** With `--send` the watcher holds `release-watch-<multisig>.lock` in
   `~/.bridge-zero`, whatever `--state-dir` is, checked before each signing; a lock whose process is
-  gone, or not refreshed for 10 minutes, is taken over. An approval or a cancellation by hand with
-  `--send` takes the same lock, so it is refused while the watcher runs. It works on one machine.
+  gone, or not refreshed for 10 minutes, is taken over. A `<lock>.takeover` file older than a
+  minute, left by a process that died while taking a stale lock over, is removed (this lock and the
+  record's). An approval or a cancellation by hand with `--send` takes the same lock, so it is
+  refused while the watcher runs. It works on one machine.
 - **The public RPC.** The watcher finds a new burn in recent logs, and reads it again before each
   approval in the block it saw it in (`eth_getLogs` over that block, or its transaction's receipt),
   so a burn released within about 33 hours works on the public RPC, which keeps logs and receipts
@@ -534,11 +551,18 @@ already released is left alone; a burn whose log the RPC refuses or does not ser
   after `--watch` seconds, then twice that, up to an hour; other errors are retried after
   `--watch` seconds.
 - **Fatal stops.** A sent approval that fails its checks on chain, an approval the record holds
-  as submitted that is in none of the blocks searched though its sender's nonce is used, a fast
-  release that does not stand on the final chain, a lost lock or an unwritable record ends the
-  watcher with **exit code 4**. With `--send` it first writes `release-watch-<multisig>.halt` in
-  `--state-dir` (the reason, the burn, the extrinsic, the time); no watcher with `--send` starts
-  while that file is there (exit code 4 again). A member looks at what happened, then removes it.
+  as submitted that the settling finds on chain and failing its checks, one that is in none of the
+  blocks searched though its sender's nonce is used, a fast release that does not stand on the
+  final chain, a lost lock or an unwritable record ends the watcher with **exit code 4**. With
+  `--send` it first writes `release-watch-<multisig>.halt` (the reason, the burn, the extrinsic, the
+  time) in `~/.bridge-zero`, next to the lock, whatever `--state-dir` is. While that file is there,
+  no watcher with `--send` starts (exit code 4 again), and an approval or a cancellation by hand
+  with `--send` is refused (exit code 4) unless it adds `--despite-halt`; the watcher takes no
+  `--despite-halt`. An approval by hand with `--send` whose settling finds an earlier approval that
+  ran on chain and failed its checks leaves the halt file too, and ends with exit code 4. A member
+  looks at what happened, then removes it. A save of the record waits up to 30 s for its lock, so
+  one that finds the lock of a save that died less than 30 s before, its process id given to a
+  running process meanwhile, still fails: an unwritable record.
 
 **What it trusts.** The committee is still a 2-of-3 multisig on chain, but the watcher holds two
 members' keys on one machine: whoever controls that machine or its password file can release up to
