@@ -167,7 +167,10 @@
 // failed on chain, a failed final check) is written to the halt file before the record, so a process
 // that dies in between leaves the halt file behind; and a watcher with --send also stops on such a
 // finding in the record that no member acknowledged (the approval's or finalizedCheck's
-// acknowledged), and leaves the halt file for it when none is there. A stop left while the halt file
+// acknowledged), and leaves the halt file for it when none is there; its dry run warns of one and
+// goes on, and an approval or a cancellation by hand with --send is refused on one (exit code 4),
+// before it takes the lock and again once it holds it, unless --despite-halt says a member looked,
+// halt file or not. A stop left while the halt file
 // is there adds to it: the file names the new one, then the earlier reasons. The two key files open
 // with --password-file before the first request: one that does not ends the watcher with exit code 4
 // and no halt file, as nothing ran on chain. While the halt file is there no
@@ -334,6 +337,7 @@ import {
   readHalt,
   receiptInLogBlock,
   reconcileVerdict,
+  recordedRefusal,
   rpcTrouble,
   settledOnChainFailure,
   settleOrHalt,
@@ -2303,6 +2307,20 @@ async function releaseCommand(o: ReleaseOptions): Promise<number> {
     }
     if (halted) warn(`${haltRefusal(halted, haltPath)}; --despite-halt: this run signs anyway`);
   }
+  /**
+   * A fatal finding `record` holds that no member acknowledged refuses the run too (with --send),
+   * halt file or not: true when it did, said; with --despite-halt a warning (`warnToo`), and false.
+   */
+  const byRecord = (record: VaultRecord, warnToo: boolean): boolean => {
+    const r = recordedRefusal(findingsOf(record), o.despiteHalt === true);
+    if (r && "refuse" in r) {
+      check(false, r.refuse);
+      return true;
+    }
+    if (r && warnToo) warn(r.warn);
+    return false;
+  };
+  if (o.send && byRecord(d.record, true)) return HALTED;
   // An approval or a cancellation by hand takes the committee's watcher lock, as the watcher does:
   // never while a watcher with --send runs, and no watcher starts while it signs.
   let lock: Lock | null = null;
@@ -2329,6 +2347,8 @@ async function releaseCommand(o: ReleaseOptions): Promise<number> {
     };
   }
   try {
+    // The record read again once the lock is held: a run that held it may have saved a finding meanwhile.
+    if (lock && byRecord(readV3Record(), false)) return HALTED;
     const burn = await burnOnSepolia(d, o);
     if (typeof burn === "number") return burn;
     const evm = new EvmRpc(o.evm);
@@ -3054,10 +3074,16 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
     // watchCommand opened the keys before the first round.
     if (o.send && !keys.pairs) throw new Fatal("the members' keys are not open");
     let heads: Heads = { latest: 0, finalized: 0 };
+    let warned = false;
+    const warnOnce = (line: string) => {
+      if (!warned) warn(line);
+      warned = true;
+    };
     const ports: Ports<WatchedBurn> = {
       // With --send, the halt file, or else a fatal finding the record holds and no member
-      // acknowledged, whose halt file is left for it now (haltedOrRecorded).
-      halted: () => haltedOrRecorded(o.send, () => haltedBy(d.v.multisig), findingsOf(d.record), (f) => leaveHalt(d.v.multisig, f)),
+      // acknowledged, whose halt file is left for it now; without, a warning of that finding, once a
+      // round (haltedOrRecorded).
+      halted: () => haltedOrRecorded(o.send, () => haltedBy(d.v.multisig), findingsOf(d.record), (f) => leaveHalt(d.v.multisig, f), warnOnce),
       settle: async () => {
         const before = submittedOf(d.record);
         // An approval found on chain and failing its checks is a fatal stop, as one sent in this round

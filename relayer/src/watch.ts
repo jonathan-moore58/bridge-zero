@@ -388,6 +388,12 @@ export function settledOnChainFailure<S extends Submitted>(before: S[], after: M
   }) ?? null;
 }
 
+/** The V3 record (release.ts reads and writes it), where a member acknowledges a fatal finding it holds (recordedStop). */
+export const V3_RECORD = "deployments/v3-testnet.json";
+
+/** What a member adds to a fatal finding the record holds (the approval, or the release's finalizedCheck), once they have looked at it. */
+export const ACKNOWLEDGED = `"acknowledged": "<who, when, what you found>"`;
+
 /** A release round as the record has it, for recordedStop: its burn, its approvals and, for a fast release, its check against Sepolia's final chain. */
 export interface RecordedFindings {
   burn: string;
@@ -427,21 +433,43 @@ export function recordedStop(rounds: RecordedFindings[]): FatalStop | null {
   return null;
 }
 
+/** What a run that a fatal finding the record holds stops tells the members to do. */
+const acknowledgeFirst = `a member who has looked at it adds ${ACKNOWLEDGED} to it in ${V3_RECORD} first`;
+
 /**
  * The watcher's halted() port (release.ts watchOnce). Without `send` nothing is signed: null, and
- * the dry run goes on as it started. With it, why the committee's halt file stops the watcher
- * (`halt`, read again); with none, the first fatal finding the record holds and no member
- * acknowledged (recordedStop), whether or not its halt file was written (a process that died
- * first): the halt file is left for it now (`leave`), and the watcher stops on what it holds.
+ * the dry run goes on as it started, after a warning (`warn`) of the first fatal finding the record
+ * holds and no member acknowledged, on which the watcher with --send would stop. With it, why the
+ * committee's halt file stops the watcher (`halt`, read again); with none, that finding, whether or
+ * not its halt file was written (a process that died first): the halt file is left for it now
+ * (`leave`), and the watcher stops on what it holds.
  */
-export function haltedOrRecorded(send: boolean, halt: () => string | null, rounds: RecordedFindings[], leave: (f: FatalStop) => void): string | null {
-  if (!send) return null;
+export function haltedOrRecorded(send: boolean, halt: () => string | null, rounds: RecordedFindings[], leave: (f: FatalStop) => void, warn: (line: string) => void): string | null {
+  if (!send) {
+    const found = recordedStop(rounds);
+    if (found) warn(`a watcher with --send stops here: ${found.why}; ${acknowledgeFirst} (this dry run goes on)`);
+    return null;
+  }
   const left = halt();
   if (left) return left;
   const found = recordedStop(rounds);
   if (!found) return null;
   leave(found);
   return halt() ?? found.why;
+}
+
+/**
+ * An approval or a cancellation by hand with --send, and the first fatal finding the record holds
+ * that no member acknowledged (recordedStop): refused as the halt file refuses it, whether or not
+ * the halt file is there (removed without the acknowledgement, or never written), unless
+ * --despite-halt (`despiteHalt`) says a member looked, which signs after a warning. Null when the
+ * record holds none.
+ */
+export function recordedRefusal(rounds: RecordedFindings[], despiteHalt: boolean): { refuse: string } | { warn: string } | null {
+  const found = recordedStop(rounds);
+  if (!found) return null;
+  const why = `${found.why}; ${acknowledgeFirst}`;
+  return despiteHalt ? { warn: `${why}; --despite-halt: this run signs anyway` } : { refuse: `nothing is signed: ${why}, or add --despite-halt once a member has looked at it` };
 }
 
 /** How a settling ended (settleOrHalt): its code, a fatal stop it found, or what it threw. */
@@ -768,12 +796,6 @@ export function readHalt(path: string): Halt | null {
     return { reason: "the halt file does not parse", burn: null, extrinsicHash: null, at: "an unknown time" };
   }
 }
-
-/** The V3 record (release.ts reads and writes it), where a member acknowledges a fatal finding it holds (recordedStop). */
-export const V3_RECORD = "deployments/v3-testnet.json";
-
-/** What a member adds to a fatal finding the record holds (the approval, or the release's finalizedCheck), once they have looked at it. */
-export const ACKNOWLEDGED = `"acknowledged": "<who, when, what you found>"`;
 
 /** Whether the halt file names a burn, in the stop it names or in an earlier reason it keeps (addHalt). */
 const namesBurn = (h: Halt) => h.burn !== null || /\bburn \d/.test(h.reason);

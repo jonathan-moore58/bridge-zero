@@ -301,8 +301,19 @@ describe("the watcher's halted() port", () => {
   it("is haltedOrRecorded: the halt file, then a fatal finding the record holds, whose halt file it leaves", () => {
     const source = readFileSync(join(RELAYER, "src", "release.ts"), "utf8");
     const once = source.slice(source.indexOf("async function watchOnce("), source.indexOf("function leaveHalt("));
-    assert.match(once, /\bhalted: \(\) => haltedOrRecorded\(o\.send, \(\) => haltedBy\(d\.v\.multisig\), findingsOf\(d\.record\), \(f\) => leaveHalt\(d\.v\.multisig, f\)\)/);
+    assert.match(once, /\bhalted: \(\) => haltedOrRecorded\(o\.send, \(\) => haltedBy\(d\.v\.multisig\), findingsOf\(d\.record\), \(f\) => leaveHalt\(d\.v\.multisig, f\), warnOnce\)/);
     assert.match(source, /const findingsOf = \(record: VaultRecord\): RecordedFindings\[\] =>\s*\(record\.releases \?\? \[\]\)\.map\(\(r\) => \(\{ burn: r\.burn\.burnNonce, approvals: r\.approvals, finalizedCheck: r\.finalizedCheck \}\)\);/);
+  });
+});
+
+describe("an approval or a cancellation by hand with --send, and a finding the record holds", () => {
+  it("is refused on one no member acknowledged, before the lock and again once it is held, unless --despite-halt", () => {
+    const source = readFileSync(join(RELAYER, "src", "release.ts"), "utf8");
+    const command = source.slice(source.indexOf("async function releaseCommand("), source.indexOf("/** The committee's halt file appeared while the run went on"));
+    assert.match(command, /const byRecord = \(record: VaultRecord, warnToo: boolean\): boolean => \{\s*const r = recordedRefusal\(findingsOf\(record\), o\.despiteHalt === true\);\s*if \(r && "refuse" in r\) \{\s*check\(false, r\.refuse\);\s*return true;/);
+    // Before the lock, on the record the run read; once it is held, on the record read again, inside the try whose finally releases the lock.
+    assert.match(command, /if \(o\.send && byRecord\(d\.record, true\)\) return HALTED;[^]*takeCommitteeLock\(/);
+    assert.match(command, /lock = taken\.lock;[^]*\btry \{\s*\/\/[^\n]*\n\s*if \(lock && byRecord\(readV3Record\(\), false\)\) return HALTED;\s*const burn = await burnOnSepolia\(d, o\);[^]*\} finally \{\s*lock\?\.release\(\);/);
   });
 });
 
