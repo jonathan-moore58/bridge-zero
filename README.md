@@ -155,7 +155,7 @@ the 3 committee members release tPOT through pallet-multisig and nothing on V3 c
 
 These read the chains and need nothing but [Foundry](https://getfoundry.sh)'s `cast`; none of them
 signs or sends anything. They are written for bash or zsh, and the outputs are what cast 1.8.5
-printed on Oct 20, 2026, after burn 0, its release and lock 1's mint. The two marked as growing grow with each
+printed on Oct 24, 2026, after burn 1 and its fast release. The two marked as growing grow with each
 relayer run, and the wtPOT and way-back outputs change with any later mint, burn or release. Any
 Sepolia RPC works in place of the public one.
 
@@ -193,11 +193,11 @@ cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "vaultTrieId()(bytes32)" --
 # 0xbe307c2d11dbc9391cda93d17e9772542d1300c9af14e7431918fb49e2f47c3a
 
 # WrappedTPOT (Sepolia, 14 decimals): locks 0 and 1 minted 1 wtPOT each to their recipient, who
-# burned 0.5 (row 47); nothing else is minted
+# burned 0.5 (row 47) and 0.1 (row 56); nothing else is minted
 cast call 0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14 "balanceOf(address)(uint256)" 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 --rpc-url $SEPOLIA
-# 150000000000000 [1.5e14]
+# 140000000000000 [1.4e14]
 cast call 0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14 "totalSupply()(uint256)" --rpc-url $SEPOLIA
-# 150000000000000 [1.5e14]
+# 140000000000000 [1.4e14]
 
 # The vault (V3 testnet, through its EVM RPC): 899 bytes of code, whose keccak-256 is the code hash
 # BridgeMinter was deployed with (its vaultCodeHash)
@@ -226,16 +226,21 @@ cast logs --from-block 101009 --to-block 101009 --address 0xa02EE16EB03d2cf1aeF1
 #   ]
 #   transactionHash: 0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051
 
-# The way back (trusted, rows 47 to 51): burn 0 on Sepolia and its burn id, then on V3 the vault's
-# released flag for that id, and what it still holds for wtPOT (2 tPOT locked, 0.5 released)
+# The way back (trusted, rows 47 to 51 and 56 to 58): burns 0 and 1 on Sepolia and their burn ids,
+# then on V3 the vault's released flag for each id, and what it still holds for wtPOT (2 tPOT
+# locked, 0.6 released)
 cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "burnCount()(uint256)" --rpc-url $SEPOLIA
-# 1
+# 2
 cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "burnIdOf(uint256)(bytes32)" 0 --rpc-url $SEPOLIA
 # 0x0b8e808d1084dd2878e3d20b124a677cdc26785882cf3aac9f7ccbf84245471f
+cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "burnIdOf(uint256)(bytes32)" 1 --rpc-url $SEPOLIA
+# 0x1573ff21c0f6cae223a42566b061f39bc0a982dafe451b86b29a8bf5f9219c0e
 cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "released(bytes32)(bool)" 0x0b8e808d1084dd2878e3d20b124a677cdc26785882cf3aac9f7ccbf84245471f --rpc-url $V3
 # true
+cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "released(bytes32)(bool)" 0x1573ff21c0f6cae223a42566b061f39bc0a982dafe451b86b29a8bf5f9219c0e --rpc-url $V3
+# true
 cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "outstanding()(uint256)" --rpc-url $V3
-# 150000000000000 [1.5e14]
+# 140000000000000 [1.4e14]
 ```
 
 The `Locked` event's data is the destination chain (`0xaa36a7`, 11155111), the minter, the amount
@@ -253,7 +258,8 @@ with lock 0's `revive.ethTransact` and `revive.ContractEmitted`. The release is 
 extrinsic (`multisig.asMulti` dispatching `revive.call`), so the EVM RPC returns no `Released` log
 for it; block
 [#117,701](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117701)
-shows `multisig.MultisigExecuted` and the vault's `revive.ContractEmitted`.
+shows `multisig.MultisigExecuted` and the vault's `revive.ContractEmitted`, and so does burn 1's,
+[#173,062](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/173062).
 
 **Without chain access**, from a clone of this repository, with Node.js 24 and Foundry:
 
