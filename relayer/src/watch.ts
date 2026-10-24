@@ -672,6 +672,8 @@ export function parseMemberKeys(text: string): { member: number; path: string }[
 /** How often the lock's holder refreshes it, and how long a lock whose process runs may go unrefreshed before it counts as stale. */
 export const LOCK_REFRESH = 30_000;
 export const LOCK_STALE = 10 * 60_000;
+/** How old a <lock>.takeover file is when it counts as left by a process that died while taking a stale lock over: a takeover lasts milliseconds. */
+export const TAKEOVER_STALE = 60_000;
 
 export interface Lock {
   path: string;
@@ -711,17 +713,32 @@ function readLock(path: string): { content: string; pid: number; age: number } |
   }
 }
 
-/** A lock whose process is gone, or which was not refreshed for LOCK_STALE; a half-written one after 10 s. */
-const stale = (held: { pid: number; age: number }) => (held.pid === 0 ? held.age >= 10_000 : !alive(held.pid) || held.age > LOCK_STALE);
+/** A lock whose process is gone, or which was not refreshed for `staleAfter` ms; a half-written one after 10 s. */
+const stale = (held: { pid: number; age: number }, staleAfter: number) => (held.pid === 0 ? held.age >= 10_000 : !alive(held.pid) || held.age > staleAfter);
+
+/** The age of the file at `path` in ms, or null when it is gone. */
+function ageOf(path: string): number | null {
+  try {
+    return Date.now() - statSync(path).mtimeMs;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
 
 /**
  * The watcher's lock at `path` (relay.ts takeLock's scheme): created exclusively with the process id
  * and a token of its own, refreshed every LOCK_REFRESH. A stale lock is taken over by the one process
  * that creates <path>.takeover, which renames it aside and removes it; then the lock is created
- * again, which only one process can. Returns null while another live watcher holds it, after
- * printing who. Between processes of one machine, on a local disk.
+ * again, which only one process can. A takeover file older than TAKEOVER_STALE was left by a process
+ * that died inside its takeover: it is renamed aside and removed, and the takeover tried again. A
+ * lock whose process runs counts as stale once it was not refreshed for `staleAfter` ms (LOCK_STALE
+ * by default; a lock held for milliseconds passes less, as withFileLock does, so a process id that
+ * Windows gave again to another process soon after a crash does not keep it for 10 minutes).
+ * Returns null while another live watcher holds it, after printing who. Between processes of one
+ * machine, on a local disk.
  */
-export function takeLock(path: string, log: (line: string) => void): Lock | null {
+export function takeLock(path: string, log: (line: string) => void, staleAfter = LOCK_STALE): Lock | null {
   const takeover = `${path}.takeover`;
   for (let attempt = 1; attempt <= 5; attempt++) {
     const content = JSON.stringify({ pid: process.pid, token: randomUUID(), since: new Date().toISOString() });
@@ -742,7 +759,7 @@ export function takeLock(path: string, log: (line: string) => void): Lock | null
     }
     const held = readLock(path);
     if (!held) continue;
-    if (!stale(held)) {
+    if (!stale(held, staleAfter)) {
       log(held.pid === 0 ? `     another watcher is writing ${path}` : `     another watcher (process ${held.pid}) runs for this committee; ${path} is its lock`);
       return null;
     }
@@ -751,13 +768,28 @@ export function takeLock(path: string, log: (line: string) => void): Lock | null
       fd = openSync(takeover, "wx");
     } catch (error) {
       if (!busy(error) && (error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      // Another process is taking it over; a takeover file this old is from one that died meanwhile.
+      const age = busy(error) ? null : ageOf(takeover);
+      if (age !== null && age > TAKEOVER_STALE) {
+        log(`     ${takeover} was left ${Math.floor(age / 1000)} s ago by a takeover that did not finish: removed`);
+        const aside = `${takeover}.${process.pid}.stale`;
+        try {
+          renameSync(takeover, aside);
+          rmSync(aside, { force: true });
+        } catch (removing) {
+          // another process removed it first, or Windows holds it for a moment
+          if (!busy(removing) && (removing as NodeJS.ErrnoException).code !== "ENOENT") throw removing;
+          pause(200);
+        }
+        continue;
+      }
       pause(200);
       continue;
     }
     closeSync(fd);
     try {
       const now = readLock(path);
-      if (now?.content === held.content && stale(now)) {
+      if (now?.content === held.content && stale(now, staleAfter)) {
         log(`     ${path} is stale (process ${held.pid || "?"}, refreshed ${Math.floor(held.age / 1000)} s ago): taken over`);
         const aside = `${path}.${process.pid}.stale`;
         renameSync(path, aside);

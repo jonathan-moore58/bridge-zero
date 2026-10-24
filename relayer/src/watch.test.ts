@@ -7,7 +7,7 @@
 //   npm test
 
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -697,6 +697,39 @@ describe("the watcher's lock", () => {
     const b = takeLock(old, quiet);
     assert.ok(b?.held());
     b!.release();
+  });
+
+  it("removes a takeover file left by a process that died inside its takeover, and waits while one is fresh", () => {
+    const path = join(dir, "takeover.lock");
+    const takeover = `${path}.takeover`;
+    const aged = (ms: number) => {
+      const then = new Date(Date.now() - ms);
+      utimesSync(takeover, then, then);
+    };
+    // A fresh takeover file: another process is taking the stale lock over, so this one waits.
+    leftover(path);
+    writeFileSync(takeover, "");
+    assert.equal(takeLock(path, quiet), null);
+    assert.ok(existsSync(takeover), "a fresh takeover file stays");
+    // The same file two minutes old, above TAKEOVER_STALE: its process died, and the lock is taken over.
+    aged(2 * 60_000);
+    const lines: string[] = [];
+    const a = takeLock(path, (l) => lines.push(l));
+    assert.ok(a?.held());
+    assert.equal(existsSync(takeover), false);
+    assert.match(lines.join("\n"), /did not finish: removed/);
+    a!.release();
+  });
+
+  it("takes a lock whose process runs once it was not refreshed for staleAfter, for a lock held for milliseconds", () => {
+    const path = join(dir, "short.lock");
+    writeFileSync(path, JSON.stringify({ pid: process.ppid, token: "a crashed save, its process id given again" }));
+    const then = new Date(Date.now() - 2 * 60_000);
+    utimesSync(path, then, then);
+    assert.equal(takeLock(path, quiet), null, "the watcher's lock waits LOCK_STALE");
+    const a = takeLock(path, quiet, 60_000);
+    assert.ok(a?.held());
+    a!.release();
   });
 
   it("tells a watcher whose lock another took over that it is not its own", () => {

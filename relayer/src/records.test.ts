@@ -4,7 +4,7 @@
 //   npm test
 
 import assert from "node:assert/strict";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -93,6 +93,16 @@ describe("the record's lock", () => {
     } finally {
       held!.release();
     }
+    assert.equal(withFileLock(path, () => "written", 300), "written");
+  });
+
+  it("takes over a lock left more than a minute ago, though its process id runs again", () => {
+    const path = join(dir, "v3-testnet-crashed.json");
+    const lock = `${path}.lock`;
+    // A save that crashed holding the lock, its process id now another running process's.
+    writeFileSync(lock, JSON.stringify({ pid: process.ppid, token: "a crashed save" }));
+    const then = new Date(Date.now() - 2 * 60_000); // above RECORD_LOCK_STALE
+    utimesSync(lock, then, then);
     assert.equal(withFileLock(path, () => "written", 300), "written");
   });
 });

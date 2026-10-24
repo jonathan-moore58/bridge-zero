@@ -13,13 +13,19 @@ const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(
 
 /** How long a save waits for another process's save. */
 export const RECORD_LOCK_WAIT = 30_000;
+/**
+ * How long the record's lock may go unrefreshed before it counts as stale although its process id
+ * runs: a save holds it for milliseconds, and Windows may give the id of a process that died
+ * holding it to another process soon after.
+ */
+export const RECORD_LOCK_STALE = 60_000;
 
-/** Runs `fn` while this process holds `<path>.lock`, waiting up to `wait` ms for another holder; throws when it cannot be taken. */
+/** Runs `fn` while this process holds `<path>.lock`, waiting up to `wait` ms for another holder; throws when it cannot be taken. A lock older than RECORD_LOCK_STALE is taken over. */
 export function withFileLock<T>(path: string, fn: () => T, wait = RECORD_LOCK_WAIT): T {
   const lockPath = `${path}.lock`;
   const until = Date.now() + wait;
   for (;;) {
-    const lock = takeLock(lockPath, () => undefined);
+    const lock = takeLock(lockPath, () => undefined, RECORD_LOCK_STALE);
     if (lock) {
       try {
         return fn();
