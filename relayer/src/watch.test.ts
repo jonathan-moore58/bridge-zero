@@ -776,7 +776,20 @@ describe("the halt file", () => {
     writeHalt(path, { reason: "member 2's approval failed its checks", burn: "4", extrinsicHash: "0xfeed", at: "2026-10-24T10:00:00.000Z" });
     const h = readHalt(path);
     assert.deepEqual(h, { reason: "member 2's approval failed its checks", burn: "4", extrinsicHash: "0xfeed", at: "2026-10-24T10:00:00.000Z" });
-    assert.equal(haltRefusal(h!, path), `a fatal stop at 2026-10-24T10:00:00.000Z: member 2's approval failed its checks (burn 4, extrinsic 0xfeed); look at it, then remove ${path}`);
+    // A stop that names a burn may be a finding the record holds, on which a watcher with --send
+    // stops again until a member acknowledges it there: removing the file alone is not enough.
+    assert.equal(
+      haltRefusal(h!, path),
+      `a fatal stop at 2026-10-24T10:00:00.000Z: member 2's approval failed its checks (burn 4, extrinsic 0xfeed); look at it; where deployments/v3-testnet.json holds an approval of a burn it names as failed on chain, or that release's finalizedCheck as failed, add "acknowledged": "<who, when, what you found>" to it; then remove ${path}`,
+    );
+  });
+
+  it("asks for no acknowledgement for a stop that names no burn, unless an earlier reason it keeps does", () => {
+    const path = join(dir, "release-watch-5Fmultisig.halt");
+    const lost = { reason: "the lock is not this watcher's any more", burn: null, extrinsicHash: null, at: "2026-10-24T12:00:00.000Z" };
+    assert.equal(haltRefusal(lost, path), `a fatal stop at 2026-10-24T12:00:00.000Z: the lock is not this watcher's any more; look at it, then remove ${path}`);
+    const kept = { ...lost, reason: `${lost.reason}; earlier: member 2's execute 0xfeed (burn 5) ran on chain in #4,100 and failed its checks (burn 5, extrinsic 0xfeed), at 2026-10-24T10:00:00.000Z` };
+    assert.match(haltRefusal(kept, path), /; look at it; where deployments\/v3-testnet\.json holds an approval of a burn it names as failed on chain, or that release's finalizedCheck as failed, add "acknowledged": "<who, when, what you found>" to it; then remove /);
   });
 
   it("keeps the first fatal stop's reason when another is left: the file names the new one, then the earlier", () => {

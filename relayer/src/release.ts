@@ -173,7 +173,8 @@
 // and no halt file, as nothing ran on chain. While the halt file is there no
 // watcher with --send starts (exit code 4; --despite-halt is refused for the watcher), and an
 // approval or a cancellation by hand with --send is refused (exit code 4) unless --despite-halt
-// says a member looked: a member looks, then removes it. A watcher with --send reads it again at
+// says a member looked: a member looks, acknowledges in the record a finding of a burn it names
+// (the refusal and the halt file's line say so), then removes it. A watcher with --send reads it again at
 // the start of each round and before each signing, and an approval or a cancellation by hand before
 // it signs: a halt file another process left meanwhile (a dry run's settling, say) stops it with
 // exit code 4, and the file keeps its reason. Otherwise a round ends 0 when nothing was
@@ -339,6 +340,7 @@ import {
   submitErrorVerdict,
   takeCommitteeLock,
   tradeOff,
+  V3_RECORD,
   watchRound,
   writeBurnCache,
   type BurnFacts as FinalBurn,
@@ -382,7 +384,6 @@ const watchLockPath = (multisig: string) => join(STATE_DIR, `release-watch-${mul
  */
 const haltPathOf = (multisig: string) => join(STATE_DIR, `release-watch-${multisig}.halt`);
 const BRIDGE_RECORD = "deployments/sepolia-bridge.json";
-const V3_RECORD = "deployments/v3-testnet.json";
 const at = (path: string) => resolve(ROOT, path);
 
 /** Gas limit of each view read at the end of a simulated burn. */
@@ -3121,7 +3122,7 @@ function leaveHalt(multisig: string, f: FatalStop): void {
     mkdirSync(STATE_DIR, { recursive: true });
     // One there already keeps its reason: the file names this stop, then the earlier ones.
     addHalt(path, { reason: f.why, burn: f.burn, extrinsicHash: f.extrinsicHash, at: new Date().toISOString() });
-    log(`     ${path} holds why: no watcher of ${multisig} with --send starts, and nothing is signed by hand without --despite-halt, until a member looks at it and removes it (exit code ${HALTED})`);
+    log(`     ${path} holds why: no watcher of ${multisig} with --send starts, and nothing is signed by hand without --despite-halt, until a member looks at it, acknowledges it in ${V3_RECORD} where it names a burn the record holds as failed, and removes it (exit code ${HALTED})`);
   } catch (error) {
     log(`FAIL the halt file ${path} could not be written (${errorText(error)}): do not restart the watcher or sign by hand before a member looks (exit code ${HALTED})`);
   }

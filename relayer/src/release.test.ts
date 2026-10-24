@@ -226,7 +226,8 @@ function homeWithHalt(): Record<string, string> {
   return { USERPROFILE: home, HOME: home };
 }
 
-const HALT_REFUSAL = /a fatal stop at 2026-10-24T10:00:00.000Z: member 2's approval failed its checks \(burn 3, extrinsic 0xfeed\); look at it, then remove .*home-halted.\.bridge-zero.release-watch-.*\.halt/;
+const HALT_REFUSAL =
+  /a fatal stop at 2026-10-24T10:00:00.000Z: member 2's approval failed its checks \(burn 3, extrinsic 0xfeed\); look at it; where deployments\/v3-testnet\.json holds an approval of a burn it names as failed on chain, or that release's finalizedCheck as failed, add "acknowledged": "<who, when, what you found>" to it; then remove .*home-halted.\.bridge-zero.release-watch-.*\.halt/;
 
 describe("after a fatal stop", () => {
   it("no watcher starts with --send while the halt file is there, whatever its --state-dir, with exit code 4 and before any request", { timeout: 120_000 }, async () => {
@@ -293,6 +294,14 @@ describe("a fatal finding, written to the record", () => {
     assert.doesNotMatch(sent, /!o\.watcher/, "the watcher's own execution too");
     // A fast release whose check against Sepolia's final chain failed.
     assert.match(beforeSave(source, "async function reconcileFast("), /if \(fatal\) \{[^}]*leaveHalt\(d\.v\.multisig, fatal\)[^]*round\.finalizedCheck = \{/);
+  });
+});
+
+describe("the halt file's line, when a stop leaves it", () => {
+  it("tells the members to acknowledge a finding the record holds before they remove it", () => {
+    const source = readFileSync(join(RELAYER, "src", "release.ts"), "utf8");
+    const leave = source.slice(source.indexOf("function leaveHalt("), source.indexOf("async function watchCommand("));
+    assert.match(leave, /until a member looks at it, acknowledges it in \$\{V3_RECORD\} where it names a burn the record holds as failed, and removes it/);
   });
 });
 

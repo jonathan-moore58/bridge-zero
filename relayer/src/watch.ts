@@ -752,9 +752,26 @@ export function readHalt(path: string): Halt | null {
   }
 }
 
-/** Why a watcher refuses to start while the halt file is there. */
+/** The V3 record (release.ts reads and writes it), where a member acknowledges a fatal finding it holds (recordedStop). */
+export const V3_RECORD = "deployments/v3-testnet.json";
+
+/** What a member adds to a fatal finding the record holds (the approval, or the release's finalizedCheck), once they have looked at it. */
+export const ACKNOWLEDGED = `"acknowledged": "<who, when, what you found>"`;
+
+/** Whether the halt file names a burn, in the stop it names or in an earlier reason it keeps (addHalt). */
+const namesBurn = (h: Halt) => h.burn !== null || /\bburn \d/.test(h.reason);
+
+/**
+ * Why a watcher refuses to start while the halt file is there, and what a member does. A stop that
+ * names a burn may be a finding the record holds (an approval that ran on chain and failed its
+ * checks, a failed check against Sepolia's final chain), on which a watcher with --send stops again
+ * (recordedStop) until a member acknowledges it there: the acknowledgement, then the file removed.
+ */
 export const haltRefusal = (h: Halt, path: string) =>
-  `a fatal stop at ${h.at}: ${h.reason}${h.burn === null ? "" : ` (burn ${h.burn}${h.extrinsicHash ? `, extrinsic ${h.extrinsicHash}` : ""})`}; look at it, then remove ${path}`;
+  `a fatal stop at ${h.at}: ${h.reason}${h.burn === null ? "" : ` (burn ${h.burn}${h.extrinsicHash ? `, extrinsic ${h.extrinsicHash}` : ""})`}; ` +
+  (namesBurn(h)
+    ? `look at it; where ${V3_RECORD} holds an approval of a burn it names as failed on chain, or that release's finalizedCheck as failed, add ${ACKNOWLEDGED} to it; then remove ${path}`
+    : `look at it, then remove ${path}`);
 
 // ---------------------------------------------------------------------------------------
 // The wait between rounds
