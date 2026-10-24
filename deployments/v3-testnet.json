@@ -156,6 +156,23 @@
         "index": 1
       },
       "fee": "1490597484542"
+    },
+    {
+      "status": "final",
+      "from": "5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7",
+      "to": "5FTrjzEPPdxo3WP1RcQGTzUX1y1udD7tAkaETV1iLH24xPk3",
+      "role": "the committee's multisig, which pays each release's storage deposit",
+      "amount": "4000000000000000",
+      "nonce": 6,
+      "extrinsicHash": "0x426f755e48222f6d10163bcad7da091145ca3cd5ddea8533aa421f7b76a62dd6",
+      "signedAt": "2026-10-24T20:01:31.631Z",
+      "submittedAfter": 179106,
+      "block": {
+        "number": 179110,
+        "hash": "0x652c0bb0dec2f9be032797bdd987fd7faed263385c1589d2b288910560ac51eb",
+        "index": 1
+      },
+      "fee": "1500527664456"
     }
   ],
   "releases": [
