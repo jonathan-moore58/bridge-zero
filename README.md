@@ -480,7 +480,11 @@ From the git history, in UTC (the time zone Etherscan shows). Rows are the [evid
 - **Oct 24.** The relayer in watch mode, one key per chain: on V3 since Oct 23, 22:15, and on the
   old mainnet since 23:36, once its key was funded. By 07:57 it had imported V3 sets 46 to 48 and
   4 V3 heads, and old mainnet set 3913 to 3914 and 4 heads (11 transactions). The page reads every
-  sender's history in `deployments/`.
+  sender's history in `deployments/`. Fast mode and the auto-release watcher (docs/BRIDGE.md), from
+  23:11 on Oct 23 to 09:43, with 213 relayer tests. On chain: the watcher running from about 09:50
+  with 3 confirmations, then burn 1, 0.1 wtPOT, on Sepolia at 09:51:48, and its release opened by
+  member 1 at 09:52:42 and run by member 2 at 09:53:12 on V3, both sent by the watcher: 84 seconds
+  from the burn's block to the release's (rows 56 to 58).
 
 ## Evidence
 
