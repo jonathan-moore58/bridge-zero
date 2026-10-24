@@ -272,8 +272,8 @@ npm run check -- --dir ../fixtures/v3-testnet-hero
 # ...
 # All checks passed: 31 passed, 0 failed.
 npm test
-# ℹ tests 118
-# ℹ pass 118
+# ℹ tests 213
+# ℹ pass 213
 # ℹ fail 0
 
 cd ../contracts
@@ -345,7 +345,7 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   by `.github/workflows/pages.yml` on every change to the records: both light clients, the vault
   and the bridge read live, the recorded runs as the fallback when an RPC is down, and the six
   tampered mints checked live against BridgeMinter.
-- Tests: 327 forge tests, 118 relayer tests and 295 fixture checks pass
+- Tests: 327 forge tests, 213 relayer tests and 295 fixture checks pass
   ([Verify it yourself](#verify-it-yourself)).
 
 **Known limits**
