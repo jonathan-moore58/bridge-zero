@@ -25,7 +25,7 @@ export function withFileLock<T>(path: string, fn: () => T, wait = RECORD_LOCK_WA
   const lockPath = `${path}.lock`;
   const until = Date.now() + wait;
   for (;;) {
-    const lock = takeLock(lockPath, () => undefined, RECORD_LOCK_STALE);
+    const lock = takeLock(lockPath, () => undefined, RECORD_LOCK_STALE, "a save of the record");
     if (lock) {
       try {
         return fn();

@@ -737,18 +737,21 @@ function alive(pid: number): boolean {
   }
 }
 
-function readLock(path: string): { content: string; pid: number; age: number } | null {
+function readLock(path: string): { content: string; pid: number; age: number; holder: string | null } | null {
   try {
     const content = readFileSync(path, "utf8");
     const age = Date.now() - statSync(path).mtimeMs;
     let pid = 0;
+    let holder: string | null = null;
     try {
-      const p = Number((JSON.parse(content) as { pid?: unknown }).pid);
+      const parsed = JSON.parse(content) as { pid?: unknown; holder?: unknown };
+      const p = Number(parsed.pid);
       if (Number.isSafeInteger(p) && p > 0) pid = p;
+      if (typeof parsed.holder === "string" && parsed.holder.length > 0) holder = parsed.holder.slice(0, 100);
     } catch {
       // half written
     }
-    return { content, pid, age };
+    return { content, pid, age, holder };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
@@ -777,13 +780,14 @@ function ageOf(path: string): number | null {
  * lock whose process runs counts as stale once it was not refreshed for `staleAfter` ms (LOCK_STALE
  * by default; a lock held for milliseconds passes less, as withFileLock does, so a process id that
  * Windows gave again to another process soon after a crash does not keep it for 10 minutes).
- * Returns null while another live watcher holds it, after printing who. Between processes of one
- * machine, on a local disk.
+ * `holder` says who holds it ("the watcher", "member 1's approval by hand"), written into the lock
+ * so that a refusal names it. Returns null while another live process holds it, after printing
+ * who. Between processes of one machine, on a local disk.
  */
-export function takeLock(path: string, log: (line: string) => void, staleAfter = LOCK_STALE): Lock | null {
+export function takeLock(path: string, log: (line: string) => void, staleAfter = LOCK_STALE, holder?: string): Lock | null {
   const takeover = `${path}.takeover`;
   for (let attempt = 1; attempt <= 5; attempt++) {
-    const content = JSON.stringify({ pid: process.pid, token: randomUUID(), since: new Date().toISOString() });
+    const content = JSON.stringify({ pid: process.pid, token: randomUUID(), since: new Date().toISOString(), ...(holder ? { holder } : {}) });
     try {
       const fd = openSync(path, "wx");
       try {
@@ -802,7 +806,7 @@ export function takeLock(path: string, log: (line: string) => void, staleAfter =
     const held = readLock(path);
     if (!held) continue;
     if (!stale(held, staleAfter)) {
-      log(held.pid === 0 ? `     another watcher is writing ${path}` : `     another watcher (process ${held.pid}) runs for this committee; ${path} is its lock`);
+      log(held.pid === 0 ? `     another process is writing ${path}` : `     ${held.holder ?? "another process"} (process ${held.pid}) holds ${path}`);
       return null;
     }
     let fd: number;

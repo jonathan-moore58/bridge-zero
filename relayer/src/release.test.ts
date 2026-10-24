@@ -192,7 +192,7 @@ function keyFiles(): string[] {
 function homeWithLock(): Record<string, string> {
   const home = join(SCRATCH, "home");
   mkdirSync(join(home, ".bridge-zero"), { recursive: true });
-  writeFileSync(join(home, ".bridge-zero", `release-watch-${MULTISIG}.lock`), JSON.stringify({ pid: process.pid, token: "a running watcher", since: new Date().toISOString() }));
+  writeFileSync(join(home, ".bridge-zero", `release-watch-${MULTISIG}.lock`), JSON.stringify({ pid: process.pid, token: "a running watcher", since: new Date().toISOString(), holder: "the watcher" }));
   return { USERPROFILE: home, HOME: home };
 }
 
@@ -200,7 +200,8 @@ describe("the watcher's lock, in the home folder", () => {
   it("keeps a second watcher of the committee from sending, whatever its --state-dir", { timeout: 120_000 }, async () => {
     const { code, out } = await run(["release", "--watch", "10", "--rounds", "1", "--send", ...keyFiles(), "--state-dir", join(SCRATCH, "elsewhere"), ...OFFLINE], homeWithLock());
     assert.equal(code, 1, out);
-    assert.match(out, new RegExp(`another watcher \\(process ${process.pid}\\) runs for this committee`));
+    assert.match(out, new RegExp(`the watcher \\(process ${process.pid}\\) holds .*release-watch-${MULTISIG}\\.lock`));
+    assert.match(out, /another run with --send \(the watcher, or an approval or a cancellation by hand\) holds the committee's lock: this watcher does not start/);
     assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
   });
 });
@@ -210,8 +211,8 @@ describe("an approval by hand while a watcher runs", () => {
     const keys = keyFiles();
     const { code, out } = await run([...RELEASE, "--approve", "--member", "2", "--send", "--key-file", keys[1].split(",")[1].slice(2), "--password-file", keys[3], ...OFFLINE], homeWithLock());
     assert.equal(code, 1, out);
-    assert.match(out, new RegExp(`another watcher \\(process ${process.pid}\\) runs for this committee`));
-    assert.match(out, /nothing is signed by hand while it does/);
+    assert.match(out, new RegExp(`the watcher \\(process ${process.pid}\\) holds .*release-watch-${MULTISIG}\\.lock`));
+    assert.match(out, /another run with --send \(the watcher, or an approval or a cancellation by hand\) holds the committee's lock: nothing is signed by hand while it does/);
     assert.doesNotMatch(out, /unreachable|ECONNREFUSED|fetch failed/i, out);
   });
 });

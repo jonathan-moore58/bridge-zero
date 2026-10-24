@@ -740,11 +740,23 @@ describe("the watcher's lock", () => {
     const a = takeLock(path, quiet);
     assert.ok(a?.held());
     assert.equal(takeLock(path, (l) => lines.push(l)), null);
-    assert.match(lines.join("\n"), new RegExp(`another watcher \\(process ${process.pid}\\)`));
+    assert.match(lines.join("\n"), new RegExp(`another process \\(process ${process.pid}\\) holds`));
     a!.release();
     const b = takeLock(path, quiet);
     assert.ok(b?.held());
     b!.release();
+  });
+
+  it("names who holds it: the watcher, or an approval by hand, as the lock is shared", () => {
+    const path = join(dir, "holder.lock");
+    leftover(path);
+    const a = takeLock(path, quiet, LOCK_STALE, "member 1's approval by hand");
+    assert.ok(a?.held());
+    const lines: string[] = [];
+    assert.equal(takeLock(path, (l) => lines.push(l), LOCK_STALE, "the watcher"), null);
+    assert.equal(lines.join("\n"), `     member 1's approval by hand (process ${process.pid}) holds ${path}`);
+    assert.equal(JSON.parse(readFileSync(path, "utf8")).holder, "member 1's approval by hand");
+    a!.release();
   });
 
   it("takes over a lock whose process is gone, or which was not refreshed for 10 minutes", () => {
