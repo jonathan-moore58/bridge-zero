@@ -320,6 +320,7 @@ import {
   readHalt,
   receiptInLogBlock,
   reconcileVerdict,
+  recordedStop,
   rpcTrouble,
   settledOnChainFailure,
   settleOrHalt,
@@ -925,6 +926,8 @@ interface ApprovalEntry {
   /** MultisigExecuted's result: "Ok", or the error. */
   result?: string;
   note?: string;
+  /** Written by a member, by hand, after looking at an approval that ran on chain and failed its checks (watch.ts recordedStop). */
+  acknowledged?: string;
 }
 
 /** One release round of a burn, in deployments/v3-testnet.json (releases). */
@@ -3041,8 +3044,18 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
     }
     let heads: Heads = { latest: 0, finalized: 0 };
     const ports: Ports<WatchedBurn> = {
-      // Without --send nothing is signed, and the dry run goes on as it started.
-      halted: () => (o.send ? haltedBy(d.v.multisig) : null),
+      // Without --send nothing is signed, and the dry run goes on as it started. With it, a fatal
+      // finding the record holds and no member acknowledged stops the watcher too, whether or not its
+      // halt file was written (a process that died first): the halt file is left for it now.
+      halted: () => {
+        if (!o.send) return null;
+        const left = haltedBy(d.v.multisig);
+        if (left) return left;
+        const found = recordedStop((d.record.releases ?? []).map((r) => ({ burn: r.burn.burnNonce, approvals: r.approvals, finalizedCheck: r.finalizedCheck })));
+        if (!found) return null;
+        leaveHalt(d.v.multisig, found);
+        return haltedBy(d.v.multisig) ?? found.why;
+      },
       settle: async () => {
         const before = submittedOf(d.record);
         // An approval found on chain and failing its checks is a fatal stop, as one sent in this round

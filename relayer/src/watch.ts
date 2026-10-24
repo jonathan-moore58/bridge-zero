@@ -388,6 +388,45 @@ export function settledOnChainFailure<S extends Submitted>(before: S[], after: M
   }) ?? null;
 }
 
+/** A release round as the record has it, for recordedStop: its burn, its approvals and, for a fast release, its check against Sepolia's final chain. */
+export interface RecordedFindings {
+  burn: string;
+  approvals: { member: number; action: string; extrinsicHash: string; status: string; block: { number: number } | null; acknowledged?: string }[];
+  finalizedCheck?: { ok: boolean; why?: string; acknowledged?: string };
+}
+
+const acknowledged = (x: { acknowledged?: string }): boolean => typeof x.acknowledged === "string" && x.acknowledged.trim() !== "";
+
+/**
+ * The first fatal finding the record holds that no member acknowledged (by hand, in the record: the
+ * approval's or the finalizedCheck's acknowledged, who, when and what they found): an approval that
+ * ran on chain (in a block) and failed its checks, or a fast release whose check against Sepolia's
+ * final chain failed. Each run leaves the halt file before the record holds such a finding; this
+ * finds one whose halt file is not there (the process died before it could write it, or it could
+ * not be written), so that the watcher with --send stops on the record too. Null when there is none.
+ */
+export function recordedStop(rounds: RecordedFindings[]): FatalStop | null {
+  for (const r of rounds) {
+    const failed = r.approvals.find((a) => a.status === "failed" && a.block !== null && !acknowledged(a));
+    if (failed) {
+      return {
+        why: `the record holds member ${failed.member}'s ${failed.action} ${failed.extrinsicHash} (burn ${r.burn}) as run on chain in #${failed.block!.number} and failing its checks, and no member has acknowledged it (the approval's acknowledged)`,
+        burn: r.burn,
+        extrinsicHash: failed.extrinsicHash,
+      };
+    }
+    if (r.finalizedCheck?.ok === false && !acknowledged(r.finalizedCheck)) {
+      const executed = r.approvals.filter((a) => a.action === "execute" && a.block !== null).at(-1);
+      return {
+        why: `the record holds the release of burn ${r.burn}, made in fast mode, as failing its check against Sepolia's final chain${r.finalizedCheck.why ? ` (${r.finalizedCheck.why})` : ""}, and no member has acknowledged it (finalizedCheck.acknowledged)`,
+        burn: r.burn,
+        extrinsicHash: executed?.extrinsicHash ?? null,
+      };
+    }
+  }
+  return null;
+}
+
 /** How a settling ended (settleOrHalt): its code, a fatal stop it found, or what it threw. */
 export type SettleEnd<T> = { kind: "settled"; code: T } | { kind: "fatal"; stop: FatalStop } | { kind: "threw"; error: unknown };
 

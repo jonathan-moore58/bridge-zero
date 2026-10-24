@@ -33,6 +33,7 @@ import {
   receiptInLogBlock,
   RECONCILE_MISSES,
   reconcileVerdict,
+  recordedStop,
   rpcTrouble,
   settledOnChainFailure,
   settleOrHalt,
@@ -48,6 +49,7 @@ import {
   type Outcome,
   type Ports,
   type RecordedApproval,
+  type RecordedFindings,
   type RecordedRound,
   type Rule,
   type SeenBurn,
@@ -576,6 +578,29 @@ describe("settling what an earlier run submitted", () => {
     const r = await watchRound(chain.ports(), FINALITY, SEND);
     assert.deepEqual(r.fatal, { ...stop, left: true });
     assert.deepEqual(chain.calls, []);
+  });
+});
+
+describe("a fatal finding the record holds", () => {
+  const opened = { member: 1, action: "open", extrinsicHash: "0xopen", status: "final", block: { number: 100 } };
+  const executed = { member: 2, action: "execute", extrinsicHash: "0xexec", status: "final", block: { number: 101 } };
+  const released: RecordedFindings = { burn: "4", approvals: [opened, executed] };
+
+  it("stops the watcher when no halt file says so: an approval that ran on chain and failed its checks, or a failed final check, until a member acknowledges it", () => {
+    assert.equal(recordedStop([released, { ...released, burn: "5", finalizedCheck: { ok: true } }]), null);
+    // The process died after the record held the failure, before the halt file was written.
+    const failed: RecordedFindings = { burn: "5", approvals: [opened, { ...executed, status: "failed" }] };
+    const stop = recordedStop([released, failed]);
+    assert.deepEqual(stop && { burn: stop.burn, extrinsicHash: stop.extrinsicHash }, { burn: "5", extrinsicHash: "0xexec" });
+    assert.match(stop!.why, /member 2's execute 0xexec \(burn 5\) as run on chain in #101 and failing its checks, and no member has acknowledged it/);
+    const reorged: RecordedFindings = { ...released, burn: "6", finalizedCheck: { ok: false, why: "the final chain has no BurnRequested log of this burn nonce" } };
+    assert.equal(recordedStop([reorged])?.extrinsicHash, "0xexec");
+    assert.match(recordedStop([reorged])!.why, /burn 6, made in fast mode, as failing its check against Sepolia's final chain \(the final chain has no BurnRequested log/);
+    // Not on chain (refused, or never included), or acknowledged by a member: nothing to stop on.
+    assert.equal(recordedStop([{ burn: "7", approvals: [{ ...opened, status: "failed", block: null }] }]), null);
+    assert.equal(recordedStop([{ burn: "5", approvals: [opened, { ...executed, status: "failed", acknowledged: "member 1, Oct 25: paid in full, checked by hand" }] }]), null);
+    assert.equal(recordedStop([{ ...reorged, finalizedCheck: { ...reorged.finalizedCheck!, acknowledged: "member 2, Oct 25" } }]), null);
+    assert.notEqual(recordedStop([{ ...reorged, finalizedCheck: { ...reorged.finalizedCheck!, acknowledged: "  " } }]), null, "a blank acknowledgement is none");
   });
 });
 
