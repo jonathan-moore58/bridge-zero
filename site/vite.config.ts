@@ -93,6 +93,10 @@ export default defineConfig({
   },
   build: {
     target: "es2022",
+    // Two pages: the status page, and the bridge app at /app/.
+    rolldownOptions: {
+      input: { main: resolve(here, "index.html"), app: resolve(here, "app/index.html") },
+    },
     assetsInlineLimit: 0,
     sourcemap: false,
     reportCompressedSize: true,

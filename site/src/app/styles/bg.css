@@ -1,0 +1,19 @@
+/* Bridge Zero background: the fixed layer under every page. Its look (a dot grid and two drifting
+   glows) is in v3.css, section 8; --bz-bg-focus-x/y is the main card's centre, set by the app. */
+
+#bz-bg {
+  --bz-bg-intensity: 1;
+  --bz-bg-focus-x: 50%;
+  --bz-bg-focus-y: 50%;
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+  isolation: isolate;
+  background:
+    radial-gradient(64% 52% at var(--bz-bg-focus-x) var(--bz-bg-focus-y), rgb(108 39 226 / 0.07), transparent 72%),
+    radial-gradient(90% 60% at 50% -10%, rgb(74 52 240 / 0.06), transparent 70%),
+    linear-gradient(180deg, var(--bg, #0d0c14) 0%, var(--bg, #0d0c14) 45%, var(--bg-deep, #08070d) 100%);
+}

@@ -1,0 +1,514 @@
+/* v3: the owner's review, Oct 24.
+   1. The bridge card in the centre, as every bridge and the owner's mockup have it: a short head,
+      the card, then the proof strip below it.
+   2. The card answers the cursor: its edge brightens, its shadow deepens, and it lifts 2px.
+   3. Sizes tuned per width: a compact one-line head on desktop, so the card's action stays above
+      the fold at 1440x900 and 1280x800.
+   Loaded after every other sheet; it only overrides. */
+
+/* ------------------------------------------------------------------ 1. centred stage */
+
+.stage:not(.stage--tx) {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: none;
+  grid-template-areas:
+    "intro"
+    "card"
+    "proof";
+  justify-items: center;
+  column-gap: 0;
+  row-gap: clamp(18px, 2.2vw, 28px);
+  padding-top: clamp(16px, 3.2vh, 36px);
+}
+
+.stage:not(.stage--tx) .intro {
+  width: 100%;
+  max-width: 920px;
+  padding: 0;
+  text-align: center;
+}
+
+.stage:not(.stage--tx) .intro__eyebrow {
+  margin-bottom: 10px;
+}
+
+.stage:not(.stage--tx) .intro__title {
+  font-size: clamp(1.5rem, 1rem + 1.4vw, 1.875rem);
+  line-height: 1.18;
+}
+
+/* The lead line only where there is room for it above the card. */
+.stage:not(.stage--tx) .intro__lead {
+  display: none;
+  margin: 10px auto 0;
+  max-width: 600px;
+}
+
+/* Short windows (the owner's browser shows about 1280x600): the small route line above the title
+   goes and the gaps tighten, so the card and its action fit without scrolling. */
+@media (min-width: 961px) and (max-height: 720px) {
+  .stage:not(.stage--tx) {
+    row-gap: 14px;
+    padding-top: 12px;
+  }
+
+  .stage:not(.stage--tx) .intro__eyebrow {
+    display: none;
+  }
+}
+
+@media (min-width: 961px) and (min-height: 980px) {
+  .stage:not(.stage--tx) .intro__lead {
+    display: block;
+  }
+}
+
+.cardcol {
+  width: 100%;
+  max-width: var(--card-w);
+}
+
+/* The proof strip under the card, wider than it on desktop, with its three facts in a row. */
+.proof {
+  width: 100%;
+  max-width: 880px;
+}
+
+@media (max-width: 960px) {
+  .proof {
+    max-width: var(--card-w);
+  }
+}
+
+/* ------------------------------------------------------------------ 2. hover */
+
+.card--lit.bridge {
+  transition: transform 0.22s var(--ease-out), box-shadow 0.22s var(--ease-out);
+}
+
+.card--lit.bridge:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 0 0 1px rgb(177 151 255 / 0.24),
+    var(--hi-strong),
+    0 36px 90px -30px rgb(0 0 0 / 0.9),
+    0 0 150px -40px rgb(108 39 226 / 0.7);
+}
+
+.route {
+  transition: box-shadow 0.18s var(--ease-out), background-color 0.18s var(--ease-out);
+}
+
+.route:hover {
+  box-shadow: inset 0 0 0 1px var(--line-3);
+}
+
+.proof {
+  transition: box-shadow 0.22s var(--ease-out);
+}
+
+.proof:hover {
+  box-shadow: inset 0 0 0 1px var(--line-2), var(--hi-strong), var(--shadow-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .card--lit.bridge:hover {
+    transform: none;
+  }
+}
+
+/* ------------------------------------------------------------------ 3. a smaller type scale
+   The owner found words and numbers too big. One step down everywhere (15 to 14 for controls,
+   48 to 36 for the amount), close to Uniswap and Across. Every sheet reads these tokens. */
+
+:root {
+  --fs-caption: 0.71875rem; /* 11.5 */
+  --fs-small: 0.78125rem; /* 12.5 */
+  --fs-body: 0.84375rem; /* 13.5 */
+  --fs-ui: 0.875rem; /* 14 */
+  --fs-title: 0.9375rem; /* 15 */
+  --fs-h3: 1.0625rem; /* 17 */
+  --fs-h2: 1.25rem; /* 20 */
+  --fs-h1: clamp(1.5rem, 1.1rem + 1.3vw, 2.25rem); /* 24 to 36 */
+  --fs-amount: clamp(1.875rem, 1.55rem + 0.9vw, 2.25rem); /* 30 to 36 */
+  --control-lg: 44px;
+  --control-xl: 50px;
+}
+
+/* The sizes that were set by hand rather than by token, one step down each. */
+.amount__input {
+  height: calc(var(--fs-amount) * 1.3);
+  font-size: var(--fs-amount);
+  line-height: 1.15;
+}
+
+.stage:not(.stage--tx) .intro__title {
+  font-size: clamp(1.375rem, 1rem + 1vw, 1.75rem);
+}
+
+.intro__title--tx {
+  font-size: clamp(1.375rem, 1rem + 1vw, 1.875rem);
+}
+
+.page__title {
+  font-size: clamp(1.5rem, 1.15rem + 1vw, 2rem);
+}
+
+.labhero__title {
+  font-size: clamp(1.5rem, 1.1rem + 1.3vw, 2.25rem);
+}
+
+.txclock__num {
+  font-size: clamp(1.75rem, 1.4rem + 1vw, 2.125rem);
+}
+
+.rc__big {
+  font-size: clamp(1.5rem, 1.25rem + 0.8vw, 1.875rem);
+}
+
+.lag__big,
+.bigrow__num {
+  font-size: clamp(1.375rem, 1.15rem + 0.7vw, 1.625rem);
+}
+
+.balance__num {
+  font-size: 1.375rem;
+}
+
+.labstat__num {
+  font-size: clamp(1.625rem, 1.3rem + 1vw, 2rem);
+}
+
+.fact__num {
+  font-size: 1.1875rem;
+}
+
+/* ------------------------------------------------------------------ 4. a shorter card
+   About 450 px on the way in and 540 px on the way back, from 645 and 770. Nothing is lost: the
+   head repeats the page title (kept for screen readers), the long trust line lives in the (i)
+   tooltip and the review sheet, and "You have" shows only when something is missing. */
+
+.bridge {
+  gap: 10px;
+  padding: 16px 18px 18px;
+}
+
+.bridge__head {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.pair .chain-btn {
+  min-height: 56px;
+  padding: 8px 12px;
+}
+
+.amount {
+  padding: 12px 14px 12px;
+}
+
+.amount__foot {
+  gap: 4px;
+  padding-top: 10px;
+}
+
+.route {
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.route__icon {
+  width: 28px;
+  height: 28px;
+}
+
+.route--back .route__sub {
+  display: none;
+}
+
+.opt--row {
+  padding: 9px 12px;
+}
+
+.opt--row .opt__src {
+  display: none;
+}
+
+.quote__sum {
+  min-height: 34px;
+  padding: 4px;
+}
+
+/* ------------------------------------------------------------------ 5. a lighter background
+   The cards' glass blur was redrawn under them on every frame of the background's motion: the
+   one costly thing on a low-end laptop. The card surface is 92-94% opaque, so the blur showed
+   almost nothing; it goes. The grain drops its blend mode for plain alpha, which looks the same
+   on this dark ground and needs no extra compositing. */
+
+.card {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  /* Fully opaque, the same colours the 92-94% surface had over the page: without the blur, the
+     background's beam would otherwise show through the card as a faint line. */
+  background: linear-gradient(180deg, #1b1826 0%, #13111b 100%);
+}
+
+/* The background holds still: no breathing planes, no travelling light, no parallax (bg.js is not
+   loaded for option 1) and no grain layer. It is painted once and costs nothing after that. The
+   app no longer moves it on scroll either (app.js), which repainted it on every scroll frame. */
+#bz-bg .bzb-stage *,
+#bz-bg .bzb-stage *::before,
+#bz-bg .bzb-stage *::after {
+  animation: none !important;
+}
+
+#bz-bg .bzb-grain {
+  display: none;
+}
+
+/* No lines at all. With the head centred above the card, the diagonal beam and the planes' lit
+   edges crossed the title at some window sizes (the owner caught it at 1280x600). What stays is
+   light only: the violet glow up left (Portaldot) and the blue glow down right (Ethereum). The
+   beam's end nodes go too: without the beam they read as a smudge near the title. */
+#bz-bg .bzb-beam,
+#bz-bg .bzb-pulse,
+#bz-bg .bzb-node,
+#bz-bg .bzb-plane::after {
+  display: none;
+}
+
+/* ------------------------------------------------------------------ 6. transfer and receipt, centred
+   The same column as the bridge: the head, the transfer (or receipt) card in the middle where the
+   bridge card was, then the checks below it. It is the tablet layout these screens already had,
+   now at every width, so the card does not jump right when Review is pressed. */
+
+.stage--tx {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-areas: none;
+  justify-items: center;
+  row-gap: 18px;
+  padding-top: clamp(16px, 3vh, 32px);
+}
+
+.intro--tx {
+  display: contents;
+}
+
+.stage--tx > .intro--tx > *,
+.stage--tx > .card {
+  width: 100%;
+  max-width: 540px;
+}
+
+.stage--tx .back-link,
+.stage--tx .intro__eyebrow,
+.stage--tx .intro__title,
+.stage--tx .replay-note {
+  order: 1;
+}
+
+.stage--tx .intro__eyebrow,
+.stage--tx .intro__title {
+  text-align: center;
+}
+
+.stage--tx .back-link {
+  margin: 0 0 -10px;
+  padding-left: 0;
+}
+
+.stage--tx .intro__eyebrow {
+  margin: 0 0 -10px;
+  justify-content: center;
+}
+
+.stage--tx .replay-note {
+  width: auto;
+  margin-top: -6px;
+  justify-self: center;
+}
+
+.stage--tx > .card {
+  order: 2;
+}
+
+/* screens.css places the card in a "card" area on desktop. With no areas, a named area that is not
+   there makes the grid add implicit columns, so every item here is placed by order alone. */
+.stage--tx > .card,
+.stage--tx .rccard,
+.stage--tx .txcard,
+.stage--tx .side {
+  grid-area: auto;
+}
+
+.stage--tx .side {
+  order: 3;
+  max-width: 720px;
+  margin-top: 0;
+}
+
+/* ------------------------------------------------------------------ 7. live chips
+   The card is as it was (the owner found the glow too much); only the live chips stay, and the
+   swap icon turns on hover. The life moves to the background (section 8). */
+
+/* Live chips: the light client follows V3, the watcher runs every 15 s. */
+.livechip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 6px;
+  padding: 2px 8px 2px 7px;
+  border-radius: 999px;
+  vertical-align: 2px;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--verify-strong);
+  background: var(--verify-wash);
+  box-shadow: inset 0 0 0 1px var(--verify-line);
+}
+
+.livechip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--verify);
+  box-shadow: 0 0 0 0 rgb(69 224 168 / 0.5);
+  animation: v3-beat 2.4s ease-out infinite;
+}
+
+.livechip--trust {
+  color: var(--trust);
+  background: var(--trust-wash);
+  box-shadow: inset 0 0 0 1px var(--trust-line);
+}
+
+.livechip--trust::before {
+  background: var(--trust);
+}
+
+@keyframes v3-beat {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(0.6);
+    opacity: 0.55;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* The swap turns as the cursor reaches it. */
+.swap-btn .i {
+  transition: transform 0.35s var(--ease-out);
+}
+
+.swap-btn:hover .i {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .livechip::before {
+    animation: none;
+  }
+
+  .swap-btn:hover .i {
+    transform: none;
+  }
+}
+
+/* ------------------------------------------------------------------ 8. the background, v3 (LOCKED)
+   The owner locked this one ("A lock kro", Oct 24): the default, and the one the real app ships.
+   Sections 9 (Orbit, ?bg=5) and 10 (Portal, ?bg=6) are kept only for reference.
+   The owner wanted the life in the background, not on the card. No lines anywhere (nothing can
+   cross a title):
+   - a fine dot grid, brightest round the card and fading to nothing at the edges (static);
+   - the two brands' light, violet up left and blue down right, drifting very slowly (40-46 s,
+     transform only, each on its own layer: the compositor moves them, nothing is repainted);
+   - a soft vignette that keeps the eye in the middle.
+   The app's placeBg() already sets --bz-bg-focus-x/y (the card's centre) and --bz-bg-intensity
+   (lower on quiet pages and small screens); the grid and the glows read them. */
+
+#bz-bg.v3bg {
+  background: linear-gradient(180deg, #0e0c17 0%, #0b0a12 55%, #08070d 100%);
+}
+
+#bz-bg .v3bg-glow {
+  position: absolute;
+  border-radius: 50%;
+  opacity: var(--bz-bg-intensity, 1);
+  will-change: transform;
+  pointer-events: none;
+}
+
+#bz-bg .v3bg-glow--violet {
+  left: -22vmax;
+  top: -34vmax;
+  width: 74vmax;
+  height: 74vmax;
+  background: radial-gradient(closest-side, rgb(108 39 226 / 0.3), rgb(108 39 226 / 0.1) 48%, transparent 100%);
+  animation: v3bg-drift-a 40s ease-in-out infinite alternate;
+}
+
+#bz-bg .v3bg-glow--blue {
+  right: -24vmax;
+  bottom: -38vmax;
+  width: 70vmax;
+  height: 70vmax;
+  background: radial-gradient(closest-side, rgb(45 104 244 / 0.25), rgb(74 52 240 / 0.09) 48%, transparent 100%);
+  animation: v3bg-drift-b 46s ease-in-out infinite alternate;
+}
+
+@keyframes v3bg-drift-a {
+  to {
+    transform: translate3d(14vw, 9vh, 0) scale(1.1);
+  }
+}
+
+@keyframes v3bg-drift-b {
+  to {
+    transform: translate3d(-12vw, -8vh, 0) scale(1.08);
+  }
+}
+
+#bz-bg .v3bg-grid {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgb(201 184 255 / 0.22) 1.1px, transparent 1.6px);
+  background-size: 26px 26px;
+  background-position: center top;
+  -webkit-mask-image: radial-gradient(58% 56% at var(--bz-bg-focus-x, 50%) var(--bz-bg-focus-y, 45%), #000 0%, rgb(0 0 0 / 0.5) 46%, transparent 80%);
+  mask-image: radial-gradient(58% 56% at var(--bz-bg-focus-x, 50%) var(--bz-bg-focus-y, 45%), #000 0%, rgb(0 0 0 / 0.5) 46%, transparent 80%);
+}
+
+#bz-bg .v3bg-vignette {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(120% 95% at 50% 40%, transparent 55%, rgb(5 4 9 / 0.6) 100%);
+}
+
+/* Pages with no hero card (Activity, Network, the lab): a fainter grid. */
+#bz-bg.is-quiet .v3bg-grid {
+  opacity: 0.55;
+}
+
+@media (max-width: 767px) {
+  #bz-bg .v3bg-grid {
+    background-size: 22px 22px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #bz-bg .v3bg-glow {
+    animation: none;
+  }
+}
