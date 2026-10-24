@@ -256,6 +256,31 @@ export type Outcome =
   /** An approval ran on chain and failed its checks: the watcher stops. */
   | { kind: "failed"; why: string; extrinsicHash?: string };
 
+/** The approval a run of the release tool added to the record: its extrinsic, its status, and its block once it is in one. */
+export interface SentApproval {
+  extrinsicHash: string;
+  status: string;
+  block: { number: number } | null;
+  note?: string;
+}
+
+/**
+ * What a run of the release tool for one approval ended with, from how it ended (its exit code, or
+ * the refusal it threw) and the approval it added to the record, if any. An approval still
+ * submitted is pending whatever else happened (a refusal thrown after it was sent, or a block it is
+ * not found in): nothing more is signed until the next round settles it. One in a block failed its
+ * checks; one never included was rejected; with nothing sent, the run refused.
+ */
+export function approvalOutcome(end: { code: "ok" | "pending" | "failed" } | { refused: string }, sent: SentApproval | undefined, failedChecks: number): Outcome {
+  if ("code" in end && end.code === "ok") return { kind: "ok" };
+  if ("code" in end && end.code === "pending") return { kind: "pending", why: "an approval is not final yet" };
+  const why = "refused" in end ? end.refused : `${failedChecks} check${failedChecks === 1 ? "" : "s"} failed`;
+  if (sent?.status === "submitted") return { kind: "pending", why: `${sent.extrinsicHash} was submitted and its outcome is not known (${why}); the next round settles it` };
+  if (sent?.block) return { kind: "failed", why: `${sent.extrinsicHash} in #${sent.block.number} failed its checks`, extrinsicHash: sent.extrinsicHash };
+  if (sent) return { kind: "rejected", why: sent.note ?? "never included" };
+  return { kind: "refused", why };
+}
+
 /** What settling the approvals an earlier run left submitted ended with. */
 export type Settled =
   /** Nothing is on its way any more: each is final (and checked), failed or dropped. */

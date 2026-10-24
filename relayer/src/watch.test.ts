@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import {
+  approvalOutcome,
   checkBlock,
   cursorOf,
   DEFAULT_FAST_CAP,
@@ -367,6 +368,16 @@ describe("a round of the watcher", () => {
     assert.deepEqual(chain.calls, [], "no burn is approved after it");
   });
 
+  it("signs nothing more in the round after an approval that was sent and whose outcome is not known", async () => {
+    // Burn 0's opening was sent, then the run threw (its block did not hold it): it stays submitted, and the round ends.
+    const chain = new FakeChain(HEADS, [burn(0n, 900), burn(1n, 905)]);
+    chain.outcomes.set(0n, [approvalOutcome({ refused: "extrinsic 0xa1 is not in block 0xb1" }, { extrinsicHash: "0xa1", status: "submitted", block: null }, 0)]);
+    const r = await watchRound(chain.ports(), FINALITY, SEND);
+    assert.equal(r.pending, true);
+    assert.equal(r.refused, 0);
+    assert.deepEqual(chain.calls, ["0:open:1:finality"], "burn 1 is not approved");
+  });
+
   it("refuses a burn whose payee the checks refuse, signs nothing for it, and goes on with the next burn", async () => {
     const chain = new FakeChain(HEADS, [burn(0n, 900), burn(1n, 905)]);
     chain.outcomes.set(0n, [{ kind: "refused", why: "the payee 0x0000…dEaD is nothing shows that anyone controls it on V3" }]);
@@ -449,6 +460,27 @@ describe("settling what an earlier run submitted", () => {
     assert.equal(settledOnChainFailure(before, after), null);
     assert.equal(settledOnChainFailure(before, new Map([["0xa1", { status: "final", onChain: true }]])), null);
     assert.equal(settledOnChainFailure([], after), null);
+  });
+});
+
+describe("what an approval run ended with", () => {
+  const submitted = { extrinsicHash: "0xa1", status: "submitted", block: null };
+
+  it("is pending while the approval it sent is still submitted, whatever the run threw or returned", () => {
+    const thrown = approvalOutcome({ refused: "extrinsic 0xa1 is not in block 0xb1" }, submitted, 0);
+    assert.equal(thrown.kind, "pending");
+    assert.match((thrown as { why: string }).why, /0xa1 was submitted and its outcome is not known \(extrinsic 0xa1 is not in block 0xb1\); the next round settles it/);
+    // Its checks threw after it was found in a block: still submitted.
+    assert.equal(approvalOutcome({ refused: "a read stopped" }, { ...submitted, block: { number: 7 } }, 0).kind, "pending");
+    assert.equal(approvalOutcome({ code: "failed" }, submitted, 1).kind, "pending");
+  });
+
+  it("tells a refusal before signing from a rejected extrinsic and from one that failed its checks", () => {
+    assert.deepEqual(approvalOutcome({ code: "ok" }, undefined, 0), { kind: "ok" });
+    assert.deepEqual(approvalOutcome({ code: "failed" }, undefined, 2), { kind: "refused", why: "2 checks failed" });
+    assert.deepEqual(approvalOutcome({ refused: "the payee is nobody's" }, undefined, 0), { kind: "refused", why: "the payee is nobody's" });
+    assert.deepEqual(approvalOutcome({ code: "failed" }, { extrinsicHash: "0xa1", status: "failed", block: null, note: "never included: 1010" }, 1), { kind: "rejected", why: "never included: 1010" });
+    assert.deepEqual(approvalOutcome({ code: "failed" }, { extrinsicHash: "0xa1", status: "failed", block: { number: 7 } }, 1), { kind: "failed", why: "0xa1 in #7 failed its checks", extrinsicHash: "0xa1" });
   });
 });
 

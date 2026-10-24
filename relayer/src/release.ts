@@ -262,6 +262,7 @@ import {
   type Receipt,
 } from "../../contracts/script/lib/sepolia.mjs";
 import {
+  approvalOutcome,
   checkBlock,
   cursorOf,
   DEFAULT_FAST_CAP,
@@ -2722,6 +2723,8 @@ async function approveFor(
   const id = bytesToHex(onChain.burnId);
   const approvalsOf = () => (d.record.releases ?? []).filter((r) => r.burn.burnId === id).flatMap((r) => r.approvals);
   const before = new Set(approvalsOf());
+  /** The approval this run added to the record, if any. */
+  const sent = () => approvalsOf().filter((a) => !before.has(a)).at(-1);
   const run: ReleaseRun = {
     burnNonce: burn.burnNonce,
     rehearse: false,
@@ -2747,14 +2750,11 @@ async function approveFor(
       return { kind: "refused", why: "the burn on Sepolia is not the one the round saw (a reorg?)" };
     }
     const code = await releaseOnV3(d, api, evm, run, read);
-    if (code === OK) return { kind: "ok" };
-    if (code === PENDING) return { kind: "pending", why: "an approval is not final yet" };
-    const sent = approvalsOf().filter((a) => !before.has(a)).at(-1);
-    if (sent?.block) return { kind: "failed", why: `${sent.extrinsicHash} in #${fmt(sent.block.number)} failed its checks`, extrinsicHash: sent.extrinsicHash };
-    if (sent) return { kind: "rejected", why: sent.note ?? "never included" };
-    return { kind: "refused", why: `${failures} check${failures === 1 ? "" : "s"} failed` };
+    return approvalOutcome({ code: code === OK ? "ok" : code === PENDING ? "pending" : "failed" }, sent(), failures);
   } catch (error) {
-    if (error instanceof Stop && !(error instanceof RecordError)) return { kind: "refused", why: errorText(error) };
+    // A refusal thrown after the approval was sent (its block not found, a check that stopped) leaves
+    // it submitted: pending, so that nothing more is signed before the next round settles it.
+    if (error instanceof Stop && !(error instanceof RecordError)) return approvalOutcome({ refused: errorText(error) }, sent(), failures);
     throw error;
   }
 }
