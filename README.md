@@ -264,8 +264,8 @@ npm run check -- --dir ../fixtures/v3-testnet-hero
 # ...
 # All checks passed: 31 passed, 0 failed.
 npm test
-# ℹ tests 74
-# ℹ pass 74
+# ℹ tests 118
+# ℹ pass 118
 # ℹ fail 0
 
 cd ../contracts
@@ -306,6 +306,21 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
 - The relayer (`npm run relay`) imports every validator-set change in order, then the finalized
   head, after a dry run of the whole plan on a Sepolia node (rows 9 to 23, 26 to 31, 39 to 46, 52
   and 53).
+- The relayer in watch mode since Oct 23 (UTC), `--watch 600`: a new run 10 minutes after each
+  one ends, one process per chain, each with a key of its own (V3:
+  [`0xE94a…0257`](https://sepolia.etherscan.io/address/0xE94a82e2c7f38f777E8845A9d8c36B6be6a30257),
+  old mainnet:
+  [`0x9926…C7f8`](https://sepolia.etherscan.io/address/0x99268e630f7f24b0f9B000CEA7B0350b3098C7f8)).
+  A run imports every set change it finds, and the head once it is `--head-every` blocks past the
+  client's latest header: 600 on V3 and 60 on the old mainnet (the defaults), about an hour of
+  each chain's blocks. While it runs and Sepolia's base fee is below its gates (0.05 gwei for a
+  head, 1.5 gwei for a set change), each light client is at most about 70 minutes behind its
+  chain's finalized head, the V3 client is at V3's current validator set within minutes of a
+  change, and a mint needs only V3's finality and one Sepolia transaction. Its transactions are in
+  [`deployments/relay-sepolia-0xe94a….jsonl`](deployments/relay-sepolia-0xe94a82e2c7f38f777e8845a9d8c36b6be6a30257.jsonl)
+  and
+  [`deployments/relay-sepolia-0x9926….jsonl`](deployments/relay-sepolia-0x99268e630f7f24b0f9b000cea7b0350b3098c7f8.jsonl),
+  outside the numbered rows.
 - The vault on the V3 testnet and lock 0 ([the vault](#the-vault-on-the-portaldot-v3-testnet)).
 - The bridge from V3 to Sepolia: BridgeMinter and wtPOT (rows 24 and 25), and one `importAndMint`
   that verified V3's finality, bound the vault, proved `commitments[0]` and minted 1 wtPOT
@@ -322,7 +337,7 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   by `.github/workflows/pages.yml` on every change to the records: both light clients, the vault
   and the bridge read live, the recorded runs as the fallback when an RPC is down, and the six
   tampered mints checked live against BridgeMinter.
-- Tests: 327 forge tests, 74 relayer tests and 295 fixture checks pass
+- Tests: 327 forge tests, 118 relayer tests and 295 fixture checks pass
   ([Verify it yourself](#verify-it-yourself)).
 
 **Known limits**
@@ -348,8 +363,10 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   than 16 validators (`MAX_AUTHORITIES`) halts the client, since from 18 new keys up it would not
   fit one transaction. Sepolia's fees are near zero (the mint paid 1,015 wei per gas); on
   Ethereum mainnet the same gas is paid at mainnet prices.
-- The relayer runs when it is started (`--watch` keeps it running): a light client is as current
-  as its last run.
+- The relayer runs on one machine, which starts it at logon: a light client is as current as its
+  last run, and while that machine is off or asleep no run happens. The records hold a gap of about
+  six hours: no import into either client from 00:38 to 06:56 UTC on Oct 24, while both chains
+  finalized blocks and Sepolia's base fee stayed near 16 wei.
 - The way back waits for Sepolia's finality, about 13 to 15 minutes, before the committee releases,
   so the recorded run took about 20 minutes from the burn to the release (rows 47 to 51). The
   way in needs only V3's finality: 48 seconds for lock 1. The roadmap's fast mode and LP
@@ -363,8 +380,6 @@ Plans, not promises: a step counts once it runs on chain and is in the [evidence
 
 - **A web app for the bridge.** Lock, mint and burn from a wallet, with the mint's proofs built in
   the browser.
-- The relayer kept running (`--watch`), so the V3 light client stays at V3's current validator set
-  and a mint needs only V3's finality and one Sepolia transaction (48 seconds for lock 1).
 - The proof kit, packaged for other builders: the light client, the proof libraries and the
   capture and check tools, so another EVM contract can read proven Portaldot state.
 
@@ -435,6 +450,9 @@ From the git history, in UTC (the time zone Etherscan shows). Rows are the [evid
   clients brought to the live heads: V3 sets 33 to 46 and head #165,089 (14 transactions), old
   mainnet sets 3907 to 3913 and head #2,739,249 (7 transactions, 7 of 10 signatures each). These
   runs are in `deployments/relay-sepolia-0xd983….jsonl`, outside the numbered rows.
+- **Oct 24.** The relayer in watch mode since Oct 23, 22:15, one key per chain: by 07:57 it had
+  imported V3 sets 46 to 48 and 4 V3 heads, and old mainnet set 3913 to 3914 and 4 heads (11
+  transactions). The page reads every sender's history in `deployments/`.
 
 ## Evidence
 
