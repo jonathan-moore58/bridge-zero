@@ -73,6 +73,8 @@ const CASES: [string[], RegExp][] = [
   [[...RELEASE, "--confirmations", "3", "--fast-cap", "0"], /--fast-cap: the amount is zero/],
   [[...RELEASE, "--confirmations", "3", "--fast-cap", "1e3"], /--fast-cap: not an amount of tPOT/],
   [[...RELEASE, "--rehearse", "--amount", "1", "--to", ADDRESS, "--confirmations", "3"], /--confirmations reads a burn on Sepolia, and a rehearsal has none/],
+  [[...RELEASE, "--approve", "--member", "1", "--send", "--key-file", "no-such-key.json", "--password-file", "no-such-file.txt", "--confirmations", "2"], /--send takes --confirmations 3 or more: reorgs of one or two blocks happen on Sepolia/],
+  [[...RELEASE, "--cancel", "--member", "1", "--send", "--key-file", "no-such-key.json", "--password-file", "no-such-file.txt", "--confirmations", "1"], /--send takes --confirmations 3 or more/],
   [[...RELEASE, "--rounds", "1"], /--rounds is for --watch/],
   [[...RELEASE, "--member-keys", "1:a.json,2:b.json"], /--member-keys is for --watch/],
   [[...RELEASE, "--state-dir", "state"], /--state-dir is for --watch/],

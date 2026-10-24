@@ -12,7 +12,7 @@
 //   npm run release -- release --watch <seconds> --send --member-keys <k>:<member json>,<j>:<member json> --password-file <path>
 //   npm run release -- fund --member <1|2|3> | --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]
 //   npm run release -- status
-//   fast mode, for release and release --watch: --confirmations <n> (1 to 64; 3 or more for --watch --send)
+//   fast mode, for release and release --watch: --confirmations <n> (1 to 64; 3 or more with --send)
 //   [--fast-cap <tPOT>] [--fast-budget <tPOT>, --watch] [--fast-cap-override, for either above 10 tPOT]
 //   more options: --rpc <wss url> (the V3 node), --evm <http(s) url> (its EVM RPC), --priority-fee
 //   <gwei> and --max-fee <gwei> (burn)
@@ -402,7 +402,7 @@ const USAGE = `usage (from relayer/):
   npm run release -- release --burn-nonce <n> --rehearse --amount <wtPOT> --to <h160> [--approve --member <1|2|3>]
   npm run release -- release --burn-nonce <n> --approve|--cancel --member <1|2|3> [--send --key-file <member json> --password-file <path>]
   npm run release -- release --watch <seconds> [--rounds <n>] [--state-dir <path>] [--send --member-keys <k>:<member json>,<j>:<member json> --password-file <path>]
-  fast mode, for release and release --watch: --confirmations <n> (1 to 64; 3 or more for --watch --send) [--fast-cap <tPOT>, by default 1] [--fast-budget <tPOT>, --watch only, by default the cap]
+  fast mode, for release and release --watch: --confirmations <n> (1 to 64; 3 or more with --send) [--fast-cap <tPOT>, by default 1] [--fast-budget <tPOT>, --watch only, by default the cap]
     (above 10 tPOT, --fast-cap and --fast-budget take --fast-cap-override)
   npm run release -- fund --member <1|2|3> | --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]
   npm run release -- status
@@ -666,6 +666,11 @@ function releaseOptions(args: string[]): ReleaseOptions | WatchOptions {
   if (send && !approve && !cancel) usage("--send signs an approval or a cancellation: add --approve or --cancel with --member");
   if (send && !(keyText && passwordText)) usage("--send needs --key-file <member json> and --password-file <path>");
   if (!send && (keyText !== undefined || passwordText !== undefined)) usage("--key-file and --password-file are for --send; a dry run signs nothing");
+  const rule = ruleOf(v);
+  // As for the watcher: a reorg of one or two blocks could undo a burn released that shallow.
+  if (send && rule.confirmations !== null && rule.confirmations < MIN_WATCH_CONFIRMATIONS) {
+    usage(`--send takes --confirmations ${MIN_WATCH_CONFIRMATIONS} or more: reorgs of one or two blocks happen on Sepolia`);
+  }
   // The key file and the password file are opened only to sign; their paths are not printed either.
   const keyFile = secretPath(keyText, "--key-file");
   const passwordFile = secretPath(passwordText, "--password-file");
@@ -680,7 +685,7 @@ function releaseOptions(args: string[]): ReleaseOptions | WatchOptions {
     send,
     keyFile,
     passwordFile,
-    rule: ruleOf(v),
+    rule,
   };
 }
 
