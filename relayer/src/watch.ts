@@ -294,6 +294,11 @@ export interface SeenBurn {
   amountText?: string;
   /** Its log could not be read this round (the RPC refuses the range, or does not serve it yet): it waits, and the round goes on. */
   missing?: string;
+  /**
+   * The record has its release as released, which it sets only once released[burnId] was read as
+   * true at a final block (and the vault never sets it back): nothing is read on V3 for it again.
+   */
+  releasedInRecord?: boolean;
 }
 
 /** What a run of the release tool for one burn ended with. */
@@ -520,6 +525,12 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
       continue;
     }
     const name = `burn ${burn.burnNonce} (${burn.amountText ?? `${burn.amount} base units`} for ${burn.payee}, #${burn.block})`;
+    // A burn held for the members keeps the cursor at its nonce: the burns after it that the record
+    // has released are not read on V3 again every round.
+    if (burn.releasedInRecord) {
+      p.log(`${name}: released (the record has it, read at a final block); nothing to do`);
+      continue;
+    }
     let state = await p.state(burn);
     if (state.released) {
       p.log(`${name}: released already; nothing to do`);

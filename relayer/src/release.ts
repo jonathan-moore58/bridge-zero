@@ -108,11 +108,13 @@
 // it), in a block that is not the canonical one of its number yet, or with the logs refused, a
 // later round looks again; with no receipt, or a reverted one, RECONCILE_MISSES (3) rounds in a
 // row, counted in memory (a restart counts from zero), the release does not stand. Then it takes
-// every burn from the last one the record has released (checked again) to burnCount one block below
-// the latest: a burn the record released, from the record; one the burn cache has, from the cache;
+// every burn from the last one the record has released to burnCount one block below the latest: a
+// burn the record released, from the record; one the burn cache has, from the cache;
 // any other from its BurnRequested log, searched from the latest block back to the last released
 // burn's block, and cached once its block is final. A burn whose log the RPC refuses or does not
-// serve yet waits, and the round goes on. A burn released on V3 is left alone; one that does not
+// serve yet waits, and the round goes on. A burn released on V3 is left alone, and one the record
+// has released (it records that only once released[burnId] was read at a final block) is not read
+// on V3 again; one that does not
 // qualify yet (finality, or the fast-mode rule above, and in fast mode the budget: the burns
 // released fast whose blocks are not final yet, and with --send those whose check against the final
 // chain has not passed yet, stay within --fast-budget in all, by default the cap) waits; for one
@@ -2734,9 +2736,9 @@ async function recentBurn(b: Bridge, n: bigint, from: number, to: number): Promi
 }
 
 /**
- * Every burn from the last one handled (the record's releases, cursorOf), which is checked again,
- * to burnCount at the latest block: a burn the record has released, from the record; one the burn
- * cache has, from the cache; any other from its BurnRequested log (recentBurn), between the last
+ * Every burn from the last one handled (the record's releases, cursorOf) to burnCount at the latest
+ * block: a burn the record has released, from the record, marked releasedInRecord (the round reads
+ * nothing on V3 for it); one the burn cache has, from the cache; any other from its BurnRequested log (recentBurn), between the last
  * handled burn's block and the latest, and into the cache once its block is final. A burn whose log
  * the RPC refuses or does not serve yet waits; the round goes on with the next.
  */
@@ -2780,7 +2782,7 @@ async function burnsSince(d: Deployed, heads: Heads, cache: BurnCache): Promise<
         added += 1;
       }
     }
-    out.push({ burnNonce: n, amount: burn.amount, amountText: formatWtpot(burn.amount), block: burn.block, payee: checksumAddress(burn.v3Recipient), onChain: burn });
+    out.push({ burnNonce: n, amount: burn.amount, amountText: formatWtpot(burn.amount), block: burn.block, payee: checksumAddress(burn.v3Recipient), onChain: burn, ...(done ? { releasedInRecord: true } : {}) });
   }
   if (added > 0 && cache.write) {
     try {

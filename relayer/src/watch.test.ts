@@ -419,6 +419,26 @@ describe("a round of the watcher", () => {
     assert.ok(chain.lines.some((l) => /burn 0 .*refused: the payee/.test(l)));
   });
 
+  it("reads nothing on V3 for a burn the record has released, while a burn held for the members keeps the cursor before it", async () => {
+    const reads: bigint[] = [];
+    const chain = new FakeChain(HEADS, [burn(2n, 900), { ...burn(3n, 905), releasedInRecord: true }, { ...burn(4n, 906), releasedInRecord: true }, burn(5n, 910)]);
+    chain.states.set(2n, { released: false, op: null, rounds: [round("open", approval(1, "open", "final"), approval(2, "execute", "failed", true))] });
+    for (const n of [3n, 4n]) chain.states.set(n, { released: true, op: null, rounds: [round("released", approval(1, "open", "final"), approval(2, "execute", "final"))] });
+    const ports = chain.ports();
+    const state = ports.state;
+    ports.state = (b) => {
+      reads.push(b.burnNonce);
+      return state(b);
+    };
+    const r = await watchRound(ports, FINALITY, SEND);
+    // Burn 5 is read before its opening, after it and after its execution.
+    assert.deepEqual(reads, [2n, 5n, 5n, 5n], "burns 3 and 4 are not read on V3");
+    assert.equal(r.held, 1);
+    assert.equal(r.released, 1);
+    assert.deepEqual(chain.calls, ["5:open:1:finality", "5:execute:2:finality"]);
+    assert.ok(chain.lines.some((l) => /^burn 3 .*released \(the record has it, read at a final block\); nothing to do/.test(l)));
+  });
+
   it("does nothing for a burn already released", async () => {
     const chain = new FakeChain(HEADS, [burn(0n, 900)]);
     chain.states.set(0n, { released: true, op: null, rounds: [round("released", approval(1, "open", "final"), approval(2, "execute", "final"))] });
