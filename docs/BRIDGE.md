@@ -581,7 +581,10 @@ burn already released is left alone; a burn whose log the RPC refuses or does no
   as failed from then on, so no later run would see it fail. So does an approval by hand with
   `--send` that ran on chain and failed its checks. The record keeps the finding too: a watcher with
   `--send` stops on an approval the record holds as failed on chain, or a failed `finalizedCheck`,
-  that no member acknowledged, and leaves the halt file for it when none is there (exit code 4). A
+  that no member acknowledged, and leaves the halt file for it when none is there (exit code 4); its
+  dry run warns of such a finding (`a watcher with --send stops here: ...`) and goes on, and an
+  approval or a cancellation by hand with `--send` is refused on one (exit code 4), before it takes
+  the lock and again once it holds it, halt file or not, unless it adds `--despite-halt`. A
   member looks at what happened, adds `"acknowledged": "<who, when, what they found>"` to that
   approval, or to that release's `finalizedCheck`, in `deployments/v3-testnet.json`, with no other
   run of the tool going, then removes the halt file: removed without it, the next watcher with
@@ -604,7 +607,8 @@ cancel or step in.
 run signs nothing. It writes no file, except that it settles in `deployments/v3-testnet.json` what
 an earlier `--send` run left submitted, as every command does, and leaves the halt file when that
 settling finds an approval that ran on chain and failed its checks (exit code 4: do not start the
-second line then). A dry run takes no keys, so it cannot check them; the second line opens both
+second line then), and warns of a finding the record holds that no member acknowledged, on which
+the second line would stop (`a watcher with --send stops here: ...`: acknowledge it first). A dry run takes no keys, so it cannot check them; the second line opens both
 before its first request and ends with exit code 4 and no halt file when one does not open (a wrong
 password file, another member's keystore):
 
