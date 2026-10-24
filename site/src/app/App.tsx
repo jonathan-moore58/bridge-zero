@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { CH, fromOf, type ChainInfo, type Dir } from "./facts.ts";
 import { useRoute, type Route } from "./router.ts";
 import { useBox } from "./store.ts";
-import { connectWallet, openNoWallet } from "./connect.tsx";
+import { addWtpotToWallet, connectWallet, openNoWallet } from "./connect.tsx";
 import { useNet, type NetState } from "./net.ts";
 import { Announcer, CopyButton, Icon, Mark, SheetHost, Toasts, closeSheet, fmt, short, toast } from "./ui.tsx";
 import { ActivityView } from "./views/Activity.tsx";
@@ -15,7 +15,7 @@ import { LabView } from "./views/Lab.tsx";
 import { NetworkView } from "./views/Network.tsx";
 import { ReceiptView } from "./views/Receipt.tsx";
 import { TxView } from "./views/Tx.tsx";
-import { addV3, addWtpot, disconnect, wallet, walletCode, type Balances } from "./wallet.ts";
+import { addV3, disconnect, wallet, walletCode, type Balances } from "./wallet.ts";
 
 // ---------------------------------------------------------------------------------------------
 // The wallet button and its menu
@@ -90,7 +90,15 @@ function WalletMenu({ address, balances, onClose }: { address: string; balances:
         <Icon id="i-plus" />
         Add Portaldot V3 to wallet
       </button>
-      <button class="menu__item" role="menuitem" type="button" onClick={act(addWtpot, ["wtPOT added", "0x1fcB…Cb14 on Sepolia, 14 decimals."])}>
+      <button
+        class="menu__item"
+        role="menuitem"
+        type="button"
+        onClick={() => {
+          onClose(false);
+          void addWtpotToWallet();
+        }}
+      >
         <Icon id="i-plus" />
         Add wtPOT to wallet
       </button>
@@ -115,7 +123,11 @@ function WalletMenu({ address, balances, onClose }: { address: string; balances:
   );
 }
 
-function WalletButton({ dir, net }: { dir: Dir; net: NetState }) {
+/**
+ * `needs`: the chain the page's next transaction is sent on (the bridge card's source chain), or
+ * null on pages that send nothing, where either bridge chain is fine.
+ */
+function WalletButton({ needs, net }: { needs: ChainInfo | null; net: NetState }) {
   const w = useBox(wallet);
   const [open, setOpen] = useState(false);
   const btn = useRef<HTMLButtonElement>(null);
@@ -135,7 +147,10 @@ function WalletButton({ dir, net }: { dir: Dir; net: NetState }) {
     if (focusButton) btn.current?.focus();
   };
 
-  const src = fromOf(dir);
+  const on = chainOf(w.chainId);
+  // A wallet whose chain is not known yet is shown on the chain the page needs.
+  const shown = w.chainId === null ? needs : on;
+  const wrong = w.chainId !== null && (needs ? w.chainId !== needs.chainId : on === null);
   let cls = "wallet";
   let label: string;
   let inner;
@@ -168,8 +183,7 @@ function WalletButton({ dir, net }: { dir: Dir; net: NetState }) {
         <span class="wallet__text">Connecting</span>
       </>
     );
-  } else if (w.chainId !== null && w.chainId !== src.chainId) {
-    const on = chainOf(w.chainId);
+  } else if (wrong) {
     cls += " wallet--wrong";
     label = `Wallet ${short(w.address)} is on ${on ? on.full : `chain ${w.chainId}`}, the wrong network. Open wallet menu`;
     inner = (
@@ -184,12 +198,10 @@ function WalletButton({ dir, net }: { dir: Dir; net: NetState }) {
     );
   } else {
     cls += ` wallet--st-${net.cls}`;
-    label = `Wallet ${short(w.address)} on ${src.full}. ${net.label}. Open wallet menu`;
+    label = `Wallet ${short(w.address)}${shown ? ` on ${shown.full}` : ""}. ${net.label}. Open wallet menu`;
     inner = (
       <>
-        <span class="wallet__net">
-          <Mark id={src.markId} />
-        </span>
+        <span class="wallet__net">{shown ? <Mark id={shown.markId} /> : null}</span>
         <span class="wallet__addr">{short(w.address)}</span>
         <Icon id="i-chevron-down" cls="wallet__chev" />
       </>
@@ -329,7 +341,7 @@ export function App() {
               <span class="status__dot" aria-hidden="true" />
               <span class="status__label">{net.label}</span>
             </a>
-            <WalletButton dir={dir} net={net} />
+            <WalletButton needs={route.name === "bridge" ? fromOf(dir) : null} net={net} />
           </div>
         </div>
       </header>

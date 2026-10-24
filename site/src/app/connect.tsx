@@ -1,7 +1,21 @@
-// Connecting a wallet, and the sheet for a browser that has none.
+// Connecting a wallet, the sheet for a browser that has none, and adding wtPOT to the wallet.
 
+import { TOKEN } from "../lib/chains.ts";
+import { checksum } from "../lib/display.ts";
 import { Icon, openSheet, short, toast } from "./ui.tsx";
-import { connect, wallet, walletCode } from "./wallet.ts";
+import { addWtpot, connect, wallet, walletCode } from "./wallet.ts";
+
+/** Adds wtPOT to the wallet, and says what the wallet answered. */
+export async function addWtpotToWallet(): Promise<void> {
+  if (wallet.get().status === "none") return openNoWallet();
+  const token = `${short(checksum(TOKEN))} on Sepolia, 14 decimals.`;
+  try {
+    if (await addWtpot()) toast("verify", "wtPOT added to your wallet", token);
+    else toast("info", "wtPOT not added", `Your wallet did not add it. The token is ${token}`);
+  } catch (e) {
+    if (walletCode(e) !== 4001) toast("revert", "Your wallet refused", (e as Error).message || "Switch it to Sepolia, then add wtPOT.");
+  }
+}
 
 export async function connectWallet(): Promise<void> {
   try {

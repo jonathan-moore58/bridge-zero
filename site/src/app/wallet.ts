@@ -167,8 +167,16 @@ export async function switchTo(chain: ChainKey): Promise<void> {
   }
 }
 
-export async function addWtpot(): Promise<void> {
-  await provider()?.request({ method: "wallet_watchAsset", params: { type: "ERC20", options: { address: TOKEN, symbol: "wtPOT", decimals: 14 } } });
+/**
+ * Asks the wallet to show wtPOT (EIP-747); true when it added it. A wallet files a token under the
+ * network it is on, so this switches it to Sepolia first.
+ */
+export async function addWtpot(): Promise<boolean> {
+  const p = provider();
+  if (!p) return false;
+  if (wallet.get().chainId !== SEPOLIA_CHAIN_ID) await switchTo("sepolia");
+  const answer = await p.request({ method: "wallet_watchAsset", params: { type: "ERC20", options: { address: TOKEN, symbol: "wtPOT", decimals: 14 } } });
+  return answer === true;
 }
 
 /** The address's tPOT on V3, wtPOT and ETH on Sepolia. A failed read keeps its last value. */
