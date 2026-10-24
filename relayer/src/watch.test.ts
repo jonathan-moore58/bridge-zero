@@ -17,6 +17,7 @@ import {
   checkBlock,
   cursorOf,
   DEFAULT_FAST_CAP,
+  fastReleaseChecked,
   FINALITY,
   haltRefusal,
   LOCK_STALE,
@@ -170,6 +171,14 @@ describe("the fast budget", () => {
     later.fast.push({ amount: SIX, block: 985, checked: true });
     assert.equal((await watchRound(later.ports(), FAST3, SEND)).released, 1);
     assert.deepEqual(later.calls, ["1:open:1:fast", "1:execute:2:fast"]);
+  });
+
+  it("stops counting a fast release whose check failed only once a member acknowledged it", () => {
+    assert.equal(fastReleaseChecked(undefined), false);
+    assert.equal(fastReleaseChecked({ ok: true }), true);
+    assert.equal(fastReleaseChecked({ ok: false }), false, "a reorg undid it: it counts for good");
+    assert.equal(fastReleaseChecked({ ok: false, acknowledged: " " }), false);
+    assert.equal(fastReleaseChecked({ ok: false, acknowledged: "member 1, 2026-10-25: burn 7 undone by a reorg; the vault is short 1 tPOT" }), true);
   });
 
   it("keeps counting a fast release whose block is final while its check against the final chain has not passed", async () => {

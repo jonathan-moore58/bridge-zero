@@ -232,6 +232,24 @@ export function reconcileVerdict(recorded: BurnFacts, final: BurnFacts | null): 
   };
 }
 
+/** A fast release's check against Sepolia's final chain, as the record has it (finalizedCheck). */
+export interface FinalizedCheck {
+  ok: boolean;
+  /**
+   * Set by a member, by hand in the record, after looking at a check that failed: who, when and
+   * what they found. The release then stops counting toward the fast budget.
+   */
+  acknowledged?: string;
+}
+
+/**
+ * Whether a fast release stops counting toward the fast budget once its block is final: its check
+ * against Sepolia's final chain passed, or it failed and a member acknowledged it
+ * (finalizedCheck.acknowledged). A failed check nobody acknowledged keeps counting for good, as
+ * what a reorg undid stays paid out: fast mode stays off for what it takes of the budget.
+ */
+export const fastReleaseChecked = (c: FinalizedCheck | undefined): boolean => c?.ok === true || (typeof c?.acknowledged === "string" && c.acknowledged.trim() !== "");
+
 /**
  * How many rounds in a row a fast release's burn may be found nowhere (no log of it on the final
  * chain, and its transaction without a receipt or reverted) before that is a fatal stop: an RPC that

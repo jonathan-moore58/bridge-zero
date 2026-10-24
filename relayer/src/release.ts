@@ -102,7 +102,8 @@
 // an approval sent in the round); reads Sepolia's heads; checks each release made in fast mode
 // whose burn's block is final now against BurnRequested(n) on the final chain (the same
 // transaction, burn id, payee and amount; recorded as finalizedCheck; a mismatch, or a log of burn
-// n from another transaction, is a fatal stop). When the final chain's logs do not show the burn
+// n from another transaction, is a fatal stop, and the release counts toward the fast budget until
+// a member, having looked, writes finalizedCheck.acknowledged in the record). When the final chain's logs do not show the burn
 // (none, or the RPC refuses them), its transaction's receipt decides: in a final canonical block,
 // its BurnRequested(n) log there is checked the same way; above the finalized block (a reorg moved
 // it), in a block that is not the canonical one of its number yet, or with the logs refused, a
@@ -300,6 +301,7 @@ import {
   cursorOf,
   DEFAULT_FAST_CAP,
   FAST_LIMIT,
+  fastReleaseChecked,
   FINALITY,
   haltRefusal,
   MAX_WATCH_SECONDS,
@@ -927,7 +929,8 @@ interface ReleaseEntry {
   /** How the burn qualified at the round's last approval: final on Sepolia, or fast mode before finality. */
   by?: "fast" | "finality";
   /** For a release made in fast mode: the check of its burn on Sepolia's final chain, once its block was final (the watcher's). */
-  finalizedCheck?: { block: number; ok: boolean; why: string; at: string };
+  /** acknowledged: written by a member, by hand, after looking at a check that failed (watch.ts fastReleaseChecked). */
+  finalizedCheck?: { block: number; ok: boolean; why: string; at: string; acknowledged?: string };
   trust: string;
   burn: { chainId: string; minter: Hex; burnNonce: string; burnId: Hex; from: Hex; v3Recipient: Hex; amount: string; txHash: Hex; block: number; blockHash?: Hex | null };
   vault: Hex;
@@ -3026,7 +3029,13 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
       fastReleases: async () =>
         (d.record.releases ?? [])
           .filter((r) => r.status === "released" && r.by === "fast" && r.burn.minter === d.b.minter)
-          .map((r) => ({ amount: BigInt(r.amountNative), block: r.burn.block, checked: r.finalizedCheck?.ok === true })),
+          .map((r) => {
+            const checked = fastReleaseChecked(r.finalizedCheck);
+            if (r.finalizedCheck?.ok === false && !checked) {
+              warn(`the release of burn ${r.burn.burnNonce}, made in fast mode, failed its check against Sepolia's final chain (${r.finalizedCheck.why}): its ${formatTpot(BigInt(r.amountNative))} count toward --fast-budget until a member, having looked, sets finalizedCheck.acknowledged in ${V3_RECORD}`);
+            }
+            return { amount: BigInt(r.amountNative), block: r.burn.block, checked };
+          }),
       reconcile: (h) => reconcileFast(d, h, o.send),
       state: (burn) => burnStateOf(api, d, burn),
       approve: (burn, by, step) => approveFor({ d, api, evm, o, keys: keys.pairs, lock }, burn, by, step),
