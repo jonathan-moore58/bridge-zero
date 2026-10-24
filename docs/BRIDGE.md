@@ -471,7 +471,9 @@ and the round starts again.
 ### Fast mode and the auto-release watcher
 
 The way back above waits for Sepolia's finality (13 to 20 minutes) and for two people. Two options
-of `release` shorten it; the header of `release.ts` and `relayer/src/watch.ts` have the details.
+of `release` shorten it, to 84 seconds from the burn's block to the release's in the run measured
+on Oct 24 (below); the header of `release.ts` and `relayer/src/watch.ts` have
+the details.
 
 **Fast mode, `--confirmations <n>`** (1 to 64; 3 or more with `--send`, for the watcher and for an
 approval or a cancellation by hand). The burn is
@@ -625,7 +627,17 @@ release, and the multisig up to 3.9415 tPOT of storage deposit per release (`rel
 shows the balances, `fund` tops them up). A member short of funds makes the dry run refuse that burn
 until it is funded. With 3 confirmations (about 36 seconds) and the two approvals each final on V3
 within about half a minute, a burn of up to 1 wtPOT is back on V3 in a minute or two, instead of
-about 20; not yet measured on chain.
+about 20.
+
+**Measured on Oct 24 (UTC)** with these two lines (`--watch 15 --confirmations 3`, the default cap
+and budget of 1 tPOT), the watcher running from about 09:50 on the relayer's machine: burn 1,
+0.1 wtPOT for `0xD9838A86cF83C28Ee486544060D1cA4Ca2971071`, in Sepolia block 11,983,026 (09:51:48,
+61,434 gas); member 1 opened its release in V3 block #173,057 (09:52:42) and member 2 ran it in
+#173,062 (09:53:12), both sent by the watcher, `released[burnId]` true and 0.1 tPOT to the payee
+there. 84 seconds from the burn's block to the release's by the block timestamps, and 108 from
+starting the burn command (09:51:24); Sepolia had not finalized the burn's block when the release
+ran. The README's rows 56 to 58; the record is `deployments/sepolia-bridge.json` (the burn) and
+`deployments/v3-testnet.json` (the release, `"by": "fast"`).
 
 ## What the minter trusts
 
