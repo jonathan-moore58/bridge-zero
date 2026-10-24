@@ -2284,8 +2284,15 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
   {
     await checkV3(api, evm);
     // What an earlier --send run left submitted is settled first, dry run or not; the watcher's round
-    // has just settled it (watchOnce, ports.settle), and stops there on an approval that fails.
-    if (!o.watcher) {
+    // has just settled it (watchOnce, ports.settle), and stops there on an approval that fails. The
+    // record approveFor read again holds none then; if it does, the next round settles it first.
+    if (o.watcher) {
+      const left = submittedOf(record)[0];
+      if (left) {
+        log(`     ${left.extrinsicHash} (burn ${left.burn}) is submitted in ${V3_RECORD}: nothing is signed before the next round settles it`);
+        return PENDING;
+      }
+    } else {
       const before = submittedOf(record);
       const settled = await settleSubmitted(api, evm, keyring, v, record);
       const failed = settledFailure(before);
