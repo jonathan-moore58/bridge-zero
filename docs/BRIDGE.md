@@ -512,10 +512,16 @@ record holds as submitted are settled; then every burn from the last one the rec
 `burnCount` one block below the latest; for each burn that qualifies (final, or fast mode within the
 cap and the budget), every check of the release tool, then member 1's approval (it opens the
 operation) and member 2's (it runs it), each signed, sent, waited on until final and checked as
-`--approve --send` does, then `released[burnId]`, `outstanding` and the payee's balance, all
-recorded in `deployments/v3-testnet.json` as before, with how the burn qualified (`by`). A burn whose
-payee nobody is shown to control, or whose dry run fails, is refused and the round goes on; a burn
-already released is left alone; a burn whose log the RPC refuses or does not serve yet waits.
+`--approve --send` does, then `released[burnId]`, `outstanding` and the payout, all recorded in
+`deployments/v3-testnet.json` as before, with how the burn qualified (`by`). The execution passes on
+what is its own: `outstanding` down by the amount once the locks in its V3 block (the vault's
+`lock()` is open to anyone) and any other release in it are counted, and the extrinsic's own
+`balances.Transfer` of the amount from the vault's account to the payee's. The payee's balance over
+the whole block, in `System.Account` and on the EVM side, is checked too; when the payout is in the
+extrinsic's events, a difference there is a warning (another extrinsic of the block sent to the
+payee), not a failure, so nobody stops the watcher by locking or sending in the same block. A burn
+whose payee nobody is shown to control, or whose dry run fails, is refused and the round goes on; a
+burn already released is left alone; a burn whose log the RPC refuses or does not serve yet waits.
 
 - **Never twice.** A member that approved (on chain or in the record) does not approve again; an
   approval the record holds as submitted is settled before anything is signed, and one the node
@@ -560,22 +566,29 @@ already released is left alone; a burn whose log the RPC refuses or does not ser
   blocks searched though its sender's nonce is used, a fast release that does not stand on the
   final chain, a lost lock or an unwritable record ends the watcher with **exit code 4**. With
   `--send` it first writes `release-watch-<multisig>.halt` (the reason, the burn, the extrinsic, the
-  time) in `~/.bridge-zero`, next to the lock, whatever `--state-dir` is. While that file is there,
-  no watcher with `--send` starts (exit code 4 again), and an approval or a cancellation by hand
-  with `--send` is refused (exit code 4) unless it adds `--despite-halt`; the watcher takes no
-  `--despite-halt`. Both read it again once they hold the lock, and before each signing; the
-  watcher also at the start of each round, so a halt file another process leaves while it runs
-  stops it (exit code 4, the file kept as it was). Every settling leaves the halt file when it
+  time) in `~/.bridge-zero`, next to the lock, whatever `--state-dir` is; for a finding the record
+  keeps (an approval failed on chain, a failed final check), the halt file is written before the
+  record, so a process killed in between (a reboot, a wrapper) leaves it behind. A stop left while
+  the file is there adds to it: the file names the new stop, then the earlier reasons. While that
+  file is there, no watcher with `--send` starts (exit code 4 again), and an approval or a
+  cancellation by hand with `--send` is refused (exit code 4) unless it adds `--despite-halt`; the
+  watcher takes no `--despite-halt`. Both read it again once they hold the lock, and before each
+  signing; the watcher also at the start of each round, so a halt file another process leaves while
+  it runs stops it (exit code 4, the file kept as it was). Every settling leaves the halt file when it
   finds an approval that ran on chain and failed its checks, whatever the command (the watcher, its
   dry run, `release --burn-nonce n` with or without `--send`, `fund`) and with or without `--send`
   (writing it signs nothing), and the command ends with exit code 4: the record holds that approval
   as failed from then on, so no later run would see it fail. So does an approval by hand with
-  `--send` that ran on chain and failed its checks. A member looks at what happened, then removes
-  it. A fast release whose check against the final chain failed keeps counting toward the fast
-  budget after that, for good (what the reorg undid stays paid out), so with the default budget
-  fast mode stays off; once a member has looked, they add `"acknowledged": "<who, when, what they
-  found>"` to that release's `finalizedCheck` in `deployments/v3-testnet.json`, with no other run
-  of the tool going, and it stops counting (the watcher warns each round until then). A save of the
+  `--send` that ran on chain and failed its checks. The record keeps the finding too: a watcher with
+  `--send` stops on an approval the record holds as failed on chain, or a failed `finalizedCheck`,
+  that no member acknowledged, and leaves the halt file for it when none is there (exit code 4). A
+  member looks at what happened, adds `"acknowledged": "<who, when, what they found>"` to that
+  approval, or to that release's `finalizedCheck`, in `deployments/v3-testnet.json`, with no other
+  run of the tool going, then removes the halt file. Until then a fast release whose check against
+  the final chain failed also counts toward the fast budget (what the reorg undid stays paid out). A
+  key file or password file that does not open is not a fatal stop: the watcher with `--send` opens
+  both keys before its first request, and one that does not open ends it with exit code 4 and no
+  halt file, as nothing ran on chain; fix it and start the watcher again. A save of the
   record waits up to 30 s for its lock, so one that finds the lock of a save that died less than
   30 s before, its process id given to a running process meanwhile, still fails: an unwritable
   record.
@@ -589,7 +602,9 @@ cancel or step in.
 run signs nothing. It writes no file, except that it settles in `deployments/v3-testnet.json` what
 an earlier `--send` run left submitted, as every command does, and leaves the halt file when that
 settling finds an approval that ran on chain and failed its checks (exit code 4: do not start the
-second line then):
+second line then). A dry run takes no keys, so it cannot check them; the second line opens both
+before its first request and ends with exit code 4 and no halt file when one does not open (a wrong
+password file, another member's keystore):
 
 ```
 npm run release -- release --watch 15 --confirmations 3 --rounds 1

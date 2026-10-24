@@ -80,10 +80,14 @@
 // the committee's halt file (below) is there, with exit code 4, unless --despite-halt says a member
 // looked, and reads it again once it holds the lock (a run that held the lock may have left it). It records the approval in deployments/v3-testnet.json (releases) before it submits,
 // waits for finalization and checks the events: NewMultisig, or MultisigExecuted with its result Ok
-// and the vault's revive.ContractEmitted Released event, then released[burnId], outstanding and the
-// payee's balance on the EVM side (eth_getBalance) up by amount x 10^4 wei, and the Released log
-// through eth_getLogs, which V3's EVM RPC may not serve for a Substrate extrinsic. An approval by
-// hand that ran on chain and failed those checks leaves the halt file too (exit code 4).
+// and the vault's revive.ContractEmitted Released event, then released[burnId]; outstanding down by
+// the amount, the locks and the other releases in its block counted (the vault's lock() is open to
+// anyone); the extrinsic's own balances.Transfer of the amount from the vault's account to the
+// payee's (the payout); the payee's balance over the block in System.Account and on the EVM side
+// (eth_getBalance, amount x 10^4 wei), where a difference is a warning when the payout is in the
+// extrinsic's events (another extrinsic of the block moved the payee's balance); and the Released
+// log through eth_getLogs, which V3's EVM RPC may not serve for a Substrate extrinsic. An approval
+// by hand that ran on chain and failed those checks leaves the halt file too (exit code 4).
 //
 // Fast mode: release with --confirmations n (1 to 64) reads and checks the burn at the block n below
 // Sepolia's latest (the finalized block when that is higher) instead of the finalized block, and
@@ -157,9 +161,16 @@
 // a sent approval that fails its checks on chain, an approval the record held as submitted that the
 // settling finds on chain and failing its checks, an approval an earlier run submitted that is in
 // none of the blocks searched though its sender's nonce is used, a fast release that does not stand
-// on the final chain, a lost lock, a key file or a record that cannot be written. With --send it
-// first writes the halt file (the reason, the burn, the extrinsic, the time); the settling of an
-// approval found on chain and failing its checks writes it without --send too. While it is there no
+// on the final chain, a lost lock, or a record that cannot be written. With --send it first writes
+// the halt file (the reason, the burn, the extrinsic, the time); the settling of an approval found on
+// chain and failing its checks writes it without --send too. A finding the record holds (an approval
+// failed on chain, a failed final check) is written to the halt file before the record, so a process
+// that dies in between leaves the halt file behind; and a watcher with --send also stops on such a
+// finding in the record that no member acknowledged (the approval's or finalizedCheck's
+// acknowledged), and leaves the halt file for it when none is there. A stop left while the halt file
+// is there adds to it: the file names the new one, then the earlier reasons. The two key files open
+// with --password-file before the first request: one that does not ends the watcher with exit code 4
+// and no halt file, as nothing ran on chain. While the halt file is there no
 // watcher with --send starts (exit code 4; --despite-halt is refused for the watcher), and an
 // approval or a cancellation by hand with --send is refused (exit code 4) unless --despite-halt
 // says a member looked: a member looks, then removes it. A watcher with --send reads it again at
@@ -3119,9 +3130,10 @@ function leaveHalt(multisig: string, f: FatalStop): void {
 /**
  * release --watch: a round every --watch seconds (watchRound), each burn that qualifies released by
  * two members' approvals; after rounds in a row an RPC failed, the wait doubles, up to an hour.
- * With --send one watcher per committee holds the lock in STATE_DIR. A fatal stop (a sent approval
- * that fails its checks, an approval that cannot be found though its nonce is used, a lost lock, a
- * key file or a record that cannot be written) ends it with exit code 4 and, with --send, leaves
+ * With --send one watcher per committee holds the lock in STATE_DIR, and opens the two members' keys
+ * before any request (one that does not open ends it with exit code 4 and no halt file). A fatal stop
+ * (a sent approval that fails its checks, an approval that cannot be found though its nonce is used,
+ * a lost lock, or a record that cannot be written) ends it with exit code 4 and, with --send, leaves
  * release-watch-<multisig>.halt in STATE_DIR, next to the lock, whatever --state-dir is; no watcher
  * with --send starts while it is there.
  */
