@@ -271,3 +271,26 @@ describe("settling what an earlier --send run left submitted", () => {
     assert.doesNotMatch(source, /if \(!o\.send\) return FAILED;\s*leaveHalt/, "a dry run that finds one leaves the halt file too");
   });
 });
+
+describe("a fatal finding, written to the record", () => {
+  /** What release.ts runs from `from` up to the next save of the record. */
+  function beforeSave(source: string, from: string): string {
+    const start = source.indexOf(from);
+    assert.ok(start >= 0, `release.ts has ${from}`);
+    const save = source.indexOf("saveV3Record(", start);
+    assert.ok(save > start, `release.ts saves the record after ${from}`);
+    return source.slice(start, save);
+  }
+
+  it("leaves the halt file first: a process that dies between the two leaves it behind, as no later run sees the finding again", () => {
+    const source = readFileSync(join(RELAYER, "src", "release.ts"), "utf8");
+    // A settling that finds an approval that ran on chain and failed its checks.
+    assert.match(beforeSave(source, 'approval.status = (await checkApproval({ api, evm, keyring, v, burn }, round, approval, where)) ? "final" : "failed";'), /leaveHalt\(v\.multisig, onChainFailure\(/);
+    // An approval sent (by hand or by the watcher) that ran on chain and failed them.
+    const sent = beforeSave(source, 'approval.status = ok ? "final" : "failed";');
+    assert.match(sent, /leaveHalt\(v\.multisig, onChainFailure\(/);
+    assert.doesNotMatch(sent, /!o\.watcher/, "the watcher's own execution too");
+    // A fast release whose check against Sepolia's final chain failed.
+    assert.match(beforeSave(source, "async function reconcileFast("), /if \(fatal\) \{[^}]*leaveHalt\(d\.v\.multisig, fatal\)[^]*round\.finalizedCheck = \{/);
+  });
+});

@@ -2186,6 +2186,9 @@ async function settleSubmitted(api: ApiPromise, evm: EvmRpc, keyring: Keyring, v
         warn(`${approval.extrinsicHash} is final in #${fmt(where.number)}, but its checks stopped (${errorText(error)}): it stays submitted, and the next run checks it again`);
         continue;
       }
+      // The halt file before the record: once the record holds the approval as failed, no later run
+      // sees it fail, so a process that dies between the two must leave the halt file behind.
+      if (approval.status === "failed" && approval.block) leaveHalt(v.multisig, onChainFailure(round.burn.burnNonce, approval));
       saveV3Record(record);
     }
   }
@@ -2670,16 +2673,13 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
     }
     const ok = await checkApproval({ api, evm, keyring, v, burn: { burnId: burn.burnId, payee: burn.v3Recipient, amount: burn.amount } }, round, approval, final);
     approval.status = ok ? "final" : "failed";
+    // An approval that ran on chain and failed its checks stops everything, sent by hand or by the
+    // watcher (whose round stops on this FAILED): the halt file first, before the record holds the
+    // approval as failed and no later run would see it fail.
+    const failedOnChain = !ok && approval.block !== null;
+    if (failedOnChain) leaveHalt(v.multisig, onChainFailure(n.toString(), approval));
     saveV3Record(record);
-    if (!ok) {
-      // An approval by hand that ran on chain and failed its checks stops everything, as one the
-      // watcher sends does (the watcher's round stops on this FAILED itself): the halt file.
-      if (!o.watcher && approval.block) {
-        leaveHalt(v.multisig, onChainFailure(n.toString(), approval));
-        return HALTED;
-      }
-      return FAILED;
-    }
+    if (!ok) return failedOnChain && !o.watcher ? HALTED : FAILED;
     if (action === "open") {
       log(o.watcher ? `\nOpened by member ${k}.` : `\nOpened. Next: member ${left([k]).join(" or ")} runs it:\n${commands("approve", left([k]))}`);
     } else if (action === "execute") log(`\nBurn ${n} is released: ${formatTpot(burn.amount)} paid to ${checksumAddress(burn.v3Recipient)} on V3, checked; ${V3_RECORD} records the round.`);
@@ -3001,17 +3001,21 @@ async function reconcileFast(d: Deployed, h: Heads, send: boolean): Promise<{ ch
     }
     checked += 1;
     log(`${verdict.ok ? "ok  " : "FAIL"} the release of burn ${n}, made in fast mode, against Sepolia's finalized block #${fmt(h.finalized)}: ${verdict.why}`);
+    const executed = round.approvals.filter((a) => a.action === "execute" && a.block).at(-1);
+    const fatal: FatalStop | null = verdict.ok
+      ? null
+      : { why: `the release of burn ${n}, made in fast mode, does not stand on Sepolia's final chain: ${verdict.why}; the vault paid ${formatTpot(BigInt(round.amountNative))} for a burn a reorg changed or undid`, burn: n.toString(), extrinsicHash: executed?.extrinsicHash ?? null };
     if (send) {
+      // The halt file before the record: a round skips a release whose check is recorded, so a
+      // process that dies between the two must leave the halt file behind.
+      if (fatal) {
+        check(false, fatal.why);
+        leaveHalt(d.v.multisig, fatal);
+      }
       round.finalizedCheck = { block: h.finalized, ok: verdict.ok, why: verdict.why, at: new Date().toISOString() };
       saveV3Record(d.record);
     }
-    if (!verdict.ok) {
-      const executed = round.approvals.filter((a) => a.action === "execute" && a.block).at(-1);
-      return {
-        checked,
-        fatal: { why: `the release of burn ${n}, made in fast mode, does not stand on Sepolia's final chain: ${verdict.why}; the vault paid ${formatTpot(BigInt(round.amountNative))} for a burn a reorg changed or undid`, burn: n.toString(), extrinsicHash: executed?.extrinsicHash ?? null },
-      };
-    }
+    if (fatal) return { checked, fatal: send ? { ...fatal, left: true } : fatal };
   }
   return { checked, fatal: null };
 }
