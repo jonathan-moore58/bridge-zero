@@ -362,9 +362,11 @@ promise that the committee releases (D1).
 Nothing is signed without `--send`, and a dry run refuses the key options. Every fetch of the
 process refuses `eth_send*` and `eth_sign*`, and the V3 node's provider refuses `author_submit*`
 before anything reaches its socket unless the command signs on V3 with `--send` (`bridge.ts`). A run
-that stops after it sent settles what the record holds as sent before it does anything else. Exit
-codes are the mint tool's: 0 done, 1 refused or a check failed, 2 a node could not be reached, 3
-something sent, or the burn, is not final yet.
+that stops after it sent settles what the record holds as sent before it does anything else; every
+`release` and `fund` run does that first, dry run or not, and records what it finds. Exit codes are
+the mint tool's: 0 done, 1 refused or a check failed, 2 a node could not be reached, 3 something
+sent, or the burn, is not final yet; and 4, a fatal stop or the committee's halt file
+([below](#fast-mode-and-the-auto-release-watcher)).
 
 V3's EVM RPC serves the logs of Ethereum transactions, and a release is a Substrate extrinsic
 (`multisig.asMulti` dispatching `revive.call`): its `Released` event is the `revive.ContractEmitted`
@@ -537,13 +539,16 @@ already released is left alone; a burn whose log the RPC refuses or does not ser
   gone, or not refreshed for 10 minutes, is taken over. A `<lock>.takeover` file older than a
   minute, left by a process that died while taking a stale lock over, is removed (this lock and the
   record's). An approval or a cancellation by hand with `--send` takes the same lock, so it is
-  refused while the watcher runs. It works on one machine.
+  refused while the watcher runs, and the watcher does not start while one signs; the lock names its
+  holder (the watcher, or member k's approval or cancellation by hand), and so does a refusal. It
+  works on one machine.
 - **The public RPC.** The watcher finds a new burn in recent logs, and reads it again before each
   approval in the block it saw it in (`eth_getLogs` over that block, or its transaction's receipt),
   so a burn released within about 33 hours works on the public RPC, which keeps logs and receipts
   that long (code 4444 after). The logs of final burns go into `release-watch-<multisig>.burns.json`
   in `--state-dir` (with `--send`), so a burn left to the members is never searched for again and
-  never holds up the burns after it. A burn older than that is refused each round, with the reason,
+  never holds up the burns after it; a burn after it that the record has released is not read on V3
+  again either (the record says released only once `released[burnId]` was read at a final block). A burn older than that is refused each round, with the reason,
   or waits when its log was never found, until `SEPOLIA_RPC_URL` names an RPC that keeps the
   minter's logs and receipts from its deploy block (an archive RPC; `sepolia.drpc.org` served burn
   0's); so does `release --burn-nonce <n>` by hand for such a burn.
@@ -558,19 +563,33 @@ already released is left alone; a burn whose log the RPC refuses or does not ser
   time) in `~/.bridge-zero`, next to the lock, whatever `--state-dir` is. While that file is there,
   no watcher with `--send` starts (exit code 4 again), and an approval or a cancellation by hand
   with `--send` is refused (exit code 4) unless it adds `--despite-halt`; the watcher takes no
-  `--despite-halt`. An approval by hand with `--send` whose settling finds an earlier approval that
-  ran on chain and failed its checks leaves the halt file too, and ends with exit code 4. A member
-  looks at what happened, then removes it. A save of the record waits up to 30 s for its lock, so
-  one that finds the lock of a save that died less than 30 s before, its process id given to a
-  running process meanwhile, still fails: an unwritable record.
+  `--despite-halt`. Both read it again once they hold the lock, and before each signing; the
+  watcher also at the start of each round, so a halt file another process leaves while it runs
+  stops it (exit code 4, the file kept as it was). Every settling leaves the halt file when it
+  finds an approval that ran on chain and failed its checks, whatever the command (the watcher, its
+  dry run, `release --burn-nonce n` with or without `--send`, `fund`) and with or without `--send`
+  (writing it signs nothing), and the command ends with exit code 4: the record holds that approval
+  as failed from then on, so no later run would see it fail. So does an approval by hand with
+  `--send` that ran on chain and failed its checks. A member looks at what happened, then removes
+  it. A fast release whose check against the final chain failed keeps counting toward the fast
+  budget after that, for good (what the reorg undid stays paid out), so with the default budget
+  fast mode stays off; once a member has looked, they add `"acknowledged": "<who, when, what they
+  found>"` to that release's `finalizedCheck` in `deployments/v3-testnet.json`, with no other run
+  of the tool going, and it stops counting (the watcher warns each round until then). A save of the
+  record waits up to 30 s for its lock, so one that finds the lock of a save that died less than
+  30 s before, its process id given to a running process meanwhile, still fails: an unwritable
+  record.
 
 **What it trusts.** The committee is still a 2-of-3 multisig on chain, but the watcher holds two
 members' keys on one machine: whoever controls that machine or its password file can release up to
 `outstanding` (D1, more concentrated). Keep member 3's key elsewhere, as the one that can still
 cancel or step in.
 
-**Running it 24/7**, from `relayer/` (the dry run first; `--rounds 1` stops after one round; a dry
-run writes no file):
+**Running it 24/7**, from `relayer/` (the dry run first; `--rounds 1` stops after one round). A dry
+run signs nothing. It writes no file, except that it settles in `deployments/v3-testnet.json` what
+an earlier `--send` run left submitted, as every command does, and leaves the halt file when that
+settling finds an approval that ran on chain and failed its checks (exit code 4: do not start the
+second line then):
 
 ```
 npm run release -- release --watch 15 --confirmations 3 --rounds 1

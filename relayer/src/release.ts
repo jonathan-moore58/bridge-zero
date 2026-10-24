@@ -138,8 +138,11 @@
 // nonce, and a burn whose execution ran without releasing it, with a cancelled round, with an
 // approval that ran on chain and failed its checks, or with an open operation that is another call,
 // is left to the members. A half-done release (opened, not run) is resumed by the other member.
-// Without --send each burn's next approval is dry-run, members 1 and 2 standing for the two keys,
-// and no file is written. --send (with --confirmations 3 or more) takes the two members'
+// Without --send each burn's next approval is dry-run, members 1 and 2 standing for the two keys:
+// nothing is signed, and no file is written, except that the round settles in
+// deployments/v3-testnet.json what an earlier --send run left submitted, as every command does, and
+// leaves the halt file when that settling finds an approval that ran on chain and failed its
+// checks. --send (with --confirmations 3 or more) takes the two members'
 // polkadot-js keystores (--member-keys k:<path>,j:<path>, opened with one --password-file, neither
 // printed) and holds the lock release-watch-<multisig>.lock in .bridge-zero in the home directory,
 // whatever --state-dir is, relay.ts's scheme: one watcher per committee and machine, checked before
@@ -182,7 +185,8 @@
 // author_submit* unless the command signs on V3 with --send (bridge.ts guardProvider). Exit code 0
 // when the dry run passed, the transaction is done and checked, or status found nothing wrong; 1
 // when a check fails or the tool refuses; 2 when a node cannot be reached; 4 when the watcher
-// stopped for good (above); 3 when a sent
+// stopped for good, a run found an approval that ran on chain and failed its checks, or the
+// committee's halt file refused it (above); 3 when a sent
 // transaction or extrinsic is not final yet, or the burn is not final on Sepolia yet (in fast mode,
 // not --confirmations deep yet, or above --fast-cap and not final).
 
