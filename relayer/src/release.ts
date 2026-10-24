@@ -155,7 +155,10 @@
 // approval found on chain and failing its checks writes it without --send too. While it is there no
 // watcher with --send starts (exit code 4; --despite-halt is refused for the watcher), and an
 // approval or a cancellation by hand with --send is refused (exit code 4) unless --despite-halt
-// says a member looked: a member looks, then removes it. Otherwise a round ends 0 when nothing was
+// says a member looked: a member looks, then removes it. A watcher with --send reads it again at
+// the start of each round and before each signing, and an approval or a cancellation by hand before
+// it signs: a halt file another process left meanwhile (a dry run's settling, say) stops it with
+// exit code 4, and the file keeps its reason. Otherwise a round ends 0 when nothing was
 // refused, 1 when a burn was refused or left to the members, 2 when a node could not be reached, 3
 // when something sent is not final yet.
 //
@@ -2245,6 +2248,9 @@ async function releaseCommand(o: ReleaseOptions): Promise<number> {
     const held = lock;
     o.guard = () => {
       if (!held.held()) throw new Stop(`${held.path} no longer holds this run's token: a watcher took the lock over, and nothing is signed`);
+      // A fatal stop another process left meanwhile (a dry run's settling, say).
+      const halted = o.despiteHalt ? null : haltedBy(d.v.multisig);
+      if (halted) throw new Halted(`nothing is signed: ${halted}, or add --despite-halt once a member has looked at it`);
     };
   }
   try {
@@ -2666,6 +2672,18 @@ class Fatal extends Error {
   override name = "Fatal";
 }
 
+/** The committee's halt file appeared while the run went on (a fatal stop another process left): nothing more is signed, exit code 4. */
+class Halted extends Error {
+  override name = "Halted";
+}
+
+/** Why the committee's halt file stops a run, or null when there is none. */
+function haltedBy(multisig: string): string | null {
+  const path = haltPathOf(multisig);
+  const h = readHalt(path);
+  return h ? haltRefusal(h, path) : null;
+}
+
 /** A burn the watcher saw, with its log (null when its log could not be read this round: it waits). */
 interface WatchedBurn extends SeenBurn {
   onChain: BurnOnChain | null;
@@ -2826,6 +2844,8 @@ async function approveFor(
     guard: lock
       ? () => {
           if (!lock.held()) throw new LockLost(`${lock.path} no longer holds this watcher's token: another watcher took the lock over, and nothing more is signed`);
+          const halted = haltedBy(d.v.multisig);
+          if (halted) throw new Halted(halted);
         }
       : undefined,
     watcher: true,
@@ -2961,6 +2981,8 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
     }
     let heads: Heads = { latest: 0, finalized: 0 };
     const ports: Ports<WatchedBurn> = {
+      // Without --send nothing is signed, and the dry run goes on as it started.
+      halted: () => (o.send ? haltedBy(d.v.multisig) : null),
       settle: async () => {
         const before = submittedOf(d.record);
         // An approval found on chain and failing its checks is a fatal stop, as one sent in this round
@@ -3084,8 +3106,17 @@ async function watchCommand(o: WatchOptions): Promise<number> {
             `${o.send ? "" : `, ${r.planned} approval${r.planned === 1 ? "" : "s"} dry-run; nothing was signed or sent`}${r.pending ? "; something sent is not final yet" : ""}`,
         );
         if (r.fatal) return halt(r.fatal);
+        if (r.halted) {
+          check(false, `the watcher stops: ${r.halted}`);
+          return HALTED;
+        }
         code = r.pending ? PENDING : r.refused + r.held > 0 ? FAILED : OK;
       } catch (error) {
+        // The halt file another process left keeps its reason: it is not written again.
+        if (error instanceof Halted) {
+          check(false, `the watcher stops: ${errorText(error)}`);
+          return HALTED;
+        }
         if (error instanceof LockLost || error instanceof Fatal || error instanceof RecordError || error instanceof DryRunViolation) {
           return halt({ why: errorText(error), burn: null, extrinsicHash: null });
         }
@@ -3360,6 +3391,9 @@ main().then(
     } else if (error instanceof Unreachable) {
       log(errorText(error));
       process.exitCode = UNREACHABLE;
+    } else if (error instanceof Halted) {
+      check(false, errorText(error));
+      process.exitCode = HALTED;
     } else {
       check(false, errorText(error));
       process.exitCode = FAILED;

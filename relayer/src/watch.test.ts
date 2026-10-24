@@ -259,6 +259,10 @@ class FakeChain {
   readonly fast: { amount: bigint; block: number; checked: boolean }[] = [];
   /** What reconcile() says. */
   reconciled: { checked: number; fatal: FatalStop | null } = { checked: 0, fatal: null };
+  /** The committee's halt file, as halted() reads it: there from its `haltFrom`th read on (0: from the first). */
+  halt: string | null = null;
+  haltFrom = 0;
+  haltReads = 0;
 
   constructor(
     readonly heads = HEADS,
@@ -273,6 +277,7 @@ class FakeChain {
 
   ports(): Ports {
     return {
+      halted: () => (this.haltReads++ >= this.haltFrom ? this.halt : null),
       // As settleSubmitted: an approval the record holds as submitted is found final; an opening then holds the operation open on chain.
       settle: async () => {
         const queued = this.settleOutcomes.shift();
@@ -449,6 +454,30 @@ describe("a round of the watcher", () => {
     assert.equal(r.planned, 1);
     assert.deepEqual(chain.calls, ["0:open:1:finality"]);
     assert.ok(chain.lines.some((l) => /then member 2 runs it/.test(l)));
+  });
+});
+
+describe("a halt file another process left", () => {
+  const HALT = "a fatal stop at 2026-10-24T10:00:00.000Z: member 2's execute 0xfeed (burn 5) ran on chain in #4,100 and failed its checks (burn 5, extrinsic 0xfeed); look at it, then remove release-watch-5F.halt";
+
+  it("stops the watcher before it signs anything, though the record holds that approval as failed already and settles nothing", async () => {
+    // A dry run settled member 2's execution of burn 5, found it failing its checks, saved it as failed and left the halt file.
+    const chain = new FakeChain(HEADS, [burn(5n, 900), burn(6n, 905), burn(7n, 910)]);
+    chain.states.set(5n, { released: false, op: null, rounds: [round("open", approval(1, "open", "final"), approval(2, "execute", "failed", true))] });
+    chain.halt = HALT;
+    const r = await watchRound(chain.ports(), FINALITY, SEND);
+    assert.deepEqual(chain.calls, [], "no burn is approved");
+    assert.equal(r.halted, HALT);
+    assert.equal(r.fatal, null);
+  });
+
+  it("signs nothing more once it appears in the middle of a round", async () => {
+    const chain = new FakeChain(HEADS, [burn(0n, 900), burn(1n, 905)]);
+    chain.halt = HALT;
+    chain.haltFrom = 2;
+    const r = await watchRound(chain.ports(), FINALITY, SEND);
+    assert.deepEqual(chain.calls, ["0:open:1:finality"], "burn 0's execution and burn 1 are not approved");
+    assert.equal(r.halted, HALT);
   });
 });
 

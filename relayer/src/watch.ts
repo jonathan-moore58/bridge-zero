@@ -389,6 +389,12 @@ export async function settleOrHalt<T>(settle: () => Promise<T>, failure: () => F
 /** What a round reads and does, through the tool: release.ts fills them with the chains, the tests with stand-ins. */
 export interface Ports<B extends SeenBurn = SeenBurn> {
   /**
+   * The committee's halt file, read again (with --send): why a fatal stop that another process left
+   * since the watcher started (a dry run's or an approval by hand's settling, say) stops it. Null
+   * when there is none. Read at the start of each round and before each approval.
+   */
+  halted(): string | null;
+  /**
    * Settles every approval the record holds as submitted (an earlier run crashed, timed out, or lost
    * the node while it was on its way): found final and checked, or dropped. Runs first in each round;
    * fatal when one ran on chain and failed its checks (settledOnChainFailure).
@@ -433,6 +439,8 @@ export interface RoundResult {
   pending: boolean;
   /** An approval failed its checks on chain, or what ran cannot be known: the watcher stops, and leaves a halt file. */
   fatal: FatalStop | null;
+  /** The halt file another process left (Ports.halted): the round signed nothing more, and the watcher stops without writing it again. */
+  halted: string | null;
 }
 
 /** Why the watcher stops for good: the reason, and the burn and the extrinsic when there is one. */
@@ -464,14 +472,17 @@ export function cursorOf(handled: { burnNonce: bigint; block: number }[], deploy
 const STEPS = 2;
 
 /**
- * One round of the watcher: first the approvals an earlier run left submitted are settled (the round
+ * One round of the watcher: nothing while the committee's halt file is there (read again before each
+ * approval too); first the approvals an earlier run left submitted are settled (the round
  * ends there while one is on its way); then, for each burn since the last one handled, in order, nothing when it is
  * released; a wait while it does not qualify; else the committee's next step, run through the tool
  * (every check first), then the next one, until it is released, refused, or left to the members.
  * Without `send` each burn's next approval is dry-run, and nothing more.
  */
 export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o: { send: boolean; keyed: number[]; threshold: number }): Promise<RoundResult> {
-  const r: RoundResult = { released: 0, waiting: 0, refused: 0, held: 0, planned: 0, pending: false, fatal: null };
+  const r: RoundResult = { released: 0, waiting: 0, refused: 0, held: 0, planned: 0, pending: false, fatal: null, halted: null };
+  r.halted = p.halted();
+  if (r.halted) return r;
   const settled = await p.settle();
   if (settled.kind === "fatal") {
     r.fatal = { why: settled.why, burn: settled.burn, extrinsicHash: settled.extrinsicHash, ...(settled.left ? { left: true } : {}) };
@@ -537,6 +548,9 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
         r.fatal = { why: `${name}: still not released after ${STEPS} approvals in one round`, burn: String(burn.burnNonce), extrinsicHash: null };
         return r;
       }
+      // A fatal stop another process left since the round started signs nothing more either.
+      r.halted = p.halted();
+      if (r.halted) return r;
       p.log(`${name}: ${next.why}${o.send ? "" : " (dry run)"}`);
       const out = await p.approve(burn, q.by, { kind: next.kind, member: next.member });
       if (out.kind === "refused") {
