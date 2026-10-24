@@ -409,10 +409,6 @@ Plans, not promises: a step counts once it runs on chain and is in the [evidence
 
 **Planned after the check-in: a liquidity engine and more chains**
 
-- **A faster way back.** A fast mode in which the committee releases a burn after a few Sepolia
-  confirmations instead of Sepolia's finality, a trade-off it states, and an auto-release watcher
-  that runs both approvals as soon as a burn qualifies: the way back in about a minute instead of
-  about 20 minutes.
 - **LP fast-fill, the first part of a liquidity engine.** A liquidity provider pays a burn's
   recipient on V3 within seconds, from its own tPOT; once the burn is final, the committee releases
   the burn's amount from the vault to the provider that filled it. The vault's `release` pays any
@@ -439,6 +435,13 @@ Plans, not promises: a step counts once it runs on chain and is in the [evidence
   only.
 - **Before any mainnet value:** an outside audit; each light client's admin replaced by a timelock
   or a multisig, or renounced; committee keys held by independent members.
+
+**Done**
+
+- **A faster way back.** Fast mode, in which the committee releases a burn of up to 1 tPOT after 3
+  Sepolia confirmations instead of Sepolia's finality, a trade-off it states, and the auto-release
+  watcher, which runs both approvals as soon as a burn qualifies. On Oct 24 it released burn 1 on
+  V3 84 seconds after the burn's Sepolia block (rows 56 to 58), instead of about 20 minutes.
 
 ## Development log
 
