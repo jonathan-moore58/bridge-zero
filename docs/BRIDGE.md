@@ -584,7 +584,9 @@ burn already released is left alone; a burn whose log the RPC refuses or does no
   that no member acknowledged, and leaves the halt file for it when none is there (exit code 4). A
   member looks at what happened, adds `"acknowledged": "<who, when, what they found>"` to that
   approval, or to that release's `finalizedCheck`, in `deployments/v3-testnet.json`, with no other
-  run of the tool going, then removes the halt file. Until then a fast release whose check against
+  run of the tool going, then removes the halt file: removed without it, the next watcher with
+  `--send` stops on the record and leaves the file again. A refusal on a halt file that names a
+  burn, and the line a stop prints when it leaves the file, say so. Until then a fast release whose check against
   the final chain failed also counts toward the fast budget (what the reorg undid stays paid out). A
   key file or password file that does not open is not a fatal stop: the watcher with `--send` opens
   both keys before its first request, and one that does not open ends it with exit code 4 and no
