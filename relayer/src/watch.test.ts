@@ -154,17 +154,31 @@ describe("the fast budget", () => {
     assert.ok(chain.lines.some((l) => /^burn 1 .*waits: .*above the fast budget/.test(l)));
   });
 
-  it("counts the fast releases of earlier rounds until their blocks are final", async () => {
+  it("counts the fast releases of earlier rounds until their blocks are final and checked", async () => {
     const chain = new FakeChain(HEADS, [burn(1n, 991, SIX)]);
-    chain.fast.push({ amount: SIX, block: 985 });
+    chain.fast.push({ amount: SIX, block: 985, checked: false });
     const r = await watchRound(chain.ports(), FAST3, SEND);
     assert.deepEqual(chain.calls, []);
     assert.equal(r.waiting, 1);
-    // Block 985 is final now: burn 1 goes fast.
+    // Block 985 is final now and its release checked against the final chain: burn 1 goes fast.
     const later = new FakeChain({ latest: 1_000, finalized: 985 }, [burn(1n, 991, SIX)]);
-    later.fast.push({ amount: SIX, block: 985 });
+    later.fast.push({ amount: SIX, block: 985, checked: true });
     assert.equal((await watchRound(later.ports(), FAST3, SEND)).released, 1);
     assert.deepEqual(later.calls, ["1:open:1:fast", "1:execute:2:fast"]);
+  });
+
+  it("keeps counting a fast release whose block is final while its check against the final chain has not passed", async () => {
+    // Block 920 is final, and reconcile has not checked its release yet (the RPC refused the logs, say): a second 0.6 tPOT burn waits.
+    const chain = new FakeChain(HEADS, [burn(1n, 991, SIX)]);
+    chain.fast.push({ amount: SIX, block: 920, checked: false });
+    const r = await watchRound(chain.ports(), FAST3, SEND);
+    assert.deepEqual(chain.calls, []);
+    assert.equal(r.waiting, 1);
+    assert.ok(chain.lines.some((l) => /^burn 1 .*waits: .*above the fast budget/.test(l)));
+    // Without --send nothing is checked or recorded: the block alone counts, and burn 1's approval is dry-run.
+    const dry = new FakeChain(HEADS, [burn(1n, 991, SIX)]);
+    dry.fast.push({ amount: SIX, block: 920, checked: false });
+    assert.equal((await watchRound(dry.ports(), FAST3, { ...SEND, send: false })).planned, 1);
   });
 });
 
@@ -239,7 +253,7 @@ class FakeChain {
   readonly settleOutcomes: Exclude<Settled, { kind: "ok" }>[] = [];
   settled = 0;
   /** The releases made fast: what fastReleases() returns. */
-  readonly fast: { amount: bigint; block: number }[] = [];
+  readonly fast: { amount: bigint; block: number; checked: boolean }[] = [];
   /** What reconcile() says. */
   reconciled: { checked: number; fatal: FatalStop | null } = { checked: 0, fatal: null };
 
@@ -297,7 +311,7 @@ class FakeChain {
           s.released = true;
           s.rounds.at(-1)!.approvals.push(approval(step.member, "execute", "final"));
           s.rounds.at(-1)!.status = "released";
-          if (by === "fast") this.fast.push({ amount: b.amount, block: b.block });
+          if (by === "fast") this.fast.push({ amount: b.amount, block: b.block, checked: false });
         }
         return { kind: "ok" };
       },

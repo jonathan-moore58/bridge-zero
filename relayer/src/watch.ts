@@ -323,8 +323,11 @@ export interface Ports<B extends SeenBurn = SeenBurn> {
   heads(): Promise<Heads>;
   /** Every BurnRequested since the last burn handled, at the latest block, in nonce order. */
   burns(): Promise<B[]>;
-  /** The releases the record has made in fast mode: each burn's amount and block. */
-  fastReleases(): Promise<{ amount: bigint; block: number }[]>;
+  /**
+   * The releases the record has made in fast mode: each burn's amount and block, and whether its
+   * check against Sepolia's final chain passed (finalizedCheck).
+   */
+  fastReleases(): Promise<{ amount: bigint; block: number; checked: boolean }[]>;
   /**
    * Checks each release made in fast mode whose burn's block is final now, and not checked yet,
    * against BurnRequested(n) on the final chain (reconcileVerdict), and records it; fatal on a
@@ -413,9 +416,11 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
   }
   const burns = await p.burns();
   p.log(`${burns.length} burn${burns.length === 1 ? "" : "s"} from the last one handled`);
-  // What a reorg could still undo: the burns released fast whose blocks are not final yet.
-  let exposed = (await p.fastReleases()).filter((x) => x.block > heads.finalized).reduce((sum, x) => sum + x.amount, 0n);
-  if (rule.confirmations !== null) p.log(`released fast and not final yet: ${exposed} of the fast budget's ${rule.fastBudget} base units`);
+  // What a reorg could still undo: the burns released fast whose blocks are not final yet, and with
+  // --send those final whose check against the final chain has not passed yet (reconcile may defer
+  // it). Without --send no check is recorded, and the block alone counts.
+  let exposed = (await p.fastReleases()).filter((x) => x.block > heads.finalized || (o.send && !x.checked)).reduce((sum, x) => sum + x.amount, 0n);
+  if (rule.confirmations !== null) p.log(`released fast and not final or not checked yet: ${exposed} of the fast budget's ${rule.fastBudget} base units`);
   for (const burn of burns) {
     if (burn.missing !== undefined) {
       p.log(`burn ${burn.burnNonce}: waits: ${burn.missing}`);

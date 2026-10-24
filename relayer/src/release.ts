@@ -2867,7 +2867,9 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
       },
       burns: () => burnsSince(d, heads, cache),
       fastReleases: async () =>
-        (d.record.releases ?? []).filter((r) => r.status === "released" && r.by === "fast" && r.burn.minter === d.b.minter).map((r) => ({ amount: BigInt(r.amountNative), block: r.burn.block })),
+        (d.record.releases ?? [])
+          .filter((r) => r.status === "released" && r.by === "fast" && r.burn.minter === d.b.minter)
+          .map((r) => ({ amount: BigInt(r.amountNative), block: r.burn.block, checked: r.finalizedCheck?.ok === true })),
       reconcile: (h) => reconcileFast(d, h, o.send),
       state: (burn) => burnStateOf(api, d, burn),
       approve: (burn, by, step) => approveFor({ d, api, evm, o, keys: keys.pairs, lock }, burn, by, step),
