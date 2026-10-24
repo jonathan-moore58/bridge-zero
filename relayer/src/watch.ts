@@ -227,6 +227,54 @@ export function reconcileVerdict(recorded: BurnFacts, final: BurnFacts | null): 
   };
 }
 
+/**
+ * How many rounds in a row a fast release's burn may be found nowhere (no log of it on the final
+ * chain, and its transaction without a receipt or reverted) before that is a fatal stop: an RPC that
+ * lags, or answers eth_getLogs with nothing, does not halt the watcher at once.
+ */
+export const RECONCILE_MISSES = 3;
+
+/** A fast release's burn transaction as its receipt has it, read when the final chain's logs did not show the burn. */
+export interface BurnReceipt {
+  /** 1: it ran; 0: it reverted. */
+  status: number;
+  block: number;
+  /** Its block is the canonical one of its number (eth_getBlockByNumber); null when that was not read. */
+  canonical: boolean | null;
+  /** The minter's BurnRequested log of this burn nonce in it, if any. */
+  log: BurnFacts | null;
+}
+
+export type MissingBurnVerdict =
+  /** Nothing is known yet: a later round looks again. `missed`: this round counts toward RECONCILE_MISSES. */
+  | { kind: "later"; why: string; missed: boolean }
+  /** Its transaction is in a final canonical block: check the release against what it burned there (reconcileVerdict). */
+  | { kind: "check"; final: BurnFacts | null }
+  /** Found nowhere RECONCILE_MISSES rounds in a row: the release does not stand. */
+  | { kind: "fatal"; why: string };
+
+/**
+ * What to make of a fast release whose burn the final chain's logs did not show (eth_getLogs gave
+ * nothing, or `logsRefused`), from its transaction's receipt (null: none) and the rounds in a row it
+ * was missed before (`misses`). In a final canonical block, the receipt's BurnRequested log of this
+ * nonce is the final chain's (a burn nonce is the minter's, once): check against it. Above the
+ * finalized block (a reorg moved it), or in a block that is not the canonical one yet: later. No
+ * receipt, or a reverted transaction: later, until RECONCILE_MISSES rounds in a row, then fatal; with
+ * the logs refused nothing counts, since the final chain was not read.
+ */
+export function missingBurnVerdict(receipt: BurnReceipt | null, finalized: number, misses: number, logsRefused: boolean): MissingBurnVerdict {
+  if (receipt === null || receipt.status !== 1) {
+    const what = receipt === null ? "its transaction has no receipt" : `its transaction reverted (status ${receipt.status}) in #${receipt.block}`;
+    if (logsRefused) return { kind: "later", why: what, missed: false };
+    const n = misses + 1;
+    if (n >= RECONCILE_MISSES) return { kind: "fatal", why: `the final chain has no BurnRequested log of this burn nonce, and ${what}, ${n} rounds in a row` };
+    return { kind: "later", why: `${what} (${n} of ${RECONCILE_MISSES} rounds in a row before a fatal stop)`, missed: true };
+  }
+  if (receipt.block > finalized) return { kind: "later", why: `its transaction is in #${receipt.block}, above the finalized #${finalized} (a reorg moved it)`, missed: false };
+  if (receipt.canonical !== true) return { kind: "later", why: `its receipt's block #${receipt.block} is not the canonical one of its number yet (an RPC behind?)`, missed: false };
+  return { kind: "check", final: receipt.log };
+}
+
 // ---------------------------------------------------------------------------------------
 // One round
 

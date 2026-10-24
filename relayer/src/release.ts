@@ -272,6 +272,7 @@ import {
   MAX_WATCH_SECONDS,
   MIN_WATCH_CONFIRMATIONS,
   MIN_WATCH_SECONDS,
+  missingBurnVerdict,
   nextWait,
   parseConfirmations,
   parseMemberKeys,
@@ -287,6 +288,8 @@ import {
   watchRound,
   writeBurnCache,
   writeHalt,
+  type BurnFacts as FinalBurn,
+  type BurnReceipt,
   type BurnState,
   type CachedBurn,
   type Heads,
@@ -2797,35 +2800,80 @@ async function approveFor(
   }
 }
 
+/** Per fast release (minter/burn nonce), the rounds in a row its burn was found nowhere (missingBurnVerdict); in memory. */
+const reconcileMisses = new Map<string, number>();
+
+/**
+ * A fast release's burn transaction as its receipt has it (null: no receipt): its status, its block,
+ * whether that block is the canonical one of its number (read when it is final and the transaction
+ * ran), and the minter's BurnRequested log of burn n in it.
+ */
+async function burnReceipt(b: Bridge, n: bigint, txHash: Hex, finalized: number): Promise<BurnReceipt | null> {
+  const receipt = (await sepolia("receipt", () => receiptOf(txHash, false))) as unknown as { status: string; blockNumber: string; blockHash?: string; transactionHash: string; logs?: LogJson[] } | null;
+  if (!receipt) return null;
+  const status = Number(BigInt(receipt.status));
+  const block = Number(BigInt(receipt.blockNumber));
+  const blockHash = receipt.blockHash?.toLowerCase() ?? null;
+  let canonical: boolean | null = null;
+  if (status === 1 && block <= finalized) {
+    const c = await sepolia("block", () => rpc<{ hash: string } | null>("eth_getBlockByNumber", [qty(block), false]));
+    canonical = !!c && blockHash !== null && c.hash.toLowerCase() === blockHash;
+  }
+  const nonce = bytesToHex(uintWord(n));
+  const logs = (receipt.logs ?? []).filter(
+    (l) => l.address.toLowerCase() === b.minter && !(l as { removed?: boolean }).removed && l.topics[0]?.toLowerCase() === BURN_REQUESTED_TOPIC && l.topics[1]?.toLowerCase() === nonce,
+  );
+  const burn = logs.length === 1 ? burnOfLog({ ...logs[0], blockNumber: logs[0].blockNumber ?? receipt.blockNumber, blockHash: logs[0].blockHash ?? blockHash ?? undefined, transactionHash: logs[0].transactionHash ?? receipt.transactionHash }) : null;
+  return {
+    status,
+    block,
+    canonical,
+    log: burn && { txHash: burn.txHash, blockHash: burn.blockHash, block: burn.block, payee: bytesToHex(burn.v3Recipient), amount: burn.amount, burnId: bytesToHex(burn.burnId) },
+  };
+}
+
 /**
  * The releases made in fast mode whose burns' blocks are final now and that are not checked yet:
  * BurnRequested(n) on the final chain (eth_getLogs from 128 blocks below the recorded block to the
  * finalized block, the log's block canonical), compared with the record (reconcileVerdict) and the
- * check recorded with --send. A release that does not stand is fatal. One whose log the RPC refuses
- * is checked in a later round.
+ * check recorded with --send. A release that does not stand is fatal. When the logs do not show the
+ * burn (none, or the RPC refuses them), its transaction's receipt decides (missingBurnVerdict): in a
+ * final canonical block, its BurnRequested log there is checked; above the finalized block, in a
+ * block not canonical yet, or with the logs refused, a later round looks again; found nowhere
+ * RECONCILE_MISSES rounds in a row, the release does not stand.
  */
 async function reconcileFast(d: Deployed, h: Heads, send: boolean): Promise<{ checked: number; fatal: FatalStop | null }> {
   const { b } = d;
   let checked = 0;
+  const factsOf = (x: BurnOnChain): FinalBurn => ({ txHash: x.txHash, blockHash: x.blockHash, block: x.block, payee: bytesToHex(x.v3Recipient), amount: x.amount, burnId: bytesToHex(x.burnId) });
   for (const round of d.record.releases ?? []) {
     if (round.status !== "released" || round.by !== "fast" || round.finalizedCheck || round.burn.minter !== b.minter || round.burn.block > h.finalized) continue;
     const n = BigInt(round.burn.burnNonce);
+    const missKey = `${b.minter}/${n}`;
+    const recorded: FinalBurn = { txHash: round.burn.txHash, blockHash: round.burn.blockHash ?? null, block: round.burn.block, payee: round.payee, amount: BigInt(round.amountNative), burnId: round.burn.burnId };
     const found = await recentBurn(b, n, Math.max(b.deployBlock, round.burn.block - 128), h.finalized);
-    if (found !== null && "refused" in found) {
-      warn(`the release of burn ${n}, made in fast mode, is not checked against Sepolia's final chain yet: the RPC refuses eth_getLogs (${found.refused}); a later round tries again`);
-      continue;
-    }
-    if (found) {
+    let verdict: { ok: boolean; why: string };
+    if (found !== null && !("refused" in found)) {
       const canonical = await sepolia("block", () => rpc<{ hash: string } | null>("eth_getBlockByNumber", [qty(found.block), false]));
       if (!canonical || !found.blockHash || canonical.hash.toLowerCase() !== found.blockHash) {
         warn(`burn ${n}'s log at #${fmt(found.block)} is not from the canonical block yet (an RPC behind?): a later round checks its fast release`);
         continue;
       }
+      reconcileMisses.delete(missKey);
+      verdict = reconcileVerdict(recorded, factsOf(found));
+    } else {
+      // The final chain's logs did not show it (none, or the RPC refuses them): its transaction's
+      // receipt says whether it is in a final canonical block, and what it burned there.
+      const refused = found !== null ? found.refused : null;
+      const missing = missingBurnVerdict(await burnReceipt(b, n, round.burn.txHash, h.finalized), h.finalized, reconcileMisses.get(missKey) ?? 0, refused !== null);
+      if (missing.kind === "later") {
+        if (missing.missed) reconcileMisses.set(missKey, (reconcileMisses.get(missKey) ?? 0) + 1);
+        warn(`the release of burn ${n}, made in fast mode, is not checked against Sepolia's final chain yet: ${refused === null ? "eth_getLogs shows no BurnRequested log of it" : `the RPC refuses eth_getLogs (${refused})`}, and ${missing.why}; a later round tries again`);
+        continue;
+      }
+      reconcileMisses.delete(missKey);
+      verdict = missing.kind === "fatal" ? { ok: false, why: missing.why } : reconcileVerdict(recorded, missing.final);
     }
-    const verdict = reconcileVerdict(
-      { txHash: round.burn.txHash, blockHash: round.burn.blockHash ?? null, block: round.burn.block, payee: round.payee, amount: BigInt(round.amountNative), burnId: round.burn.burnId },
-      found && { txHash: found.txHash, blockHash: found.blockHash, block: found.block, payee: bytesToHex(found.v3Recipient), amount: found.amount, burnId: bytesToHex(found.burnId) },
-    );
     checked += 1;
     log(`${verdict.ok ? "ok  " : "FAIL"} the release of burn ${n}, made in fast mode, against Sepolia's finalized block #${fmt(h.finalized)}: ${verdict.why}`);
     if (send) {

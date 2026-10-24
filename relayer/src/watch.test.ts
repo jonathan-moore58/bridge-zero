@@ -20,6 +20,7 @@ import {
   haltRefusal,
   LOCK_STALE,
   MAX_BACKOFF_SECONDS,
+  missingBurnVerdict,
   nextStep,
   nextWait,
   parseConfirmations,
@@ -28,6 +29,7 @@ import {
   readBurnCache,
   readHalt,
   receiptInLogBlock,
+  RECONCILE_MISSES,
   reconcileVerdict,
   rpcTrouble,
   settledOnChainFailure,
@@ -564,6 +566,35 @@ describe("a fast release once its burn's block is final", () => {
     const other = reconcileVerdict(recorded, { ...recorded, txHash: `0x${"dd".repeat(32)}`, payee: "0x0000000000000000000000000000000000000001", amount: TPOT });
     assert.equal(other.ok, false);
     assert.match(other.why, /transaction 0xdd.*payee 0x0+1.*amount 100000000000000, not 50000000000000/);
+  });
+
+  it("checks against its transaction's receipt when the final chain's logs do not show the burn, once that is in a final canonical block", () => {
+    // A lagging backend answers eth_getLogs with []: the receipt has the burn, in final block #990, canonical.
+    const inFinal = { status: 1, block: 990, canonical: true, log: recorded };
+    assert.deepEqual(missingBurnVerdict(inFinal, 1_000, 0, false), { kind: "check", final: recorded });
+    // The RPC refuses the logs (pruned history): the receipt decides the same way.
+    assert.deepEqual(missingBurnVerdict(inFinal, 1_000, 0, true), { kind: "check", final: recorded });
+    // Its transaction ran there without a BurnRequested log of this nonce: checked against nothing, it does not stand.
+    assert.deepEqual(missingBurnVerdict({ ...inFinal, log: null }, 1_000, 0, false), { kind: "check", final: null });
+  });
+
+  it("waits, without counting, for a burn a reorg moved above the finalized block, or in a block not canonical yet", () => {
+    const moved = missingBurnVerdict({ status: 1, block: 1_003, canonical: null, log: recorded }, 1_000, 2, false);
+    assert.deepEqual(moved, { kind: "later", why: "its transaction is in #1003, above the finalized #1000 (a reorg moved it)", missed: false });
+    const behind = missingBurnVerdict({ status: 1, block: 990, canonical: false, log: recorded }, 1_000, 2, false);
+    assert.deepEqual([behind.kind, (behind as { missed: boolean }).missed], ["later", false]);
+  });
+
+  it("stops only when the burn's transaction has no receipt, or reverted, 3 rounds in a row", () => {
+    assert.equal(RECONCILE_MISSES, 3);
+    assert.deepEqual(missingBurnVerdict(null, 1_000, 0, false), { kind: "later", why: "its transaction has no receipt (1 of 3 rounds in a row before a fatal stop)", missed: true });
+    assert.equal(missingBurnVerdict(null, 1_000, 1, false).kind, "later");
+    assert.deepEqual(missingBurnVerdict(null, 1_000, 2, false), { kind: "fatal", why: "the final chain has no BurnRequested log of this burn nonce, and its transaction has no receipt, 3 rounds in a row" });
+    const reverted = missingBurnVerdict({ status: 0, block: 990, canonical: null, log: null }, 1_000, 2, false);
+    assert.equal(reverted.kind, "fatal");
+    assert.match((reverted as { why: string }).why, /reverted \(status 0\) in #990, 3 rounds in a row/);
+    // With the logs refused, the final chain was not read: nothing counts.
+    assert.deepEqual(missingBurnVerdict(null, 1_000, 2, true), { kind: "later", why: "its transaction has no receipt", missed: false });
   });
 
   it("stops the watcher before it approves anything when a fast release does not stand", async () => {
