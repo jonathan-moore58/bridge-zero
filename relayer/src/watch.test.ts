@@ -7,6 +7,7 @@
 //   npm test
 
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,6 +36,7 @@ import {
   settledOnChainFailure,
   settleOrHalt,
   submitErrorVerdict,
+  takeCommitteeLock,
   takeLock,
   tradeOff,
   watchRound,
@@ -745,6 +747,29 @@ describe("the watcher's lock", () => {
     const b = takeLock(path, quiet);
     assert.ok(b?.held());
     b!.release();
+  });
+
+  it("reads the halt file again once it holds the lock: one that another run left while this one took the lock stops it", () => {
+    const path = join(dir, "halted.lock");
+    const haltPath = join(dir, "halted.halt");
+    leftover(path);
+    // Another run with --send writes the halt file while this one takes the stale lock over (after its first look).
+    const reason = `member 2's execute failed its checks (${randomUUID()})`;
+    const meanwhile = (line: string) => {
+      if (/taken over/.test(line)) writeHalt(haltPath, { reason, burn: "5", extrinsicHash: "0xfeed", at: new Date().toISOString() });
+    };
+    const taken = takeCommitteeLock(path, haltPath, meanwhile, { holder: "the watcher" });
+    assert.ok(taken !== null && "halt" in taken, "the halt file stops it");
+    assert.equal(taken.halt.reason, reason);
+    assert.equal(existsSync(path), false, "the lock is released again");
+    // An approval by hand with --despite-halt keeps the lock; without a halt file, so does every run.
+    leftover(path);
+    const despite = takeCommitteeLock(path, haltPath, () => undefined, { holder: "member 2's approval by hand", despiteHalt: true });
+    assert.ok(despite !== null && "lock" in despite && despite.lock.held());
+    despite.lock.release();
+    const clear = takeCommitteeLock(path, join(dir, "never-written.halt"), () => undefined, { holder: "the watcher" });
+    assert.ok(clear !== null && "lock" in clear && clear.lock.held());
+    clear.lock.release();
   });
 
   it("names who holds it: the watcher, or an approval by hand, as the lock is shared", () => {

@@ -849,6 +849,24 @@ export function takeLock(path: string, log: (line: string) => void, staleAfter =
   return null;
 }
 
+/**
+ * The committee's lock for a run with --send (takeLock, as `holder`), and its halt file read again
+ * once the lock is held: another run with --send may have left it after this run first looked and
+ * before it took the lock (it writes the file, then releases the lock). With the halt file there,
+ * the lock is released again and the halt returned, unless `despiteHalt` (an approval by hand once
+ * a member has looked). Null while another run holds the lock.
+ */
+export function takeCommitteeLock(lockPath: string, haltPath: string, log: (line: string) => void, o: { holder: string; despiteHalt?: boolean }): { lock: Lock } | { halt: Halt } | null {
+  const lock = takeLock(lockPath, log, LOCK_STALE, o.holder);
+  if (!lock) return null;
+  const halt = readHalt(haltPath);
+  if (halt && !o.despiteHalt) {
+    lock.release();
+    return { halt };
+  }
+  return { lock };
+}
+
 function heldLock(path: string, content: string): Lock {
   const held = () => {
     try {

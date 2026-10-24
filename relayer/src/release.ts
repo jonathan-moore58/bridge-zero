@@ -78,7 +78,7 @@
 // never printed, requires the account to be member k, and in fast mode --confirmations 3 or more.
 // It takes the watcher's lock (below), and is refused while another run holds it; it is refused while
 // the committee's halt file (below) is there, with exit code 4, unless --despite-halt says a member
-// looked. It records the approval in deployments/v3-testnet.json (releases) before it submits,
+// looked, and reads it again once it holds the lock (a run that held the lock may have left it). It records the approval in deployments/v3-testnet.json (releases) before it submits,
 // waits for finalization and checks the events: NewMultisig, or MultisigExecuted with its result Ok
 // and the vault's revive.ContractEmitted Released event, then released[burnId], outstanding and the
 // payee's balance on the EVM side (eth_getBalance) up by amount x 10^4 wei, and the Released log
@@ -143,7 +143,7 @@
 // each signing. A lock whose process is gone, or not refreshed for 10 minutes, is taken over, and a
 // <lock>.takeover file older than a minute, left by a process that died while taking a stale lock
 // over, is removed. The committee's halt file, release-watch-<multisig>.halt, is next to the lock,
-// whatever --state-dir is; --state-dir (by default that same folder) holds the burn cache
+// whatever --state-dir is, and is read again once the lock is held; --state-dir (by default that same folder) holds the burn cache
 // (release-watch-<multisig>.burns.json). An approval or a cancellation by hand with --send takes
 // the same lock, and is refused while a watcher or another such run holds it; the lock names its
 // holder (the watcher, or member k's approval or cancellation by hand), and a refusal names it. After a round with trouble reaching or
@@ -300,7 +300,6 @@ import {
   FAST_LIMIT,
   FINALITY,
   haltRefusal,
-  LOCK_STALE,
   MAX_WATCH_SECONDS,
   MIN_WATCH_CONFIRMATIONS,
   MIN_WATCH_SECONDS,
@@ -316,7 +315,7 @@ import {
   settledOnChainFailure,
   settleOrHalt,
   submitErrorVerdict,
-  takeLock,
+  takeCommitteeLock,
   tradeOff,
   watchRound,
   writeBurnCache,
@@ -327,6 +326,7 @@ import {
   type CachedBurn,
   type Heads,
   type FatalStop,
+  type Halt,
   type Lock,
   type Outcome,
   type Ports,
@@ -2227,11 +2227,12 @@ async function releaseCommand(o: ReleaseOptions): Promise<number> {
   if (o.rule.confirmations !== null) log(`     ${ruleText(o.rule)}`);
   const d = await deployed();
   // After a fatal stop, nothing is signed by hand either until a member looked (--despite-halt).
+  const haltPath = haltPathOf(d.v.multisig);
+  const refused = (h: Halt) => check(false, `nothing is signed: ${haltRefusal(h, haltPath)}, or add --despite-halt once a member has looked at it`);
   if (o.send) {
-    const haltPath = haltPathOf(d.v.multisig);
     const halted = readHalt(haltPath);
     if (halted && !o.despiteHalt) {
-      check(false, `nothing is signed: ${haltRefusal(halted, haltPath)}, or add --despite-halt once a member has looked at it`);
+      refused(halted);
       return HALTED;
     }
     if (halted) warn(`${haltRefusal(halted, haltPath)}; --despite-halt: this run signs anyway`);
@@ -2245,8 +2246,14 @@ async function releaseCommand(o: ReleaseOptions): Promise<number> {
     } catch (error) {
       throw new Stop(`${STATE_DIR} cannot be created: ${errorText(error)}`);
     }
-    lock = takeLock(watchLockPath(d.v.multisig), log, LOCK_STALE, `member ${o.member}'s ${o.action === "cancel" ? "cancellation" : "approval"} by hand`);
-    if (!lock) throw new Stop("another run with --send (the watcher, or an approval or a cancellation by hand) holds the committee's lock: nothing is signed by hand while it does (wait for it, or stop it first)");
+    // The halt file is read again once the lock is held: a run that held it may have left one meanwhile.
+    const taken = takeCommitteeLock(watchLockPath(d.v.multisig), haltPath, log, { holder: `member ${o.member}'s ${o.action === "cancel" ? "cancellation" : "approval"} by hand`, despiteHalt: o.despiteHalt });
+    if (!taken) throw new Stop("another run with --send (the watcher, or an approval or a cancellation by hand) holds the committee's lock: nothing is signed by hand while it does (wait for it, or stop it first)");
+    if ("halt" in taken) {
+      refused(taken.halt);
+      return HALTED;
+    }
+    lock = taken.lock;
     const held = lock;
     o.guard = () => {
       if (!held.held()) throw new Stop(`${held.path} no longer holds this run's token: a watcher took the lock over, and nothing is signed`);
@@ -3089,11 +3096,17 @@ async function watchCommand(o: WatchOptions): Promise<number> {
         throw new Stop(`${dir} cannot be created: ${errorText(error)}`);
       }
     }
-    lock = takeLock(watchLockPath(v.multisig), log, LOCK_STALE, "the watcher");
-    if (!lock) {
+    // The halt file is read again once the lock is held: a run that held it may have left one meanwhile.
+    const taken = takeCommitteeLock(watchLockPath(v.multisig), haltPath, log, { holder: "the watcher" });
+    if (!taken) {
       check(false, "another run with --send (the watcher, or an approval or a cancellation by hand) holds the committee's lock: this watcher does not start");
       return FAILED;
     }
+    if ("halt" in taken) {
+      check(false, `the watcher does not start: ${haltRefusal(taken.halt, haltPath)}`);
+      return HALTED;
+    }
+    lock = taken.lock;
     log(`     the lock ${lock.path} is this watcher's: no other watcher of the committee ${v.multisig} sends while it runs`);
   }
   const keys: { pairs: Map<number, Pair> | null } = { pairs: null };
