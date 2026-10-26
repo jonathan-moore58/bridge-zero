@@ -1,17 +1,22 @@
 // The visitor's browser wallets, through wagmi's core (@wagmi/core, on viem): every wallet that
 // announces itself (EIP-6963), window.ethereum for one that does not, the connected address and the
 // chain it is on. Balances are read from the public RPCs for that address, not through the wallet,
-// so they show on both chains whichever chain the wallet is on.
+// so they show on both chains whichever chain the wallet is on. The bridge's transactions are sent
+// through the wallet here (sendOn), with the gas and fees the page worked out, and their receipts
+// read through the config's transports, the page's own RPCs.
 
 import {
   connect as wagmiConnect,
   createConfig,
   createStorage,
   disconnect as wagmiDisconnect,
+  getBlock,
   getConnection,
   getConnectorClient,
+  getTransactionReceipt,
   injected,
   reconnect,
+  sendTransaction,
   switchChain,
   watchAsset,
   watchConnection,
@@ -19,7 +24,8 @@ import {
 } from "@wagmi/core";
 import { addChain } from "viem/actions";
 import { encodeCall } from "../lib/abi.ts";
-import { SEPOLIA, TOKEN, V3_EVM } from "../lib/chains.ts";
+import { SEPOLIA, SEPOLIA_HISTORY, TOKEN, V3_EVM } from "../lib/chains.ts";
+import type { Hex } from "../lib/hex.ts";
 import { request } from "../lib/rpc.ts";
 import { sepolia, transports, v3 } from "./chains.ts";
 import type { ChainKey } from "./facts.ts";
@@ -296,13 +302,124 @@ export async function addV3(): Promise<void> {
   }
 }
 
+/** wagmi's chain id of a bridge chain. */
+const idOf = (chain: ChainKey): number => (chain === "v3" ? v3.id : sepolia.id);
+
 /** Switches the wallet to a bridge chain; wagmi adds V3 first when the wallet does not know it. */
 export async function switchTo(chain: ChainKey): Promise<void> {
   try {
-    await switchChain(config, { chainId: chain === "v3" ? v3.id : sepolia.id });
+    await switchChain(config, { chainId: idOf(chain) });
   } catch (e) {
     throw new WalletError(e);
   }
+}
+
+/** Whether the connected wallet is on `chain` now, as wagmi last heard. */
+export const walletOn = (chain: ChainKey): boolean => getConnection(config).chainId === idOf(chain);
+
+/** A transaction the page asks the wallet for, with the gas limit and the fees worked out here. */
+export interface SendRequest {
+  to: Hex;
+  data: Hex;
+  value?: bigint;
+  gas: bigint;
+  maxFeePerGas: bigint;
+  maxPriorityFeePerGas: bigint;
+}
+
+/**
+ * Asks the wallet to send `tx` on `chain`, and returns its hash. viem asks the wallet for its chain
+ * first (eth_chainId) and refuses on another one, so a wallet switched away meanwhile cannot send on
+ * the wrong network. Throws what the wallet answered, as a WalletError (walletCode, problemOf).
+ */
+export async function sendOn(chain: ChainKey, tx: SendRequest): Promise<Hex> {
+  try {
+    const hash = await sendTransaction(config, {
+      chainId: idOf(chain),
+      to: tx.to,
+      data: tx.data,
+      value: tx.value,
+      gas: tx.gas,
+      maxFeePerGas: tx.maxFeePerGas,
+      maxPriorityFeePerGas: tx.maxPriorityFeePerGas,
+    });
+    return hash.toLowerCase() as Hex;
+  } catch (e) {
+    throw new WalletError(e);
+  }
+}
+
+/** A mined transaction, as the page reads its receipt. */
+export interface Mined {
+  ok: boolean;
+  block: number;
+  gasUsed: number;
+  logs: { address: string; topics: string[]; data: string }[];
+}
+
+interface RawReceipt {
+  status?: string;
+  blockNumber?: string;
+  gasUsed?: string;
+  logs?: { address: string; topics: string[]; data: string }[];
+}
+
+/**
+ * The receipt of `hash` on `chain`, from the page's RPCs; null while it is not mined. Throws when no
+ * RPC answers. `deep`: on Sepolia, a receipt the first node no longer serves (the public node keeps
+ * about a day of them) is asked of the page's other endpoints too, which keep older ones.
+ */
+export async function receiptOn(chain: ChainKey, hash: Hex, deep = false): Promise<Mined | null> {
+  try {
+    const r = await getTransactionReceipt(config, { chainId: idOf(chain), hash });
+    return {
+      ok: r.status === "success",
+      block: Number(r.blockNumber),
+      gasUsed: Number(r.gasUsed),
+      logs: r.logs.map((l) => ({ address: l.address, topics: [...l.topics], data: l.data })),
+    };
+  } catch (e) {
+    if (!causes(e).some((x) => (x as { name?: unknown }).name === "TransactionReceiptNotFoundError")) throw e;
+  }
+  if (!deep || chain !== "sepolia") return null;
+  try {
+    const r = (await request<RawReceipt | null>(SEPOLIA_HISTORY, "eth_getTransactionReceipt", [hash], { accept: (x) => x !== null, timeoutMs: 10_000, retries: 0 })).result;
+    if (!r?.blockNumber || !r.gasUsed || !Array.isArray(r.logs)) return null;
+    return { ok: r.status === "0x1", block: Number(BigInt(r.blockNumber)), gasUsed: Number(BigInt(r.gasUsed)), logs: r.logs.map((l) => ({ address: l.address, topics: [...l.topics], data: l.data })) };
+  } catch {
+    // Not mined, or no endpoint keeps it: the callers read the chains' logs too.
+    return null;
+  }
+}
+
+/** A block's timestamp on `chain`, ms. */
+export async function blockTimeOn(chain: ChainKey, block: number): Promise<number> {
+  const b = await getBlock(config, { chainId: idOf(chain), blockNumber: BigInt(block) });
+  return Number(b.timestamp) * 1000;
+}
+
+/** What went wrong with a wallet request, in the app's terms, and the words for it. */
+export interface Problem {
+  kind: "rejected" | "busy" | "network" | "account" | "other";
+  text: string;
+}
+
+/**
+ * The wallet's answer, mapped: 4001 the visitor said no; -32002 a request is already open; 4902 the
+ * wallet lacks the network (wagmi adds V3 itself, so this is an add that failed); a wallet on
+ * another chain than viem expected; no account connected. Anything else, in the wallet's own words.
+ */
+export function problemOf(e: unknown): Problem {
+  const code = walletCode(e);
+  if (code === 4001) return { kind: "rejected", text: "You declined it in your wallet." };
+  if (code === -32002) return { kind: "busy", text: "Your wallet already has a request open: open the wallet to finish or reject it, then try again." };
+  if (code === 4902) return { kind: "network", text: "Your wallet does not have this network: add it from the wallet menu, then try again." };
+  const names = causes(e).map((x) => (x as { name?: unknown }).name);
+  if (names.includes("ChainMismatchError")) return { kind: "network", text: "Your wallet changed network before it sent: nothing was sent. Try again." };
+  if (names.some((n) => n === "ConnectorNotConnectedError" || n === "ConnectorAccountNotFoundError" || n === "AccountNotFoundError")) {
+    return { kind: "account", text: "Connect your wallet, then try again." };
+  }
+  return { kind: "other", text: (e instanceof Error && e.message) || "Your wallet did not answer." };
 }
 
 /**

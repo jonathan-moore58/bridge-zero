@@ -92,6 +92,15 @@ function WalletList({ after }: { after: (() => void) | undefined }) {
   );
 }
 
+/** Connects a wallet first when none is, then runs `after`: the picker, or the sheet for a browser without one. */
+export function connectThen(after: () => void): void {
+  const status = wallet.get().status;
+  if (status === "on") return after();
+  if (status === "none") return openNoWallet();
+  if (status === "connecting") return toast("info", "Check your wallet", "It already has a connection request open.");
+  openWalletPicker(after);
+}
+
 /** The wallets this browser has, to connect one; `after` runs once it is connected. */
 export function openWalletPicker(after?: () => void): void {
   if (!wallets.get().length) return openNoWallet();

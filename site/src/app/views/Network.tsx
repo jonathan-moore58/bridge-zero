@@ -13,7 +13,7 @@ import { bytesToHex, type Hex } from "../../lib/hex.ts";
 import { registry, useField, type ChainHead, type Field, type LcState } from "../../lib/live.ts";
 import { burnId } from "../../lib/proofs.ts";
 import { request } from "../../lib/rpc.ts";
-import { FAST_CAP, LATER_CHAINS, SPEED_NAME, V3_SCAN } from "../facts.ts";
+import { FAST_CAP, IMPORT_GAS, LATER_CHAINS, SPEED_NAME, V3_SCAN } from "../facts.ts";
 import type { NetState } from "../net.ts";
 import { Addr, Chip, Icon, Mark, fmt, num, short } from "../ui.tsx";
 import { RUNS, clockUtc, dayTime, qty, sepoliaTime, tok, type RawLog, type Run } from "./Activity.tsx";
@@ -789,15 +789,16 @@ function WatcherCard({ waiting }: { waiting: Waiting }) {
             Fast
           </span>
           <span class="nlist__v">
-            Live · a round every 15 s{" "}
+            A round every 15 s, on one machine{" "}
             <span class="dim">
               · releases after 3 confirmations · ≤ {FAST_CAP} tPOT per burn · ≤ {FAST_CAP} tPOT in flight before finality
             </span>
           </span>
+          {/* Whether the watcher runs right now is not something this page can read: its settings, not its state. */}
           <span class="nlist__end">
             <span class="tag tag--verify">
               <Icon id="i-check" cls="i--12" />
-              Running
+              Enabled
             </span>
           </span>
         </li>
@@ -807,12 +808,12 @@ function WatcherCard({ waiting }: { waiting: Waiting }) {
             Standard
           </span>
           <span class="nlist__v">
-            After Sepolia finality <span class="dim">· any amount, and Fast above the cap</span>
+            After Sepolia finality <span class="dim">· any amount, and Fast above the cap · ≈ 17 min, est.</span>
           </span>
           <span class="nlist__end">
             <span class="tag tag--verify">
               <Icon id="i-check" cls="i--12" />
-              Running
+              Enabled
             </span>
           </span>
         </li>
@@ -1216,7 +1217,7 @@ function PageNotice({ net }: { net: NetState }) {
       "notice--trust",
       "i-refresh",
       `The V3 light client is ${net.behind} validator-set change${s} behind`,
-      `${to !== null && to !== undefined ? `V3 moved to set ${to}. ` : ""}Mints wait until the relayer imports ${net.behind === 1 ? "it" : "them"}, on its next run, within about 10 min. Locks made now stay locked for you.`,
+      `${to !== null && to !== undefined ? `V3 moved to set ${to}. ` : ""}A mint made now imports ${net.behind === 1 ? "the change" : "the changes"} first, through Multicall3, for about ${IMPORT_GAS} M gas more per change; nothing waits for the relayer, which imports ${net.behind === 1 ? "it" : "them"} on its next run.`,
     ];
   } else if (net.key === "paused") {
     n = lc.value?.halted

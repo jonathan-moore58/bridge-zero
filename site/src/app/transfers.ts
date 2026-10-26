@@ -1,9 +1,10 @@
-// The transfers the app shows. Live ones, which this tab sends and follows: a lock on V3 and its
+// The transfers the app shows. Live ones, which this browser sends and follows: a lock on V3 and its
 // mint on Sepolia (the way in), or a burn on Sepolia and the committee's release on V3 (the way
-// back). The code that sends fills them in as the wallet and the chains answer; the transfer screen
-// and the receipt only read them. The recorded runs, from the build's records: the receipts show
-// them and the replays play them. And any other lock or burn, read from the chains by its nonce:
-// Activity lists a connected wallet's, and links each to its transfer or its receipt.
+// back). The code that sends (sends.ts) fills them in as the wallet and the chains answer, and keeps
+// them in this browser's journal (journal.ts); the transfer screen and the receipt only read them.
+// The recorded runs, from the build's records: the receipts show them and the replays play them.
+// And any other lock or burn, read from the chains by its nonce: Activity lists a connected
+// wallet's, and links each to its transfer or its receipt.
 
 import { useEffect } from "preact/hooks";
 import { decode, encodeCall, type AbiValue, type DecodedLog } from "../lib/abi.ts";
@@ -28,80 +29,19 @@ import type { BurnRecord, Hex, RunStep } from "../lib/records-types.ts";
 import { request, SubstrateClient, type Endpoint } from "../lib/rpc.ts";
 import { decodeTimestampInherent } from "../lib/scale.ts";
 import { FAST_CAP, type Dir, type Speed } from "./facts.ts";
+import type { CheckKey, CheckState, LiveTransfer } from "./model.ts";
 import { Box, useBox } from "./store.ts";
 
 // ---------------------------------------------------------------------------------------------
-// Live transfers
+// Live transfers: their shapes are model.ts's
 
-/** The five checks of a mint, in the contracts' order: the light client's two, then BridgeMinter's three. */
-export type CheckKey = "header" | "sigs" | "proof" | "commit" | "nonce";
-export type CheckState = "waiting" | "checking" | "passed" | "failed";
+export type { BurnTransfer, CheckKey, CheckState, Failure, LiveTransfer, LockTransfer, MintRoute, Note, SentTx } from "./model.ts";
 
 export function waitingChecks(): Record<CheckKey, CheckState> {
   return { header: "waiting", sigs: "waiting", proof: "waiting", commit: "waiting", nonce: "waiting" };
 }
 
-/**
- * A transaction the visitor sends: asked for in the wallet, sent (the wallet returned its hash),
- * then mined. Times are ms since the epoch; `minedAt` is its block's timestamp.
- */
-export type SentTx =
-  | { stage: "asking" }
-  | { stage: "sent"; hash: Hex; sentAt: number }
-  | { stage: "mined"; hash: Hex; sentAt: number; block: number; minedAt: number; gasUsed: number };
-
-interface Common {
-  /** The page's #/tx/<id>: letters, digits and dashes, and never a lock's or a burn's (lock-1, burn-0…). */
-  id: string;
-  /** Base units, 14 decimals: tPOT and wtPOT alike. */
-  amount: bigint;
-  /** The address paid on the other chain: the sender's own, today. */
-  recipient: Hex;
-  /** When the visitor confirmed the review: the transfer's clock starts here. */
-  startedAt: number;
-  /** When its last step finished. */
-  doneAt: number | null;
-}
-
-/** V3 to Sepolia: the lock, V3's finality of its block, the proof built and checked here, the mint. */
-export interface LockTransfer extends Common {
-  dir: "in";
-  lock: SentTx;
-  /** The vault's nonce for this lock, from its Locked log. */
-  nonce: number | null;
-  commitment: Hex | null;
-  /** The finalized block the proofs are read at, and the signatures that finalize it. `at`: when V3 finalized it. */
-  finality: { block: number; hash: Hex; setId: number; signatures: number; authorities: number; at: number } | null;
-  /** Each check as this browser runs it; `builtAt` once all five passed (the nonce passes with the dry run of importAndMint). */
-  proof: { checks: Record<CheckKey, CheckState>; builtAt: number | null };
-  /** null until the visitor is asked to sign the mint. */
-  mint: SentTx | null;
-  /** The wallet refused the lock (nothing was sent), or a storage proof did not check out (the lock stays in the vault). `at` stops the card's clock. */
-  failure: { reason: "rejected" | "proof"; at: number } | null;
-}
-
-/** Sepolia to V3: the burn, its confirmations or Sepolia's finality, then the committee's release. */
-export interface BurnTransfer extends Common {
-  dir: "back";
-  /** How the watcher releases it: after 3 confirmations (fast) or after Sepolia's finality (standard). */
-  speed: Speed;
-  /** Fast was asked for, but the fast budget was in use: released the standard way. */
-  fallback: boolean;
-  burn: SentTx;
-  /** From BurnRequested. */
-  burnNonce: number | null;
-  burnId: Hex | null;
-  /** Sepolia blocks on top of the burn's, whether its block is final, and when the burn qualified for the release. */
-  depth: { confirmations: number; final: boolean; qualifiedAt: number | null };
-  /** The committee's approvals on V3, 2 of 3 to release; `at` is the release block's timestamp. */
-  release: { approvals: number; open: { extrinsic: Hex; block: number } | null; run: { extrinsic: Hex; block: number } | null; at: number | null };
-  /** The wallet refused the burn: nothing was burned. `at` stops the card's clock. */
-  failure: { reason: "rejected"; at: number } | null;
-}
-
-export type LiveTransfer = LockTransfer | BurnTransfer;
-
-/** The transfers this tab follows, by id. Kept in memory: a reload forgets them. */
+/** The transfers this browser follows, by id: the journal's, read back when the page loads, and those it starts. */
 export const transfers = new Box<ReadonlyMap<string, LiveTransfer>>(new Map());
 
 export function putTransfer(t: LiveTransfer): void {
@@ -115,9 +55,9 @@ export function updateTransfer(id: string, fn: (t: LiveTransfer) => LiveTransfer
   });
 }
 
-export const isDone = (t: LiveTransfer): boolean => (t.dir === "in" ? t.mint?.stage === "mined" : t.release.run !== null);
+export const isDone = (t: LiveTransfer): boolean => (t.dir === "in" ? t.mint?.stage === "mined" : t.release.released);
 
-/** What the transfer screen's buttons ask for. Unset in this build: the code that sends sets them. */
+/** What the transfer screen's buttons ask for. sends.ts sets them when the app starts. */
 export type TransferAction = "retry" | "sign" | "speedUp";
 export const transferActions: Partial<Record<TransferAction, (id: string) => void>> = {};
 
@@ -125,6 +65,17 @@ export const transferActions: Partial<Record<TransferAction, (id: string) => voi
 export function nonceOf(id: string): { dir: Dir; n: number } | null {
   const m = /^(lock|burn)-(0|[1-9]\d{0,8})$/.exec(id);
   return m ? { dir: m[1] === "lock" ? "in" : "back", n: Number(m[2]) } : null;
+}
+
+/** The lock's or the burn's nonce a live transfer goes by on the chains, once its receipt gave it. */
+export const chainIdOf = (t: LiveTransfer): string | null =>
+  t.dir === "in" ? (t.nonce === null ? null : `lock-${t.nonce}`) : t.burnNonce === null ? null : `burn-${t.burnNonce}`;
+
+/** The live transfer that follows lock-<n> or burn-<n>, if this browser follows it. */
+export function followerOf(id: string): LiveTransfer | null {
+  if (!nonceOf(id)) return null;
+  for (const t of transfers.get().values()) if (chainIdOf(t) === id) return t;
+  return null;
 }
 
 /** The way a transfer goes, for the chain the wallet should be on: a live one, a replay, or a lock or a burn. */
@@ -203,11 +154,13 @@ export interface BurnRun {
 export const FAST_RUN = { burn: 1, mined: 24, opened: 78, ran: 108 } as const;
 
 /**
- * Burn 0, Standard, Oct 20: Sepolia's finality took about 14 min (README, Known limits: "about 13 to
- * 15 minutes"), about 70 blocks at 12 s; about 20 min in all (rows 47 to 51), so the release came
- * about 6 min after finality. The approvals' own times are in the records.
+ * Burn 0, Standard, Oct 20, released by hand before the watcher existed: its block at 12:52:12,
+ * final about 16.6 min later by Sepolia's epoch rule (a block is final once the third epoch after
+ * its own starts), about 83 blocks of 12 s, then about 3 min of a person running the release tool;
+ * 20 min from signing the burn to the release (rows 47 to 51). The approvals' own times are in the
+ * records. With the watcher, Standard is about 17 min (facts.ts, TIME).
  */
-export const STD_RUN = { burn: 0, finality: 840, total: 1200, blocks: 70, finLabel: "≈ 14 min", relLabel: "≈ 6 min" } as const;
+export const STD_RUN = { burn: 0, finality: 996, total: 1200, blocks: 83, finLabel: "≈ 17 min", relLabel: "≈ 3 min, by hand" } as const;
 
 /**
  * Lock 1, Oct 20: the timed run, which the way in's replay plays. The records give it while it is
@@ -630,6 +583,10 @@ async function readBurn(n: number, last: ChainBurn | null): Promise<ChainBurn | 
   ]);
   return { ...x, released: got(released) ?? x.released, at: got(at) ?? x.at, heads: got(heads) ?? x.heads };
 }
+
+// What the sends read the same way: a lock by its nonce (Finish mint), a lock's mint (one that
+// someone else sent), a burn by its nonce, a V3 block's time and Sepolia's heads.
+export { burnLog as findBurn, lockLog as findLock, mintOf as findMint, sepoliaHeads, v3Time as v3BlockTime };
 
 /** What the chains said of each lock and burn, by id. Kept across pages: a visit back shows the last read while it reads again. */
 export const chainReads = new Box<ReadonlyMap<string, ChainRead>>(new Map());

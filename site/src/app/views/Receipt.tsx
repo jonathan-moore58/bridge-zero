@@ -13,6 +13,7 @@ import { useBox } from "../store.ts";
 import {
   FAST_RUN,
   STD_RUN,
+  followerOf,
   isDone,
   nonceOf,
   recordedBurn,
@@ -50,6 +51,10 @@ interface InReceipt extends Common {
   lockBlock: number;
   /** null when used(nonce) says minted but the mint's log could not be read yet; `gas` null when its receipt could not. */
   mint: { tx: Hex; block: number; gas: number | null } | null;
+  /** The mint was mint(p) at a block the light client held already (true), importAndMint (false), or not known (null). */
+  held: boolean | null;
+  /** A self-relay's transactions before the mint, which imported V3's set changes the light client lacked (block 0: not read). */
+  relayed: { tx: Hex; block: number }[];
   facts: CheckFacts;
   /** Seconds: lock, finality, proofs and mint, and the whole, when the run was timed. */
   timing: { parts: readonly [number, number, number, number]; total: number } | null;
@@ -91,6 +96,8 @@ function lockReceipt(r: LockRun, label: string): InReceipt {
     lockTx: r.lockTx,
     lockBlock: r.lockBlock,
     mint: { tx: r.mintTx, block: r.mintBlock, gas: r.mintGas },
+    held: false,
+    relayed: [],
     facts: factsOf(r),
     timing: s ? { parts: [s.lock, s.finality, s.proofs, s.mint], total: s.lock + s.finality + s.proofs + s.mint } : null,
     // Lock 0 was sent at 09:15, and BridgeMinter created at 21:31 the same day (README, row 24).
@@ -175,20 +182,24 @@ function liveReceipt(x: LiveTransfer): Receipt | null {
       lockTx: lock.hash,
       lockBlock: lock.block,
       mint: { tx: mint.hash, block: mint.block, gas: mint.gasUsed },
+      // The block it proved the lock at carries the signatures an import counted, or none: mint(p) imports nothing.
+      held: mint.gasUsed === null || !fin ? null : fin.signatures === null,
+      relayed: x.relayed.map((r) => ({ tx: r.hash, block: r.block })),
       facts: liveFacts(x),
+      // Finish mint: the lock came before this page followed it, so the transfer is not timed.
       timing:
-        fin && built !== null
+        fin && built !== null && !x.resumed
           ? {
               parts: [sec(lock.sentAt, lock.minedAt), sec(lock.minedAt, fin.at), sec(fin.at, built), sec(built, end)],
               total: sec(lock.sentAt, end),
             }
           : null,
-      note: null,
+      note: x.resumed ? `Lock ${x.nonce ?? ""} was made on ${day(lock.minedAt)}, before this page followed it, and minted on ${day(mint.minedAt)}. A lock does not expire.` : null,
     };
   }
   const { burn, release, depth } = x;
   const run = release.run;
-  if (burn.stage !== "mined" || !run) return null;
+  if (burn.stage !== "mined" || !release.released) return null;
   const end = release.at ?? x.doneAt ?? burn.minedAt;
   const sec = (from: number, to: number) => Math.max(0, (to - from) / 1000);
   const q = depth.qualifiedAt;
@@ -205,7 +216,7 @@ function liveReceipt(x: LiveTransfer): Receipt | null {
     burnBlock: burn.block,
     burnId: x.burnId,
     open: release.open ? { tx: release.open.extrinsic, block: release.open.block } : null,
-    run: { tx: run.extrinsic, block: run.block },
+    run: run ? { tx: run.extrinsic, block: run.block } : null,
     fast:
       x.speed === "fast"
         ? {
@@ -243,6 +254,9 @@ function chainLockReceipt(x: ChainLock, authorities: number | null): InReceipt {
     lockTx: x.tx,
     lockBlock: x.block,
     mint: x.mint ? { tx: x.mint.tx, block: x.mint.block, gas: x.mint.gasUsed } : null,
+    // The mint's receipt read: a HeaderImported of its block in it is importAndMint's; none, mint(p)'s.
+    held: x.mint && x.mint.gasUsed !== null ? x.mint.final.block === null : null,
+    relayed: [],
     facts: {
       finalBlock: f?.block ?? null,
       finalHash: f?.hash ?? null,
@@ -374,6 +388,17 @@ function InMain({ m, whose }: { m: InReceipt; whose: string }) {
             <Addr full={m.lockTx} href={nodeConsoleBlock(m.lockBlock)} label="lock transaction" cls="addr--tx" />
           </dd>
         </div>
+        {m.relayed.map((r, i) => (
+          <div class="kv" key={r.tx}>
+            <dt class="kv__k kv__stack">
+              Set changes{m.relayed.length > 1 ? ` ${i + 1}` : ""}
+              <span class="kv__small">{r.block ? `Sepolia #${num(r.block)}` : "Sepolia"}</span>
+            </dt>
+            <dd class="kv__v">
+              <Addr full={r.tx} href={etherscanTx(r.tx)} label="set changes imported" cls="addr--tx" />
+            </dd>
+          </div>
+        ))}
         {m.mint ? (
           <>
             <div class="kv">
@@ -575,7 +600,7 @@ function ReceiptScreen({ m, me }: { m: Receipt; me: string | null }) {
           <span class="visually-hidden"> to </span> {to.short}
         </p>
         <div class="side">
-          {m.dir === "in" ? <ChecksPanel states={ALL_PASSED} receipt facts={m.facts} /> : <TrustPanel speed={m.speed} fallback={m.fallback} members={null} />}
+          {m.dir === "in" ? <ChecksPanel states={ALL_PASSED} receipt facts={m.facts} held={m.held} /> : <TrustPanel speed={m.speed} fallback={m.fallback} members={null} />}
         </div>
       </section>
       <section class="card card--lit rccard" aria-labelledby="rc-title">
@@ -637,6 +662,9 @@ export function ReceiptView({ route }: { route: Route }) {
     const m = liveReceipt(live);
     return m ? <ReceiptScreen m={m} me={me} /> : <NotFound what="receipt" id={id} />;
   }
+  // A lock or a burn this browser followed: its receipt is the live one, with its own times.
+  const follower = followerOf(id);
+  if (follower) return <Redirect to={`#/receipt/${follower.id}`} />;
   const m = recordedReceipt(id, route.q.get("speed"));
   if (m) return <ReceiptScreen m={m} me={me} />;
   // Any other lock or burn is read from its chain: Activity lists a connected wallet's own.

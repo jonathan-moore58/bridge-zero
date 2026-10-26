@@ -1,7 +1,8 @@
-// Activity: the recorded runs of the project's test address, always listed, and with a wallet
-// connected, that address's own locks and burns, read live and read-only: the vault's Locked events
-// on V3 and BridgeMinter's BurnRequested events on Sepolia, each with its status (used(nonce) on
-// Sepolia, released(burnId) on V3).
+// Activity: the recorded runs of the project's test address, always listed; the transfers this
+// browser started, from its journal, each linked to its live screen; and with a wallet connected,
+// that address's own locks and burns, read live and read-only: the vault's Locked events on V3 and
+// BridgeMinter's BurnRequested events on Sepolia, each with its status (used(nonce) on Sepolia,
+// released(burnId) on V3).
 
 import { useEffect } from "preact/hooks";
 import { decode, encodeCall, type AbiValue, type DecodedLog } from "../../lib/abi.ts";
@@ -27,7 +28,8 @@ import { decodeTimestampInherent } from "../../lib/scale.ts";
 import { SPEED_NAME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
 import type { Route } from "../router.ts";
 import { Box, useBox } from "../store.ts";
-import { Chip, Icon, Mark, fmt, num, secs, short } from "../ui.tsx";
+import { chainIdOf, isDone, transfers, type LiveTransfer } from "../transfers.ts";
+import { Chip, Icon, Mark, dur, fmt, num, secs, short } from "../ui.tsx";
 import { wallet } from "../wallet.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -362,7 +364,7 @@ function refresh(address: string): void {
 // ---------------------------------------------------------------------------------------------
 // Rows
 
-type Status = "minted" | "released" | "locked" | "progress" | "unread";
+type Status = "minted" | "released" | "locked" | "progress" | "unread" | "failed";
 type Group = "action" | "progress" | "done";
 
 interface Row {
@@ -378,11 +380,13 @@ interface Row {
   took: string;
   tookTitle: string | null;
   speed: Speed | null;
-  /** Read from the chains just now; otherwise from the records. */
+  /** Read from the chains just now, or followed by this browser; otherwise from the records. */
   live: boolean;
+  /** This browser's own page for it, when it follows the transfer: its live screen or its receipt. */
+  href: string | null;
 }
 
-const GROUP: Record<Status, Group> = { minted: "done", released: "done", locked: "action", progress: "progress", unread: "progress" };
+const GROUP: Record<Status, Group> = { minted: "done", released: "done", locked: "action", progress: "progress", unread: "progress", failed: "action" };
 
 /** Each status's chip: the badge kind, its text and its icon. */
 const STATUS: Record<Status, readonly [string, string, string]> = {
@@ -391,6 +395,7 @@ const STATUS: Record<Status, readonly [string, string, string]> = {
   locked: ["needs", "Locked, not minted", "dot"],
   progress: ["progress", "In progress", "dot"],
   unread: ["muted", "Could not read", "i-server"],
+  failed: ["revert", "Not sent", "i-alert"],
 };
 
 const GROUPS: readonly (readonly [Group, string])[] = [
@@ -414,6 +419,37 @@ function runRow(r: Run): Row {
     tookTitle: r.tookTitle,
     speed: r.speed,
     live: false,
+    href: null,
+  };
+}
+
+/**
+ * A transfer of this browser's journal. Before its receipt gives a nonce it goes by its own id; then
+ * by its lock's or its burn's, the row the chains' reads give it too. A lock on chain whose mint
+ * waits for the visitor needs action (Finish mint); one that was never sent too (Not sent).
+ */
+function journalRow(t: LiveTransfer): Row {
+  const chainId = chainIdOf(t);
+  const lock = t.dir === "in";
+  const n = lock ? t.nonce : t.burnNonce;
+  const done = isDone(t);
+  const waitsForYou = lock && n !== null && !done && (t.failure !== null || (t.mint === null && t.note === null && t.proof.builtAt !== null));
+  const status: Status = done ? (lock ? "minted" : "released") : t.failure && n === null ? "failed" : waitsForYou ? "locked" : "progress";
+  const end = lock ? (t.mint?.stage === "mined" ? t.mint.minedAt : null) : t.release.at;
+  return {
+    id: chainId ?? t.id,
+    dir: t.dir,
+    title: n !== null ? `${lock ? "Lock" : "Burn"} ${n}` : `New ${lock ? "lock" : "burn"}`,
+    nonce: n ?? Number.MAX_SAFE_INTEGER,
+    amount: tok(t.amount),
+    status,
+    when: dayTime(t.startedAt),
+    at: t.startedAt,
+    took: done && end !== null && !(lock && t.resumed) ? dur(Math.max(0, (end - t.startedAt) / 1000)) : "",
+    tookTitle: done ? "Timed in this browser, from sending to the end" : null,
+    speed: t.dir === "back" ? t.speed : null,
+    live: true,
+    href: done ? `#/receipt/${t.id}` : `#/tx/${t.id}`,
   };
 }
 
@@ -433,6 +469,7 @@ function liveRows(f: Found): Row[] {
       tookTitle: null,
       speed: null,
       live: true,
+      href: null,
     };
   });
   const burns = f.burns.items.map((b): Row => {
@@ -451,6 +488,7 @@ function liveRows(f: Found): Row[] {
       tookTitle: null,
       speed: null,
       live: true,
+      href: null,
     };
   });
   return [...locks, ...burns];
@@ -483,8 +521,12 @@ function newestFirst(rows: Row[]): Row[] {
   });
 }
 
-/** The recorded runs, each confirmed by a live read of the same nonce when there is one, and the address's other transfers. */
-function allRows(mine: Found | null): { rows: Row[]; own: number } {
+/**
+ * The recorded runs, each confirmed by a live read of the same nonce when there is one, the
+ * address's other transfers, and this browser's own (`journal`): those link to their live page,
+ * and the chains have the last word on whether they are done.
+ */
+function allRows(mine: Found | null, journal: Row[]): { rows: Row[]; own: number } {
   const live = mine ? liveRows(mine) : [];
   const recorded = RUNS.map((r) => {
     const row = runRow(r);
@@ -492,7 +534,14 @@ function allRows(mine: Found | null): { rows: Row[]; own: number } {
     return l && l.status !== "unread" ? { ...row, status: l.status, live: true } : row;
   });
   const rest = live.filter((l) => !recorded.some((r) => r.id === l.id));
-  return { rows: newestFirst([...rest, ...recorded]), own: live.length };
+  const rows = [...rest, ...recorded];
+  for (const j of journal) {
+    const i = rows.findIndex((r) => r.id === j.id);
+    const r = rows[i];
+    if (!r) rows.push(j);
+    else rows[i] = { ...j, status: r.status === "minted" || r.status === "released" ? r.status : j.status };
+  }
+  return { rows: newestFirst(rows), own: live.length + journal.filter((j) => !live.some((l) => l.id === j.id)).length };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -503,10 +552,17 @@ function ActRow({ x, connected }: { x: Row; connected: boolean }) {
   const to = toOf(x.dir);
   const s = STATUS[x.status];
   const action = x.status === "locked";
-  const why = action ? "Your tPOT is in the vault. The mint hasn't been sent." : x.status === "unread" ? `Could not read whether it was ${x.dir === "in" ? "minted" : "released"}.` : null;
-  // Done: its receipt. Otherwise its transfer screen, where Finish mint leads, as in the prototype. Both
-  // read a lock or a burn by this id from its chain when this tab does not follow it and the records lack it.
-  const href = x.status === "minted" || x.status === "released" ? `#/receipt/${x.id}` : `#/tx/${x.id}`;
+  const why = action
+    ? "Your tPOT is in the vault. The mint hasn't been sent."
+    : x.status === "unread"
+      ? `Could not read whether it was ${x.dir === "in" ? "minted" : "released"}.`
+      : x.status === "failed"
+        ? "Nothing was sent. Open it to try again."
+        : null;
+  // This browser's own transfer: its live page. Done: its receipt. Otherwise its transfer screen,
+  // where Finish mint leads, as in the prototype. Both read a lock or a burn by this id from its
+  // chain when this browser does not follow it and the records lack it.
+  const href = x.href ?? (x.status === "minted" || x.status === "released" ? `#/receipt/${x.id}` : `#/tx/${x.id}`);
   const statusChip =
     x.status === "progress" ? (
       <Chip kind="progress badge--sm" icon="dot">
@@ -642,7 +698,10 @@ export function ActivityView({ route }: { route: Route }) {
   const f = route.q.get("f") ?? "all";
   const d = route.q.get("d") ?? "both";
   const mine = address && cur && cur.address === address ? cur : null;
-  const { rows, own } = allRows(mine);
+  // This browser's transfers for the connected address, from its journal: the page is about that address.
+  const followed = useBox(transfers);
+  const journal = address ? [...followed.values()].filter((t) => t.recipient.toLowerCase() === address).map(journalRow) : [];
+  const { rows, own } = allRows(mine, journal);
   const shown = rows.filter((x) => (f === "all" || GROUP[x.status] === f) && (d === "both" || x.dir === d));
   const counts: Record<"all" | Group, number> = { all: rows.length, action: 0, progress: 0, done: 0 };
   for (const x of rows) counts[GROUP[x.status]]++;

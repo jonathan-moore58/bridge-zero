@@ -9,6 +9,7 @@ import {
   BURN_GAS_FULL,
   CH,
   FAST_CAP,
+  IMPORT_GAS,
   LATER_CHAINS,
   LOCK_CEILING,
   LOCK_COST,
@@ -27,6 +28,7 @@ import {
 } from "../facts.ts";
 import type { NetState } from "../net.ts";
 import type { Route } from "../router.ts";
+import { startBurn, startLock } from "../sends.ts";
 import { Box, useBox } from "../store.ts";
 import { CopyChip, Icon, Mark, Mono, Nb, Tip, announce, closeSheet, fmt, openSheet, short, toast } from "../ui.tsx";
 import { readBalances, switchTo, wallet, walletCode, type WalletState } from "../wallet.ts";
@@ -231,12 +233,17 @@ function openGetEth(dir: Dir, address: string): void {
   });
 }
 
-function ReviewFoot({ k, value }: { k: Facts; value: string }) {
+/** The mint's gas while the light client is `behind` V3's validator set: the mint imports each change first (sends.ts, the self-relay). */
+const mintGas = (behind: number): string => fmt(Number(MINT_GAS) + IMPORT_GAS * behind, 1);
+
+/** `amount`: the field's text, which the sends parse exactly; `value` is how the sheet shows it. */
+function ReviewFoot({ k, value, amount }: { k: Facts; value: string; amount: string }) {
   const inDir = k.dir === "in";
   const [consent, setConsent] = useState(false);
   const confirm = () => {
     closeSheet(true);
-    toast("info", "Sending comes next", "This build stops at the review: the lock, the mint and the burn are wired in the next step.");
+    if (inDir) startLock(amount);
+    else startBurn(amount);
   };
   return (
     <>
@@ -260,9 +267,10 @@ function ReviewFoot({ k, value }: { k: Facts; value: string }) {
   );
 }
 
-function openReview(k: Facts, address: string): void {
+function openReview(k: Facts, address: string, amount: string, net: NetState): void {
   const v = fmt(k.value);
   const inDir = k.dir === "in";
+  const behind = inDir && net.key === "relay" ? net.behind : 0;
   const sumRow = (label: string, c: ChainInfo) => (
     <div class="sum__row">
       <Mark id={c.markId} cls="mark--36" />
@@ -299,9 +307,11 @@ function openReview(k: Facts, address: string): void {
       {step(
         2,
         "Mint on Sepolia",
-        "Your wallet, on Sepolia, after V3 finality and the proof",
+        behind
+          ? `Your wallet, on Sepolia, after V3 finality and the proof · it imports the ${behind === 1 ? "validator-set change" : `${behind} validator-set changes`} the light client lacks first`
+          : "Your wallet, on Sepolia, after V3 finality and the proof",
         <>
-          <Nb>≈ {MINT_GAS} M gas</Nb> <Nb>in Sepolia ETH</Nb>
+          <Nb>≈ {behind ? mintGas(behind) : MINT_GAS} M gas</Nb> <Nb>in Sepolia ETH</Nb>
         </>,
       )}
     </>
@@ -324,7 +334,7 @@ function openReview(k: Facts, address: string): void {
           </>
         ) : (
           <>
-            After Sepolia finality, <Nb>≈ 20 min in all</Nb> · nothing to sign
+            After Sepolia finality, <Nb>{TIME.std[0]} in all</Nb> · nothing to sign
           </>
         ),
         null,
@@ -423,7 +433,7 @@ function openReview(k: Facts, address: string): void {
               <Icon id="i-info" cls="i--14" />
               <span>
                 Fast takes up to 1 tPOT per burn, and up to 1 tPOT in all across fast releases not yet final. If other fast burns are in flight, yours is released
-                the standard way (≈ 20 min).
+                the standard way ({TIME.std[0]}).
               </span>
             </p>
           ) : null}
@@ -431,7 +441,7 @@ function openReview(k: Facts, address: string): void {
         {inDir ? trust : null}
       </div>
     ),
-    foot: <ReviewFoot k={k} value={v} />,
+    foot: <ReviewFoot k={k} value={v} amount={amount} />,
   });
 }
 
@@ -503,7 +513,7 @@ function ProofStrip({ dir }: { dir: Dir }) {
                 <span class="fact__num">
                   <span class="fact__approx">≈</span>20<span class="unit">min</span>
                 </span>
-                <span class="fact__text">from sending the burn to the release, Standard · Oct 20</span>
+                <span class="fact__text">from sending the burn to the release, Standard · Oct 20, released by hand before the watcher</span>
               </a>
             </li>
             <li class="fact">
@@ -575,7 +585,7 @@ interface Action {
   run?: () => void;
 }
 
-function action(k: Facts, w: WalletState, net: NetState, busy: string | null, run: (fn: () => Promise<void>, wait: string) => void): Action {
+function action(k: Facts, f: Form, w: WalletState, net: NetState, busy: string | null, run: (fn: () => Promise<void>, wait: string) => void): Action {
   const { dir, from, to } = k;
   if (busy) return { label: <span>{busy}</span>, hint: "", busy: true, disabled: true };
   if (w.status === "none") {
@@ -638,13 +648,13 @@ function action(k: Facts, w: WalletState, net: NetState, busy: string | null, ru
   return {
     label: (
       <span>
-        {dir === "in" && net.key === "relay" ? "Review: lock now, mint after the relay" : "Review transfer"}
+        Review transfer
         {dir === "back" ? <span class="cta__speed"> · {SPEED_NAME[k.speed]}</span> : null}
       </span>
     ),
     hint: "",
     run: () => {
-      if (w.address) openReview(k, w.address);
+      if (w.address) openReview(k, w.address, f.amount, net);
     },
   };
 }
@@ -675,12 +685,15 @@ function Notice({ k, f, net }: { k: Facts; f: Form; net: NetState }) {
       </>,
     ];
   } else if (k.dir === "in" && net.key === "relay") {
-    const s = net.behind === 1 ? "" : "s";
+    const one = net.behind === 1;
+    // The mint imports what the relayer has not (sends.ts): six calls fit one transaction, so past
+    // five changes it takes more than one.
+    const txs = Math.ceil((net.behind + 1) / 6);
     n = [
       "notice--trust",
       "i-refresh",
-      `A relay is due: ${net.behind} validator-set change${s}`,
-      "You can lock now. Your tPOT stays locked for you, and the mint waits for the relayer's next run, within about 10 min.",
+      `The light client is ${net.behind} validator-set change${one ? "" : "s"} behind V3`,
+      `You can lock and mint now: your mint imports ${one ? "the change" : `the ${net.behind} changes`} first, through Multicall3${txs > 1 ? `, in ${txs} transactions` : ""}, for about ${fmt(IMPORT_GAS * net.behind, 1)} M gas more (≈ ${mintGas(net.behind)} M in all, in Sepolia ETH). Nothing waits for the relayer.`,
     ];
   } else if (k.dir === "in" && net.key === "paused") {
     n = ["notice--revert", "i-alert", "The light client is paused by its admin", "Mints are refused until it resumes. Nothing you hold is affected. Burns still work."];
@@ -721,7 +734,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
   const { from, to } = k;
 
   useEffect(() => {
-    if (route.q.get("review") && k.ready && w.address && !k.wrong && k.value) openReview(k, w.address);
+    if (route.q.get("review") && k.ready && w.address && !k.wrong && k.value) openReview(k, w.address, f.amount, net);
     // Only when the page opens with ?review=1 and the wallet is read.
   }, [query, k.ready]);
 
@@ -740,7 +753,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
       },
     );
   };
-  const a = action(k, w, net, busy, run);
+  const a = action(k, f, w, net, busy, run);
 
   const useMax = () => {
     setForm({ amount: k.max });
@@ -914,7 +927,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               <p class="route__title">
                 <span class="route__kind route__kind--verify">Verified</span> by the light client{" "}
                 {net.key === "ready" || net.key === "relay" ? (
-                  <span class="livechip" title="The light client on Sepolia follows V3: the relayer runs every 10 min">
+                  <span class="livechip" title="Read live: the light client on Sepolia and V3's validator set. When the client is behind, your mint imports V3's changes itself.">
                     Live
                   </span>
                 ) : null}
@@ -934,8 +947,12 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
             <div class="route__titles">
               <p class="route__title">
                 <span class="route__kind route__kind--trust">Trusted:</span> 2-of-3 committee{" "}
-                <span class="livechip livechip--trust" title="The release watcher runs a round every 15 s">
-                  Watcher live
+                {/* This page cannot see whether the watcher runs: a neutral label, not a live one. */}
+                <span
+                  class="badge badge--sm badge--muted"
+                  title="The committee's release watcher sends both approvals. It runs on one machine: while that machine is off or asleep, burns wait until it is back."
+                >
+                  Watcher
                 </span>
               </p>
               <p class="route__sub">
@@ -948,7 +965,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               Two of the three committee members must approve the release on V3. Both speeds are trusted. The amount sets the speed: Fast releases after 3
               Sepolia confirmations, before finality, up to 1 tPOT per burn and up to 1 tPOT in all across fast releases whose burn is not final yet; a larger burn
               goes Standard, after finality. A reorg deeper than 3 blocks could undo a burn on Sepolia after V3 has released, which would break the 1:1 backing.
-              On the testnet one operator holds all three keys. Once sent, a burn cannot be cancelled.
+              On the testnet one operator holds all three keys, and the watcher that sends their approvals runs on one machine: while it is off, burns wait. Once
+              sent, a burn cannot be cancelled.
             </Tip>
             <div class="speed" role="radiogroup" aria-readonly="true" aria-label="Release speed, set by the amount">
               <button class="opt opt--row" type="button" role="radio" id="opt-std" aria-checked={k.speed === "std"} tabIndex={k.speed === "std" ? 0 : -1} onClick={explainSpeed}>
@@ -958,13 +976,13 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                   </span>
                   <span class="opt__title">Standard</span>
                   <span class="opt__time">
-                    ≈ 20<span class="unit">min</span>
+                    ≈ 17<span class="unit">min</span>
                   </span>
                 </span>
                 <span class="opt__meta">
                   <span>Any amount</span>
                 </span>
-                <span class="opt__src">measured Oct 20</span>
+                <span class="opt__src">{TIME.std[1]}</span>
               </button>
               <button
                 class="opt opt--row"

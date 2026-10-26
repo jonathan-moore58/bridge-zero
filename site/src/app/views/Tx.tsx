@@ -8,7 +8,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { etherscanBlock, etherscanTx, nodeConsoleBlock, records } from "../../lib/chains.ts";
 import { checksum } from "../../lib/display.ts";
 import type { Hex } from "../../lib/records-types.ts";
-import { FAST_CAP, MINT_GAS, SPEED_NAME, TIME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
+import { FAST_CAP, IMPORT_GAS, MINT_GAS, SEPOLIA_FINALITY, SPEED_NAME, TIME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
 import type { NetState } from "../net.ts";
 import type { Route } from "../router.ts";
 import { useBox } from "../store.ts";
@@ -17,6 +17,7 @@ import {
   FAST_RUN,
   STD_RUN,
   amountText,
+  followerOf,
   isDone,
   nonceOf,
   recordedBurn,
@@ -36,11 +37,14 @@ import {
   type ChainTransfer,
   type CheckKey,
   type CheckState,
+  type Failure,
   type LiveTransfer,
   type LockRun,
   type LockTransfer,
+  type MintRoute,
   type TransferAction,
 } from "../transfers.ts";
+import { gasText } from "../txmath.ts";
 import { Addr, Chip, Icon, Mark, Nb, announce, clock, dur, fmt, num, secs, short, toast } from "../ui.tsx";
 
 type StepState = "pending" | "active" | "needs" | "done" | "failed" | "stuck";
@@ -84,7 +88,8 @@ interface TxState {
   done: boolean;
   /** The next step waits on the visitor. */
   needs: { action: string; note: string } | null;
-  failed: { reason: "rejected" | "proof"; action: string } | null;
+  /** Why it stopped, the notice's words, the button's, and whether nothing is on chain yet (the amount can change). */
+  failed: { reason: Failure["reason"]; title: string; text: string; action: string; change: boolean } | null;
   /** The mint was sent and is not mined. */
   stuck: { action: string; note: string } | null;
   checks: Record<CheckKey, CheckState>;
@@ -115,6 +120,8 @@ interface Head {
   replayWhen: string | null;
   /** A lock or a burn read from the chains: what was read. */
   note: string | null;
+  /** A note on the card itself: how this mint goes when it imports set changes first. */
+  cardNote: string | null;
   receipt: string;
   facts: CheckFacts;
 }
@@ -151,10 +158,65 @@ const TRUST = {
 } as const satisfies Record<string, Trust>;
 
 const NEEDS = { action: "Switch to Sepolia and sign the mint", note: "Your wallet asks twice: switch network, then sign." };
-const STUCK = { action: "Speed up the mint", note: "Re-signs the same mint at the same nonce, with a higher fee. Only one of the two can be mined." };
+const STUCK = {
+  action: "Speed up the mint",
+  note: "Your wallet's Speed up re-signs the same mint at the same nonce, with a higher fee. Only one of the two can be mined, and either completes this transfer.",
+};
+
+/** What the visitor signs next: the mint, or one transaction of a self-relay that takes several. */
+function needsOf(r: MintRoute | null): { action: string; note: string } {
+  if (!r || r.steps < 2) return NEEDS;
+  return { action: `Switch to Sepolia and sign ${r.step} of ${r.steps}`, note: `Your wallet asks for each of the ${r.steps} transactions in turn, after the one before is mined.` };
+}
+
+/** What the dry run ran, by the mint's path. */
+const DRY: Record<MintRoute["path"], string> = { mint: "mint(p)", head: "importAndMint", change: "importAndMint", selfRelay: "the self-relay" };
+
+/** The card's note for a mint that imports V3's set changes itself instead of waiting for the relayer. */
+function routeNote(r: MintRoute | null): string | null {
+  if (r?.path === "change") {
+    return "V3 changed validator set at the block your lock is proven in, and the light client had not imported it: the mint imports that change in the same call, about 0.5 M gas more than at V3's head. Nobody waits for the relayer.";
+  }
+  if (r?.path !== "selfRelay" || r.imports < 1) return null;
+  const n = r.imports;
+  const txs = r.steps > 1 ? ` in ${r.steps} transactions` : "";
+  const all = r.total !== null ? ` (≈ ${gasText(r.total)} gas in all)` : "";
+  return `The light client lacked V3's newer validator sets: the mint imports ${n === 1 ? "a set change" : `${n} set changes`} first, through Multicall3${txs}, about ${fmt(IMPORT_GAS * n, 1)} M gas more${all}. Nobody waits for the relayer.`;
+}
+
+/** The finality step's line: the block the proofs are read at, its set, and the signatures the import counts when it imports one. */
+function finalLine(f: NonNullable<LockTransfer["finality"]>): string {
+  const set = f.setId !== null ? ` · set ${f.setId}` : "";
+  const sigs = f.signatures !== null && f.authorities !== null ? ` · ${f.signatures} of ${f.authorities} precommits` : "";
+  return `Finalized in block #${num(f.block)}${set}${sigs}`;
+}
+
+/** The card's notice and button for a transfer that stopped, by why, in the words the sends gave it when they said more. */
+function failedOf(f: Failure, dir: Dir, onChain: boolean): NonNullable<TxState["failed"]> {
+  // On the way in, once the lock is on chain what is left to send is the mint.
+  const what = dir === "back" ? "burn" : onChain ? "mint" : "lock";
+  const Was = dir === "back" ? "burned" : onChain ? "sent to Sepolia" : "sent";
+  const after = dir === "in" && onChain ? " Your tPOT stays locked for you; the lock does not expire." : " Try again, or change the amount.";
+  const words: Record<Failure["reason"], readonly [string, string, string]> = {
+    rejected: ["Cancelled in your wallet", `Nothing was ${Was}.${after}`, `Try the ${what} again`],
+    refused: [`${what[0]?.toUpperCase() ?? ""}${what.slice(1)} not sent`, `Nothing was ${Was}.`, `Try the ${what} again`],
+    reverted: [`The ${what} reverted`, `Only its fee was paid.${after}`, `Try the ${what} again`],
+    proof: [
+      "A storage proof didn't check out",
+      "Nothing was sent to Sepolia. Your tPOT stays locked for you; the lock does not expire. Rebuilding reads the proof again at the latest finalized block.",
+      "Rebuild the proof",
+    ],
+    blocked: ["The mint is blocked", "Your tPOT stays locked for you; the lock does not expire.", "Check again"],
+    stopped: ["This page stopped following it", "Nothing on chain changed.", "Follow it again"],
+  };
+  const [title, text, action] = words[f.reason];
+  return { reason: f.reason, title: f.title ?? title, text: f.text ?? text, action, change: !onChain };
+}
 
 /** A mint sent this long ago and still not mined is stuck: the prototype's "sent 5 min ago". */
 const STUCK_AFTER = 5 * 60_000;
+/** A qualified burn with no approval this long is not picked up yet: the watcher's rounds take about 20 s, its checks under a minute. */
+const SLOW_RELEASE = 3 * 60_000;
 
 // The replays' pacing, not measurements: when each check lights inside the measured proof step
 // (seconds from its start), when the second signature is checked, Sepolia's 12 s a block for the
@@ -283,7 +345,7 @@ export function NotFound({ what, id }: { what: "transfer" | "receipt"; id: strin
   const name = id.length > 32 ? short(id, 14, 8) : id;
   // A lock's or a burn's id has been looked for on its chain too.
   const k = nonceOf(id);
-  const where = k ? `this tab, in the records or in ${k.dir === "in" ? "the vault's logs on V3" : "BridgeMinter's logs on Sepolia"}` : "this tab or in the records";
+  const where = k ? `this browser, in the records or in ${k.dir === "in" ? "the vault's logs on V3" : "BridgeMinter's logs on Sepolia"}` : "this browser or in the records";
   return (
     <EmptyCard title={what === "transfer" ? "Transfer not found" : "Receipt not found"}>
       {name ? (
@@ -292,7 +354,7 @@ export function NotFound({ what, id }: { what: "transfer" | "receipt"; id: strin
         </>
       ) : null}
       {what === "transfer"
-        ? "A transfer you start is followed here until you close the tab. The recorded runs are in Activity."
+        ? "A transfer you start is kept in the browser you start it in, and followed here again when the page opens. The recorded runs are in Activity."
         : "A receipt follows a transfer once it is done. The recorded runs and their receipts are in Activity."}
     </EmptyCard>
   );
@@ -336,8 +398,12 @@ function checkValue(key: CheckKey, f: CheckFacts): string | null {
   }
 }
 
-/** The five checks, as a lit rail: the project's signature. */
-export function ChecksPanel({ states, receipt, facts }: { states: Record<CheckKey, CheckState>; receipt: boolean; facts: CheckFacts }) {
+/**
+ * The five checks, as a lit rail: the project's signature. `held`, on a receipt: the mint was mint(p)
+ * at a block the light client held already, whose header and signatures it checked when it took the
+ * block in (null: not known which).
+ */
+export function ChecksPanel({ states, receipt, facts, held = false }: { states: Record<CheckKey, CheckState>; receipt: boolean; facts: CheckFacts; held?: boolean | null }) {
   const passed = CHECKS.filter((c) => states[c.key] === "passed").length;
   return (
     <div class="rail-card">
@@ -348,7 +414,13 @@ export function ChecksPanel({ states, receipt, facts }: { states: Record<CheckKe
         <div>
           <h2 class="rail-card__title">{receipt ? "What was checked" : "What Sepolia checks"}</h2>
           <p class="rail-card__sub">
-            {receipt ? "importAndMint verified all five on Sepolia before it minted." : "Your browser checks each one first. BridgeMinter checks them again, on chain."}
+            {!receipt
+              ? "Your browser checks each one first. BridgeMinter checks them again, on chain."
+              : held === true
+                ? "The light client verified the header and its signatures when it took the block in; mint(p) verified the other three before it minted."
+                : held === null
+                  ? "Verified on Sepolia before the mint, by the light client and BridgeMinter."
+                  : "importAndMint verified all five on Sepolia before it minted."}
           </p>
         </div>
         <span class="rail-card__count">
@@ -494,25 +566,33 @@ function activeFrom(x: Step, since: number, usual: number | undefined, now: numb
   x.p = usual ? Math.min(0.9, Math.max(0, (now - since) / 1000 / usual)) : 0;
 }
 
-function proofLine(k: CheckKey, block: number, sigs: string | null): string {
+/** The proof step's line while check `k` runs; `call`: what the dry run runs (a live plan's path is known only once it is built). */
+function proofLine(k: CheckKey, block: number, sigs: string | null, call = "importAndMint"): string {
   if (k === "header") return `Reading block #${num(block)} from V3`;
   if (k === "sigs") return `Checking validator signatures${sigs ? ` · ${sigs}` : ""}`;
   if (k === "proof") return "Walking the vault's storage proof";
   if (k === "commit") return "Recomputing your lock's commitment";
-  return "Dry run of importAndMint on Sepolia · checks the nonce";
+  return `Dry run of ${call} on Sepolia · checks the nonce`;
 }
 
-/** Standard: the blocks so far against the ≈ 70 of Sepolia's finality, and the minutes left. */
-function countdown(prefix: string, blocks: number, p: number): Line {
-  const left = Math.max(1, Math.ceil(((1 - p) * STD_RUN.finality) / 60));
-  return [prefix, { nb: `${blocks} of ≈ ${STD_RUN.blocks} blocks` }, " · ", { nb: `≈ ${left} min left` }];
+/** Standard: the blocks so far against the ≈ `of` blocks of Sepolia's finality, and the minutes left of its `seconds`. */
+function countdown(prefix: string, blocks: number, of: number, seconds: number): Line {
+  const p = Math.min(1, blocks / of);
+  const left = Math.max(1, Math.ceil(((1 - p) * seconds) / 60));
+  return [prefix, { nb: `${blocks} of ≈ ${of} blocks` }, " · ", { nb: `≈ ${left} min left` }];
 }
 
-const finalityAhead = (prefix: string) => `${prefix}${STD_RUN.finLabel} · ${TIME.std[0]} in all · ${TIME.std[1]} (burn ${STD_RUN.burn})`;
-const releaseAhead = (fast: boolean) => (fast ? "After 3 confirmations · nothing to sign" : `${STD_RUN.relLabel} after finality, ${TIME.std[1]} · nothing to sign`);
+/** A live burn's countdown, against Sepolia's finality as measured. */
+const liveCountdown = (prefix: string, blocks: number): Line => countdown(prefix, blocks, SEPOLIA_FINALITY.blocks, SEPOLIA_FINALITY.median);
+
+const finalityAhead = (prefix: string) => `${prefix}Sepolia finality, ${SEPOLIA_FINALITY.range} · ${TIME.std[0]} in all, ${TIME.std[1]}`;
+const releaseAhead = (fast: boolean) => (fast ? "After 3 confirmations · nothing to sign" : "About a minute after finality, by the watcher · nothing to sign");
+/** Burn 0's, on its replay: released by hand, before the watcher existed. */
+const RECORDED_FINALITY = `${STD_RUN.finLabel} · ${dur(STD_RUN.total)} in all, released by hand (burn ${STD_RUN.burn}, Oct 20)`;
+const RECORDED_RELEASE = `${STD_RUN.relLabel} after finality · nothing to sign`;
 
 function approvalLine(a: number, openBlock: number | null): string {
-  if (a <= 0) return "0 of 2 approvals · the watcher picked up the burn";
+  if (a <= 0) return "0 of 2 approvals so far";
   if (a === 1) return `1 of 2 approvals · member 1 ${openBlock !== null ? `opened it in #${num(openBlock)}` : "opened it"}`;
   return "2 of 2 approvals · member 2 ran it";
 }
@@ -576,6 +656,7 @@ function replayHead(r: Replay): Head {
       fallback: false,
       replayWhen: when(r.run.lockAt),
       note: null,
+      cardNote: null,
       receipt: "#/receipt/replay-in",
       facts: factsOf(r.run),
     };
@@ -588,6 +669,7 @@ function replayHead(r: Replay): Head {
     fallback: false,
     replayWhen: when(r.run.burnAt),
     note: null,
+    cardNote: null,
     receipt: `#/receipt/replay-back?speed=${r.speed}`,
     facts: NO_FACTS,
   };
@@ -682,8 +764,8 @@ function replayBack(b: BurnRun, speed: Speed, w: BackPlan, t: number): TxState {
       mid.st === "done"
         ? `Final · Sepolia finalized past #${num(b.burnBlock)}`
         : mid.st === "active"
-          ? countdown("", Math.round(mid.p * STD_RUN.blocks), mid.p)
-          : finalityAhead("");
+          ? countdown("", Math.round(mid.p * STD_RUN.blocks), STD_RUN.blocks, STD_RUN.finality)
+          : RECORDED_FINALITY;
     mid.bar = mid.st === "active" ? mid.p : null;
   }
 
@@ -696,7 +778,9 @@ function replayBack(b: BurnRun, speed: Speed, w: BackPlan, t: number): TxState {
       ? `${amt} tPOT paid to ${short(checksum(b.payee))} · V3 #${num(b.run.block)}${fast ? ` · ${w.ran - w.mined} s after the burn's block` : ""}`
       : R.st === "active"
         ? approvalLine(a, b.open?.block ?? null)
-        : releaseAhead(fast);
+        : fast
+          ? releaseAhead(true)
+          : RECORDED_RELEASE;
   if (R.st === "done") R.tx = { hash: b.run.tx, href: nodeConsoleBlock(b.run.block), label: "release extrinsic" };
 
   const members: MemberState[] = [
@@ -719,6 +803,7 @@ function liveHead(x: LiveTransfer): Head {
     fallback: x.dir === "back" && x.fallback,
     replayWhen: null,
     note: null,
+    cardNote: x.dir === "in" ? routeNote(x.route) : null,
     receipt: `#/receipt/${x.id}`,
     facts: x.dir === "in" ? liveFacts(x) : NO_FACTS,
   };
@@ -726,32 +811,40 @@ function liveHead(x: LiveTransfer): Head {
 
 function liveIn(x: LockTransfer, now: number): TxState {
   const amt = fmt(toTokens(x.amount));
-  const { lock, mint, finality: fin, failure } = x;
-  const locked = lock.stage === "mined" ? lock : null;
+  const { lock, mint, finality: fin, failure, route, note } = x;
+  const locked = lock.stage === "mined" && x.nonce !== null ? lock : null;
+  const minted = mint?.stage === "mined" ? mint : null;
+  // Stopped before the lock is on chain: not sent, or reverted.
+  const early = failure !== null && locked === null;
 
   const L = step("lock", "Lock on Portaldot V3", TRUST.lock);
-  if (lock.stage !== "asking") L.tx = { hash: lock.hash, href: locked ? nodeConsoleBlock(locked.block) : undefined, label: "lock transaction" };
-  if (failure?.reason === "rejected") {
+  if (lock.stage !== "asking") L.tx = { hash: lock.hash, href: lock.stage === "mined" ? nodeConsoleBlock(lock.block) : undefined, label: "lock transaction" };
+  if (early) {
     L.st = "failed";
-    L.title = "Lock not sent";
+    if (failure.reason === "reverted") L.title = "Lock reverted";
+    else if (failure.reason !== "stopped") L.title = "Lock not sent";
   } else if (lock.stage === "asking") {
-    L.st = "needs";
-    L.sub = "Confirm the lock in your wallet";
+    L.st = note && !note.wallet ? "active" : "needs";
+    L.sub = note?.text ?? "Confirm the lock in your wallet";
   } else if (!locked) {
     activeFrom(L, x.startedAt, MEASURED?.lock, now);
-    L.sub = "Sent · waiting for a V3 block";
+    L.sub = note?.text ?? "Sent · waiting for a V3 block";
   } else {
     L.st = "done";
-    L.sub = `${amt} tPOT locked in V3 block #${num(locked.block)}${x.nonce !== null ? ` · nonce ${x.nonce}` : ""}`;
-    L.time = span(x.startedAt, locked.minedAt);
+    L.sub = `${amt} tPOT locked in V3 block #${num(locked.block)} · nonce ${x.nonce}`;
+    // Finish mint: the lock came before this page, so it is not timed.
+    if (!x.resumed) L.time = span(x.startedAt, locked.minedAt);
   }
 
   const F = step("final", "V3 finality", TRUST.final);
   if (fin) {
     F.st = "done";
-    F.sub = `Finalized in block #${num(fin.block)} · set ${fin.setId} · ${fin.signatures} of ${fin.authorities} precommits`;
+    F.sub = finalLine(fin);
     F.link = { href: nodeConsoleBlock(fin.block), text: `#${num(fin.block)}` };
-    if (locked) F.time = span(locked.minedAt, fin.at);
+    if (locked && !x.resumed) F.time = span(locked.minedAt, fin.at);
+  } else if (minted) {
+    F.st = "done";
+    F.sub = "Final · the mint proved the lock";
   } else if (locked) {
     activeFrom(F, locked.minedAt, MEASURED?.finality, now);
     F.sub = `GRANDPA is finalizing #${num(locked.block)}${MEASURED ? ` · usually ${MEASURED.finality} s` : ""}`;
@@ -762,42 +855,56 @@ function liveIn(x: LockTransfer, now: number): TxState {
   if (failure?.reason === "proof") {
     P.st = "failed";
     P.title = "Proof didn't check out";
+  } else if (failure?.reason === "blocked") {
+    P.st = "failed";
+    P.title = "Mint blocked";
   } else if (CHECKS.every((c) => checks[c.key] === "passed")) {
     P.st = "done";
-    P.sub = "5 of 5 checks passed · dry run of importAndMint passed";
+    P.sub = minted && x.proof.builtAt === null ? "5 of 5 checked on chain by the mint" : `5 of 5 checks passed · dry run of ${route ? DRY[route.path] : "the mint"} passed`;
     if (fin && x.proof.builtAt !== null) P.time = span(fin.at, x.proof.builtAt);
   } else if (fin) {
     activeFrom(P, fin.at, MEASURED?.proofs, now);
     const k = CHECKS.find((c) => checks[c.key] === "checking")?.key ?? CHECKS.find((c) => checks[c.key] !== "passed")?.key ?? "nonce";
-    P.sub = proofLine(k, fin.block, null);
+    P.sub = note && !mint ? note.text : proofLine(k, fin.block, null, "the mint");
   } else P.sub = `${MEASURED ? `≈ ${MEASURED.proofs} s · ` : ""}7 requests to V3`;
 
   const M = step("mint", "Mint on Sepolia", TRUST.mint);
   let needs: TxState["needs"] = null;
   let stuck: TxState["stuck"] = null;
-  const minted = mint?.stage === "mined" ? mint : null;
   const built = x.proof.builtAt ?? now;
+  const of = route && route.steps > 1 ? ` ${route.step} of ${route.steps}` : "";
+  const gas = route?.gas != null ? `≈ ${gasText(route.gas)} gas` : `≈ ${MINT_GAS} M gas`;
   if (mint && mint.stage !== "asking") M.tx = { hash: mint.hash, href: etherscanTx(mint.hash), label: "mint transaction" };
-  if (P.st !== "done") M.sub = `Your wallet, on Sepolia · ≈ ${MINT_GAS} M gas`;
+  if (minted) {
+    M.st = "done";
+    M.sub = `${amt} wtPOT minted · Sepolia #${num(minted.block)}${minted.gasUsed !== null ? ` · ${num(minted.gasUsed)} gas` : ""}`;
+    if (x.proof.builtAt !== null) M.time = span(x.proof.builtAt, minted.minedAt);
+  } else if (failure?.reason === "refused" && locked) {
+    // The mint's own check refused it (Sepolia ETH for its gas): the lock stays.
+    M.st = "failed";
+    M.title = "Mint not sent";
+  } else if (P.st !== "done" || failure) M.sub = `Your wallet, on Sepolia · ${gas}`;
   else if (!mint) {
-    M.st = "needs";
-    M.sub = NEEDS.action;
-    needs = NEEDS;
+    if (note) {
+      // Switching the wallet's network, or checking the plan again before the wallet asks.
+      M.st = note.wallet ? "needs" : "active";
+      M.sub = note.text;
+    } else {
+      M.st = "needs";
+      M.sub = route ? `${route.title} · ${gas}` : NEEDS.action;
+      needs = needsOf(route);
+    }
   } else if (mint.stage === "asking") {
-    activeFrom(M, built, MEASURED?.mint, now);
-    M.sub = "Confirm the mint in your wallet";
-  } else if (mint.stage === "sent" && now - mint.sentAt >= STUCK_AFTER) {
+    M.st = "needs";
+    M.sub = `Confirm${of || " the mint"} in your wallet · ${gas}`;
+  } else if (now - mint.sentAt >= STUCK_AFTER) {
     M.st = "stuck";
     M.p = 0.9;
     M.sub = `Not mined yet · sent ${Math.floor((now - mint.sentAt) / 60_000)} min ago`;
     stuck = STUCK;
-  } else if (mint.stage === "sent") {
+  } else {
     activeFrom(M, built, MEASURED?.mint, now);
-    M.sub = `Sent · waiting for the receipt${MEASURED ? ` · usually ${MEASURED.mint} s` : ""}`;
-  } else if (minted) {
-    M.st = "done";
-    M.sub = `${amt} wtPOT minted · Sepolia #${num(minted.block)} · ${num(minted.gasUsed)} gas`;
-    if (x.proof.builtAt !== null) M.time = span(x.proof.builtAt, minted.minedAt);
+    M.sub = note?.text ?? `Sent${of} · waiting for the receipt${MEASURED ? ` · usually ${MEASURED.mint} s` : ""}`;
   }
 
   const end = x.doneAt ?? failure?.at ?? minted?.minedAt ?? now;
@@ -806,7 +913,7 @@ function liveIn(x: LockTransfer, now: number): TxState {
     t: Math.max(0, (end - x.startedAt) / 1000),
     done: minted !== null,
     needs,
-    failed: failure ? { reason: failure.reason, action: failure.reason === "proof" ? "Rebuild the proof" : "Try the lock again" } : null,
+    failed: failure ? failedOf(failure, "in", locked !== null) : null,
     stuck,
     checks,
     members: NO_MEMBERS,
@@ -815,21 +922,22 @@ function liveIn(x: LockTransfer, now: number): TxState {
 
 function liveBack(x: BurnTransfer, now: number): TxState {
   const amt = fmt(toTokens(x.amount));
-  const { burn, depth, release, failure } = x;
+  const { burn, depth, release, failure, note } = x;
   const fast = x.speed === "fast";
-  const burned = burn.stage === "mined" ? burn : null;
+  const burned = burn.stage === "mined" && x.burnNonce !== null ? burn : null;
 
   const B = step("burn", "Burn on Sepolia", TRUST.burn);
   if (burn.stage !== "asking") B.tx = { hash: burn.hash, href: etherscanTx(burn.hash), label: "burn transaction" };
-  if (failure) {
+  if (failure && !burned) {
     B.st = "failed";
-    B.title = "Burn not sent";
+    if (failure.reason === "reverted") B.title = "Burn reverted";
+    else if (failure.reason !== "stopped") B.title = "Burn not sent";
   } else if (burn.stage === "asking") {
-    B.st = "needs";
-    B.sub = "Confirm the burn in your wallet";
+    B.st = note && !note.wallet ? "active" : "needs";
+    B.sub = note?.text ?? "Confirm the burn in your wallet";
   } else if (!burned) {
     activeFrom(B, x.startedAt, fast ? FAST_RUN.mined : STD_MINED, now);
-    B.sub = "Sent · waiting for a Sepolia block";
+    B.sub = note?.text ?? "Sent · waiting for a Sepolia block";
   } else {
     B.st = "done";
     B.sub = `${amt} wtPOT burned in Sepolia block #${num(burned.block)}`;
@@ -860,39 +968,46 @@ function liveBack(x: BurnTransfer, now: number): TxState {
       mid.sub = `Final · Sepolia finalized past #${num(burned.block)}`;
       if (depth.qualifiedAt !== null) mid.time = span(burned.minedAt, depth.qualifiedAt);
     } else {
-      const blocks = Math.min(STD_RUN.blocks, Math.max(0, depth.confirmations));
+      const blocks = Math.min(SEPOLIA_FINALITY.blocks, Math.max(0, depth.confirmations));
       mid.st = "active";
-      mid.p = blocks / STD_RUN.blocks;
+      mid.p = blocks / SEPOLIA_FINALITY.blocks;
       mid.bar = mid.p;
-      mid.sub = countdown(fb, blocks, mid.p);
+      mid.sub = liveCountdown(fb, blocks);
     }
   }
 
   const R = step("release", "Committee release on V3", TRUST.release);
   const run = release.run;
-  const a = run ? 2 : Math.min(2, Math.max(0, release.approvals));
-  if (run) {
+  const a = release.released ? 2 : Math.min(2, Math.max(0, release.approvals));
+  if (release.released) {
     R.st = "done";
     R.approvals = 2;
     const after = fast && burned && release.at !== null ? Math.max(0, Math.round((release.at - burned.minedAt) / 1000)) : null;
-    R.sub = `${amt} tPOT paid to ${short(checksum(x.recipient))} · V3 #${num(run.block)}${after !== null ? ` · ${after} s after the burn's block` : ""}`;
-    R.tx = { hash: run.extrinsic, href: nodeConsoleBlock(run.block), label: "release extrinsic" };
+    const to = short(checksum(x.recipient));
+    R.sub = run
+      ? `${amt} tPOT paid to ${to} · V3 #${num(run.block)}${after !== null ? ` · ${after} s after the burn's block` : ""}`
+      : `${amt} tPOT released to ${to} · released(burnId) is true on V3`;
+    if (run) R.tx = { hash: run.extrinsic, href: nodeConsoleBlock(run.block), label: "release extrinsic" };
     if (after !== null) R.time = secs(after);
     else if (!fast && depth.qualifiedAt !== null && release.at !== null) R.time = span(depth.qualifiedAt, release.at);
   } else if (burned && qualified) {
-    activeFrom(R, depth.qualifiedAt ?? now, fast ? FAST_RUN.ran - FAST_RUN.mined - 3 * BLOCK_S : STD_RUN.total - STD_RUN.finality, now);
+    activeFrom(R, depth.qualifiedAt ?? now, fast ? FAST_RUN.ran - FAST_RUN.mined - 3 * BLOCK_S : 60, now);
     R.approvals = a;
-    R.sub = approvalLine(a, release.open?.block ?? null);
+    // The watcher runs on one machine: a burn it has not picked up after a few minutes says so, rather than look under way.
+    R.sub =
+      a === 0 && now - (depth.qualifiedAt ?? now) > SLOW_RELEASE
+        ? "0 of 2 approvals · not picked up yet: the committee's watcher runs on one machine, and releases wait while it is off"
+        : approvalLine(a, release.open?.block ?? null);
   } else R.sub = releaseAhead(fast);
 
   const members: MemberState[] = [a >= 1 ? "approved" : R.st === "active" ? "waiting" : "idle", a >= 2 ? "approved" : "idle", "idle"];
-  const end = x.doneAt ?? failure?.at ?? (run ? release.at : null) ?? now;
+  const end = x.doneAt ?? failure?.at ?? (release.released ? release.at : null) ?? now;
   return {
     steps: [B, mid, R],
     t: Math.max(0, (end - x.startedAt) / 1000),
-    done: run !== null,
+    done: release.released,
     needs: null,
-    failed: failure ? { reason: "rejected", action: "Try the burn again" } : null,
+    failed: failure ? failedOf(failure, "back", burned !== null) : null,
     stuck: null,
     checks: waitingChecks(),
     members,
@@ -922,6 +1037,7 @@ function chainHead(x: ChainTransfer, id: string): Head {
       x.dir === "in"
         ? `Read live: the vault's Locked log on V3, and used(${x.nonce}) on Sepolia.`
         : "Read live: BridgeMinter's BurnRequested log on Sepolia, and released(burnId) on V3.",
+    cardNote: null,
     receipt: `#/receipt/${id}`,
     facts: NO_FACTS,
   };
@@ -991,11 +1107,11 @@ function chainBack(x: ChainBurn, now: number): TxState {
     mid.st = "done";
     mid.sub = `Final · Sepolia finalized past #${num(x.block)}`;
   } else {
-    const blocks = Math.min(STD_RUN.blocks, depth);
+    const blocks = Math.min(SEPOLIA_FINALITY.blocks, depth);
     mid.st = "active";
-    mid.p = blocks / STD_RUN.blocks;
+    mid.p = blocks / SEPOLIA_FINALITY.blocks;
     mid.bar = mid.p;
-    mid.sub = countdown("", blocks, mid.p);
+    mid.sub = liveCountdown("", blocks);
   }
 
   // The approvals are the committee's multisig on V3, which this page does not read: no dots, no members.
@@ -1068,22 +1184,19 @@ function ActBar({ pair = false, children }: { pair?: boolean; children: Componen
 function Foot({ h, s, asking, onAct }: { h: Head; s: TxState; asking: boolean; onAct: (a: TransferAction) => void }) {
   const inDir = h.mode === "in";
   if (s.failed) {
-    const cancelled = s.failed.reason !== "proof";
+    // Nothing on chain yet: the amount can still change.
+    const change = s.failed.change;
     return (
       <>
         <div class="notice notice--revert" role="alert">
           <Icon id="i-alert" />
           <div>
-            <p class="notice__title">{cancelled ? "Cancelled in your wallet" : "A storage proof didn't check out"}</p>
-            <p>
-              {cancelled
-                ? `Nothing was ${inDir ? "sent" : "burned"}. Try again, or change the amount.`
-                : "Nothing was sent to Sepolia. Your tPOT stays locked for you; the lock does not expire. Rebuilding reads the proof again at the latest finalized block."}
-            </p>
+            <p class="notice__title">{s.failed.title}</p>
+            <p>{s.failed.text}</p>
           </div>
         </div>
-        <ActBar pair={cancelled}>
-          {cancelled ? (
+        <ActBar pair={change}>
+          {change ? (
             <a class="btn btn--secondary btn--lg" href={`#/bridge/${inDir ? "in" : "back"}?amount=${h.amountText}`}>
               Change amount
             </a>
@@ -1267,6 +1380,12 @@ function TxScreen({ h, s, onAct }: { h: Head; s: TxState; onAct: (a: TransferAct
             <span>Other fast burns were in flight, so yours is released the standard way. Nothing to do.</span>
           </p>
         ) : null}
+        {h.cardNote ? (
+          <p class="notice notice--lilac txcard__note">
+            <Icon id="i-info" />
+            <span>{h.cardNote}</span>
+          </p>
+        ) : null}
         <div class="progress txprog" id="tx-prog" aria-hidden="true">
           {s.steps.map((x) => (
             <CssSpan
@@ -1380,11 +1499,11 @@ function ReplayTx({ replay }: { replay: Replay }) {
   return <TxScreen h={h} s={s} onAct={() => undefined} />;
 }
 
-/** The card's buttons: the code that sends handles them; until it is wired, a toast says so. */
+/** The card's buttons: the code that sends handles them (sends.ts registers them when the app starts). */
 const actOn = (id: string) => (a: TransferAction) => {
   const run = transferActions[a];
   if (run) run(id);
-  else toast("info", "Sending comes next", "This build follows a transfer; the lock, the mint and the burn are wired in the next step.");
+  else toast("info", "Not ready yet", "The page is still starting: try again in a moment.");
 };
 
 function LiveTx({ x }: { x: LiveTransfer }) {
@@ -1413,6 +1532,9 @@ export function TxView({ route }: { route: Route; net: NetState }) {
   const id = route.parts[1] ?? "";
   const live = useBox(transfers).get(id);
   if (live) return <LiveTx key={id} x={live} />;
+  // A lock or a burn this browser follows: its page is the live transfer, with its own times.
+  const follower = followerOf(id);
+  if (follower) return <Redirect to={`#/tx/${follower.id}`} />;
   const replay = replayOf(id, route.q.get("speed"));
   if (replay) return <ReplayTx key={replay.dir === "in" ? "in" : replay.speed} replay={replay} />;
   // A recorded run is done: its page is the receipt.

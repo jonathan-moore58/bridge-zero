@@ -43,7 +43,15 @@ export function useNet(): NetState {
   const behind = h.setId !== null && h.setId > c.setId ? Number(h.setId - c.setId) : 0;
   if (behind) {
     const s = behind === 1 ? "" : "s";
-    return { key: "relay", cls: "trust", label: "Relay needed", long: `The V3 light client is ${behind} validator-set change${s} behind V3.`, behind, down: null };
+    // The relayer's to import, or a mint's: one made now imports the changes first (sends.ts), so nobody waits.
+    return {
+      key: "relay",
+      cls: "trust",
+      label: "Relay needed",
+      long: `The V3 light client is ${behind} validator-set change${s} behind V3. A mint made now imports ${behind === 1 ? "it" : "them"} first.`,
+      behind,
+      down: null,
+    };
   }
   return { key: "ready", cls: "verify", label: "Bridge ready", long: "The V3 light client is at V3's validator set.", behind: 0, down: null };
 }

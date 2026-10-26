@@ -1,6 +1,7 @@
 import { render } from "preact";
 import { startLive } from "../lib/live.ts";
 import { App } from "./App.tsx";
+import { startSends } from "./sends.ts";
 import { insertSprite } from "./sprite.ts";
 import { startWallet } from "./wallet.ts";
 import "./styles/tokens.css";
@@ -16,4 +17,5 @@ if (root) {
   render(<App />, root);
   startLive();
   startWallet();
+  startSends();
 }

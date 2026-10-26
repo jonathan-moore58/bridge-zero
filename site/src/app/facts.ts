@@ -2,9 +2,9 @@
 // runs (README rows 24 to 58). Each number names the run it comes from.
 
 import { SEPOLIA_CHAIN_ID, V3_CHAIN_ID } from "../lib/chains.ts";
+import type { Dir, Speed } from "./model.ts";
 
-export type Dir = "in" | "back";
-export type Speed = "fast" | "std";
+export type { Dir, Speed };
 export type ChainKey = "v3" | "sepolia";
 
 export interface ChainInfo {
@@ -26,12 +26,26 @@ export const CH: Record<ChainKey, ChainInfo> = {
 export const fromOf = (dir: Dir): ChainInfo => (dir === "in" ? CH.v3 : CH.sepolia);
 export const toOf = (dir: Dir): ChainInfo => (dir === "in" ? CH.sepolia : CH.v3);
 
-/** The one way to say each time, with its source: lock 1 (Oct 20), burn 0 (Oct 20), burn 1 (Oct 24). */
+/**
+ * The one way to say each time, with its source: lock 1 (Oct 20), burn 1 (Oct 24), and Standard
+ * as the watcher releases it: Sepolia's finality (SEPOLIA_FINALITY), then the watcher's round and
+ * the two approvals, about a minute. Burn 0's 20 min (Oct 20) included a person typing the release
+ * by hand before the watcher existed.
+ */
 export const TIME: Record<"in" | Speed, readonly [string, string]> = {
   in: ["≈ 48 s", "measured Oct 20"],
-  std: ["≈ 20 min", "measured Oct 20"],
+  std: ["≈ 17 min", "est., with the watcher"],
   fast: ["≈ 84 s", "measured Oct 24"],
 };
+
+/**
+ * Sepolia's finality, from a block's arrival to the block final: 12.5 to 19.4 min, median 16, over
+ * the 1,594 blocks the watcher's logged heads show on Oct 24. About 80 blocks of 12 s.
+ */
+export const SEPOLIA_FINALITY = { median: 960, blocks: 80, range: "12.5 to 19.4 min" } as const;
+
+/** What one V3 validator-set change adds to a mint that imports it first: an importHeader, about 2.4 M gas (README: "a V3 set change about 2.39M"). */
+export const IMPORT_GAS = 2.4;
 
 export const SPEED_NAME: Record<Speed, string> = { fast: "Fast", std: "Standard" };
 
