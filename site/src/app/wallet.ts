@@ -319,6 +319,8 @@ export const walletOn = (chain: ChainKey): boolean => getConnection(config).chai
 
 /** A transaction the page asks the wallet for, with the gas limit and the fees worked out here. */
 export interface SendRequest {
+  /** The account the page checked (and, for a lock or a burn, named in the calldata): the wallet sends from it, or not at all. */
+  from: Hex;
   to: Hex;
   data: Hex;
   value?: bigint;
@@ -330,11 +332,14 @@ export interface SendRequest {
 /**
  * Asks the wallet to send `tx` on `chain`, and returns its hash. viem asks the wallet for its chain
  * first (eth_chainId) and refuses on another one, so a wallet switched away meanwhile cannot send on
- * the wrong network. Throws what the wallet answered, as a WalletError (walletCode, problemOf).
+ * the wrong network. The sender is `tx.from`, not whichever account the wallet shows now: wagmi
+ * refuses an account the wallet no longer connects (ConnectorAccountNotFoundError, problemOf's
+ * "account"). Throws what the wallet answered, as a WalletError (walletCode, problemOf).
  */
 export async function sendOn(chain: ChainKey, tx: SendRequest): Promise<Hex> {
   try {
     const hash = await sendTransaction(config, {
+      account: tx.from,
       chainId: idOf(chain),
       to: tx.to,
       data: tx.data,
@@ -416,7 +421,8 @@ export function problemOf(e: unknown): Problem {
   if (code === 4902) return { kind: "network", text: "Your wallet does not have this network: add it from the wallet menu, then try again." };
   const names = causes(e).map((x) => (x as { name?: unknown }).name);
   if (names.includes("ChainMismatchError")) return { kind: "network", text: "Your wallet changed network before it sent: nothing was sent. Try again." };
-  if (names.some((n) => n === "ConnectorNotConnectedError" || n === "ConnectorAccountNotFoundError" || n === "AccountNotFoundError")) {
+  if (names.includes("ConnectorAccountNotFoundError")) return { kind: "account", text: "Your wallet no longer connects the account this page checked: nothing was sent. Switch back to it, then try again." };
+  if (names.some((n) => n === "ConnectorNotConnectedError" || n === "AccountNotFoundError")) {
     return { kind: "account", text: "Connect your wallet, then try again." };
   }
   return { kind: "other", text: (e instanceof Error && e.message) || "Your wallet did not answer." };

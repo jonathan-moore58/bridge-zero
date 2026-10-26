@@ -14,11 +14,14 @@ export type CheckState = "waiting" | "checking" | "passed" | "failed";
 /**
  * A transaction the visitor sends: asked for in the wallet, sent (the wallet returned its hash),
  * then mined. Times are ms since the epoch; `minedAt` is its block's timestamp. `gasUsed` is null
- * for a lock this page did not send (Finish mint), whose receipt it did not read.
+ * for a lock this page did not send (Finish mint), whose receipt it did not read. `by`: the sender,
+ * and its next nonce as this page's node counted it just before the wallet was asked, the wallet's
+ * nonce for it most likely: once the sender's nonce has passed it with no receipt for this hash, the
+ * wallet put another transaction in its place, even when no node ever showed this one.
  */
 export type SentTx =
   | { stage: "asking" }
-  | { stage: "sent"; hash: Hex; sentAt: number }
+  | { stage: "sent"; hash: Hex; sentAt: number; by?: { from: Hex; nonce: number } }
   | { stage: "mined"; hash: Hex; sentAt: number; block: number; minedAt: number; gasUsed: number | null };
 
 /** What the step under way waits on, when it is not a block: the wallet (`wallet`), or a read or a dry run here. Not kept in the journal. */
@@ -66,6 +69,12 @@ interface Common {
   recipient: Hex;
   /** When the visitor confirmed the review (or Finish mint): the transfer's clock starts here. */
   startedAt: number;
+  /**
+   * The first block the lock's or the burn's log can be in, on its chain (V3, Sepolia): the one after
+   * the latest block when the checks before the wallet's prompt ran. Where the page looks for a lock
+   * or a burn whose hash it does not have. Absent until the wallet is asked.
+   */
+  fromBlock?: number;
   /** When its last step finished. */
   doneAt: number | null;
   failure: Failure | null;

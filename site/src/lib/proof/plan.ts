@@ -27,7 +27,7 @@ import { shortAddr } from "../display.ts";
 import { formatInt, formatUnits } from "../format.ts";
 import { bytesToHex, equalBytes, hexToBytes, type Hex } from "../hex.ts";
 import { lockCommitment } from "../proofs.ts";
-import { AllFailed, TransportError, type Endpoint, type SubstrateClient } from "../rpc.ts";
+import { AllFailed, NodeError, TransportError, type Endpoint, type SubstrateClient } from "../rpc.ts";
 import { aggregate3Calldata, decodeAggregate3, importAndMintCalldata, importHeaderCalldata, mintCalldata, MULTICALL3_CODE_HASH, type Call3, type LockProof } from "./calldata.ts";
 import { authorityChange, loadClientCrypto, SignatureError, signersHint, type ClientCrypto, type SignersHint } from "./grandpa.ts";
 import { accountInfoKey, decodeContractInfo } from "./revive.ts";
@@ -305,7 +305,7 @@ const plural = (k: number, one: string, many = `${one}s`): string => `${n(k)} ${
 const sigs = (s: SignersHint, keys: number): string => `${s.counted.length} of ${keys}`;
 
 /** Calls per transaction through Multicall3: six imports, or five and the mint, about 14 M gas, under the 16,777,216 cap with the margin. */
-const CALLS_PER_TX = 6;
+export const CALLS_PER_TX = 6;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -315,10 +315,23 @@ function errorText(error: unknown): string {
 const isCheckFailure = (error: unknown): boolean =>
   error instanceof V3Error || error instanceof SignatureError || error instanceof TrieProofError || error instanceof ScaleError || error instanceof PlanError;
 
-const isUnreachable = (error: unknown): boolean => error instanceof AllFailed || error instanceof TransportError;
+/** How ../rpc.ts words a try that reached no node: no connection, no answer in time, an HTTP error, no JSON-RPC answer. */
+const NO_NODE = /: (unreachable|no answer in|HTTP \d+|not a JSON-RPC answer|no data|connection closed|could not open|send failed|no connection in)/;
 
-/** A failure the next path may not meet: the node did not serve an old block's state, or what it served did not check out. */
-const fallsBack = (error: unknown): boolean => !(error instanceof CommitError) && (isCheckFailure(error) || isUnreachable(error));
+/**
+ * A read that reached no node, as opposed to a node that answered with an error: worth asking again
+ * in a moment. planMint throws these; the app asks again (../../app/preflight.ts uses this too).
+ */
+export const unreachable = (error: unknown): boolean =>
+  error instanceof TransportError || (error instanceof AllFailed && error.problems.every((p) => NO_NODE.test(p)));
+
+/**
+ * A failure the next path may not meet: the node answered that it no longer serves an old block's
+ * state, or what it served did not check out. A node not reached is not a reason to take another,
+ * dearer path: planMint throws, and the plan is made again once the node answers.
+ */
+const fallsBack = (error: unknown): boolean =>
+  !(error instanceof CommitError) && (isCheckFailure(error) || error instanceof NodeError || (error instanceof AllFailed && !unreachable(error)));
 
 const importedTarget = (t: Target): MintTarget => ({
   ...t.at,
@@ -490,7 +503,7 @@ async function headPath(ctx: Ctx): Promise<Choice> {
 async function behindPath(ctx: Ctx, behind: number): Promise<Choice> {
   const { client, lock, checks, opts, v3, head } = ctx;
   checks.set("header", "checking", `finding the ${plural(behind, "validator-set change")} V3 made that the light client has not imported`);
-  const changes = await v3.setChanges({ number: client.latest.number, setId: client.setId, keys: client.keys, activatedAt: client.activatedAt }, behind, ctx.crypto);
+  const changes = await v3.setChanges({ number: client.latest.number, setId: client.setId, keys: client.keys, activatedAt: client.activatedAt }, behind, ctx.crypto, head.number);
   ctx.read.pending = changes.map((s) => ({ number: s.number, hash: s.hash }));
   const K = changes.length;
   const first = changes[0];
@@ -546,18 +559,27 @@ async function choose(ctx: Ctx): Promise<Choice> {
   if (opts.only === "mint" && !held) {
     throw new PlanError(minter.trieId ? `the light client's latest header #${n(client.latest.number)} is below the lock's block #${n(lock.block)}` : "the minter is not bound to the vault");
   }
+  let heldFailed: string | null = null;
   if (held && (opts.only === undefined || opts.only === "mint")) {
     try {
       return await heldPath(ctx);
     } catch (error) {
       // A node that no longer serves that block's state: the next path reads at the head.
       if (opts.only || !fallsBack(error)) throw error;
-      ctx.notes.push(`mint(p) at #${n(client.latest.number)} could not be built (${errorText(error)}); the plan reads at V3's head instead.`);
-      checks.set("header", "checking", "reading V3's finalized head");
+      heldFailed = errorText(error);
     }
   }
   if (client.paused || client.halted) {
-    throw new Blocked(`The light client is ${client.halted ? "halted" : "paused"} and holds no V3 block at or after the lock's: the mint waits for its admin.`);
+    const state = client.halted ? "halted" : "paused";
+    throw new Blocked(
+      heldFailed === null
+        ? `The light client is ${state} and holds no V3 block at or after the lock's: the mint waits for its admin.`
+        : `The light client is ${state}, so it imports nothing until its admin acts, and mint(p) at the block it holds, #${n(client.latest.number)}, could not be built: ${heldFailed}.`,
+    );
+  }
+  if (heldFailed !== null) {
+    ctx.notes.push(`mint(p) at #${n(client.latest.number)} could not be built (${heldFailed}); the plan reads at V3's head instead.`);
+    checks.set("header", "checking", "reading V3's finalized head");
   }
   const behind = Number(head.setId - client.setId);
   if (behind === 0) {
@@ -718,9 +740,10 @@ function describe(ctx: Ctx, txs: { tx: PlannedTx; calls: Call3[] }[]): void {
 
 /**
  * The plan to mint `lock` now: the path, its transactions with their gas, what each does, the block
- * it mints at, and the five checks as this browser ran them. Throws only when a chain cannot be
- * reached (AllFailed, TransportError) or a forced path does not apply (PlanError); everything else
- * is a status. The dry run is the contracts' own verdict: plan again right before the wallet opens.
+ * it mints at, and the five checks as this browser ran them. Throws when a chain cannot be reached
+ * (AllFailed, TransportError: `unreachable` says so; plan again in a moment) or a forced path does
+ * not apply (PlanError); everything else is a status. The dry run is the contracts' own verdict:
+ * plan again right before the wallet opens.
  */
 export async function planMint(lock: LockRef, env: ProofEnv, opts: PlanOptions = {}): Promise<MintPlan> {
   const checks = new Checks(opts.onCheck);

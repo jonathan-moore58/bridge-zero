@@ -1256,14 +1256,23 @@ function Foot({ h, s, asking, onAct }: { h: Head; s: TxState; asking: boolean; o
       </a>
     );
   }
+  // The first step is the lock or the burn: until it is mined, nothing is locked or burned yet, and
+  // before the wallet sends it, closing the page sends nothing.
+  const first = s.steps[0];
+  const what = inDir ? "lock" : "burn";
+  const where = inDir ? "V3" : "Sepolia";
+  const text =
+    first?.st === "done"
+      ? inDir
+        ? "You can close this page. Your tPOT stays locked for you, and Activity can finish the mint on any device."
+        : "You can close this page. The burn is on Sepolia; the release is up to the committee."
+      : first?.tx
+        ? `Sent, not on ${where} yet: this page follows the ${what} until a block takes it, and again when you come back.`
+        : `Nothing is on ${where} yet. Keep this page open until your wallet has sent the ${what}.`;
   return (
     <p class="txcard__close">
       <Icon id="i-info" cls="i--14" />
-      <span>
-        {inDir
-          ? "You can close this page. Your tPOT stays locked for you, and Activity can finish the mint on any device."
-          : "You can close this page. The burn is on Sepolia; the release is up to the committee."}
-      </span>
+      <span>{text}</span>
     </p>
   );
 }

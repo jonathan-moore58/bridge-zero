@@ -36,6 +36,8 @@ interface V3State {
   poor: boolean;
   /** The vault's refusal, as revert data. */
   revert: Hex | null;
+  /** The node does not answer eth_blockNumber and eth_getTransactionCount. */
+  mute: boolean;
 }
 
 interface SepoliaState {
@@ -47,8 +49,12 @@ interface SepoliaState {
   revert: Hex | null;
 }
 
+/** Oct 26 (scratchpad probes): V3's head and 0xD983…1071's nonce there; Sepolia's head and its nonce there. */
+const V3_HEAD = 0x32f42n;
+const SEP_HEAD = 0xb71cddn;
+
 function chains(v3: Partial<V3State> = {}, sep: Partial<SepoliaState> = {}): Seen[] {
-  const V: V3State = { balance: RICH, outstanding: 14n * ONE / 10n, poor: false, revert: null, ...v3 };
+  const V: V3State = { balance: RICH, outstanding: 14n * ONE / 10n, poor: false, revert: null, mute: false, ...v3 };
   const S: SepoliaState = { code: "0x", wtpot: 14n * ONE / 10n, eth: 10n ** 17n, base: 17n, tip: 3n, revert: null, ...sep };
   return fakeFetch({
     [V3E.url]: (method, params) => {
@@ -58,6 +64,12 @@ function chains(v3: Partial<V3State> = {}, sep: Partial<SepoliaState> = {}): See
           return qty(PRICE);
         case "eth_getBalance":
           return qty(V.balance);
+        case "eth_blockNumber":
+          if (V.mute) break;
+          return qty(V3_HEAD);
+        case "eth_getTransactionCount":
+          if (V.mute) break;
+          return params[1] === "pending" ? "0x2" : "0x1";
         case "eth_call":
         case "eth_estimateGas":
           if (tx.to?.toLowerCase() === VAULT && tx.data === encodeCall("outstanding()")) return enc("uint256", [V.outstanding]);
@@ -78,6 +90,10 @@ function chains(v3: Partial<V3State> = {}, sep: Partial<SepoliaState> = {}): See
           return { number: "0xb71cdd", baseFeePerGas: qty(S.base) };
         case "eth_maxPriorityFeePerGas":
           return qty(S.tip);
+        case "eth_blockNumber":
+          return qty(SEP_HEAD);
+        case "eth_getTransactionCount":
+          return params[1] === "pending" ? "0x54" : "0x53";
         case "eth_call":
         case "eth_estimateGas":
           if (tx.to?.toLowerCase() === TOKEN) return enc("uint256", [S.wtpot]);
@@ -111,6 +127,12 @@ test("a lock names Sepolia, BridgeMinter and the sender, carries whole native un
   assert.equal(p.need, p.value + p.gas * p.fees.maxFeePerGas);
   assert.equal(p.cost, LOCK_GAS * PRICE);
   assert.equal(p.returns, 2n);
+  // The block the lock's log can only follow, and the nonce the wallet most likely gives it: pending transactions counted.
+  assert.deepEqual([p.head, p.nonce], [Number(V3_HEAD), 2]);
+  assert.deepEqual(
+    seen.find((s) => s.method === "eth_getTransactionCount")?.params,
+    [ME, "pending"],
+  );
   // Both dry runs ran from the sender, with the value.
   for (const m of ["eth_call", "eth_estimateGas"]) {
     const c = seen.find((s) => s.method === m && (s.params[0] as { to: string }).to.toLowerCase() === VAULT && (s.params[0] as { data: string }).data === p.data);
@@ -118,6 +140,12 @@ test("a lock names Sepolia, BridgeMinter and the sender, carries whole native un
     assert.deepEqual(c.params[0], { from: ME, to: VAULT, data: p.data, value: qty(p.value) });
   }
   assert.ok(seen.every((s) => !/^(eth_send|eth_sign|personal_|wallet_)/.test(s.method)));
+});
+
+test("a node that does not give its head or the sender's nonce does not stop the lock: they read as unknown", async () => {
+  chains({ mute: true });
+  const p = ok(await prepareLock(env, ME, ONE / 10n));
+  assert.deepEqual([p.head, p.nonce], [null, null]);
 });
 
 test("a lock V3 will not run for the sender stops before the wallet, in words", async () => {
@@ -154,6 +182,7 @@ test("a burn names the sender's own address on V3, with Sepolia's fees and the t
   assert.equal(p.gas, 62_261n + 6_226n);
   assert.deepEqual(p.fees, { maxFeePerGas: 2n * 17n + SEPOLIA_MIN_TIP, maxPriorityFeePerGas: SEPOLIA_MIN_TIP });
   assert.equal(p.returns, 2n);
+  assert.deepEqual([p.head, p.nonce], [Number(SEP_HEAD), 0x54]);
   assert.ok(seen.some((s) => s.method === "eth_call" && (s.params[0] as { to: string }).to.toLowerCase() === VAULT));
   assert.ok(seen.every((s) => !/^(eth_send|eth_sign|personal_|wallet_)/.test(s.method)));
 });
@@ -186,4 +215,6 @@ test("only a read that reached no node counts as unreachable; a node's refusal d
   assert.equal(unreachable(new AllFailed("eth_call", ["fake V3 EVM: insufficient funds for gas * price + value"])), false);
   assert.equal(unreachable({ name: "CallExecutionError", cause: { name: "HttpRequestError" } }), true);
   assert.equal(unreachable(new Error("execution reverted")), false);
+  // The V3 node's refusal to prove a block it has not finalized is an answer: asking again the same way gets the same.
+  assert.equal(unreachable(new AllFailed("grandpa_proveFinality", ["grandpa_proveFinality: fake V3 node: GRANDPA prove finality rpc failed: Block not yet finalized"])), false);
 });

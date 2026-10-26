@@ -19,6 +19,17 @@ export function encodeJournal(list: readonly LiveTransfer[]): string {
   return JSON.stringify({ v: VERSION, transfers: kept.map((t) => ({ ...t, amount: t.amount.toString(), note: null })) });
 }
 
+/**
+ * The journal a tab writes: the transfers it follows (`follows`) as it has them, and every other
+ * entry as the journal holds it now, as the tab that follows it wrote it last. So a tab never writes
+ * its own, older copy of another tab's transfer over that tab's.
+ */
+export function mergeJournal(stored: readonly LiveTransfer[], mine: readonly LiveTransfer[], follows: (id: string) => boolean): LiveTransfer[] {
+  const kept = mine.filter((t) => follows(t.id));
+  const ids = new Set(kept.map((t) => t.id));
+  return [...stored.filter((t) => !ids.has(t.id)), ...kept];
+}
+
 /** The transfers a journal's text holds. An entry that does not read as one is dropped, and so is a journal of another version. */
 export function decodeJournal(text: string | null): LiveTransfer[] {
   if (!text) return [];
@@ -62,7 +73,12 @@ function sentOf(x: unknown): SentTx | null {
   const h = hash(x.hash);
   const sentAt = time(x.sentAt);
   if (!h || sentAt === null) return null;
-  if (x.stage === "sent") return { stage: "sent", hash: h, sentAt };
+  if (x.stage === "sent") {
+    if (x.by === undefined) return { stage: "sent", hash: h, sentAt };
+    const from = isObj(x.by) ? hexOf(x.by.from, 20) : null;
+    const nonce = isObj(x.by) ? int(x.by.nonce) : null;
+    return from && nonce !== null ? { stage: "sent", hash: h, sentAt, by: { from, nonce } } : null;
+  }
   const block = int(x.block);
   const minedAt = time(x.minedAt);
   const gasUsed = x.gasUsed === null ? null : int(x.gasUsed);
@@ -97,8 +113,10 @@ function commonOf(x: Obj) {
   const startedAt = time(x.startedAt);
   const doneAt = orNull(x.doneAt, time);
   const failure = orNull(x.failure, failureOf);
-  if (!id || !ID.test(id) || amount === null || !recipient || startedAt === null || doneAt === undefined || failure === undefined) return null;
-  return { id, amount, recipient, startedAt, doneAt, failure, note: null };
+  // Absent in an entry from before the page kept it.
+  const fromBlock = x.fromBlock === undefined ? undefined : int(x.fromBlock);
+  if (!id || !ID.test(id) || amount === null || !recipient || startedAt === null || doneAt === undefined || failure === undefined || fromBlock === null) return null;
+  return { id, amount, recipient, startedAt, ...(fromBlock === undefined ? {} : { fromBlock }), doneAt, failure, note: null };
 }
 
 function lockOf(x: Obj): LockTransfer | null {

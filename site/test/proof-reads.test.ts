@@ -237,6 +237,38 @@ test("setChanges: from set 32, the three changes, each found with one grandpa_pr
   assert.equal(plain[0]?.asked, 116_993);
 });
 
+test("setChanges: a guess past V3's finalized head is held to the head, and a node that refuses the guess sends the ask to the block after the client's", async () => {
+  const c = chains();
+  c.v3.add(S0, B);
+  const prove = proveFrom([S0, B]);
+  // The V3 node refuses a block it has not finalized, with an error, not null (live, Oct 26).
+  c.v3.prove = (n) => {
+    if (n > B.number) throw new RpcFail(4, "GRANDPA prove finality rpc failed: Block not yet finalized");
+    return prove(n);
+  };
+  const asks = () => c.seen.filter((s) => s.method === "grandpa_proveFinality").map((s) => s.params[0]);
+  const reader = new V3Reader(c.env.v3);
+  const keys = KEYS.map((k) => hexToBytes(k));
+  // Set 32 began at #116,000 (a checkpoint, or a set cut short): the guess, #119,500, is past the head #118,637.
+  const from = { number: 116_992, setId: 32n, keys, activatedAt: 116_000 };
+  const held = await reader.setChanges(from, 1, crypto, B.number);
+  assert.deepEqual(
+    held.map((s) => [s.number, s.asked]),
+    [[118_123, 116_993]],
+  );
+  // The head's own proof, signed by set 33, is no change of set 32; then the block after the client's.
+  assert.deepEqual(asks(), [118_637, 116_993]);
+  c.seen.length = 0;
+  const refused = await reader.setChanges(from, 1, crypto);
+  assert.equal(refused[0]?.number, 118_123);
+  assert.deepEqual(asks(), [119_500, 116_993]);
+  // The ask at the block after the client's is the one that counts: its refusal is the caller's.
+  c.v3.prove = () => {
+    throw new RpcFail(4, "GRANDPA prove finality rpc failed: Block not yet finalized");
+  };
+  await assert.rejects(reader.setChanges(from, 1, crypto, B.number), AllFailed);
+});
+
 test("setChanges: a block that changes no set, or a node with no proof, is no set change", async () => {
   const c = chains();
   c.v3.add(S0, B);

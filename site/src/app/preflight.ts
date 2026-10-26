@@ -7,8 +7,9 @@
 import { decode, encodeCall, type AbiRegistry } from "../lib/abi.ts";
 import { formatUnits } from "../lib/format.ts";
 import type { Hex } from "../lib/hex.ts";
+import { unreachable as reachedNoNode } from "../lib/proof/plan.ts";
 import { revertOf, type Revert } from "../lib/proof/sepolia.ts";
-import { AllFailed, NodeError, request, TransportError, type Endpoint } from "../lib/rpc.ts";
+import { AllFailed, NodeError, request, type Endpoint } from "../lib/rpc.ts";
 import { evmValue, keyControlled, sepoliaFees, upFront, v3Fees, withMargin, type Fees } from "./txmath.ts";
 
 /** The deployed contracts, the page's endpoints, and the contracts' errors, which name a revert. */
@@ -22,10 +23,13 @@ export interface SendEnv {
   registry: AbiRegistry;
 }
 
-/** A read that reached no node, as opposed to a node that answered with an error: worth asking again later. */
+/**
+ * A read that reached no node, as opposed to a node that answered with an error: worth asking again
+ * later. The proof core's test (it throws only these for a plan to be made again), and viem's.
+ */
 export function unreachable(e: unknown): boolean {
-  if (e instanceof TransportError) return true;
-  if (e instanceof AllFailed) return e.problems.every((p) => /: (unreachable|no answer in|HTTP \d+|not a JSON-RPC answer|no data|connection closed|could not open|send failed|no connection in)/.test(p));
+  if (reachedNoNode(e)) return true;
+  if (e instanceof AllFailed) return false;
   // viem's, through wagmi's transports.
   for (let x: unknown = e, i = 0; x && typeof x === "object" && i < 8; x = (x as { cause?: unknown }).cause, i++) {
     const name = (x as { name?: unknown }).name;
@@ -85,6 +89,24 @@ export async function sepoliaFeesNow(endpoints: Endpoint[]): Promise<Fees & { ba
 
 export const balanceOn = async (endpoints: Endpoint[], address: Hex): Promise<bigint> => BigInt((await request<Hex>(endpoints, "eth_getBalance", [address, "latest"])).result);
 
+/**
+ * The sender's next nonce, its pending transactions counted: the nonce the wallet most likely gives
+ * the transaction it is asked for next. Null when no node said; nothing depends on it but the check
+ * for a transaction the wallet replaced (sends.ts).
+ */
+export const nextNonce = (endpoints: Endpoint[], address: Hex): Promise<number | null> =>
+  request<Hex>(endpoints, "eth_getTransactionCount", [address, "pending"]).then(
+    (a) => Number(BigInt(a.result)),
+    () => null,
+  );
+
+/** The chain's latest block number, or null when no node said. */
+const headOf = (endpoints: Endpoint[]): Promise<number | null> =>
+  request<Hex>(endpoints, "eth_blockNumber", []).then(
+    (a) => Number(BigInt(a.result)),
+    () => null,
+  );
+
 /** A send the wallet can be asked for, with what the checks found. Amounts in wei unless said. */
 export interface Prepared {
   data: Hex;
@@ -102,6 +124,13 @@ export interface Prepared {
   balance: bigint;
   /** The estimate at the price now: on V3 the whole cost, its storage deposit included. */
   cost: bigint;
+  /**
+   * The chain's latest block as the checks read it: the lock or the burn the wallet sends after them
+   * is in a later block, which is where the sends look for its log. And the sender's next nonce
+   * (nextNonce). Each null when the node did not say.
+   */
+  head: number | null;
+  nonce: number | null;
 }
 
 export type Prep = Prepared | { problem: { title: string; text: string } };
@@ -125,11 +154,13 @@ export async function prepareLock(env: SendEnv, from: Hex, amount: bigint): Prom
     if (!unreachable(e) && /insufficient|balance|funds/i.test(errorText(e))) return { short: errorText(e) };
     throw e;
   };
-  const [call, est, price, balance] = await Promise.all([
+  const [call, est, price, balance, head, nonce] = await Promise.all([
     dry(env.v3Evm, "eth_call", tx, env.registry).catch(poor),
     dry(env.v3Evm, "eth_estimateGas", tx, env.registry).catch(poor),
     request<Hex>(env.v3Evm, "eth_gasPrice", []).then((a) => BigInt(a.result)),
     balanceOn(env.v3Evm, from),
+    headOf(env.v3Evm),
+    nextNonce(env.v3Evm, from),
   ]);
   if ("short" in call || "short" in est) {
     return problem("Not enough tPOT for the lock", `You have ${tokens(balance, 18)} tPOT on V3, and V3 would not run this lock: the amount and its gas, the storage deposit included, are more. Nothing was sent.`);
@@ -147,7 +178,7 @@ export async function prepareLock(env: SendEnv, from: Hex, amount: bigint): Prom
       `Your wallet checks ${tokens(need, 18)} tPOT up front: the amount, and the gas limit at the max fee. On V3 the gas includes the storage deposit; about ${tokens(cost, 18)} tPOT of it is charged at today's price. You have ${tokens(balance, 18)}. Nothing was sent.`,
     );
   }
-  return { data, value, gas, fees, estimate, returns: word(call.result), need, balance, cost };
+  return { data, value, gas, fees, estimate, returns: word(call.result), need, balance, cost, head, nonce };
 }
 
 /**
@@ -159,7 +190,7 @@ export async function prepareLock(env: SendEnv, from: Hex, amount: bigint): Prom
 export async function prepareBurn(env: SendEnv, from: Hex, amount: bigint): Promise<Prep> {
   const data = encodeCall("burn(uint256,address)", [amount, from]);
   const tx: DryTx = { from, to: env.minter, data };
-  const [code, held, call, est, fees, eth, outstanding] = await Promise.all([
+  const [code, held, call, est, fees, eth, outstanding, head, nonce] = await Promise.all([
     request<Hex>(env.sepolia, "eth_getCode", [from, "latest"]).then((a) => a.result),
     request<Hex>(env.sepolia, "eth_call", [{ to: env.token, data: encodeCall("balanceOf(address)", [from]) }, "latest"]).then((a) => word(a.result)),
     dry(env.sepolia, "eth_call", tx, env.registry),
@@ -167,6 +198,8 @@ export async function prepareBurn(env: SendEnv, from: Hex, amount: bigint): Prom
     sepoliaFeesNow(env.sepolia),
     balanceOn(env.sepolia, from),
     request<Hex>(env.v3Evm, "eth_call", [{ to: env.vault, data: encodeCall("outstanding()") }, "latest"]).then((a) => word(a.result)),
+    headOf(env.sepolia),
+    nextNonce(env.sepolia, from),
   ]);
   if (!keyControlled(code)) {
     return problem(
@@ -185,5 +218,5 @@ export async function prepareBurn(env: SendEnv, from: Hex, amount: bigint): Prom
   const need = upFront(0n, gas, fees);
   if (eth < need) return problem("Not enough Sepolia ETH", `The burn's gas needs up to ${tokens(need, 18)} ETH; you have ${tokens(eth, 18)}. Nothing was burned.`);
   const { maxFeePerGas, maxPriorityFeePerGas } = fees;
-  return { data, value: 0n, gas, fees: { maxFeePerGas, maxPriorityFeePerGas }, estimate, returns: word(call.result), need, balance: eth, cost: estimate * (fees.base + maxPriorityFeePerGas) };
+  return { data, value: 0n, gas, fees: { maxFeePerGas, maxPriorityFeePerGas }, estimate, returns: word(call.result), need, balance: eth, cost: estimate * (fees.base + maxPriorityFeePerGas), head, nonce };
 }

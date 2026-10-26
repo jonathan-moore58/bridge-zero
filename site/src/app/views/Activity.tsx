@@ -364,7 +364,13 @@ function refresh(address: string): void {
 // ---------------------------------------------------------------------------------------------
 // Rows
 
-type Status = "minted" | "released" | "locked" | "progress" | "unread" | "failed";
+/**
+ * failed: not sent (declined, refused before the wallet, or not found on chain after the wallet's
+ * prompt was cut off). reverted: sent and mined, reverted. replaced: the wallet sent another
+ * transaction in its place. stopped: sent, or perhaps sent, and this browser stopped following it
+ * (its receipt did not check out, or a read failed).
+ */
+type Status = "minted" | "released" | "locked" | "progress" | "unread" | "failed" | "reverted" | "replaced" | "stopped";
 type Group = "action" | "progress" | "done";
 
 interface Row {
@@ -386,7 +392,17 @@ interface Row {
   href: string | null;
 }
 
-const GROUP: Record<Status, Group> = { minted: "done", released: "done", locked: "action", progress: "progress", unread: "progress", failed: "action" };
+const GROUP: Record<Status, Group> = {
+  minted: "done",
+  released: "done",
+  locked: "action",
+  progress: "progress",
+  unread: "progress",
+  failed: "action",
+  reverted: "action",
+  replaced: "action",
+  stopped: "action",
+};
 
 /** Each status's chip: the badge kind, its text and its icon. */
 const STATUS: Record<Status, readonly [string, string, string]> = {
@@ -396,6 +412,9 @@ const STATUS: Record<Status, readonly [string, string, string]> = {
   progress: ["progress", "In progress", "dot"],
   unread: ["muted", "Could not read", "i-server"],
   failed: ["revert", "Not sent", "i-alert"],
+  reverted: ["revert", "Reverted", "i-alert"],
+  replaced: ["revert", "Replaced", "i-alert"],
+  stopped: ["muted", "Not followed", "i-alert"],
 };
 
 const GROUPS: readonly (readonly [Group, string])[] = [
@@ -434,7 +453,13 @@ function journalRow(t: LiveTransfer): Row {
   const n = lock ? t.nonce : t.burnNonce;
   const done = isDone(t);
   const waitsForYou = lock && n !== null && !done && (t.failure !== null || (t.mint === null && t.note === null && t.proof.builtAt !== null));
-  const status: Status = done ? (lock ? "minted" : "released") : t.failure && n === null ? "failed" : waitsForYou ? "locked" : "progress";
+  // Stopped before its receipt gave a nonce. Not sent: declined, or refused before the wallet sent
+  // it. Stopped: the page stopped following it, sent or perhaps sent (sends.ts, stopped).
+  const stage = lock ? t.lock.stage : t.burn.stage;
+  const r = t.failure?.reason;
+  const stoppedEarly: Status | null =
+    !r || n !== null ? null : r === "reverted" ? "reverted" : r === "stopped" ? "stopped" : stage === "asking" ? "failed" : r === "rejected" ? "replaced" : "stopped";
+  const status: Status = done ? (lock ? "minted" : "released") : (stoppedEarly ?? (waitsForYou ? "locked" : "progress"));
   const end = lock ? (t.mint?.stage === "mined" ? t.mint.minedAt : null) : t.release.at;
   return {
     id: chainId ?? t.id,
@@ -552,13 +577,20 @@ function ActRow({ x, connected }: { x: Row; connected: boolean }) {
   const to = toOf(x.dir);
   const s = STATUS[x.status];
   const action = x.status === "locked";
+  const done = x.dir === "in" ? "locked" : "burned";
   const why = action
     ? "Your tPOT is in the vault. The mint hasn't been sent."
     : x.status === "unread"
       ? `Could not read whether it was ${x.dir === "in" ? "minted" : "released"}.`
       : x.status === "failed"
         ? "Nothing was sent. Open it to try again."
-        : null;
+        : x.status === "reverted"
+          ? `It reverted: nothing was ${done}, only its fee was paid. Open it to try again.`
+          : x.status === "replaced"
+            ? `Your wallet sent another transaction in its place: nothing was ${done}. Open it to try again.`
+            : x.status === "stopped"
+              ? "This browser stopped following it. Open it to see why, and to follow it again."
+              : null;
   // This browser's own transfer: its live page. Done: its receipt. Otherwise its transfer screen,
   // where Finish mint leads, as in the prototype. Both read a lock or a burn by this id from its
   // chain when this browser does not follow it and the records lack it.

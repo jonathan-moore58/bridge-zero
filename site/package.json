@@ -13,7 +13,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
-    "test": "node --test test/abi.test.ts test/scale.test.ts test/records.test.ts test/rpc.test.ts test/proof-scale.test.ts test/proof-trie.test.ts test/proof-revive.test.ts test/proof-grandpa.test.ts test/proof-calldata.test.ts test/proof-reads.test.ts test/proof-plan.test.ts test/app-txmath.test.ts test/app-journal.test.ts test/app-preflight.test.ts",
+    "test": "node --test test/abi.test.ts test/scale.test.ts test/records.test.ts test/rpc.test.ts test/proof-scale.test.ts test/proof-trie.test.ts test/proof-revive.test.ts test/proof-grandpa.test.ts test/proof-calldata.test.ts test/proof-reads.test.ts test/proof-plan.test.ts test/app-txmath.test.ts test/app-journal.test.ts test/app-preflight.test.ts test/app-tabs.test.ts",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {

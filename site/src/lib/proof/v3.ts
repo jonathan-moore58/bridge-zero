@@ -212,13 +212,20 @@ export class V3Reader {
    * The `count` set changes after `from`, in order, without scanning headers: for a block m in a set
    * that has ended, grandpa_proveFinality(m) answers with the justification of that set's last
    * block, its set change, and carries the headers up to it, the change's own header last. m is
-   * guessed SET_CHANGE_GUESS blocks after the set's start; an answer that is not the change of the
-   * expected set (its justification does not verify under that set, or its block changes no set)
-   * is asked again at the first block after `from`, which is in that set for sure.
+   * guessed SET_CHANGE_GUESS blocks after the set's start, but never past `head`; an answer to the
+   * guess that is not the change of the expected set (its justification does not verify under that
+   * set, its block changes no set, or the node refuses the ask) is asked again at the first block
+   * after `from`, which is in that set for sure.
    *   from: the client's latest header, its set (id and keys) and the block that started that set
    *   (null when the client does not say: then every change is asked at the first block after the last).
+   *   head: V3's finalized head; the node refuses to prove a block past it ("Block not yet finalized").
    */
-  async setChanges(from: { number: number; setId: bigint; keys: Uint8Array[]; activatedAt: number | null }, count: number, crypto: ClientCrypto): Promise<SetChange[]> {
+  async setChanges(
+    from: { number: number; setId: bigint; keys: Uint8Array[]; activatedAt: number | null },
+    count: number,
+    crypto: ClientCrypto,
+    head = Number.MAX_SAFE_INTEGER,
+  ): Promise<SetChange[]> {
     const out: SetChange[] = [];
     let after = from.number;
     let started = from.activatedAt;
@@ -226,7 +233,8 @@ export class V3Reader {
     let keys = from.keys;
     for (let k = 0; k < count; k++) {
       const first = after + 1;
-      const guess = started === null ? first : Math.max(first, started + SET_CHANGE_GUESS);
+      // A set that began at a checkpoint, or ran short, can end before the guess: the head bounds it.
+      const guess = started === null ? first : Math.max(first, Math.min(head, started + SET_CHANGE_GUESS));
       let found: SetChange | null = null;
       const problems: string[] = [];
       for (const ask of guess === first ? [first] : [guess, first]) {
@@ -234,8 +242,11 @@ export class V3Reader {
           found = await this.setChangeAt(ask, after, setId, keys, crypto);
           break;
         } catch (error) {
-          if (!(error instanceof SignatureError || error instanceof V3Error || error instanceof ScaleError)) throw error;
-          problems.push(`#${formatInt(ask)}: ${error.message}`);
+          // Whatever the guess gets, a refusal included, `first` is asked next and its answer counts;
+          // a change the client cannot follow is the change, wherever it was found.
+          const noChange = error instanceof SignatureError || error instanceof V3Error || error instanceof ScaleError;
+          if (error instanceof HaltingChange || (ask === first && !noChange)) throw error;
+          problems.push(`#${formatInt(ask)}: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
       if (!found) throw new V3Error(`no set change of set ${setId} found after #${formatInt(after)}: ${problems.join("; ")}`);

@@ -3,6 +3,8 @@
 
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
+import { formatUnits } from "../../lib/format.ts";
+import { CALLS_PER_TX } from "../../lib/proof/plan.ts";
 import { openNoWallet, openWalletPicker } from "../connect.tsx";
 import {
   BURN_GAS,
@@ -30,6 +32,7 @@ import type { NetState } from "../net.ts";
 import type { Route } from "../router.ts";
 import { startBurn, startLock } from "../sends.ts";
 import { Box, useBox } from "../store.ts";
+import { DECIMALS, parseAmount } from "../txmath.ts";
 import { CopyChip, Icon, Mark, Mono, Nb, Tip, announce, closeSheet, fmt, openSheet, short, toast } from "../ui.tsx";
 import { readBalances, switchTo, wallet, walletCode, type WalletState } from "../wallet.ts";
 
@@ -236,14 +239,21 @@ function openGetEth(dir: Dir, address: string): void {
 /** The mint's gas while the light client is `behind` V3's validator set: the mint imports each change first (sends.ts, the self-relay). */
 const mintGas = (behind: number): string => fmt(Number(MINT_GAS) + IMPORT_GAS * behind, 1);
 
-/** `amount`: the field's text, which the sends parse exactly; `value` is how the sheet shows it. */
-function ReviewFoot({ k, value, amount }: { k: Facts; value: string; amount: string }) {
+/** The Sepolia transactions of a mint that imports `behind` set changes first: the plan's calls, at most CALLS_PER_TX to a transaction (../../lib/proof/plan.ts). */
+const sepoliaTxs = (behind: number): number => Math.ceil((behind + 1) / CALLS_PER_TX);
+
+/**
+ * `amount`: the field's text, which the sends parse exactly; `value` is how the sheet shows it, to
+ * its last decimal; `address`: the account the sheet names, which Confirm locks or burns for and
+ * from, or nothing; `txs`: the mint's Sepolia transactions.
+ */
+function ReviewFoot({ k, value, amount, address, txs }: { k: Facts; value: string; amount: string; address: string; txs: number }) {
   const inDir = k.dir === "in";
   const [consent, setConsent] = useState(false);
   const confirm = () => {
     closeSheet(true);
-    if (inDir) startLock(amount);
-    else startBurn(amount);
+    if (inDir) startLock(amount, address);
+    else startBurn(amount, address);
   };
   return (
     <>
@@ -261,16 +271,23 @@ function ReviewFoot({ k, value, amount }: { k: Facts; value: string; amount: str
         {inDir ? `Lock ${value} tPOT on V3` : `Burn ${value} wtPOT on Sepolia`}
       </button>
       <p class="sheet-foot">
-        {inDir ? "Your wallet asks twice: the lock on V3, then the mint on Sepolia. Nothing is sent until you confirm." : "Your wallet asks once. Nothing is sent until you confirm."}
+        {!inDir
+          ? "Your wallet asks once. Nothing is sent until you confirm."
+          : txs > 1
+            ? `Your wallet asks for the lock on V3, then for ${txs} transactions on Sepolia, each after the one before is mined. Nothing is sent until you confirm.`
+            : "Your wallet asks twice: the lock on V3, then the mint on Sepolia. Nothing is sent until you confirm."}
       </p>
     </>
   );
 }
 
 function openReview(k: Facts, address: string, amount: string, net: NetState): void {
-  const v = fmt(k.value);
+  // What Confirm sends, to its last decimal: the sends parse the field exactly, so no rounding here.
+  const exact = parseAmount(amount);
+  const v = exact === null ? fmt(k.value) : formatUnits(exact, DECIMALS);
   const inDir = k.dir === "in";
   const behind = inDir && net.key === "relay" ? net.behind : 0;
+  const txs = behind ? sepoliaTxs(behind) : 1;
   const sumRow = (label: string, c: ChainInfo) => (
     <div class="sum__row">
       <Mark id={c.markId} cls="mark--36" />
@@ -308,7 +325,7 @@ function openReview(k: Facts, address: string, amount: string, net: NetState): v
         2,
         "Mint on Sepolia",
         behind
-          ? `Your wallet, on Sepolia, after V3 finality and the proof · it imports the ${behind === 1 ? "validator-set change" : `${behind} validator-set changes`} the light client lacks first`
+          ? `Your wallet, on Sepolia, after V3 finality and the proof · it imports the ${behind === 1 ? "validator-set change" : `${behind} validator-set changes`} the light client lacks first${txs > 1 ? `, in ${txs} transactions` : ""}`
           : "Your wallet, on Sepolia, after V3 finality and the proof",
         <>
           <Nb>≈ {behind ? mintGas(behind) : MINT_GAS} M gas</Nb> <Nb>in Sepolia ETH</Nb>
@@ -441,7 +458,7 @@ function openReview(k: Facts, address: string, amount: string, net: NetState): v
         {inDir ? trust : null}
       </div>
     ),
-    foot: <ReviewFoot k={k} value={v} amount={amount} />,
+    foot: <ReviewFoot k={k} value={v} amount={amount} address={address} txs={txs} />,
   });
 }
 
@@ -688,7 +705,7 @@ function Notice({ k, f, net }: { k: Facts; f: Form; net: NetState }) {
     const one = net.behind === 1;
     // The mint imports what the relayer has not (sends.ts): six calls fit one transaction, so past
     // five changes it takes more than one.
-    const txs = Math.ceil((net.behind + 1) / 6);
+    const txs = sepoliaTxs(net.behind);
     n = [
       "notice--trust",
       "i-refresh",

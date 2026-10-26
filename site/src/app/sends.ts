@@ -8,10 +8,11 @@
 // confirmations, Sepolia's finality, the committee's approvals and released(burnId) on V3.
 //
 // Every transfer is kept in this browser's journal (journal.ts) and read again from the chains when
-// the page loads: the journal says what to look for, the chains say what happened. A transfer this
-// tab starts asks the wallet for each next step as soon as it can; one read back after a reload
-// waits for the visitor's click. The checks before each prompt are preflight.ts's and the proof
-// core's dry runs. The wallet signs; nothing here holds a key.
+// the page loads: the journal says what to look for, the chains say what happened. One tab follows
+// each transfer (tabs.ts): another tab shows it as the journal has it, and takes it over when that
+// tab closes. A transfer this tab starts asks the wallet for each next step as soon as it can; one
+// read back after a reload waits for the visitor's click. The checks before each prompt are
+// preflight.ts's and the proof core's dry runs. The wallet signs; nothing here holds a key.
 
 import { decode, encodeCall } from "../lib/abi.ts";
 import { MINTER, SEPOLIA, SEPOLIA_CHAIN_ID, SEPOLIA_LOGS, TOKEN, V3_CHAIN_ID, V3_EVM, VAULT } from "../lib/chains.ts";
@@ -24,9 +25,10 @@ import { V3Reader } from "../lib/proof/v3.ts";
 import { request, type Endpoint } from "../lib/rpc.ts";
 import { decodeTimestampInherent } from "../lib/scale.ts";
 import { connectThen } from "./connect.tsx";
-import { decodeJournal, encodeJournal, JOURNAL_KEY } from "./journal.ts";
-import { balanceOn, errorText, prepareBurn, prepareLock, sepoliaFeesNow, unreachable, type SendEnv } from "./preflight.ts";
+import { decodeJournal, encodeJournal, JOURNAL_KEY, mergeJournal } from "./journal.ts";
+import { balanceOn, errorText, nextNonce, prepareBurn, prepareLock, sepoliaFeesNow, unreachable, type SendEnv } from "./preflight.ts";
 import { go } from "./router.ts";
+import { claim, follows, onTaken, own, take } from "./tabs.ts";
 import {
   chainReads,
   findLock,
@@ -101,9 +103,9 @@ interface Job {
 
 const jobs = new Map<string, Job>();
 
-/** Runs `work` for a transfer unless a run of it is under way; an error it does not settle stops the transfer, saying why. */
+/** Runs `work` for a transfer unless a run of it is under way, or another tab follows it; an error it does not settle stops the transfer, saying why. */
 function runFor(id: string, work: (job: Job) => Promise<void>): void {
-  if (jobs.has(id)) return;
+  if (jobs.has(id) || !follows(id)) return;
   const job: Job = { stop: false };
   jobs.set(id, job);
   void work(job)
@@ -139,13 +141,17 @@ function fail(id: string, reason: Failure["reason"], title: string | null, text:
   updateTransfer(id, (t) => ({ ...t, failure: { reason, at: Date.now(), title, text }, note: null }));
 }
 
-/** What an error nothing settled means for the transfer: not sent, when nothing was; else the page stopped following it. */
+/**
+ * What an error nothing settled means for the transfer: not sent, when the wallet was never asked;
+ * else the page stopped following it (once asked, the wallet may have sent it: recover looks).
+ */
 function stopped(id: string, e: unknown): void {
   const t = transfers.get().get(id);
-  if (!t || isDone(t) || t.failure) return;
+  if (!t || isDone(t) || t.failure || !follows(id)) return;
   const sent = t.dir === "in" ? t.lock.stage !== "asking" : t.burn.stage !== "asking";
   if (e instanceof PlanError) fail(id, "proof", null, `${errorText(e)}.`);
   else if (sent) fail(id, "stopped", null, `${errorText(e)}. Nothing on chain changed: follow it again.`);
+  else if (t.fromBlock !== undefined) fail(id, "stopped", null, `${errorText(e)}. Whether your wallet sent it is not known here: follow it again to look for it.`);
   else fail(id, "refused", null, `${errorText(e)}. Nothing was sent.`);
 }
 
@@ -181,6 +187,50 @@ function walletRefused(id: string, e: unknown, what: "Lock" | "Burn"): false {
   return false;
 }
 
+/** The wallet moved to another account during the network switch or the checks: nothing is sent, from it or for it. */
+function switched(id: string, what: "Lock" | "Burn", from: Hex): false {
+  const now = me();
+  const role = what === "Lock" ? "this lock is for" : "this burn is from and pays on V3";
+  fail(id, "refused", `${what} not sent`, `Your wallet ${now ? `moved to ${short(now)}` : "disconnected"} after the checks. Connect ${short(from)}, the address ${role}, then try again.`);
+  return false;
+}
+
+/** A transfer whose tab may have a wallet prompt open for it: its lock, burn or mint asked for, and no answer yet. */
+const promptOpen = (t: LiveTransfer): boolean =>
+  t.failure === null && (t.dir === "in" ? t.lock.stage === "asking" || t.mint?.stage === "asking" : t.burn.stage === "asking");
+
+/**
+ * A transfer another tab of this browser follows: the visitor acting on it here takes it over (that
+ * tab stops following it), then `act` runs here; unless that tab may have a wallet prompt open for
+ * it, which this page leaves to that tab. True when the action is that tab's to finish.
+ */
+function elsewhere(id: string, act: () => void): boolean {
+  if (follows(id)) return false;
+  const t = readJournal().find((x) => x.id === id) ?? transfers.get().get(id);
+  if (t && promptOpen(t)) {
+    toast("info", "Your wallet is asked in another tab", "Another tab of this browser is asking your wallet for this transfer's next step. Answer it there: this page shows what it does.");
+    return true;
+  }
+  take(id, () => {
+    // As the tab that followed it wrote it last.
+    const latest = readJournal().find((x) => x.id === id);
+    if (latest) putTransfer(latest);
+    act();
+  });
+  return true;
+}
+
+/** Whether the address has a transaction its chain has not mined: its nonce counted with pending transactions past its latest. */
+async function pendingFrom(endpoints: Endpoint[], address: Hex): Promise<boolean> {
+  const count = (tag: string) => request<Hex>(endpoints, "eth_getTransactionCount", [address, tag]).then((a) => BigInt(a.result));
+  try {
+    const [latest, pending] = await Promise.all([count("latest"), count("pending")]);
+    return pending > latest;
+  } catch {
+    return false;
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 // A sent transaction with no receipt: still pending, mined (a receipt the first node no longer
 // keeps), or put out of place by another one from the wallet (its Speed up, or a Cancel)
@@ -208,12 +258,15 @@ type Fate = "pending" | "mined" | "replaced";
  * What became of a sent transaction that has no receipt: mined, when a node shows it in a block;
  * replaced, when the nonce it was sent with is taken by another mined transaction of its sender;
  * else pending. `seen` keeps what a node said of it once: a replaced transaction leaves the pools.
+ * Its nonce is the one a node showed it with, else `by`'s, read before the wallet was asked (a
+ * Cancel can leave the pools before any node here showed the transaction, and V3's node may show
+ * only mined ones). The callers take "replaced" twice, a check apart, before they act on it.
  */
-async function fateOf(endpoints: Endpoint[], hash: Hex, seen: { tx: Seen | null }): Promise<Fate> {
+async function fateOf(endpoints: Endpoint[], hash: Hex, seen: { tx: Seen | null }, by: { from: Hex; nonce: number } | undefined): Promise<Fate> {
   const now = await seenTx(endpoints, hash);
   seen.tx = now ?? seen.tx;
   if (now?.block != null) return "mined";
-  const s = seen.tx;
+  const s = seen.tx ?? (by ? { from: by.from, nonce: BigInt(by.nonce), block: null } : null);
   if (!s) return "pending";
   try {
     const count = BigInt((await request<Hex>(endpoints, "eth_getTransactionCount", [s.from, "latest"])).result);
@@ -258,13 +311,22 @@ const newId = (dir: "in" | "back"): string => {
   return `${dir}-${Date.now().toString(36)}-${(r[0] ?? 0).toString(36)}`;
 };
 
-/** The review's Confirm on the way in: a new transfer, its screen, and the lock asked for. */
-export function startLock(amountText: string): void {
+/** The account the review named is not the wallet's now: nothing is started for another one. */
+function reviewedElse(reviewed: string, now: Hex, what: string): boolean {
+  if (sameAddress(now, reviewed)) return false;
+  toast("revert", "Your wallet changed account", `You reviewed this ${what} for ${short(reviewed)}, and your wallet is on ${short(now)} now. Review it again.`);
+  return true;
+}
+
+/** The review's Confirm on the way in: a new transfer, its screen, and the lock asked for, for `reviewed`, the address the review showed. */
+export function startLock(amountText: string, reviewed: string): void {
   const amount = parseAmount(amountText);
   if (amount === null) return toast("revert", "Not an amount the vault takes", "Up to 14 decimals, more than 0.");
   const from = me();
-  if (!from) return connectThen(() => startLock(amountText));
+  if (!from) return connectThen(() => startLock(amountText, reviewed));
+  if (reviewedElse(reviewed, from, "lock")) return;
   const id = newId("in");
+  own(id);
   putTransfer({
     id,
     dir: "in",
@@ -326,14 +388,16 @@ async function sendLock(job: Job, id: string): Promise<boolean> {
     fail(id, "refused", prep.problem.title, prep.problem.text);
     return false;
   }
-  say(id, null);
+  if (!sameAddress(me(), from)) return switched(id, "Lock", from);
+  // Whatever the wallet sends from here on is in a later block than the checks read.
+  patchIn(id, (x) => ({ note: null, fromBlock: prep.head === null ? x.fromBlock : prep.head + 1 }));
   let hash: Hex;
   try {
-    hash = await sendOn("v3", { to: VAULT, data: prep.data, value: prep.value, gas: prep.gas, ...prep.fees });
+    hash = await sendOn("v3", { from, to: VAULT, data: prep.data, value: prep.value, gas: prep.gas, ...prep.fees });
   } catch (e) {
     return walletRefused(id, e, "Lock");
   }
-  patchIn(id, { lock: { stage: "sent", hash, sentAt: Date.now() } });
+  patchIn(id, { lock: { stage: "sent", hash, sentAt: Date.now(), ...(prep.nonce === null ? {} : { by: { from, nonce: prep.nonce } }) } });
   return true;
 }
 
@@ -348,17 +412,20 @@ async function followLock(job: Job, id: string): Promise<boolean> {
   for (let round = 1; !job.stop; round++) {
     const t = lockT(id);
     if (!t || t.lock.stage !== "sent") return false;
-    const { hash, sentAt } = t.lock;
+    const { hash, sentAt, by } = t.lock;
     const got = await patiently(job, id, "Portaldot V3", () => receiptOn("v3", hash));
     if (!got) return false;
     let r: Landed | null = got.value;
+    // Seen in a pool from the first round: a Cancel can take its place within seconds.
+    if (!r && !seen.tx) seen.tx = await seenTx(V3_EVM, hash);
     if (!r && round % REPLACED_EVERY === 0) {
-      const fate = await fateOf(V3_EVM, hash, seen);
+      const fate = await fateOf(V3_EVM, hash, seen, by);
       const logs = await locksSince(t).catch((): ChainLog[] => []);
       const mine = logs.find((l) => l.transactionHash.toLowerCase() === hash);
       const other = logs.find((l) => l.transactionHash.toLowerCase() !== hash);
       if (mine) r = landedOf(mine);
       else if (other && (fate === "replaced" || !seen.tx)) {
+        // The Speed up's copy: its log is on chain, so its receipt or that log settles it next round.
         patchIn(id, { lock: { stage: "sent", hash: other.transactionHash.toLowerCase() as Hex, sentAt } });
         seen.tx = null;
         strikes = 0;
@@ -546,9 +613,9 @@ async function signMint(job: Job, id: string, fresh: MintPlan | null): Promise<v
   const from = me();
   if (!tx || tx.gasLimit === null || !from) return say(id, null);
   const gas = tx.gasLimit;
-  const got = await patiently(job, id, "Sepolia", () => Promise.all([sepoliaFeesNow(SEPOLIA), balanceOn(SEPOLIA, from)]));
+  const got = await patiently(job, id, "Sepolia", () => Promise.all([sepoliaFeesNow(SEPOLIA), balanceOn(SEPOLIA, from), nextNonce(SEPOLIA, from)]));
   if (!got) return;
-  const [{ maxFeePerGas, maxPriorityFeePerGas }, eth] = got.value;
+  const [{ maxFeePerGas, maxPriorityFeePerGas }, eth, next] = got.value;
   const fees = { maxFeePerGas, maxPriorityFeePerGas };
   const need = upFront(0n, gas, fees);
   if (eth < need) {
@@ -556,15 +623,37 @@ async function signMint(job: Job, id: string, fresh: MintPlan | null): Promise<v
     fail(id, "refused", "Not enough Sepolia ETH", `This transaction's gas needs up to ${tokens(need, 18)} ETH, and ${short(from)} has ${tokens(eth, 18)}. Your tPOT stays locked for you; the lock does not expire.`);
     return;
   }
+  const twin = mintElsewhere(id);
+  if (twin) {
+    // One mint is enough: this transfer completes when that one lands (watchIdle reads used(nonce)).
+    patchIn(id, { mint: null, note: null });
+    toast("info", "This lock's mint is under way", `Another transfer of this browser ${twin === "asking" ? "is asking your wallet for" : "has sent"} the same lock's mint. This one completes when it lands.`);
+    return;
+  }
   patchIn(id, { mint: { stage: "asking" }, note: null });
   let hash: Hex;
   try {
-    hash = await sendOn("sepolia", { to: tx.to, data: tx.data, gas, ...fees });
+    hash = await sendOn("sepolia", { from, to: tx.to, data: tx.data, gas, ...fees });
   } catch (e) {
     return mintNotSent(id, e);
   }
-  patchIn(id, { mint: { stage: "sent", hash, sentAt: Date.now() } });
+  patchIn(id, { mint: { stage: "sent", hash, sentAt: Date.now(), ...(next === null ? {} : { by: { from, nonce: next } }) } });
   await followMint(job, id, true);
+}
+
+/**
+ * Another entry of the journal for the same lock whose mint a wallet is asked for, or has sent: in
+ * another tab, or a Finish mint made while that tab had not written the lock's nonce yet. The
+ * journal, not this tab's copy: it has what every tab wrote last.
+ */
+function mintElsewhere(id: string): "asking" | "sent" | null {
+  const nonce = lockT(id)?.nonce ?? null;
+  if (nonce === null) return null;
+  for (const x of readJournal()) {
+    if (x.id === id || x.dir !== "in" || x.nonce !== nonce || isDone(x)) continue;
+    if (x.mint?.stage === "asking" || x.mint?.stage === "sent") return x.mint.stage;
+  }
+  return null;
 }
 
 function mintNotSent(id: string, e: unknown): void {
@@ -581,14 +670,16 @@ function mintNotSent(id: string, e: unknown): void {
  */
 async function followMint(job: Job, id: string, auto: boolean): Promise<void> {
   const seen = { tx: null as Seen | null };
+  let strikes = 0;
   for (let round = 1; !job.stop; round++) {
     const t = lockT(id);
     if (!t || t.mint?.stage !== "sent" || t.nonce === null) return;
-    const { hash, sentAt } = t.mint;
+    const { hash, sentAt, by } = t.mint;
     const nonce = t.nonce;
     const got = await patiently(job, id, "Sepolia", () => receiptOn("sepolia", hash, round === 1 || round % REPLACED_EVERY === 0));
     if (!got) return;
     const r = got.value;
+    if (!r && !seen.tx) seen.tx = await seenTx(SEPOLIA, hash);
     if (r?.ok) {
       const minted = mintedIn(r.logs, registry, MINTER, BigInt(nonce));
       if (minted) {
@@ -612,7 +703,13 @@ async function followMint(job: Job, id: string, auto: boolean): Promise<void> {
         return;
       }
     }
-    const fate = !r && round % REPLACED_EVERY === 0 ? await fateOf(SEPOLIA, hash, seen) : "pending";
+    let fate: Fate = "pending";
+    if (!r && round % REPLACED_EVERY === 0) {
+      fate = await fateOf(SEPOLIA, hash, seen, by);
+      // Twice, a check apart, as for the lock and the burn: once could be a copy no node serves yet.
+      strikes = fate === "replaced" ? strikes + 1 : 0;
+      if (fate === "replaced" && strikes < 2) fate = "pending";
+    }
     if (fate !== "pending") {
       // A speed-up that minted completes the transfer. Mined with a receipt no endpoint serves, it
       // was a self-relay's import; replaced (a cancel, or a sped-up import), the plan says what is left.
@@ -695,6 +792,7 @@ async function adopt(n: number): Promise<void> {
   if (x.minted === true) return go(`#/receipt/${chainId}`);
   const id = newId("in");
   const at = x.at ?? Date.now();
+  own(id);
   putTransfer({
     id,
     dir: "in",
@@ -721,13 +819,15 @@ async function adopt(n: number): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 // The way back: the burn
 
-/** The review's Confirm on the way back: a new transfer, its screen, and the burn asked for. */
-export function startBurn(amountText: string): void {
+/** The review's Confirm on the way back: a new transfer, its screen, and the burn asked for, from `reviewed`, the address the review showed. */
+export function startBurn(amountText: string, reviewed: string): void {
   const amount = parseAmount(amountText);
   if (amount === null) return toast("revert", "Not an amount BridgeMinter takes", "Up to 14 decimals, more than 0.");
   const from = me();
-  if (!from) return connectThen(() => startBurn(amountText));
+  if (!from) return connectThen(() => startBurn(amountText, reviewed));
+  if (reviewedElse(reviewed, from, "burn")) return;
   const id = newId("back");
+  own(id);
   putTransfer({
     id,
     dir: "back",
@@ -779,14 +879,16 @@ async function sendBurn(job: Job, id: string): Promise<boolean> {
     fail(id, "refused", prep.problem.title, prep.problem.text);
     return false;
   }
-  say(id, null);
+  if (!sameAddress(me(), from)) return switched(id, "Burn", from);
+  // Whatever the wallet sends from here on is in a later block than the checks read.
+  patchBack(id, (x) => ({ note: null, fromBlock: prep.head === null ? x.fromBlock : prep.head + 1 }));
   let hash: Hex;
   try {
-    hash = await sendOn("sepolia", { to: MINTER, data: prep.data, gas: prep.gas, ...prep.fees });
+    hash = await sendOn("sepolia", { from, to: MINTER, data: prep.data, gas: prep.gas, ...prep.fees });
   } catch (e) {
     return walletRefused(id, e, "Burn");
   }
-  patchBack(id, { burn: { stage: "sent", hash, sentAt: Date.now() } });
+  patchBack(id, { burn: { stage: "sent", hash, sentAt: Date.now(), ...(prep.nonce === null ? {} : { by: { from, nonce: prep.nonce } }) } });
   return true;
 }
 
@@ -802,13 +904,15 @@ async function followBurn(job: Job, id: string): Promise<boolean> {
   for (let round = 1; !job.stop; round++) {
     const t = burnT(id);
     if (!t || t.burn.stage !== "sent") return false;
-    const { hash, sentAt } = t.burn;
+    const { hash, sentAt, by } = t.burn;
     const look = round % REPLACED_EVERY === 0;
     const got = await patiently(job, id, "Sepolia", () => receiptOn("sepolia", hash, round === 1 || look));
     if (!got) return false;
     let r: Landed | null = got.value;
+    // Seen in a pool from the first round: a Cancel can take its place within seconds.
+    if (!r && !seen.tx) seen.tx = await seenTx(SEPOLIA, hash);
     if (!r && look) {
-      const fate = await fateOf(SEPOLIA, hash, seen);
+      const fate = await fateOf(SEPOLIA, hash, seen, by);
       const logs = await burnsSince(t).catch((): ChainLog[] => []);
       const mine = logs.find((l) => l.transactionHash.toLowerCase() === hash);
       const other = logs.find((l) => l.transactionHash.toLowerCase() !== hash);
@@ -962,16 +1066,23 @@ async function settleRelease(id: string, burnId: Hex, lastFalse: number | null, 
 }
 
 // ---------------------------------------------------------------------------------------------
-// A lock or a burn sent under another hash than the one this page holds: a reload that cut the
-// wallet's prompt off, or the wallet's own Speed up
+// A lock or a burn sent under another hash than the one this page holds: a closed tab or a reload
+// that cut the wallet's prompt off, or the wallet's own Speed up
 
 /**
- * The vault's Locked logs from this transfer's sender for its amount, from about ten minutes before
- * it started, but those of locks other transfers of this browser follow.
+ * Where a transfer's lock or burn can be: from the block after the one the checks before the wallet's
+ * prompt read (fromBlock), so a lock or a burn the address made before cannot be taken for it. A
+ * transfer from before the page kept that block: about ten minutes before it started.
  */
+async function searchFrom(t: LiveTransfer, endpoints: Endpoint[], blockSeconds: number, slack: number): Promise<number> {
+  if (t.fromBlock !== undefined) return t.fromBlock;
+  const head = Number(BigInt((await request<Hex>(endpoints, "eth_blockNumber", [])).result));
+  return Math.max(0, head - Math.ceil((Date.now() - t.startedAt) / (blockSeconds * 1000)) - slack);
+}
+
+/** The vault's Locked logs from this transfer's sender for its amount, since searchFrom, but those of locks other transfers of this browser follow. Oldest first. */
 async function locksSince(t: LockTransfer): Promise<ChainLog[]> {
-  const head = Number(BigInt((await request<Hex>(V3_EVM, "eth_blockNumber", [])).result));
-  const from = Math.max(0, head - Math.ceil((Date.now() - t.startedAt) / 6_000) - 100);
+  const from = await searchFrom(t, V3_EVM, 6, 100);
   const logs = (await request<ChainLog[]>(V3_EVM, "eth_getLogs", [{ address: VAULT, topics: [LOCKED, null, topicOf(t.recipient)], fromBlock: qty(from), toBlock: "latest" }])).result;
   const others = [...transfers.get().values()].filter((x): x is LockTransfer => x.dir === "in" && x.id !== t.id);
   const nonces = new Set(others.map((x) => x.nonce));
@@ -984,13 +1095,9 @@ async function locksSince(t: LockTransfer): Promise<ChainLog[]> {
   });
 }
 
-/**
- * BridgeMinter's BurnRequested logs from this transfer's sender for its amount, from about ten
- * minutes before it started, but those of burns other transfers of this browser follow.
- */
+/** BridgeMinter's BurnRequested logs from this transfer's sender for its amount, since searchFrom, but those of burns other transfers of this browser follow. Oldest first. */
 async function burnsSince(t: BurnTransfer): Promise<ChainLog[]> {
-  const head = Number(BigInt((await request<Hex>(SEPOLIA, "eth_blockNumber", [])).result));
-  const from = Math.max(0, head - Math.ceil((Date.now() - t.startedAt) / 12_000) - 50);
+  const from = await searchFrom(t, SEPOLIA, 12, 50);
   const logs = (await request<ChainLog[]>(SEPOLIA_LOGS, "eth_getLogs", [{ address: MINTER, topics: [BURN_REQUESTED, null, topicOf(t.recipient)], fromBlock: qty(from), toBlock: "latest" }])).result;
   const others = [...transfers.get().values()].filter((x): x is BurnTransfer => x.dir === "back" && x.id !== t.id);
   const nonces = new Set(others.map((x) => x.burnNonce));
@@ -1003,27 +1110,61 @@ async function burnsSince(t: BurnTransfer): Promise<ChainLog[]> {
   });
 }
 
-/** A transfer whose wallet prompt the reload cut off: its transaction on the chain if the wallet sent it, else not sent. */
+/** How long recover looks for a lock or a burn before it counts as not sent; and at most, while the sender has a transaction pending on that chain. */
+const RECOVER_FOR = 3 * 60_000;
+const RECOVER_PENDING_FOR = 15 * 60_000;
+
+/** The transfer's lock or burn on chain, looked for once: its log since the wallet was asked. */
+async function onChain(job: Job, id: string, t: LiveTransfer): Promise<{ found: ChainLog | null } | null> {
+  const got = await patiently(job, id, t.dir === "in" ? "Portaldot V3" : "Sepolia", () => (t.dir === "in" ? locksSince(t) : burnsSince(t)));
+  return got ? { found: got.value[0] ?? null } : null;
+}
+
+/** The lock or the burn found on chain, followed as this transfer's from there. */
+async function followFound(job: Job, id: string, t: LiveTransfer, log: ChainLog): Promise<void> {
+  const sent = { stage: "sent" as const, hash: log.transactionHash.toLowerCase() as Hex, sentAt: t.startedAt };
+  if (t.dir === "in") {
+    patchIn(id, { lock: sent, note: null, failure: null });
+    await lockFlow(job, id, false);
+  } else {
+    patchBack(id, { burn: sent, note: null, failure: null });
+    await burnFlow(job, id);
+  }
+}
+
+/**
+ * A transfer whose wallet prompt was cut off (the tab that asked closed or reloaded first): its lock
+ * or burn on chain if the wallet sent it, else not sent. Not after one read: a confirmed transaction
+ * takes a block or two to show, and a wallet's prompt can outlive the page that opened it. So a few
+ * minutes, and longer while the sender has a transaction pending there. One the page closed on
+ * before the wallet was asked (no fromBlock: the checks were still running) is looked for once.
+ */
 async function recover(job: Job, id: string): Promise<void> {
   const t = transfers.get().get(id);
   if (!t) return;
   const what = t.dir === "in" ? "lock" : "burn";
-  say(id, { text: `This page reloaded while your wallet was asking: looking for the ${what} on ${t.dir === "in" ? "V3" : "Sepolia"}`, wallet: false });
-  const got = await patiently(job, id, t.dir === "in" ? "Portaldot V3" : "Sepolia", () => (t.dir === "in" ? locksSince(t) : burnsSince(t)));
-  if (!got) return;
-  const found = got.value[0];
-  if (!found) {
-    fail(id, "refused", "Not sent", `This page reloaded while your wallet was asking, and no such ${what} from your address is on chain since. If you confirm it in your wallet later, Activity lists it from the chain.`);
-    return;
+  const chain = t.dir === "in" ? "V3" : "Sepolia";
+  const asked = t.fromBlock !== undefined;
+  const began = Date.now();
+  say(id, { text: asked ? `Looking for the ${what} on ${chain}: the page that asked your wallet closed first. If the wallet still asks, answer it there.` : `Looking for the ${what} on ${chain}`, wallet: false });
+  for (;;) {
+    const read = await onChain(job, id, t);
+    if (!read || job.stop) return;
+    if (read.found) return followFound(job, id, t, read.found);
+    if (!asked) break;
+    const waited = Date.now() - began;
+    if (waited >= RECOVER_FOR && (waited >= RECOVER_PENDING_FOR || !(await pendingFrom(t.dir === "in" ? V3_EVM : SEPOLIA, t.recipient)))) break;
+    await sleep(t.dir === "in" ? 2 * V3_POLL : 3 * SEPOLIA_POLL);
+    if (job.stop) return;
   }
-  const sent = { stage: "sent" as const, hash: found.transactionHash.toLowerCase() as Hex, sentAt: t.startedAt };
-  if (t.dir === "in") {
-    patchIn(id, { lock: sent, note: null });
-    await lockFlow(job, id, false);
-  } else {
-    patchBack(id, { burn: sent, note: null });
-    await burnFlow(job, id);
-  }
+  fail(
+    id,
+    "refused",
+    "Not sent",
+    asked
+      ? `No ${what} from your address for this amount is on ${chain} since your wallet was asked for it. If you confirm it in your wallet later, Activity lists it from the chain.`
+      : `The page closed while it checked the ${what}, before your wallet was asked: nothing was sent.`,
+  );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1036,32 +1177,52 @@ function sign(id: string): void {
     if (k.dir === "in") void adopt(k.n);
     return;
   }
-  if (!lockT(id)) return;
+  if (!lockT(id) || elsewhere(id, () => sign(id))) return;
   connectThen(() => runFor(id, (job) => lockFlow(job, id, true)));
 }
 
-/** Try again from where the transfer stopped: the lock or the burn again when nothing is on chain, else on from there. */
+/**
+ * Try again from where the transfer stopped: the lock or the burn again when nothing is on chain,
+ * else on from there. Before the wallet is asked for another, the one it was asked for before is
+ * looked for once more: confirmed late, or a Speed up taken for a Cancel, it is this transfer's.
+ */
 function retry(id: string): void {
   const t = transfers.get().get(id);
-  if (!t || jobs.has(id)) return;
-  const again = (): void => {
-    const x = transfers.get().get(id);
-    if (!x) return;
-    if (x.dir === "in") {
-      const fresh = x.nonce === null && x.lock.stage !== "mined" && (x.failure?.reason !== "stopped" || x.lock.stage === "asking");
-      patchIn(id, fresh ? { failure: null, note: null, lock: { stage: "asking" }, startedAt: Date.now() } : { failure: null, note: null });
-      runFor(id, (job) => lockFlow(job, id, true));
-    } else {
-      const fresh = x.burnNonce === null && x.burn.stage !== "mined" && (x.failure?.reason !== "stopped" || x.burn.stage === "asking");
-      patchBack(id, fresh ? { failure: null, note: null, burn: { stage: "asking" }, startedAt: Date.now() } : { failure: null, note: null });
-      runFor(id, (job) => burnFlow(job, id));
-    }
-  };
-  connectThen(again);
+  if (!t || jobs.has(id) || elsewhere(id, () => retry(id))) return;
+  connectThen(() =>
+    runFor(id, async (job) => {
+      const x = transfers.get().get(id);
+      if (!x) return;
+      const stage = x.dir === "in" ? x.lock.stage : x.burn.stage;
+      // Stopped while it looked for what the wallet sent: looked for again, as after a reload.
+      if (stage === "asking" && x.failure?.reason === "stopped" && x.fromBlock !== undefined) {
+        updateTransfer(id, (y) => ({ ...y, failure: null }));
+        return recover(job, id);
+      }
+      const unsent = (x.dir === "in" ? x.nonce : x.burnNonce) === null;
+      const fresh = unsent && stage !== "mined" && (x.failure?.reason !== "stopped" || stage === "asking");
+      const asked = x.fromBlock !== undefined && x.failure?.reason !== "reverted";
+      updateTransfer(id, (y) => ({ ...y, failure: null, note: fresh && asked ? { text: `Looking on ${x.dir === "in" ? "V3" : "Sepolia"} for the ${x.dir === "in" ? "lock" : "burn"} your wallet was asked for before`, wallet: false } : null }));
+      if (fresh && asked) {
+        const read = await onChain(job, id, x);
+        if (!read || job.stop) return;
+        if (read.found) return followFound(job, id, x, read.found);
+      }
+      // A fresh attempt: its own fromBlock is taken before the wallet is asked again.
+      if (x.dir === "in") {
+        if (fresh) patchIn(id, { note: null, lock: { stage: "asking" }, startedAt: Date.now(), fromBlock: undefined });
+        await lockFlow(job, id, true);
+      } else {
+        if (fresh) patchBack(id, { note: null, burn: { stage: "asking" }, startedAt: Date.now(), fromBlock: undefined });
+        await burnFlow(job, id);
+      }
+    }),
+  );
 }
 
 /** The wallet's own Speed up re-signs the same mint at its nonce; this page follows the lock's nonce, so either copy completes it. */
 function speedUp(id: string): void {
+  if (elsewhere(id, () => speedUp(id))) return;
   toast(
     "info",
     "Speed it up in your wallet",
@@ -1081,7 +1242,7 @@ function speedUp(id: string): void {
 function watchIdle(): void {
   if (document.hidden) return;
   for (const t of transfers.get().values()) {
-    if (t.dir !== "in" || t.nonce === null || isDone(t) || jobs.has(t.id)) continue;
+    if (t.dir !== "in" || t.nonce === null || isDone(t) || jobs.has(t.id) || !follows(t.id)) continue;
     const { id, nonce } = t;
     void usedOnSepolia(nonce).then(
       (used) => {
@@ -1113,15 +1274,48 @@ function readJournal(): LiveTransfer[] {
   }
 }
 
-/** Writes this tab's transfers over the journal, keeping what other tabs added since (by id). */
+/** Set while another tab's journal is copied in: what it wrote is not written back. */
+let mirroring = false;
+
+/** Writes the transfers this tab follows over the journal; every other entry stays as the tab that follows it wrote it (journal.ts, mergeJournal). */
 function saveJournal(): void {
+  if (mirroring) return;
   try {
-    const mine = [...transfers.get().values()];
-    const ids = new Set(mine.map((t) => t.id));
-    storage()?.setItem(JOURNAL_KEY, encodeJournal([...readJournal().filter((t) => !ids.has(t.id)), ...mine]));
+    storage()?.setItem(JOURNAL_KEY, encodeJournal(mergeJournal(readJournal(), [...transfers.get().values()], follows)));
   } catch {
     // Full or blocked: the page follows its transfers until it closes, and Activity reads them from the chains.
   }
+}
+
+/** Another tab wrote the journal: the transfers it follows, as it has them now, and any it started, which this tab takes over if that tab closes. */
+function mirror(e: StorageEvent): void {
+  if (e.key !== JOURNAL_KEY) return;
+  const added: LiveTransfer[] = [];
+  mirroring = true;
+  try {
+    for (const t of decodeJournal(e.newValue)) {
+      if (follows(t.id)) continue;
+      const known = transfers.get().get(t.id);
+      if (!known) added.push(t);
+      if (!known || encodeJournal([known]) !== encodeJournal([t])) putTransfer(t);
+    }
+  } finally {
+    mirroring = false;
+  }
+  for (const t of added) if (!isDone(t)) claim(t.id, () => takeOver(t.id));
+}
+
+/**
+ * A transfer this tab follows from now on: as the journal has it last (the tab that followed it
+ * may have moved it on), then followed again from there. A mint prompt that tab had open is gone
+ * with it.
+ */
+function takeOver(id: string): void {
+  const latest = readJournal().find((t) => t.id === id) ?? transfers.get().get(id);
+  if (!latest) return;
+  const t = latest.dir === "in" && latest.mint?.stage === "asking" ? { ...latest, mint: null } : latest;
+  putTransfer(t);
+  resume(t);
 }
 
 /**
@@ -1143,15 +1337,27 @@ function resume(t: LiveTransfer): void {
 
 let started = false;
 
-/** Reads the journal back and follows each transfer again, keeps the journal from then on, and wires the transfer screen's buttons. */
+/**
+ * Reads the journal back and follows each transfer again once this tab holds it (at once, unless
+ * another tab follows it now), keeps the journal from then on, and wires the transfer screen's
+ * buttons.
+ */
 export function startSends(): void {
   if (started) return;
   started = true;
   transferActions.retry = retry;
   transferActions.sign = sign;
   transferActions.speedUp = speedUp;
-  for (const t of readJournal()) putTransfer(t.dir === "in" && t.mint?.stage === "asking" ? { ...t, mint: null } : t);
+  // The visitor acted on a transfer in another tab, which took it from this one: this tab stops
+  // running it, shows what that tab writes, and takes it back when that tab closes.
+  onTaken((id) => {
+    const job = jobs.get(id);
+    if (job) job.stop = true;
+    claim(id, () => takeOver(id));
+  });
+  for (const t of readJournal()) putTransfer(t);
   transfers.subscribe(saveJournal);
-  for (const t of transfers.get().values()) resume(t);
+  window.addEventListener("storage", mirror);
+  for (const t of transfers.get().values()) if (!isDone(t)) claim(t.id, () => takeOver(t.id));
   setInterval(watchIdle, IDLE_POLL);
 }

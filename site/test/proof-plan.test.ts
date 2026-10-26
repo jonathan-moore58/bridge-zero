@@ -17,9 +17,10 @@ import { blake2b256, eventTopic, keccak256 } from "../src/lib/hashes.ts";
 import { bytesToHex, hexToBytes, type Hex } from "../src/lib/hex.ts";
 import { importAndMintCalldata, mintCalldata, MULTICALL3, type LockProof } from "../src/lib/proof/calldata.ts";
 import { clientCrypto, signersHint } from "../src/lib/proof/grandpa.ts";
-import { CHECK_KEYS, lockRefOf, PlanError, planMint, type Check, type LockRef, type PlanOptions } from "../src/lib/proof/plan.ts";
+import { CHECK_KEYS, lockRefOf, PlanError, planMint, unreachable, type Check, type LockRef, type PlanOptions } from "../src/lib/proof/plan.ts";
 import { decodeFinalityProof, decodeJustification } from "../src/lib/proof/scale.ts";
 import { lockCommitment } from "../src/lib/proofs.ts";
+import { AllFailed, NodeError, TransportError } from "../src/lib/rpc.ts";
 import {
   B,
   bundle,
@@ -146,6 +147,27 @@ function assertRelayedImport(call: { target: Hex; allowFailure: boolean; callDat
 }
 
 const proveAsks = (c: Chains): number[] => c.seen.filter((s) => s.method === "grandpa_proveFinality").map((s) => s.params[0] as number);
+
+/** The fake V3 node answers HTTP 503 to the next `times` requests that carry one of `methods`, as a public node under load does; then it answers again. */
+function busyFor(methods: string[], times: number): void {
+  const inner = globalThis.fetch;
+  let left = times;
+  globalThis.fetch = (async (url: string | URL, init: RequestInit) => {
+    const body = JSON.parse(String(init.body)) as { method: string } | { method: string }[];
+    const asked = (Array.isArray(body) ? body : [body]).map((x) => x.method);
+    if (left > 0 && String(url) === "https://v3.fake/" && asked.some((m) => methods.includes(m))) {
+      left--;
+      return new Response("Service Unavailable", { status: 503 });
+    }
+    return inner(url, init);
+  }) as typeof fetch;
+}
+
+/** The light client at set 33, its latest import lock 1's block #118,637, which it holds: mint(p) applies. */
+function holdsB(c: Chains): void {
+  atSet33(c, { number: B.number, hash: B.hash });
+  c.sepolia.client.held.set(B.hash, { number: B.number, stateRoot: bundle.header.stateRoot, setId: 33n });
+}
 const states = (checks: Check[]) => Object.fromEntries(checks.map((c) => [c.key, c.state]));
 const ALL_PASSED = Object.fromEntries(CHECK_KEYS.map((k) => [k, "passed"]));
 const at = (lock: LockRef, block: number): LockRef => ({ ...lock, block });
@@ -469,6 +491,77 @@ test("the change's state pruned: the change is imported and the mint is at V3's 
   assertRelayedImport(calls[0]!, S0);
   assert.equal(calls[1]?.callData, LOCK1_MINT);
   assert.match(plan.why, /could not be read/);
+});
+
+test("a node not reached for a moment is asked again: planMint throws, and is no reason for a dearer path or a blocked mint", async () => {
+  const reads = ["state_getReadProof", "state_getChildReadProof"];
+  // Behind V3's set, with a held block at the lock: a 503 on the proof reads at the held block does not turn mint(p) into importAndMint at the change.
+  const c = fakeChains();
+  holdsB(c);
+  headAt(c, S1, [B]);
+  lockProofs(c, B, S1);
+  busyFor(reads, 2);
+  const e = await planMint(LOCK1, c.env, opts()).then(
+    () => null,
+    (x: unknown) => x,
+  );
+  assert.ok(e instanceof AllFailed, String(e));
+  assert.equal(unreachable(e), true);
+  const again = await planMint(LOCK1, c.env, opts());
+  assert.equal(again.status, "ready", again.why);
+  assert.equal(again.path, "mint");
+  assert.equal(again.txs[0]?.gas, 601_970n);
+  // Paused: the same 503 is not "blocked, holds no V3 block at or after the lock's".
+  restoreFetch();
+  const p = fakeChains();
+  holdsB(p);
+  p.sepolia.client.paused = true;
+  headAt(p, S1, [B]);
+  lockProofs(p, B);
+  busyFor(reads, 2);
+  await assert.rejects(planMint(LOCK1, p.env, opts()), (x: unknown) => unreachable(x));
+  const later = await planMint(LOCK1, p.env, opts());
+  assert.deepEqual([later.status, later.path], ["ready", "mint"]);
+});
+
+test("paused, and the node no longer serves the held block's state: blocked, saying so, not that the client holds no block", async () => {
+  const c = fakeChains();
+  holdsB(c);
+  c.sepolia.client.paused = true;
+  headAt(c, S1, [B]);
+  lockProofs(c, B);
+  c.v3.pruned.add(B.hash);
+  const plan = await planMint(LOCK1, c.env, opts());
+  assert.equal(plan.status, "blocked");
+  assert.match(plan.why, /^The light client is paused, so it imports nothing until its admin acts, and mint\(p\) at the block it holds, #118,637, could not be built: .*State already discarded/);
+  assert.doesNotMatch(plan.why, /holds no V3 block|reads at V3's head instead/);
+});
+
+test("unreachable: only a read that reached no node; a node's refusal is an answer", () => {
+  const ep = { id: "x", label: "fake V3 node", url: "https://v3.fake/" };
+  assert.equal(unreachable(new TransportError("unreachable", ep)), true);
+  assert.equal(unreachable(new AllFailed("state_getReadProof", ["state_getReadProof: fake V3 node: HTTP 503", "wss://v3.fake: could not open a WebSocket"])), true);
+  assert.equal(unreachable(new AllFailed("state_getReadProof", ["state_getReadProof: fake V3 node: State already discarded for block", "wss://v3.fake: no connection in 8 s"])), false);
+  assert.equal(unreachable(new NodeError(4, "GRANDPA prove finality rpc failed: Block not yet finalized", undefined, ep)), false);
+});
+
+test("a set that began at a checkpoint and ended before the guess: the guess is held to V3's head, and the change is found", async () => {
+  const c = fakeChains();
+  atSet32(c, 116_000);
+  headAt(c, B, [S0]);
+  lockProofs(c, B);
+  const prove = c.v3.prove;
+  // The V3 node refuses to prove a block past its finalized head (live, Oct 26).
+  c.v3.prove = (n) => {
+    if (n > B.number) throw new RpcFail(4, "GRANDPA prove finality rpc failed: Block not yet finalized");
+    return prove(n);
+  };
+  const plan = await planMint(LOCK1, c.env, opts());
+  assert.equal(plan.status, "ready", plan.why);
+  assert.equal(plan.path, "selfRelay");
+  assertRelayedImport(callsOf(plan.txs[0]!.data)[0]!, S0);
+  // #116,000 + 3,500 is past the head: asked at the head (set 33's proof, no change of set 32), then after the client's latest, then the mint's own proof.
+  assert.deepEqual(proveAsks(c), [118_637, 116_993, 118_637]);
 });
 
 test("a forced path that does not apply throws PlanError; a forced self-relay of one change", async () => {
