@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { CH, fromOf, type ChainInfo, type Dir } from "./facts.ts";
 import { useRoute, type Route } from "./router.ts";
 import { useBox } from "./store.ts";
-import { addWtpotToWallet, connectWallet, openNoWallet } from "./connect.tsx";
+import { addWtpotToWallet, openNoWallet, openWalletPicker } from "./connect.tsx";
 import { useNet, type NetState } from "./net.ts";
 import { Announcer, CopyButton, Icon, Mark, SheetHost, Toasts, closeSheet, fmt, short, toast } from "./ui.tsx";
 import { ActivityView } from "./views/Activity.tsx";
@@ -45,7 +45,16 @@ function BalanceRow({ mark, token, where, value }: { mark: string; token: string
   );
 }
 
-function WalletMenu({ address, balances, onClose }: { address: string; balances: Balances | null; onClose: (focusButton: boolean) => void }) {
+interface MenuProps {
+  address: string;
+  /** The connected wallet's name and icon (a data:image/ URI, or null). */
+  name: string | null;
+  icon: string | null;
+  balances: Balances | null;
+  onClose: (focusButton: boolean) => void;
+}
+
+function WalletMenu({ address, name, icon, balances, onClose }: MenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ref.current?.querySelector<HTMLElement>(".menu__item")?.focus();
@@ -77,7 +86,15 @@ function WalletMenu({ address, balances, onClose }: { address: string; balances:
   return (
     <div class="menu" id="wallet-menu" role="menu" aria-labelledby="wallet" ref={ref} onKeyDown={onKeyDown}>
       <div class="menu__head">
-        <span class="menu__addr mono">{short(address)}</span>
+        <span class="menu__who">
+          <span class="menu__addr mono">{short(address)}</span>
+          {name ? (
+            <span class="badge badge--sm badge--muted menu__via">
+              {icon ? <img class="wallet-ico" src={icon} alt="" /> : <Icon id="i-wallet" />}
+              <span>{name}</span>
+            </span>
+          ) : null}
+        </span>
         <CopyButton value={address} label="your address" />
       </div>
       <dl class="menu__bals">
@@ -185,7 +202,7 @@ function WalletButton({ needs, net }: { needs: ChainInfo | null; net: NetState }
     );
   } else if (wrong) {
     cls += " wallet--wrong";
-    label = `Wallet ${short(w.address)} is on ${on ? on.full : `chain ${w.chainId}`}, the wrong network. Open wallet menu`;
+    label = `${w.name ?? "Wallet"} ${short(w.address)} is on ${on ? on.full : `chain ${w.chainId}`}, the wrong network. Open wallet menu`;
     inner = (
       <>
         <span class="wallet__net">{on ? <Mark id={on.markId} /> : null}</span>
@@ -198,7 +215,7 @@ function WalletButton({ needs, net }: { needs: ChainInfo | null; net: NetState }
     );
   } else {
     cls += ` wallet--st-${net.cls}`;
-    label = `Wallet ${short(w.address)}${shown ? ` on ${shown.full}` : ""}. ${net.label}. Open wallet menu`;
+    label = `${w.name ?? "Wallet"} ${short(w.address)}${shown ? ` on ${shown.full}` : ""}. ${net.label}. Open wallet menu`;
     inner = (
       <>
         <span class="wallet__net">{shown ? <Mark id={shown.markId} /> : null}</span>
@@ -211,7 +228,7 @@ function WalletButton({ needs, net }: { needs: ChainInfo | null; net: NetState }
   const onClick = (e: MouseEvent) => {
     e.stopPropagation();
     if (w.status === "none") return openNoWallet();
-    if (w.status === "off") return void connectWallet();
+    if (w.status === "off") return openWalletPicker();
     if (w.status === "connecting") return;
     setOpen((o) => !o);
   };
@@ -226,13 +243,13 @@ function WalletButton({ needs, net }: { needs: ChainInfo | null; net: NetState }
         ref={btn}
         aria-label={label}
         aria-busy={w.status === "connecting" ? "true" : undefined}
-        aria-haspopup={w.status === "none" ? "dialog" : menu ? "menu" : undefined}
+        aria-haspopup={w.status === "none" || w.status === "off" ? "dialog" : menu ? "menu" : undefined}
         aria-expanded={menu ? open : undefined}
         onClick={onClick}
       >
         {inner}
       </button>
-      {open && w.address ? <WalletMenu address={w.address} balances={w.balances} onClose={close} /> : null}
+      {open && w.address ? <WalletMenu address={w.address} name={w.name} icon={w.icon} balances={w.balances} onClose={close} /> : null}
     </div>
   );
 }

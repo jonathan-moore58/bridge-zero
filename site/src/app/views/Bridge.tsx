@@ -3,7 +3,7 @@
 
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { connectWallet, openNoWallet } from "../connect.tsx";
+import { openNoWallet, openWalletPicker } from "../connect.tsx";
 import {
   BURN_GAS,
   BURN_GAS_FULL,
@@ -599,7 +599,7 @@ function action(k: Facts, w: WalletState, net: NetState, busy: string | null, ru
         </>
       ),
       hint: "Connect to see your balances. Nothing is sent until you sign.",
-      run: () => void connectWallet(),
+      run: () => openWalletPicker(),
     };
   }
   if (k.loading) {

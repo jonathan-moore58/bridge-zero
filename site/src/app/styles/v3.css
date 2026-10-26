@@ -534,3 +534,47 @@
 .speed[aria-readonly="true"] .opt:active {
   transform: none;
 }
+
+/* ------------------------------------------------------------------ 10. the wallet picker
+   The picker's rows are the chain picker's (.picker__list, .list-row), each with the icon the wallet
+   announced (EIP-6963, a data: image), or the sprite's wallet on the brand wash as the wallet button
+   draws it. The wallet menu repeats the icon and the name small, in a badge beside the address. */
+
+.wallet-ico {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-2);
+  object-fit: contain;
+}
+
+.wallet-ico--none {
+  display: grid;
+  place-items: center;
+  color: var(--lilac);
+  background: var(--brand-wash);
+  box-shadow: inset 0 0 0 1px var(--line-brand);
+}
+
+.badge .wallet-ico {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.menu__who {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.menu__via,
+.menu__via span {
+  min-width: 0;
+}
+
+.menu__via span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

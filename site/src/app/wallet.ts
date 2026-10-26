@@ -1,17 +1,29 @@
-// The visitor's browser wallet (EIP-1193): whether there is one, the connected address and the chain
-// it is on. Balances are read from the public RPCs for that address, not through the wallet, so they
-// show on both chains whichever chain the wallet is on.
+// The visitor's browser wallets, through wagmi's core (@wagmi/core, on viem): every wallet that
+// announces itself (EIP-6963), window.ethereum for one that does not, the connected address and the
+// chain it is on. Balances are read from the public RPCs for that address, not through the wallet,
+// so they show on both chains whichever chain the wallet is on.
 
+import {
+  connect as wagmiConnect,
+  createConfig,
+  createStorage,
+  disconnect as wagmiDisconnect,
+  getConnection,
+  getConnectorClient,
+  injected,
+  reconnect,
+  switchChain,
+  watchAsset,
+  watchConnection,
+  watchConnectors,
+} from "@wagmi/core";
+import { addChain } from "viem/actions";
 import { encodeCall } from "../lib/abi.ts";
-import { SEPOLIA, SEPOLIA_CHAIN_ID, TOKEN, V3_CHAIN_ID, V3_EVM } from "../lib/chains.ts";
+import { SEPOLIA, TOKEN, V3_EVM } from "../lib/chains.ts";
 import { request } from "../lib/rpc.ts";
-import { CH, V3_RPC, V3_SCAN, type ChainKey } from "./facts.ts";
+import { sepolia, transports, v3 } from "./chains.ts";
+import type { ChainKey } from "./facts.ts";
 import { Box } from "./store.ts";
-
-interface Eip1193 {
-  request(args: { method: string; params?: unknown }): Promise<unknown>;
-  on?(event: string, fn: (...args: never[]) => void): void;
-}
 
 export type WalletStatus = "none" | "off" | "connecting" | "on";
 
@@ -28,155 +40,282 @@ export interface WalletState {
   chainId: bigint | null;
   /** null until the first read for this address answers. */
   balances: Balances | null;
+  /** The connected wallet's name, and its icon: the data:image/ URI it announced, or null. */
+  name: string | null;
+  icon: string | null;
 }
 
-export const wallet = new Box<WalletState>({ status: "off", address: null, chainId: null, balances: null });
+/** A wallet the picker offers. */
+export interface WalletOption {
+  /** wagmi's connector id: the wallet's EIP-6963 rdns (io.metamask, say), or "injected" for window.ethereum. */
+  id: string;
+  name: string;
+  /** The data:image/ URI the wallet announced, or null. */
+  icon: string | null;
+  /** The wallet this browser connected with last. */
+  last: boolean;
+}
+
+export const wallet = new Box<WalletState>({ status: "off", address: null, chainId: null, balances: null, name: null, icon: null });
+
+/** The wallets found in this browser, the last used first. */
+export const wallets = new Box<WalletOption[]>([]);
 
 /** V3's EVM values have 18 decimals; tPOT has 14 (NativeToEthRatio 10,000, docs/V3.md). */
 const V3_EVM_PER_NATIVE = 10_000n;
-const FORGET = "bz-app-disconnected";
+/** Wallets answer EIP-6963 at once and a few inject late: this long passes before the page says there is none. */
+const DISCOVERY_MS = 600;
+/** wagmi's connector for window.ethereum; every other connector is a wallet's EIP-6963 announcement. */
+const INJECTED = "injected";
 
-function provider(): Eip1193 | null {
-  const eth = (window as { ethereum?: Eip1193 }).ethereum;
-  return eth && typeof eth.request === "function" ? eth : null;
+/**
+ * localStorage where the browser allows it, else memory for the page's life. wagmi keeps the last
+ * used wallet and each wallet's "disconnected" flag here, and wagmi's own default throws where
+ * storage is blocked.
+ */
+function browserStorage() {
+  const memory = new Map<string, string>();
+  const local = (() => {
+    try {
+      const s = window.localStorage;
+      s.setItem("bz-app.probe", "1");
+      s.removeItem("bz-app.probe");
+      return s;
+    } catch {
+      return null;
+    }
+  })();
+  return {
+    getItem(key: string): string | null {
+      try {
+        if (local) return local.getItem(key);
+      } catch {
+        // Blocked since the probe: memory has what this page wrote.
+      }
+      return memory.get(key) ?? null;
+    },
+    setItem(key: string, value: string): void {
+      memory.set(key, value);
+      try {
+        local?.setItem(key, value);
+      } catch {
+        // Full or blocked: memory keeps it.
+      }
+    },
+    removeItem(key: string): void {
+      memory.delete(key);
+      try {
+        local?.removeItem(key);
+      } catch {
+        // Blocked.
+      }
+    },
+  };
 }
 
-/** The EIP-1193 error code of a wallet's refusal (4001: the user said no; 4902: unknown chain). */
+const config = createConfig({
+  chains: [v3, sepolia],
+  // window.ethereum, for a wallet that does not announce itself; EIP-6963 adds a connector for each
+  // wallet that does. WalletConnect, for a phone wallet without an in-app browser, would be one more
+  // connector here (walletConnect from @wagmi/connectors), with the owner's Reown project id and its
+  // relay's hosts in the page's connect-src (vite.config.ts). It is not wired.
+  connectors: [injected()],
+  multiInjectedProviderDiscovery: true,
+  storage: createStorage({ key: "bz-app.wallet", storage: browserStorage() }),
+  transports,
+});
+
+/** The wallet a connect() waits on. */
+let pending: string | null = null;
+/** The connector id wagmi stored as the last one connected. */
+let recent: string | null = null;
+/** Discovery has had its moment: no wallet by now means none. */
+let settled = false;
+
+const nameOf = (c: { id: string; name: string }): string => (c.id === INJECTED ? "Browser wallet" : c.name);
+
+/** Only a data:image/ URI is drawn as an <img>; anything else gets the page's own wallet icon. */
+const imageOf = (icon: string | undefined): string | null => (icon && /^data:image\//i.test(icon) ? icon : null);
+
+const hasEthereum = (): boolean => typeof (window as { ethereum?: { request?: unknown } }).ethereum?.request === "function";
+
+/**
+ * The EIP-1193 code a wallet answered with (4001: the user said no; 4902: unknown chain; -32002: a
+ * request is already open). viem and wagmi wrap the wallet's error, at times in a class with another
+ * code (a pending request comes back as a SwitchChainError, 4902; a failed wallet_addEthereumChain
+ * as a UserRejectedRequestError, 4001), so this walks the causes and keeps the innermost code, the
+ * wallet's own.
+ */
 export function walletCode(e: unknown): number | null {
-  const c = (e as { code?: unknown } | null)?.code;
-  return typeof c === "number" ? c : null;
+  let code: number | null = null;
+  for (const x of causes(e)) {
+    const c = (x as { code?: unknown }).code;
+    if (typeof c === "number") code = c;
+  }
+  return code;
+}
+
+/** The error and its causes, outermost first; MetaMask Mobile nests its own in data.originalError. */
+function causes(e: unknown): object[] {
+  const out: object[] = [];
+  for (let x: unknown = e; x !== null && typeof x === "object" && !out.includes(x) && out.length < 8; ) {
+    out.push(x);
+    const o = x as { cause?: unknown; data?: { originalError?: unknown } | null };
+    x = o.cause ?? o.data?.originalError;
+  }
+  return out;
+}
+
+/**
+ * What a wallet call threw, for a toast: the wallet's own words (the innermost message; viem's and
+ * wagmi's messages run to docs links and versions), and its code for walletCode.
+ */
+class WalletError extends Error {
+  readonly code: number | null;
+
+  constructor(cause: unknown) {
+    let text = "";
+    for (const x of causes(cause)) {
+      const o = x as { shortMessage?: unknown; message?: unknown };
+      const s = typeof o.shortMessage === "string" ? o.shortMessage : o.message;
+      if (typeof s === "string" && s.trim()) text = s.trim().split("\n")[0] ?? "";
+    }
+    super(text, { cause });
+    this.name = "WalletError";
+    this.code = walletCode(cause);
+  }
 }
 
 function patch(p: Partial<WalletState>): void {
-  wallet.set((w) => ({ ...w, ...p }));
+  wallet.set((w) => ((Object.keys(p) as (keyof WalletState)[]).every((k) => Object.is(w[k], p[k])) ? w : { ...w, ...p }));
 }
 
-function remember(disconnected: boolean): void {
-  try {
-    if (disconnected) localStorage.setItem(FORGET, "1");
-    else localStorage.removeItem(FORGET);
-  } catch {
-    // Storage can be blocked; the wallet's own permission still decides.
-  }
-}
-
-function forgotten(): boolean {
-  try {
-    return localStorage.getItem(FORGET) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function setAccounts(accounts: unknown): void {
-  const a = Array.isArray(accounts) && typeof accounts[0] === "string" ? accounts[0] : null;
-  const prev = wallet.get().address;
-  if (!a) {
-    patch({ status: provider() ? "off" : "none", address: null, balances: null });
+/** The wallet state from wagmi's connection: "connecting" only while a connect() the visitor asked for waits. */
+function sync(): void {
+  const c = getConnection(config);
+  if (c.status === "connected") {
+    const prev = wallet.get();
+    const same = prev.address?.toLowerCase() === c.address.toLowerCase();
+    patch({
+      status: "on",
+      address: c.address,
+      chainId: BigInt(c.chainId),
+      balances: same ? prev.balances : null,
+      name: nameOf(c.connector),
+      icon: imageOf(c.connector.icon),
+    });
+    if (!same) void readBalances();
     return;
   }
-  patch({ status: "on", address: a, balances: prev?.toLowerCase() === a.toLowerCase() ? wallet.get().balances : null });
-  void readBalances();
+  // wagmi's own reconnect on load is not shown: the wallet asks nothing, as with a first visit.
+  const status = pending ? "connecting" : wallets.get().length || !settled ? "off" : "none";
+  patch({ status, address: null, chainId: null, balances: null, name: null, icon: null });
 }
 
-function setChain(id: unknown): void {
-  try {
-    patch({ chainId: typeof id === "string" ? BigInt(id) : null });
-  } catch {
-    patch({ chainId: null });
-  }
+function listWallets(): void {
+  const announced = config.connectors.filter((c) => c.id !== INJECTED);
+  // window.ethereum is listed only when no wallet announced itself: it is usually one of those.
+  const shown = announced.length ? announced : config.connectors.filter((c) => c.id === INJECTED && hasEthereum());
+  const list = shown.map((c) => ({ id: c.id, name: nameOf(c), icon: imageOf(c.icon), last: c.id === recent }));
+  wallets.set(list.sort((a, b) => Number(b.last) - Number(a.last)));
+  sync();
 }
 
 let started = false;
-let timer: ReturnType<typeof setInterval> | undefined;
 
-/** Finds the wallet, restores a connection the visitor already allowed, and follows its events. */
+/** Finds the wallets, restores a connection the visitor already allowed, and follows wagmi's state. */
 export function startWallet(): void {
   if (started) return;
-  const p = provider();
-  if (!p) {
-    patch({ status: "none" });
-    // Some wallets inject after the page loads.
-    window.addEventListener("ethereum#initialized", () => startWallet(), { once: true });
-    return;
-  }
   started = true;
-  patch({ status: "off" });
-  p.on?.("accountsChanged", ((a: unknown) => setAccounts(a)) as never);
-  p.on?.("chainChanged", ((id: unknown) => setChain(id)) as never);
-  void p.request({ method: "eth_chainId" }).then(setChain, () => undefined);
-  if (!forgotten()) void p.request({ method: "eth_accounts" }).then(setAccounts, () => undefined);
-  timer ??= setInterval(() => {
+  watchConnection(config, { onChange: sync });
+  watchConnectors(config, {
+    onChange(list, prev) {
+      listWallets();
+      // The last used wallet announced itself after the reconnect below ran: restore it now.
+      const late = list.find((c) => c.id === recent && !prev.some((p) => p.uid === c.uid));
+      if (late && !pending && getConnection(config).status === "disconnected") void reconnect(config, { connectors: [late] }).catch(() => undefined);
+    },
+  });
+  // A wallet that sets window.ethereum after the page loads, without announcing itself.
+  window.addEventListener("ethereum#initialized", listWallets, { once: true });
+  void Promise.resolve(config.storage?.getItem("recentConnectorId")).then(
+    (id) => {
+      recent = typeof id === "string" ? id : null;
+      listWallets();
+    },
+    () => undefined,
+  );
+  listWallets();
+  setTimeout(() => {
+    settled = true;
+    sync();
+  }, DISCOVERY_MS);
+  // After wagmi has read back what it stored (a few microtasks after createConfig).
+  setTimeout(() => void reconnect(config).catch(() => undefined), 0);
+  setInterval(() => {
     if (!document.hidden && wallet.get().status === "on") void readBalances();
   }, 30_000);
 }
 
-export async function connect(): Promise<void> {
-  const p = provider();
-  if (!p) return;
-  patch({ status: "connecting" });
+/** Connects the wallet the visitor picked (a WalletOption's id); throws what the wallet answered. */
+export async function connect(walletId: string): Promise<void> {
+  const connector = config.connectors.find((c) => c.id === walletId);
+  if (!connector) throw new WalletError(new Error("That wallet is no longer in this browser."));
+  pending = walletId;
+  sync();
   try {
-    const accounts = await p.request({ method: "eth_requestAccounts" });
-    remember(false);
-    setAccounts(accounts);
-    setChain(await p.request({ method: "eth_chainId" }));
+    if (getConnection(config).connector?.uid !== connector.uid) await wagmiConnect(config, { connector });
+    recent = walletId;
+    listWallets();
   } catch (e) {
-    patch({ status: "off" });
-    throw e;
+    throw new WalletError(e);
+  } finally {
+    pending = null;
+    sync();
   }
 }
 
+/** Disconnects every wallet wagmi holds (it asks each to revoke the page's access, where it can). */
 export async function disconnect(): Promise<void> {
-  remember(true);
-  patch({ status: "off", address: null, balances: null });
-  try {
-    await provider()?.request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] });
-  } catch {
-    // Not every wallet can revoke; the page forgets the address either way.
+  for (const { connector } of [...config.state.connections.values()]) {
+    try {
+      await wagmiDisconnect(config, { connector });
+    } catch {
+      // A wallet that has gone away: the page forgets it below either way.
+    }
   }
+  if (config.state.status !== "disconnected") config.setState((x) => ({ ...x, connections: new Map(), current: null, status: "disconnected" }));
 }
 
 /** Asks the wallet to add the Portaldot V3 testnet (it then offers to switch to it). */
 export async function addV3(): Promise<void> {
-  const p = provider();
-  if (!p) return;
-  await p.request({
-    method: "wallet_addEthereumChain",
-    params: [
-      {
-        chainId: "0x" + V3_CHAIN_ID.toString(16),
-        chainName: CH.v3.full,
-        nativeCurrency: { name: "tPOT", symbol: "tPOT", decimals: 18 },
-        rpcUrls: [V3_RPC],
-        blockExplorerUrls: [V3_SCAN],
-      },
-    ],
-  });
+  try {
+    await addChain(await getConnectorClient(config), { chain: v3 });
+  } catch (e) {
+    throw new WalletError(e);
+  }
 }
 
-/** Switches the wallet to a bridge chain, adding V3 first when the wallet does not know it. */
+/** Switches the wallet to a bridge chain; wagmi adds V3 first when the wallet does not know it. */
 export async function switchTo(chain: ChainKey): Promise<void> {
-  const p = provider();
-  if (!p) return;
-  const id = chain === "v3" ? V3_CHAIN_ID : SEPOLIA_CHAIN_ID;
   try {
-    await p.request({ method: "wallet_switchEthereumChain", params: [{ chainId: "0x" + id.toString(16) }] });
+    await switchChain(config, { chainId: chain === "v3" ? v3.id : sepolia.id });
   } catch (e) {
-    if (walletCode(e) === 4902 && chain === "v3") await addV3();
-    else throw e;
+    throw new WalletError(e);
   }
 }
 
 /**
- * Asks the wallet to show wtPOT (EIP-747); true when it added it. A wallet files a token under the
- * network it is on, so this switches it to Sepolia first.
+ * Asks the wallet to show wtPOT (EIP-747); true when it says it added it. A wallet files a token
+ * under the network it is on, so this switches it to Sepolia first.
  */
 export async function addWtpot(): Promise<boolean> {
-  const p = provider();
-  if (!p) return false;
-  if (wallet.get().chainId !== SEPOLIA_CHAIN_ID) await switchTo("sepolia");
-  const answer = await p.request({ method: "wallet_watchAsset", params: { type: "ERC20", options: { address: TOKEN, symbol: "wtPOT", decimals: 14 } } });
-  return answer === true;
+  try {
+    if (getConnection(config).chainId !== sepolia.id) await switchChain(config, { chainId: sepolia.id });
+    return (await watchAsset(config, { type: "ERC20", options: { address: TOKEN, symbol: "wtPOT", decimals: 14 } })) === true;
+  } catch (e) {
+    throw new WalletError(e);
+  }
 }
 
 /** The address's tPOT on V3, wtPOT and ETH on Sepolia. A failed read keeps its last value. */
