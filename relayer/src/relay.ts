@@ -2,9 +2,18 @@
 //
 //   npm run relay -- --chain mainnet|v3 [--dry-run] [--from <address>] [--watch <seconds>]
 //   npm run relay -- --chain mainnet|v3 --send --account <keystore> --password-file <path> [--watch <seconds>]
-//   more options: --rpc <wss url> (the Portaldot node), --state-dir <path>, --scan-limit <blocks>,
+//   more options: --network <name>, --rpc <wss url> (the Portaldot node), --state-dir <path>, --scan-limit <blocks>,
 //   --head-every <blocks>, --priority-fee <gwei>, --max-fee <gwei>, --max-base-fee <gwei>,
 //   --max-base-fee-change <gwei>, --keep <eth>, --replace-after <minutes>
+//
+// --network sepolia (the default, and everything below as written) | base-sepolia | arbitrum-sepolia
+// runs the same relayer for the client on that network (contracts/script/lib/sepolia.mjs NETWORKS):
+// the client and its code from deployments/<network>.json, that network's RPC (its own variable,
+// BASE_SEPOLIA_RPC_URL or ARBITRUM_SEPOLIA_RPC_URL, else its first public RPC) and archive RPCs
+// (BASE_SEPOLIA_ARCHIVE_RPC_URLS or ARBITRUM_SEPOLIA_ARCHIVE_RPC_URLS), and the sender's record,
+// history and lock named relay-<network>-<sender>, so that one key relays to several networks
+// without sharing a nonce or a lock. There, --keep defaults to 0.001 ETH. Where "Sepolia" stands
+// below, read that network.
 //
 // A run reads the client's state on Sepolia (currentSetId, latestFinalized, authorities, halted,
 // paused), takes a finality proof at the Portaldot finalized head, and scans the headers from
@@ -145,7 +154,10 @@ import {
   RECEIPT_TIMEOUT,
   REQUEST_GAS,
   RPC,
-  SEPOLIA_CHAIN_ID,
+  CHAIN_ID,
+  NETWORK,
+  NETWORKS,
+  useNetwork,
   concat,
   dataWord,
   encode,
@@ -190,9 +202,10 @@ const CHAINS = {
 } as const;
 type ChainName = keyof typeof CHAINS;
 
-const DEPLOYMENT = fileURLToPath(new URL("../../deployments/sepolia.json", import.meta.url));
 /** Where an earlier version wrote each sender's record and history (now in the state directory). */
 const DEPLOYMENTS = fileURLToPath(new URL("../../deployments", import.meta.url));
+/** The deployment record of the network: deployments/sepolia.json on Sepolia. */
+const deploymentPath = () => join(DEPLOYMENTS, `${NETWORK.name}.json`);
 /** The default --state-dir: each sender's record, history and lock, outside every checkout. */
 const STATE_DIR = join(homedir(), ".bridge-zero");
 
@@ -201,11 +214,14 @@ const STATE_DIR = join(homedir(), ".bridge-zero");
  * 10,000 blocks, 33 hours): an old receipt, transaction, or the state of an old block, needed to
  * settle a transaction left open that long. SEPOLIA_ARCHIVE_RPC_URLS (comma separated) when set,
  * else two public ones that served all of Sepolia's in October 2026. Each must answer Sepolia's chain id.
+ * On another network, its own variable and RPCs (NETWORKS, archiveEnv and archives).
  */
-const ARCHIVE_RPCS = (process.env.SEPOLIA_ARCHIVE_RPC_URLS ?? "https://sepolia.drpc.org,https://sepolia.gateway.tenderly.co")
-  .split(",")
-  .map((url) => url.trim())
-  .filter((url) => URL.canParse(url));
+const archivesOf = (network: typeof NETWORK) =>
+  (process.env[network.archiveEnv] ?? network.archives.join(","))
+    .split(",")
+    .map((url) => url.trim())
+    .filter((url) => URL.canParse(url));
+let ARCHIVE_RPCS = archivesOf(NETWORK);
 
 /** Header requests in flight during the scan. */
 const SCAN_CONCURRENCY = 32;
@@ -305,14 +321,14 @@ async function sepolia<R>(what: string, read: () => Promise<R>): Promise<R> {
   try {
     return await retry(what, read);
   } catch (error) {
-    throw new Unreachable(`Sepolia RPC unreachable (${what}: ${errorText(error)})`);
+    throw new Unreachable(`${NETWORK.title} RPC unreachable (${what}: ${errorText(error)})`);
   }
 }
 
 /** A Sepolia read that retries by itself (receiptOf); Unreachable when it fails. */
 const reached = <R>(what: string, read: Promise<R>): Promise<R> =>
   read.catch((error: unknown) => {
-    throw new Unreachable(`Sepolia RPC unreachable (${what}: ${errorText(error)})`);
+    throw new Unreachable(`${NETWORK.title} RPC unreachable (${what}: ${errorText(error)})`);
   });
 
 /** The request never got an answer (fetch failed, timed out, or no JSON came back), as opposed to an error the RPC returned. */
@@ -363,17 +379,25 @@ function usage(problem: string): never {
 usage (from relayer/):
   npm run relay -- --chain mainnet|v3 [--dry-run] [--from <address>] [--watch <seconds>]
   npm run relay -- --chain mainnet|v3 --send --account <keystore> --password-file <path> [--watch <seconds>]
-  more options: --rpc <wss url>, --state-dir <path> (default ~/.bridge-zero), --scan-limit <blocks>, --head-every <blocks>,
+  more options: --network sepolia|base-sepolia|arbitrum-sepolia (default sepolia), --rpc <wss url>, --state-dir <path> (default ~/.bridge-zero),
+    --scan-limit <blocks>, --head-every <blocks>,
     --priority-fee <gwei>, --max-fee <gwei>, --max-base-fee <gwei> (default 0.05), --max-base-fee-change <gwei> (default ${MAX_BASE_FEE_CHANGE}),
-    --keep <eth> (default 0.05), --replace-after <minutes> (default 5)`);
+    --keep <eth> (default 0.05 on Sepolia, 0.001 elsewhere), --replace-after <minutes> (default 5)`);
   process.exit(FAILED);
 }
+
+/**
+ * The default --keep: 0.05 ETH on Sepolia, as before; 0.001 ETH on a rollup, where one import needed at
+ * most about 0.0004 ETH at its max fee in the dry runs of Oct 27 (Arbitrum Sepolia; Base Sepolia a quarter of that).
+ */
+const keepOf = (network: string) => (network === "sepolia" ? "0.05" : "0.001");
 
 function parse() {
   try {
     return parseArgs({
       options: {
         chain: { type: "string" },
+        network: { type: "string", default: "sepolia" },
         "dry-run": { type: "boolean", default: false },
         send: { type: "boolean", default: false },
         account: { type: "string" },
@@ -388,7 +412,7 @@ function parse() {
         "max-fee": { type: "string" },
         "max-base-fee": { type: "string", default: "0.05" },
         "max-base-fee-change": { type: "string" },
-        keep: { type: "string", default: "0.05" },
+        keep: { type: "string" },
         "replace-after": { type: "string", default: "5" },
       },
     }).values;
@@ -411,6 +435,9 @@ function options(): Options {
   const values = parse();
   const chain = values.chain;
   if (chain !== "mainnet" && chain !== "v3") usage("--chain must be mainnet or v3");
+  // RPC, CHAIN_ID, CAP and NETWORK follow --network from here on.
+  if (!Object.hasOwn(NETWORKS, values.network)) usage(`--network must be ${Object.keys(NETWORKS).join(", ")}`);
+  useNetwork(values.network);
   if (values["dry-run"] && values.send) usage("choose one of --dry-run and --send");
   const send = values.send;
   if (send && !(values.account && values["password-file"])) usage("--send needs --account <keystore name> and --password-file <path>");
@@ -471,7 +498,7 @@ function options(): Options {
     maxFee,
     maxBaseFee,
     maxBaseFeeChange,
-    keep: amount(values.keep, parseEth)!,
+    keep: amount(values.keep ?? keepOf(values.network), parseEth)!,
     replaceAfter: replaceAfter * 60_000,
   };
 }
@@ -493,7 +520,9 @@ interface Deployment {
 
 function deployment(chain: ChainName): Deployment {
   const name = CHAINS[chain].client;
-  const record = JSON.parse(readFileSync(DEPLOYMENT, "utf8")) as {
+  const path = deploymentPath();
+  if (!existsSync(path)) throw new Fatal(`${path} does not exist: nothing is deployed on ${NETWORK.title} yet`);
+  const record = JSON.parse(readFileSync(path, "utf8")) as {
     chainId: number;
     deployer: string;
     contracts: Record<string, string>;
@@ -501,7 +530,7 @@ function deployment(chain: ChainName): Deployment {
   };
   const client = record.contracts[name];
   const codeHash = record.steps.find((s) => s.name === name)?.codeHash;
-  if (record.chainId !== Number(SEPOLIA_CHAIN_ID) || !client || !codeHash) throw new Fatal(`${DEPLOYMENT} has no ${name} on Sepolia`);
+  if (record.chainId !== Number(CHAIN_ID) || !client || !codeHash) throw new Fatal(`${path} has no ${name} on ${NETWORK.title}`);
   return {
     deployer: record.deployer.toLowerCase() as Hex,
     deployerName: record.deployer,
@@ -523,7 +552,7 @@ export interface Sender {
 }
 
 export function senderOf(address: Hex, name: string, stateDir: string): Sender {
-  const file = join(stateDir, `relay-sepolia-${address}`);
+  const file = join(stateDir, `relay-${NETWORK.name}-${address}`);
   return { address, name, record: `${file}.json`, history: `${file}.jsonl`, lock: `${file}.lock` };
 }
 
@@ -583,8 +612,8 @@ const samePath = (a: string, b: string) => (process.platform === "win32" ? resol
  * (false); a dry run, which never reads the record, prints them as a note and goes on.
  */
 function legacyRecordMoved(s: Sender, send: boolean): boolean {
-  const record = join(DEPLOYMENTS, `relay-sepolia-${s.address}.json`);
-  const history = join(DEPLOYMENTS, `relay-sepolia-${s.address}.jsonl`);
+  const record = join(DEPLOYMENTS, `relay-${NETWORK.name}-${s.address}.json`);
+  const history = join(DEPLOYMENTS, `relay-${NETWORK.name}-${s.address}.jsonl`);
   let open: number | null = null;
   const recordExists = existsSync(record);
   if (recordExists) {
@@ -811,7 +840,7 @@ async function clientNow(client: Hex, after: number): Promise<Now> {
         paused: BigInt(await get("paused()")) !== 0n,
       };
     }
-    if (Date.now() > until) throw new Unreachable(`Sepolia RPC unreachable (its latest block is still #${fmt(head)}, below #${fmt(after)})`);
+    if (Date.now() > until) throw new Unreachable(`${NETWORK.title} RPC unreachable (its latest block is still #${fmt(head)}, below #${fmt(after)})`);
     await sleep(3_000);
   }
 }
@@ -1195,7 +1224,7 @@ async function simulated(params: unknown[], what: string): Promise<SimBlock[]> {
       return await rpc<SimBlock[]>("eth_simulateV1", params);
     } catch (error) {
       if (!transient(error)) throw new Error(`${what}: ${errorText(error)}`);
-      if (attempt === 10) throw new Unreachable(`Sepolia RPC unreachable (eth_simulateV1: ${errorText(error)})`);
+      if (attempt === 10) throw new Unreachable(`${NETWORK.title} RPC unreachable (eth_simulateV1: ${errorText(error)})`);
       log(`     (eth_simulateV1: ${errorText(error)}; retrying)`);
       await sleep(3_000);
     }
@@ -1484,7 +1513,8 @@ export interface RelayEntry {
 }
 
 interface RelayRecord {
-  network: "sepolia";
+  /** NETWORK.name: "sepolia" unless --network says otherwise (the entries' sepoliaBlock is then that network's block). */
+  network: string;
   chainId: number;
   sender: Hex;
   /** The transactions not settled yet, in the order they were signed. */
@@ -1501,7 +1531,7 @@ export interface Ledger {
 }
 
 function openLedger(s: Sender, lock: Lock | null = null): Ledger {
-  const ledger: Ledger = { path: s.record, history: s.history, record: { network: "sepolia", chainId: Number(SEPOLIA_CHAIN_ID), sender: s.address, open: [] }, lock };
+  const ledger: Ledger = { path: s.record, history: s.history, record: { network: NETWORK.name, chainId: Number(CHAIN_ID), sender: s.address, open: [] }, lock };
   if (!existsSync(s.record)) return ledger;
   let record: RelayRecord;
   try {
@@ -1509,7 +1539,7 @@ function openLedger(s: Sender, lock: Lock | null = null): Ledger {
   } catch (error) {
     throw new Fatal(`${s.record}: ${errorText(error)}`);
   }
-  if (record.chainId !== Number(SEPOLIA_CHAIN_ID) || String(record.sender).toLowerCase() !== s.address || !Array.isArray(record.open)) {
+  if (record.chainId !== Number(CHAIN_ID) || String(record.sender).toLowerCase() !== s.address || !Array.isArray(record.open)) {
     throw new Fatal(`${s.record} is for chain ${record.chainId} and sender ${record.sender}, not this relayer's`);
   }
   return { ...ledger, record };
@@ -1810,7 +1840,7 @@ export function servesSepolia(url: string): Promise<boolean> {
   if (!archives.has(url)) {
     const asked = rpcBodyAt(url, "eth_chainId", []).then((a) => {
       if (typeof a.result !== "string" || !/^0x[0-9a-f]+$/i.test(a.result)) throw new Error(`eth_chainId: ${JSON.stringify(a.error ?? a.result ?? null)}`);
-      return BigInt(a.result) === SEPOLIA_CHAIN_ID;
+      return BigInt(a.result) === CHAIN_ID;
     });
     archives.set(url, asked);
     asked.catch(() => archives.delete(url));
@@ -1847,7 +1877,7 @@ async function fromArchives(method: string, params: unknown[], usable: (a: RpcAn
       log(`     (${failed})`);
     }
   }
-  if (failed !== undefined) throw new Unreachable(`Sepolia archive RPCs unreachable (${what}; ${failed})`);
+  if (failed !== undefined) throw new Unreachable(`${NETWORK.title} archive RPCs unreachable (${what}; ${failed})`);
   return null;
 }
 
@@ -1881,7 +1911,7 @@ export async function callAt(call: object, block: string, what: string): Promise
     } catch (error) {
       failure = error;
     }
-    if (attempt === 10) throw new Unreachable(`Sepolia RPC unreachable (${what}: ${errorText(failure)})`);
+    if (attempt === 10) throw new Unreachable(`${NETWORK.title} RPC unreachable (${what}: ${errorText(failure)})`);
     log(`     (${what}: ${errorText(failure)}; retrying)`);
     await sleep(3_000);
   }
@@ -1890,14 +1920,14 @@ export async function callAt(call: object, block: string, what: string): Promise
     const error = new Error(JSON.stringify(a.error));
     return !a.error || !(pruned(error) || transient(error));
   };
-  return fromArchives("eth_call", [call, block], served, `${what} at Sepolia block ${fmt(Number(BigInt(block)))}`);
+  return fromArchives("eth_call", [call, block], served, `${what} at ${NETWORK.title} block ${fmt(Number(BigInt(block)))}`);
 }
 
 /** latestFinalized() and isImported(`hash`) on the state of an old `block` (callAt), or null when no RPC serves it. */
 async function readLatestAt(client: Hex, block: string, hash: Hex): Promise<{ hash: Hex; number: number; imported: boolean } | null> {
   const get = async (data: Hex) => {
     const answer = await callAt({ to: client, data }, block, "client state");
-    if (answer?.error) throw new Unreachable(`Sepolia RPC unreachable (client state at block ${block}: ${JSON.stringify(answer.error)})`);
+    if (answer?.error) throw new Unreachable(`${NETWORK.title} RPC unreachable (client state at block ${block}: ${JSON.stringify(answer.error)})`);
     return answer ? (answer.result as Hex) : null;
   };
   const latest = await get(callData("latestFinalized()"));
@@ -1956,7 +1986,7 @@ export async function importedNothing(entry: RelayEntry, receipt: Receipt, statu
     return why ? { superseded: true, why } : { superseded: false, why: "without HeaderImported" };
   }
   const tx = await transactionOf(receipt.transactionHash);
-  if (!tx) throw new Unreachable(`Sepolia RPC unreachable (no RPC serves transaction ${receipt.transactionHash})`);
+  if (!tx) throw new Unreachable(`${NETWORK.title} RPC unreachable (no RPC serves transaction ${receipt.transactionHash})`);
   const replay = await callAt({ from: tx.from, to: tx.to, data: tx.input, gas: tx.gas }, receipt.blockNumber, "replay");
   if (!replay) return atLatest("it reverted");
   if (replay.error) {
@@ -2371,7 +2401,7 @@ async function sendStep(
     if (now.halted || now.paused || now.hash !== s.before.hash || now.setId !== s.setBefore) {
       check(
         false,
-        `the client is ${now.halted ? "halted" : now.paused ? "paused" : `at #${fmt(now.number)} ${shortHex(now.hash)}, set ${now.setId}`} at Sepolia block ${fmt(now.block)}, ` +
+        `the client is ${now.halted ? "halted" : now.paused ? "paused" : `at #${fmt(now.number)} ${shortHex(now.hash)}, set ${now.setId}`} at ${NETWORK.title} block ${fmt(now.block)}, ` +
           `not where step ${s.index} expects it: ${last.txHash} is not signed again; the next run settles it and plans again`,
       );
       return FAILED;
@@ -2451,7 +2481,7 @@ export async function sendPlan(steps: Step[], dry: DryRun, ctx: Context, o: Opti
   for (const [i, s] of steps.entries()) {
     const now = await clientNow(ctx.client, after);
     if (now.halted || now.paused) {
-      check(false, `the client is ${now.halted ? "halted" : "paused"} at Sepolia block ${fmt(now.block)}: nothing more is sent`);
+      check(false, `the client is ${now.halted ? "halted" : "paused"} at ${NETWORK.title} block ${fmt(now.block)}: nothing more is sent`);
       return FAILED;
     }
     if (now.hash !== s.before.hash || now.setId !== s.setBefore) {
@@ -2497,15 +2527,15 @@ async function relay(o: Options, sender: Sender, lock: Lock | null = null): Prom
   const chain = CHAINS[o.chain];
   const { client: address, codeHash, clients } = deployment(o.chain);
   const title = `${chain.client} ${address}`;
-  log(`${new Date().toISOString()}: relaying ${chain.title} to ${title} on Sepolia${o.send ? "" : " (dry run)"}`);
+  log(`${new Date().toISOString()}: relaying ${chain.title} to ${title} on ${NETWORK.title}${o.send ? "" : " (dry run)"}`);
 
   let chainId: string;
   try {
     chainId = await rpc<string>("eth_chainId", []);
   } catch (error) {
-    throw new Unreachable(`Sepolia RPC unreachable (${errorText(error)})`);
+    throw new Unreachable(`${NETWORK.title} RPC unreachable (${errorText(error)})`);
   }
-  if (!check(BigInt(chainId) === SEPOLIA_CHAIN_ID, `chain id ${BigInt(chainId)} is Sepolia`)) throw new Blocked("the Sepolia RPC serves another chain");
+  if (!check(BigInt(chainId) === CHAIN_ID, `chain id ${BigInt(chainId)} is ${NETWORK.title}`)) throw new Blocked(`the ${NETWORK.title} RPC serves another chain`);
   const ledger = o.send ? openLedger(sender, lock) : null;
   // The record's transactions at the sender's next nonce, which this run signs again: still
   // pending after --replace-after (stuck), or dropped.
@@ -2527,7 +2557,7 @@ async function relay(o: Options, sender: Sender, lock: Lock | null = null): Prom
   const balance = BigInt(await at<string>("balance", "eth_getBalance", [sender.address]));
   const nonce = Number(BigInt(await at<string>("nonce", "eth_getTransactionCount", [sender.address])));
   const n = await sepolia("nonces", () => nonces(sender.address));
-  log(`Sepolia block ${fmt(Number(BigInt(block.number)))} (${block.hash}), simulated on top of it via ${new URL(RPC).host}`);
+  log(`${NETWORK.title} block ${fmt(Number(BigInt(block.number)))} (${block.hash}), simulated on top of it via ${new URL(RPC).host}`);
   log(`Sender ${sender.name}: nonce ${nonce}, balance ${eth(balance)}${o.send ? `; record ${sender.record}` : ""}`);
   const admins: string[] = [];
   for (const c of clients) {
@@ -2549,8 +2579,8 @@ async function relay(o: Options, sender: Sender, lock: Lock | null = null): Prom
     log(`     (${what}: the plan starts at the mined nonce${stuck ? ", where it replaces the pending one" : ""})`);
   }
   const code = await at<Hex>("code", "eth_getCode", [address]);
-  if (!check(bytesToHex(keccak256(hexToBytes(code))) === codeHash, `${chain.client} has the code deployments/sepolia.json recorded`)) {
-    throw new Blocked(`${chain.client} at ${address} does not have the code deployments/sepolia.json recorded`);
+  if (!check(bytesToHex(keccak256(hexToBytes(code))) === codeHash, `${chain.client} has the code deployments/${NETWORK.name}.json recorded`)) {
+    throw new Blocked(`${chain.client} at ${address} does not have the code deployments/${NETWORK.name}.json recorded`);
   }
   const client = await sepolia("client state", () => readClient(address, block.number));
   log(
@@ -2746,7 +2776,8 @@ async function runOnce(o: Options, sender: Sender): Promise<Run> {
 /** The relayer: one run, or with --watch one run after another. relay-main.ts runs it (npm run relay). */
 export async function main(): Promise<number> {
   const o = options();
-  redactAlso(o.passwordFile, o.rpc === CHAINS[o.chain].rpc ? undefined : o.rpc, ...(process.env.SEPOLIA_ARCHIVE_RPC_URLS ? ARCHIVE_RPCS : []));
+  ARCHIVE_RPCS = archivesOf(NETWORK);
+  redactAlso(o.passwordFile, o.rpc === CHAINS[o.chain].rpc ? undefined : o.rpc, ...(process.env[NETWORK.archiveEnv] ? ARCHIVE_RPCS : []));
   const { deployer, deployerName } = deployment(o.chain);
   let sender: Sender;
   if (o.send) {

@@ -1,0 +1,115 @@
+{
+  "provenance": {
+    "chain": "PortaldotV3 Test",
+    "rpc": "wss://test-node-v3.portaldot.dev",
+    "genesisHash": "0xd4f9acbcf7f52388d8b095abe3c198d19fc510e0343e643e87cfbccb155283bd",
+    "runtime": {
+      "specName": "portaldot-v3",
+      "specVersion": 3002,
+      "implName": "portaldot-v3-node",
+      "implVersion": 0,
+      "transactionVersion": 2,
+      "stateVersion": 1
+    },
+    "block": {
+      "number": 214016,
+      "hash": "0x9ef860fd4045525b927e64a7c601dd0018ea319370d22afe26b0b9589fc5f89c"
+    },
+    "setId": 59,
+    "capturedAt": "2026-10-27T07:20:05.677Z",
+    "tool": {
+      "name": "@bridge-zero/relayer",
+      "version": "0.1.0",
+      "script": "src/capture.ts",
+      "gitCommit": "2ad0425720804b9eab4c5c46e5bfcebf644efd1e",
+      "gitDirty": false
+    }
+  },
+  "kind": "stored-justification",
+  "about": "A justification the node stores every 512 blocks, read with chain_getBlock.",
+  "source": {
+    "method": "chain_getBlock",
+    "engine": "FRNK",
+    "period": 512
+  },
+  "header": {
+    "hash": "0x9ef860fd4045525b927e64a7c601dd0018ea319370d22afe26b0b9589fc5f89c",
+    "number": 214016,
+    "parentHash": "0xf7128e1152ac7724202737260ea5b33c8c92af14866287e61ed37609f6f943c4",
+    "stateRoot": "0x4e21e44c48e1a689fb849eb3c6a8dc4509d168de19e44a24de95b85628a38943",
+    "extrinsicsRoot": "0xb272cfd17c146193da2d35e7fa5ba2d706f59c9e555d87551b5e4b1970a7e780",
+    "digest": [
+      {
+        "kind": "PreRuntime",
+        "engine": "BABE",
+        "bytes": 116,
+        "scale": "0x0642414245b5010100000000740bd01100000000d29d8b58b33c484133523bd06fa10d86ad9725d50a2e89c75fe66dd9c6ef3f5673892c34dfefe64770fd392337aedb293913c2eb2c450076bd16bc68aa197c0ce813f0c39eb05d2a00a4501ca2bfd28b46e1e2f9b57e0e36626ecf47c4129606"
+      },
+      {
+        "kind": "Consensus",
+        "engine": "BEEF",
+        "bytes": 39,
+        "scale": "0x04424545468403d6a1633ed8425ca26aa78fcaac21cf16d2b9b930dd43de97cd8695b560e2babc"
+      },
+      {
+        "kind": "Seal",
+        "engine": "BABE",
+        "bytes": 71,
+        "scale": "0x054241424501013c0d3ccfb56f0f6e9259271163af0297f1b2a56f925ca1a1f974e38a5efcc6351c9921dfc22310844171c751e1574011fcf636c07b0782f3d2e7883195b6818b"
+      }
+    ],
+    "bytes": 327,
+    "scale": "0xf7128e1152ac7724202737260ea5b33c8c92af14866287e61ed37609f6f943c402100d004e21e44c48e1a689fb849eb3c6a8dc4509d168de19e44a24de95b85628a38943b272cfd17c146193da2d35e7fa5ba2d706f59c9e555d87551b5e4b1970a7e7800c0642414245b5010100000000740bd01100000000d29d8b58b33c484133523bd06fa10d86ad9725d50a2e89c75fe66dd9c6ef3f5673892c34dfefe64770fd392337aedb293913c2eb2c450076bd16bc68aa197c0ce813f0c39eb05d2a00a4501ca2bfd28b46e1e2f9b57e0e36626ecf47c412960604424545468403d6a1633ed8425ca26aa78fcaac21cf16d2b9b930dd43de97cd8695b560e2babc054241424501013c0d3ccfb56f0f6e9259271163af0297f1b2a56f925ca1a1f974e38a5efcc6351c9921dfc22310844171c751e1574011fcf636c07b0782f3d2e7883195b6818b"
+  },
+  "justification": {
+    "round": 12364,
+    "targetHash": "0x9ef860fd4045525b927e64a7c601dd0018ea319370d22afe26b0b9589fc5f89c",
+    "targetNumber": 214016,
+    "precommits": [
+      {
+        "authorityIndex": 1,
+        "authorityId": "0x71fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0",
+        "targetHash": "0x9ef860fd4045525b927e64a7c601dd0018ea319370d22afe26b0b9589fc5f89c",
+        "targetNumber": 214016,
+        "signature": "0x32cdea627b96154552ffb920b51949a15b49c7375b01d9003a23637de45fae49c5afcce37c5467e65fd0b00e8506f72ed62d7457052d6a830f1d7646147a6c05"
+      },
+      {
+        "authorityIndex": 0,
+        "authorityId": "0xe64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090",
+        "targetHash": "0x9ef860fd4045525b927e64a7c601dd0018ea319370d22afe26b0b9589fc5f89c",
+        "targetNumber": 214016,
+        "signature": "0x2d12c6177c43632cda2f5878bb0b0e0ce4dc0b5d65bc9ce361c511d5879ade7f9f17cae4ead5bb2ea8932ab9cd0da2ad46efc632e03154a0b8bee9f7a18a9a0a"
+      }
+    ],
+    "votesAncestries": 0,
+    "bytes": 310,
+    "scale": "0x4c300000000000009ef860fd4045525b927e64a7c601dd0018ea319370d22afe26b0b9589fc5f89c00440300089ef860fd4045525b927e64a7c601dd0018ea319370d22afe26b0b9589fc5f89c0044030032cdea627b96154552ffb920b51949a15b49c7375b01d9003a23637de45fae49c5afcce37c5467e65fd0b00e8506f72ed62d7457052d6a830f1d7646147a6c0571fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f09ef860fd4045525b927e64a7c601dd0018ea319370d22afe26b0b9589fc5f89c004403002d12c6177c43632cda2f5878bb0b0e0ce4dc0b5d65bc9ce361c511d5879ade7f9f17cae4ead5bb2ea8932ab9cd0da2ad46efc632e03154a0b8bee9f7a18a9a0ae64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d09000"
+  },
+  "signingSet": {
+    "setId": 59,
+    "at": {
+      "number": 214015,
+      "hash": "0xf7128e1152ac7724202737260ea5b33c8c92af14866287e61ed37609f6f943c4"
+    },
+    "count": 2,
+    "threshold": 2,
+    "authorities": [
+      {
+        "id": "0xe64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090",
+        "weight": 1
+      },
+      {
+        "id": "0x71fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0",
+        "weight": 1
+      }
+    ],
+    "setIdStorage": {
+      "key": "0x5f9cc45b7a00c5899361e1c6099678dc8a2d09463effcc78a22d75b9cb87dffc",
+      "scale": "0x3b00000000000000"
+    },
+    "runtimeCall": {
+      "method": "GrandpaApi_grandpa_authorities",
+      "scale": "0x08e64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090010000000000000071fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f00100000000000000"
+    }
+  }
+}

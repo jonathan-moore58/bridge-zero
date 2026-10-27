@@ -14,9 +14,18 @@
 // Usage (from contracts/, after `forge build` and `FOUNDRY_PROFILE=sepolia forge build --skip test
 // --skip script`; the sepolia profile in foundry.toml links the libraries at compile time, at the
 // addresses the deployer's nonces 0 to 3 create, so Etherscan can match the metadata):
-//   node script/deploy-sepolia.mjs [--dry-run] [--resume]
-//   node script/deploy-sepolia.mjs --send --account bz-deployer --password-file <path> [--resume]
-//   node script/deploy-sepolia.mjs --verify
+//   node script/deploy-sepolia.mjs [--network <name>] [--dry-run] [--resume]
+//   node script/deploy-sepolia.mjs [--network <name>] --send --account bz-deployer --password-file <path> [--resume]
+//   node script/deploy-sepolia.mjs [--network <name>] --verify
+//
+// --network: sepolia (the default, the plan above), base-sepolia or arbitrum-sepolia (lib/sepolia.mjs
+// NETWORKS: chain id, RPCs, explorer, gas cap). A rollup gets the V3 testnet's client only, from
+// fixtures/v3-testnet-set59: the libraries, GrandpaLightClient #2 and ProvenBalance #2, initialize
+// with the set that the newest set change started, at that set change (the set that signs the
+// head, so nothing is left to import before it), and importAndProve at the head; no old mainnet,
+// no tampered proof. The same build serves: the deployer's nonce there must be 0, so the
+// libraries land where the sepolia profile links them, and nothing else may come first.
+// Each network has its own record, deployments/<network>.json.
 //
 // --dry-run (the default) has a Sepolia node run the plan with eth_simulateV1 (validation on) at
 // the latest block, from the deployer with its own nonce and balance. Each step runs with the
@@ -28,8 +37,10 @@
 // the key from ETHERSCAN_API_KEY).
 // Fees: a priority fee of 1,000 wei and a max fee of ten times the next base fee plus it, at least
 // 0.01 gwei, fixed for the run; --priority-fee and --max-fee (gwei) replace them. The
-// RPC is SEPOLIA_RPC_URL when set, else the public endpoint. Exit code 0 on success, 1 when a
-// check fails, 2 when the RPC cannot be reached, 3 when a sent transaction is still pending.
+// RPC is SEPOLIA_RPC_URL when set, else the public endpoint (on another network, its own variable,
+// BASE_SEPOLIA_RPC_URL or ARBITRUM_SEPOLIA_RPC_URL, else its first public RPC). Exit code 0 on
+// success, 1 when a check fails, 2 when the RPC cannot be reached, 3 when a sent transaction is
+// still pending.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -37,7 +48,9 @@ import { spawnSync } from "node:child_process";
 import {
   RPC,
   CAP,
-  SEPOLIA_CHAIN_ID,
+  CHAIN_ID,
+  NETWORK,
+  useNetwork,
   REQUEST_GAS,
   RECEIPT_TIMEOUT,
   CONTRACTS,
@@ -88,7 +101,6 @@ import {
 
 const DEPLOYER = "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071";
 const deployer = DEPLOYER.toLowerCase();
-const RECORD = join(CONTRACTS, "..", "deployments", "sepolia.json");
 // The deployment build: FOUNDRY_PROFILE=sepolia forge build --skip test --skip script.
 const SEPOLIA_OUT = join(CONTRACTS, "out-sepolia");
 
@@ -112,15 +124,16 @@ function exit(code) {
 
 // ------------------------------------------------------------------ arguments
 
-const VALUED = ["--account", "--password-file", "--priority-fee", "--max-fee"];
+const VALUED = ["--account", "--password-file", "--priority-fee", "--max-fee", "--network"];
 const FLAGS = ["--dry-run", "--send", "--verify", "--resume"];
 const opts = {};
 function usage(problem) {
   console.log(`${problem}
 usage (from contracts/):
-  node script/deploy-sepolia.mjs [--dry-run] [--resume] [--priority-fee <gwei>] [--max-fee <gwei>]
-  node script/deploy-sepolia.mjs --send --account <keystore> --password-file <path> [--resume] [fees]
-  node script/deploy-sepolia.mjs --verify`);
+  node script/deploy-sepolia.mjs [--network <name>] [--dry-run] [--resume] [--priority-fee <gwei>] [--max-fee <gwei>]
+  node script/deploy-sepolia.mjs [--network <name>] --send --account <keystore> --password-file <path> [--resume] [fees]
+  node script/deploy-sepolia.mjs [--network <name>] --verify
+  --network: sepolia (the default), base-sepolia or arbitrum-sepolia`);
   exit(1);
 }
 for (let i = 2; i < process.argv.length; i++) {
@@ -155,14 +168,32 @@ const MAX_FEE = opts["--max-fee"] && gwei(opts["--max-fee"]);
 // Tool and RPC messages leave out the password file's path (redact, in lib/sepolia.mjs).
 redactAlso(opts["--password-file"]);
 
+// RPC, CHAIN_ID, CAP and NETWORK follow --network from here on.
+try {
+  useNetwork(opts["--network"] ?? "sepolia");
+} catch (err) {
+  usage(`--network: ${err.message}`);
+}
+const RECORD = join(CONTRACTS, "..", "deployments", `${NETWORK.name}.json`);
+
 // ------------------------------------------------------------------ the plan
 
 const LIBRARIES = ["SCL_EIP6565", "GrandpaCodec", "AuthoritySets", "StorageProofs"];
 const UNITS = [...LIBRARIES, "GrandpaLightClient", "ProvenBalance"];
-const CHAINS = [
-  { id: "#1", dir: "mainnet", title: "the old Portaldot mainnet", checkpoint: "parent" },
-  { id: "#2", dir: "v3-testnet", title: "the Portaldot V3 testnet", checkpoint: "announced" },
-];
+// The light clients of each network, each with the fixtures it starts from: on Sepolia (the first
+// deployment) both chains, initialized one set before a set change that is then imported, and
+// the tampered proof mined as a failed transaction; on a rollup the V3 testnet only, at the
+// checkpoint "current" (fixtureCalls), so no set change is imported, and no tampered proof.
+const V3_NOW = { id: "#2", dir: "v3-testnet-set59", title: "the Portaldot V3 testnet", checkpoint: "current", tamper: false };
+const PLANS = {
+  sepolia: [
+    { id: "#1", dir: "mainnet", title: "the old Portaldot mainnet", checkpoint: "parent", tamper: true },
+    { id: "#2", dir: "v3-testnet", title: "the Portaldot V3 testnet", checkpoint: "announced", tamper: true },
+  ],
+  "base-sepolia": [V3_NOW],
+  "arbitrum-sepolia": [V3_NOW],
+};
+const CHAINS = PLANS[NETWORK.name];
 
 const T = {
   initialized: topic("Initialized(bytes32,uint64,bytes32,uint32,bytes32)"),
@@ -216,22 +247,26 @@ function buildPlan(start) {
       if (hex(blake2b(bytes(h.scale), 32)) !== h.hash.toLowerCase()) throw new Error(`fixtures/${c.dir}: header #${h.number} hash`);
     const files = (...names) => names.map((n) => `fixtures/${c.dir}/${n}.json`);
     const oldSet = sc.signingSet.setId;
-    const where = cp === sc.parentHeader ? "the set change's parent" : `the set change that started set ${oldSet}`;
+    // The set initialize installs: the set change's signing set, or with "current" the set it started.
+    const initSet = f.initSet.setId;
+    const where =
+      cp === sc.parentHeader ? "the set change's parent" : `the set change that started set ${c.checkpoint === "current" ? initSet : oldSet}`;
     const onLc = { kind: "call", to: c.lc, target: `GrandpaLightClient ${c.id}`, fixtures: files("set-change"), group: c.id };
     const onPb = { to: c.pb, target: `ProvenBalance ${c.id}`, fixtures: files("finality-proof-head", "account-proof"), group: c.id };
     add({
       ...onLc,
       name: `${c.id} initialize`,
-      label: `${c.id} initialize: set ${oldSet}, ${sc.signingSet.authorities.length} keys, checkpoint #${fmt(cp.number)} (${where})`,
+      label: `${c.id} initialize: set ${initSet}, ${f.initSet.authorities.length} keys, checkpoint #${fmt(cp.number)} (${where})`,
       data: hex(f.initData),
       checks: ({ logs }) => {
         const log = findLog(logs, c.lc, T.initialized, sc.provenance.genesisHash.toLowerCase());
         const ok =
-          !!log && dataWord(log, 0) === BigInt(oldSet) && dataWord(log, 2) === BigInt(cp.number) && dataWord(log, 3) === BigInt(cp.hash);
-        return [[ok, `Initialized: genesis ${short(sc.provenance.genesisHash)}, set ${oldSet}, checkpoint ${short(cp.hash)}`]];
+          !!log && dataWord(log, 0) === BigInt(initSet) && dataWord(log, 2) === BigInt(cp.number) && dataWord(log, 3) === BigInt(cp.hash);
+        return [[ok, `Initialized: genesis ${short(sc.provenance.genesisHash)}, set ${initSet}, checkpoint ${short(cp.hash)}`]];
       },
     });
-    add({
+    // From the checkpoint "current" the client is in the head's set already: no set change to import.
+    if (c.checkpoint !== "current") add({
       ...onLc,
       name: `${c.id} importHeader`,
       label:
@@ -281,7 +316,7 @@ function buildPlan(start) {
         return out;
       },
     });
-    add({
+    if (c.tamper) add({
       ...onPb,
       kind: "tamper",
       name: `${c.id} importAndProve, one signature byte flipped`,
@@ -407,13 +442,13 @@ async function dryRun(steps, ctx) {
       ` each request goes on from what the previous one left (no balance is added).`,
   );
   const groups = requestsOf(steps).map((r) => `[${r.map((s) => s.index).join(",")}]`);
-  console.log(`Requests ${groups.join(" ")}: every step first with gas limit 16,777,216, then with the gas limit below.`);
+  console.log(`Requests ${groups.join(" ")}: every step first with gas limit ${fmt(CAP)}, then with the gas limit below.`);
 
   // 1. Measure, with the cap as gas limit.
   const first = await simulatePlan(steps, () => CAP, ctx);
   const measured = steps.map((s) => judge(s, first.results.get(s.index), CAP)).flat();
   if (measured.some(([ok]) => !ok)) {
-    console.log("\nWith gas limit 16,777,216:");
+    console.log(`\nWith gas limit ${fmt(CAP)}:`);
     for (const [ok, what] of measured) check(ok, what);
     return null;
   }
@@ -441,7 +476,7 @@ async function dryRun(steps, ctx) {
   // at most, every earlier one paid the max fee too.
   console.log(`\n     ${steps.length} transactions: ${fmt(total)} gas; the largest ${share(largest)}`);
   const top = Math.max(...limits.values());
-  check(top <= CAP, `every gas limit is within the 16,777,216 cap (the largest ${fmt(top)})`);
+  check(top <= CAP, `every gas limit is within the ${fmt(CAP)} cap (the largest ${fmt(top)})`);
   const peak = Math.max(first.peak, run.peak);
   check(peak <= REQUEST_GAS, `the largest request needs ${fmt(peak)} of the ${fmt(REQUEST_GAS)} gas one request may use`);
   let need = 0n;
@@ -477,8 +512,8 @@ const dataHash = (s) => hex(keccak256(bytes(s.data)));
 
 function newRecord(steps) {
   return {
-    network: "sepolia",
-    chainId: Number(SEPOLIA_CHAIN_ID),
+    network: NETWORK.name,
+    chainId: Number(CHAIN_ID),
     deployer: DEPLOYER,
     commit: git(["rev-parse", "HEAD"]),
     dirty: git(["status", "--porcelain", "--untracked-files=no"]) !== "",
@@ -521,7 +556,7 @@ function matchRecord(record, steps) {
     console.log(`FAIL ${RECORD} does not match this plan: ${why}`);
     exit(1);
   };
-  if (record.chainId !== Number(SEPOLIA_CHAIN_ID) || record.deployer.toLowerCase() !== deployer) fail("network or deployer");
+  if (record.chainId !== Number(CHAIN_ID) || record.deployer.toLowerCase() !== deployer) fail("network or deployer");
   const hashes = artifactHashes();
   for (const n of UNITS) if (record.artifacts?.[n] !== hashes[n]) fail(`${n} is built differently (the record is from commit ${record.commit})`);
   if (record.steps.length !== steps.length) fail("step count");
@@ -669,7 +704,7 @@ function verify() {
     const meta = artifact(s.contract.split(":").at(-1), SEPOLIA_OUT).metadata;
     const args = [
       "verify-contract", s.address, s.contract,
-      "--chain", "sepolia", "--verifier", "etherscan", "--root", CONTRACTS, "--watch",
+      "--chain", NETWORK.name, "--verifier", "etherscan", "--root", CONTRACTS, "--watch",
       "--compiler-version", meta.compiler.version, "--evm-version", meta.settings.evmVersion,
     ];
     if (meta.settings.optimizer?.enabled) args.push("--num-of-optimizations", String(meta.settings.optimizer.runs));
@@ -691,11 +726,11 @@ try {
 
   const unreachable = (err) => {
     if (err instanceof Exit) throw err;
-    console.log(`Sepolia RPC unreachable (${redact(err.message)})`);
+    console.log(`${NETWORK.title} RPC unreachable (${redact(err.message)})`);
     exit(2);
   };
   const chainId = await rpc("eth_chainId", []).catch(unreachable);
-  if (!check(BigInt(chainId) === SEPOLIA_CHAIN_ID, `chain id ${BigInt(chainId)} is Sepolia`)) exit(1);
+  if (!check(BigInt(chainId) === CHAIN_ID, `chain id ${BigInt(chainId)} is ${NETWORK.title}`)) exit(1);
 
   // With --resume, the record's first unmined step, after reconciling a step sent before the run
   // stopped; then the chain as it is now.
@@ -727,7 +762,7 @@ try {
   } catch (err) {
     unreachable(err);
   }
-  console.log(`Sepolia block ${fmt(Number(BigInt(ctx.block.number)))} (${ctx.block.hash}), simulated on top of it via ${new URL(RPC).host}`);
+  console.log(`${NETWORK.title} block ${fmt(Number(BigInt(ctx.block.number)))} (${ctx.block.hash}), simulated on top of it via ${new URL(RPC).host}`);
   console.log(`Deployer ${DEPLOYER}: nonce ${ctx.nonce}, balance ${eth(ctx.balance)}`);
   if (n.pending !== n.latest) {
     const what = `the deployer has pending transactions (nonce ${n.latest}, pending ${n.pending})`;

@@ -1,15 +1,36 @@
 // SPDX-License-Identifier: UNLICENSED
 //
-// Types of what the relayer imports from sepolia.mjs: relay.ts shares the Sepolia send flow with
-// script/deploy-sepolia.mjs, and v3-vault.ts runs cast and writes its record the same way. Keep them
-// in step with sepolia.mjs.
+// Types of what the relayer imports from sepolia.mjs: relay.ts shares the send flow with
+// script/deploy-sepolia.mjs (on Sepolia, or the network useNetwork chose), and v3-vault.ts runs
+// cast and writes its record the same way. Keep them in step with sepolia.mjs.
 
 import type { SpawnSyncReturns } from "node:child_process";
 
 type Hex = `0x${string}`;
 
-export const RPC: string;
-export const CAP: number;
+export type NetworkName = "sepolia" | "base-sepolia" | "arbitrum-sepolia";
+/** One network the scripts can use (sepolia.mjs NETWORKS). */
+export interface Network {
+  name: NetworkName;
+  title: string;
+  chainId: bigint;
+  /** The variable that replaces rpcs[0], the RPC used. */
+  rpcEnv: string;
+  rpcs: string[];
+  /** The variable (comma separated) that replaces archives, the RPCs asked for what rpcs[0] no longer serves. */
+  archiveEnv: string;
+  archives: string[];
+  explorer: string;
+  gasCap: number;
+}
+export const NETWORKS: Record<NetworkName, Network>;
+/** The network in use (Sepolia until useNetwork), and what follows it: live bindings. */
+export let NETWORK: Network;
+export let RPC: string;
+export let CHAIN_ID: bigint;
+export let CAP: number;
+/** Switches to network `name`; throws on a name that is not a key of NETWORKS. */
+export function useNetwork(name: string): Network;
 export const SEPOLIA_CHAIN_ID: bigint;
 export const REQUEST_GAS: number;
 export const RECEIPT_TIMEOUT: number;

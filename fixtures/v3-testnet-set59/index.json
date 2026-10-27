@@ -1,0 +1,183 @@
+{
+  "provenance": {
+    "chain": "PortaldotV3 Test",
+    "rpc": "wss://test-node-v3.portaldot.dev",
+    "genesisHash": "0xd4f9acbcf7f52388d8b095abe3c198d19fc510e0343e643e87cfbccb155283bd",
+    "runtime": {
+      "specName": "portaldot-v3",
+      "specVersion": 3002,
+      "implName": "portaldot-v3-node",
+      "implVersion": 0,
+      "transactionVersion": 2,
+      "stateVersion": 1
+    },
+    "block": {
+      "number": 214510,
+      "hash": "0xadc251f366cb8a4c7e623cd7b2395da42237c35104812458dcabb1671233b9db"
+    },
+    "setId": 59,
+    "capturedAt": "2026-10-27T07:18:53.893Z",
+    "tool": {
+      "name": "@bridge-zero/relayer",
+      "version": "0.1.0",
+      "script": "src/capture.ts",
+      "gitCommit": "2ad0425720804b9eab4c5c46e5bfcebf644efd1e",
+      "gitDirty": false
+    }
+  },
+  "kind": "index",
+  "about": "Index of one capture run: the files written, the justifications seen on the subscription, and notes.",
+  "node": {
+    "version": "3.0.0-dev-fddd43141f2"
+  },
+  "chainProperties": {
+    "ss58Format": 42,
+    "tokenDecimals": 14,
+    "tokenSymbol": "tPOT"
+  },
+  "files": [
+    {
+      "file": "finality-proof-head.json",
+      "kind": "finality-proof",
+      "block": 214510,
+      "setId": 59,
+      "summary": "round 14584, 2 precommits, justification 310 B, header 230 B, finality proof 345 B"
+    },
+    {
+      "file": "authority-set.json",
+      "kind": "authority-set",
+      "block": 214510,
+      "setId": 59,
+      "summary": "set 59, 2 authorities, threshold 2"
+    },
+    {
+      "file": "set-change.json",
+      "kind": "set-change",
+      "block": 211277,
+      "setId": 58,
+      "summary": "ScheduledChange (delay 0) to set 59, round 16180, 2 precommits, justification 310 B, header 527 B, FRNK log 86 B"
+    },
+    {
+      "file": "stored-justification-512.json",
+      "kind": "stored-justification",
+      "block": 214016,
+      "setId": 59,
+      "summary": "round 12364, 2 precommits, justification 310 B, header 327 B"
+    },
+    {
+      "file": "account-proof.json",
+      "kind": "storage-proof",
+      "block": 214510,
+      "setId": 59,
+      "summary": "8 nodes, 2264 B, value 80 B"
+    }
+  ],
+  "watch": {
+    "method": "grandpa_subscribeJustifications",
+    "seconds": 0,
+    "minPrecommits": 8,
+    "seen": [
+      {
+        "number": 214511,
+        "hash": "0xf554010a0c0ee723e721661d5dba93a8ad596094131481a3452af7d9ac9defea",
+        "round": 14589,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:18:55.073Z"
+      },
+      {
+        "number": 214512,
+        "hash": "0x25e713cff891d53ded4af301e33377f6dc458ec29b6f1bfe66079a091ab839ed",
+        "round": 14593,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:19:00.417Z"
+      },
+      {
+        "number": 214513,
+        "hash": "0xd2e1f3dbbf4559fe6408ec050a0429f53af200ed560ece1d600bda71e00cc055",
+        "round": 14598,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:19:07.095Z"
+      },
+      {
+        "number": 214514,
+        "hash": "0x823d64146fec12c1280ae3729a68aaca9fe1f83742611d1fd5ead9115357eff1",
+        "round": 14602,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:19:12.441Z"
+      },
+      {
+        "number": 214515,
+        "hash": "0xf3b606c4ea9d67626331d6cfe4b77c1c07b2ff332519a4aa0cde411b8d042a54",
+        "round": 14607,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:19:19.107Z"
+      },
+      {
+        "number": 214516,
+        "hash": "0x4f7546fe81c25869d998f1a0afea396a175cae305ca28e379bbb9c415f8f8786",
+        "round": 14611,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:19:24.451Z"
+      },
+      {
+        "number": 214517,
+        "hash": "0x4b83e5de3f620a7d350c31a8b1a9d1837783e4bdc67c12933188894f4cca4fb8",
+        "round": 14616,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:19:31.131Z"
+      },
+      {
+        "number": 214518,
+        "hash": "0x2c4fe56711134c341d473b2b5c5307309ba915736daf08d134c65946c5480c2b",
+        "round": 14620,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:19:36.470Z"
+      },
+      {
+        "number": 214519,
+        "hash": "0xdbe674b3c929a5dad0008c04a7034c82935a0b07298d0f43581fd3820d9082bf",
+        "round": 14625,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:19:43.159Z"
+      },
+      {
+        "number": 214520,
+        "hash": "0x96b84fd58a53cdcd2919e2c8589dab6a9106ba390c33064cc8237032121e6785",
+        "round": 14629,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:19:48.494Z"
+      },
+      {
+        "number": 214521,
+        "hash": "0xe73f73d4e9b9ddbcd961a2f2938caa70ae917b639a4550593d2e2578f94413f7",
+        "round": 14634,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:19:55.198Z"
+      },
+      {
+        "number": 214522,
+        "hash": "0xe1dc16d3dd2b77a36a3acfb0ec2a0b60e6039706de6a6e0ffd859cfde2de306d",
+        "round": 14638,
+        "precommits": 2,
+        "bytes": 310,
+        "receivedAt": "2026-10-27T07:20:00.494Z"
+      }
+    ]
+  },
+  "notes": [
+    "Set changes found by scanning 6816 headers, #214510 back to #207695: #211277 (ScheduledChange, delay 0, 2 keys, weights {1}), #207695 (ScheduledChange, delay 0, 2 keys, weights {1}).",
+    "The head's set has 2 authorities, so no justification carries 8 or more precommits; the watch did not wait for one.",
+    "These files chain together: a light client initialized with set-change.json's signing set (checkpoint: its parentHeader, or signingSet.announced.header, the change that started that set) can import set-change.json's header (moving to the next set), then finality-proof-head.json, then check account-proof.json against that header's state_root."
+  ]
+}

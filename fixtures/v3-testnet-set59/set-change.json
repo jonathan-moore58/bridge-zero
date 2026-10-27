@@ -1,0 +1,249 @@
+{
+  "provenance": {
+    "chain": "PortaldotV3 Test",
+    "rpc": "wss://test-node-v3.portaldot.dev",
+    "genesisHash": "0xd4f9acbcf7f52388d8b095abe3c198d19fc510e0343e643e87cfbccb155283bd",
+    "runtime": {
+      "specName": "portaldot-v3",
+      "specVersion": 3002,
+      "implName": "portaldot-v3-node",
+      "implVersion": 0,
+      "transactionVersion": 2,
+      "stateVersion": 1
+    },
+    "block": {
+      "number": 211277,
+      "hash": "0x7c26675bfb2d46d69b775aacfeb575cb183fc65097c59d31366b2cddad2cf528"
+    },
+    "setId": 58,
+    "capturedAt": "2026-10-27T07:18:57.291Z",
+    "tool": {
+      "name": "@bridge-zero/relayer",
+      "version": "0.1.0",
+      "script": "src/capture.ts",
+      "gitCommit": "2ad0425720804b9eab4c5c46e5bfcebf644efd1e",
+      "gitDirty": false
+    }
+  },
+  "kind": "set-change",
+  "about": "The most recent block carrying a FRNK ScheduledChange, with the justification the node stores for it (chain_getBlock). It is signed by the outgoing set; the set id in the block's own state is already the new one. signingSet.announced is the change before it, which started the outgoing set.",
+  "source": {
+    "method": "chain_getBlock",
+    "engine": "FRNK",
+    "located": "newest block with a FRNK ScheduledChange or ForcedChange log, scanning the headers back from the head block",
+    "scanned": {
+      "from": 214510,
+      "to": 207695,
+      "headers": 6816
+    }
+  },
+  "newSetId": 59,
+  "scheduledChange": {
+    "kind": "ScheduledChange",
+    "delay": 0,
+    "nextAuthorities": [
+      {
+        "id": "0xe64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090",
+        "weight": 1
+      },
+      {
+        "id": "0x71fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0",
+        "weight": 1
+      }
+    ],
+    "bytes": 86,
+    "scale": "0x0108e64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090010000000000000071fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0010000000000000000000000"
+  },
+  "header": {
+    "hash": "0x7c26675bfb2d46d69b775aacfeb575cb183fc65097c59d31366b2cddad2cf528",
+    "number": 211277,
+    "parentHash": "0xb20e92502d0c2f72ee1ed056c20f7cab2b000dbe06bf08cdf0d1d3a1317976af",
+    "stateRoot": "0x7bc225b10a8148551a4c19e5d4c98f3de4e780ff770458d999d85423a62fb196",
+    "extrinsicsRoot": "0x389757c66aa984ee4140b6b096db99270a6c828301708fdfbb4ea6f48303f393",
+    "digest": [
+      {
+        "kind": "PreRuntime",
+        "engine": "BABE",
+        "bytes": 19,
+        "scale": "0x0642414245340201000000b500d01100000000"
+      },
+      {
+        "kind": "Consensus",
+        "engine": "BABE",
+        "bytes": 121,
+        "scale": "0x0442414245c9010108849a279f6c2ad8f0a66953cb89bdeff513b1a4ded437e41cb7dbd69726176b0c010000000000000050a3056458163409296a34271779f494750981a5018ce818c116f264e7280a6c0100000000000000f70911e68c25eea4f5c706c5806401215d75d725b985612eabdc90d436dc7b84"
+      },
+      {
+        "kind": "Consensus",
+        "engine": "BEEF",
+        "bytes": 83,
+        "scale": "0x044245454631010108028f12cacb8859c1cd56bec31499dd6251b50ac6dd297a8e6a1974f9affe5e42f5037c2fb56876492e164c268c9f6ef0fba6ef436c9f02bbd754fff372acd62d10f06201000000000000"
+      },
+      {
+        "kind": "Consensus",
+        "engine": "BEEF",
+        "bytes": 39,
+        "scale": "0x04424545468403a1061b4a66501a797a3fa8cae2118693b305175828e221c3ad326eca5458c908"
+      },
+      {
+        "kind": "Consensus",
+        "engine": "FRNK",
+        "bytes": 93,
+        "scale": "0x0446524e4b59010108e64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090010000000000000071fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0010000000000000000000000"
+      },
+      {
+        "kind": "Seal",
+        "engine": "BABE",
+        "bytes": 71,
+        "scale": "0x054241424501011c8ead5cef329b58fc59cd56a41ecc3c05f1952bd81159c07c5ad0bc5b30737570414b05a7c20e3f12c470ffe585502dc1d4b38b58c3c4b3590c942b8b6c268b"
+      }
+    ],
+    "bytes": 527,
+    "scale": "0xb20e92502d0c2f72ee1ed056c20f7cab2b000dbe06bf08cdf0d1d3a1317976af36e50c007bc225b10a8148551a4c19e5d4c98f3de4e780ff770458d999d85423a62fb196389757c66aa984ee4140b6b096db99270a6c828301708fdfbb4ea6f48303f393180642414245340201000000b500d011000000000442414245c9010108849a279f6c2ad8f0a66953cb89bdeff513b1a4ded437e41cb7dbd69726176b0c010000000000000050a3056458163409296a34271779f494750981a5018ce818c116f264e7280a6c0100000000000000f70911e68c25eea4f5c706c5806401215d75d725b985612eabdc90d436dc7b84044245454631010108028f12cacb8859c1cd56bec31499dd6251b50ac6dd297a8e6a1974f9affe5e42f5037c2fb56876492e164c268c9f6ef0fba6ef436c9f02bbd754fff372acd62d10f0620100000000000004424545468403a1061b4a66501a797a3fa8cae2118693b305175828e221c3ad326eca5458c9080446524e4b59010108e64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090010000000000000071fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0010000000000000000000000054241424501011c8ead5cef329b58fc59cd56a41ecc3c05f1952bd81159c07c5ad0bc5b30737570414b05a7c20e3f12c470ffe585502dc1d4b38b58c3c4b3590c942b8b6c268b"
+  },
+  "justification": {
+    "round": 16180,
+    "targetHash": "0x7c26675bfb2d46d69b775aacfeb575cb183fc65097c59d31366b2cddad2cf528",
+    "targetNumber": 211277,
+    "precommits": [
+      {
+        "authorityIndex": 1,
+        "authorityId": "0x71fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0",
+        "targetHash": "0x7c26675bfb2d46d69b775aacfeb575cb183fc65097c59d31366b2cddad2cf528",
+        "targetNumber": 211277,
+        "signature": "0x2a8e61e2dd6f2af6f527e79e6cac1e0ef08f1fb8472358bcaab7994f302c9397596778ebea5aa19b96edb9b5e6e860168ac3528c349a8649ba4e3b5acab82302"
+      },
+      {
+        "authorityIndex": 0,
+        "authorityId": "0xe64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090",
+        "targetHash": "0x7c26675bfb2d46d69b775aacfeb575cb183fc65097c59d31366b2cddad2cf528",
+        "targetNumber": 211277,
+        "signature": "0x6d819f2d409ba5d7c2366c32091a9b668a0c5d3ee9e6cdcda2451c7338e25a00d13aa562b741bf1af53bceacc12f92a48b53618ced6bee870c1c04e3dd78480e"
+      }
+    ],
+    "votesAncestries": 0,
+    "bytes": 310,
+    "scale": "0x343f0000000000007c26675bfb2d46d69b775aacfeb575cb183fc65097c59d31366b2cddad2cf5284d390300087c26675bfb2d46d69b775aacfeb575cb183fc65097c59d31366b2cddad2cf5284d3903002a8e61e2dd6f2af6f527e79e6cac1e0ef08f1fb8472358bcaab7994f302c9397596778ebea5aa19b96edb9b5e6e860168ac3528c349a8649ba4e3b5acab8230271fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f07c26675bfb2d46d69b775aacfeb575cb183fc65097c59d31366b2cddad2cf5284d3903006d819f2d409ba5d7c2366c32091a9b668a0c5d3ee9e6cdcda2451c7338e25a00d13aa562b741bf1af53bceacc12f92a48b53618ced6bee870c1c04e3dd78480ee64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d09000"
+  },
+  "signingSet": {
+    "setId": 58,
+    "at": {
+      "number": 211276,
+      "hash": "0xb20e92502d0c2f72ee1ed056c20f7cab2b000dbe06bf08cdf0d1d3a1317976af"
+    },
+    "count": 2,
+    "threshold": 2,
+    "authorities": [
+      {
+        "id": "0xe64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090",
+        "weight": 1
+      },
+      {
+        "id": "0x71fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0",
+        "weight": 1
+      }
+    ],
+    "setIdStorage": {
+      "key": "0x5f9cc45b7a00c5899361e1c6099678dc8a2d09463effcc78a22d75b9cb87dffc",
+      "scale": "0x3a00000000000000"
+    },
+    "runtimeCall": {
+      "method": "GrandpaApi_grandpa_authorities",
+      "scale": "0x08e64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090010000000000000071fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f00100000000000000"
+    },
+    "announced": {
+      "header": {
+        "hash": "0x1e3431d55fd065ac3b19a456490d6737d134f63932bf4b8519b6d53b294fbaf1",
+        "number": 207695,
+        "parentHash": "0x127944a487e392c79b204c77105758fd129dfdacaefb7d2e89eaf5d12eef6532",
+        "stateRoot": "0x79e0f7f09e81026cb73cf8222cefa429832605aaf17964fd6ffb9245bfeed575",
+        "extrinsicsRoot": "0x1a8e51f269df0a86abd82a4060718c0567dd94bac49a7c91073ccca6fc8f4701",
+        "digest": [
+          {
+            "kind": "PreRuntime",
+            "engine": "BABE",
+            "bytes": 19,
+            "scale": "0x0642414245340201000000a5f2cf1100000000"
+          },
+          {
+            "kind": "Consensus",
+            "engine": "BABE",
+            "bytes": 121,
+            "scale": "0x0442414245c9010108849a279f6c2ad8f0a66953cb89bdeff513b1a4ded437e41cb7dbd69726176b0c010000000000000050a3056458163409296a34271779f494750981a5018ce818c116f264e7280a6c010000000000000014c7894a78692ff5fb8598be391d0638f435f5f8b3a18e50a290b21436685ef7"
+          },
+          {
+            "kind": "Consensus",
+            "engine": "BEEF",
+            "bytes": 83,
+            "scale": "0x044245454631010108028f12cacb8859c1cd56bec31499dd6251b50ac6dd297a8e6a1974f9affe5e42f5037c2fb56876492e164c268c9f6ef0fba6ef436c9f02bbd754fff372acd62d10f05c01000000000000"
+          },
+          {
+            "kind": "Consensus",
+            "engine": "BEEF",
+            "bytes": 39,
+            "scale": "0x04424545468403784e1f6f30256a69b24c6d7b9260544e825c97d8813208bbf5dd3685be9acb89"
+          },
+          {
+            "kind": "Consensus",
+            "engine": "FRNK",
+            "bytes": 93,
+            "scale": "0x0446524e4b59010108e64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090010000000000000071fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0010000000000000000000000"
+          },
+          {
+            "kind": "Seal",
+            "engine": "BABE",
+            "bytes": 71,
+            "scale": "0x054241424501011610dfcd83b6f31a52354f8ee8e7a37e89be464cbd6b688249279a6a28b69a25f08eb399fa3e678419c6d4c9bfd839c56772564e5d7e2db382e027e1bc99c283"
+          }
+        ],
+        "bytes": 527,
+        "scale": "0x127944a487e392c79b204c77105758fd129dfdacaefb7d2e89eaf5d12eef65323ead0c0079e0f7f09e81026cb73cf8222cefa429832605aaf17964fd6ffb9245bfeed5751a8e51f269df0a86abd82a4060718c0567dd94bac49a7c91073ccca6fc8f4701180642414245340201000000a5f2cf11000000000442414245c9010108849a279f6c2ad8f0a66953cb89bdeff513b1a4ded437e41cb7dbd69726176b0c010000000000000050a3056458163409296a34271779f494750981a5018ce818c116f264e7280a6c010000000000000014c7894a78692ff5fb8598be391d0638f435f5f8b3a18e50a290b21436685ef7044245454631010108028f12cacb8859c1cd56bec31499dd6251b50ac6dd297a8e6a1974f9affe5e42f5037c2fb56876492e164c268c9f6ef0fba6ef436c9f02bbd754fff372acd62d10f05c0100000000000004424545468403784e1f6f30256a69b24c6d7b9260544e825c97d8813208bbf5dd3685be9acb890446524e4b59010108e64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090010000000000000071fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0010000000000000000000000054241424501011610dfcd83b6f31a52354f8ee8e7a37e89be464cbd6b688249279a6a28b69a25f08eb399fa3e678419c6d4c9bfd839c56772564e5d7e2db382e027e1bc99c283"
+      },
+      "scheduledChange": {
+        "kind": "ScheduledChange",
+        "delay": 0,
+        "nextAuthorities": [
+          {
+            "id": "0xe64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090",
+            "weight": 1
+          },
+          {
+            "id": "0x71fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0",
+            "weight": 1
+          }
+        ],
+        "bytes": 86,
+        "scale": "0x0108e64cb64dacf59392463823df2978ab3ee21f72362d57c7fe3b85d435ea72d090010000000000000071fe90e5ae0c71f83e66da6c13b95c8627e62b3a584bb24ad18dfb56973a91f0010000000000000000000000"
+      }
+    }
+  },
+  "parentHeader": {
+    "hash": "0xb20e92502d0c2f72ee1ed056c20f7cab2b000dbe06bf08cdf0d1d3a1317976af",
+    "number": 211276,
+    "parentHash": "0x643dfd6417211a4042072c56c688603188bdb1db6d995d5cc24f357d54c2be14",
+    "stateRoot": "0xfd99e9f2154d4e1c45ec01d6707bb0e6efc905719361950ec325c5e397e35a27",
+    "extrinsicsRoot": "0x6e841d71e766b6af23ff430407fdfc0bc272ec000e459202d675cd23c20c54a8",
+    "digest": [
+      {
+        "kind": "PreRuntime",
+        "engine": "BABE",
+        "bytes": 19,
+        "scale": "0x0642414245340200000000b400d01100000000"
+      },
+      {
+        "kind": "Consensus",
+        "engine": "BEEF",
+        "bytes": 39,
+        "scale": "0x04424545468403e77ccc44693fa34c3d119e7ffa2bd6198d48f068bfe7e7a201a84d74e53325d5"
+      },
+      {
+        "kind": "Seal",
+        "engine": "BABE",
+        "bytes": 71,
+        "scale": "0x05424142450101ba248ce7a66881a2c22fd89a8621283fd81d4a27f6fc34e08f48b4f8146d29792251a74e6e2ec51b86c7e3ce7ab642cc83d94328fd9fdc19aa0fb06be11a4d8d"
+      }
+    ],
+    "bytes": 230,
+    "scale": "0x643dfd6417211a4042072c56c688603188bdb1db6d995d5cc24f357d54c2be1432e50c00fd99e9f2154d4e1c45ec01d6707bb0e6efc905719361950ec325c5e397e35a276e841d71e766b6af23ff430407fdfc0bc272ec000e459202d675cd23c20c54a80c0642414245340200000000b400d0110000000004424545468403e77ccc44693fa34c3d119e7ffa2bd6198d48f068bfe7e7a201a84d74e53325d505424142450101ba248ce7a66881a2c22fd89a8621283fd81d4a27f6fc34e08f48b4f8146d29792251a74e6e2ec51b86c7e3ce7ab642cc83d94328fd9fdc19aa0fb06be11a4d8d"
+  }
+}

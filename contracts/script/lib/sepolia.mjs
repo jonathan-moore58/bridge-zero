@@ -5,6 +5,10 @@
 // the JSON-RPC client, the forge artifacts with their libraries linked, the light client and
 // ProvenBalance calls built from one fixtures directory, and the way a transaction is priced,
 // signed, sent and followed to its receipt. Plain Node, no dependencies.
+//
+// They work on Sepolia unless a script calls useNetwork (the deploy script's and the relayer's
+// --network): RPC, CHAIN_ID, CAP and NETWORK then follow that network, and every send and read
+// below with them.
 
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -12,9 +16,70 @@ import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-export const RPC = process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com";
-export const CAP = 16_777_216;
 export const SEPOLIA_CHAIN_ID = 11_155_111n;
+
+// The networks: Sepolia, and two rollups that settle on it. rpcs: the first is used unless the
+// variable rpcEnv is set; each answered eth_chainId and eth_simulateV1 with state overrides on
+// Oct 27, 2026 (tenderly's gateway rate-limits eth_simulateV1, so it is never the first).
+// archives: what the relayer asks for receipts and old state the first no longer serves, unless
+// archiveEnv is set (comma separated); measured Oct 27: publicnode serves Base Sepolia's state at
+// least 1,048,576 blocks back but Arbitrum Sepolia's only about 64 (16 seconds), so Arbitrum's
+// first RPC is its own endpoint (about 4,096 blocks) and tenderly's gateway serves every block of
+// both. Sepolia's are as they were. gasCap: the most gas a plan gives one transaction: EIP-7825's
+// cap on Sepolia, and the same on the rollups (Arbitrum allows 32M a transaction), where the
+// largest step needs about 2.2M. Explorers for the people reading the records.
+export const NETWORKS = {
+  sepolia: {
+    name: "sepolia",
+    title: "Sepolia",
+    chainId: SEPOLIA_CHAIN_ID,
+    rpcEnv: "SEPOLIA_RPC_URL",
+    rpcs: ["https://ethereum-sepolia-rpc.publicnode.com", "https://sepolia.gateway.tenderly.co"],
+    archiveEnv: "SEPOLIA_ARCHIVE_RPC_URLS",
+    archives: ["https://sepolia.drpc.org", "https://sepolia.gateway.tenderly.co"],
+    explorer: "https://sepolia.etherscan.io",
+    gasCap: 16_777_216,
+  },
+  "base-sepolia": {
+    name: "base-sepolia",
+    title: "Base Sepolia",
+    chainId: 84_532n,
+    rpcEnv: "BASE_SEPOLIA_RPC_URL",
+    rpcs: ["https://base-sepolia-rpc.publicnode.com", "https://sepolia.base.org", "https://base-sepolia.gateway.tenderly.co"],
+    archiveEnv: "BASE_SEPOLIA_ARCHIVE_RPC_URLS",
+    archives: ["https://sepolia.base.org", "https://base-sepolia.gateway.tenderly.co"],
+    explorer: "https://sepolia.basescan.org",
+    gasCap: 16_777_216,
+  },
+  "arbitrum-sepolia": {
+    name: "arbitrum-sepolia",
+    title: "Arbitrum Sepolia",
+    chainId: 421_614n,
+    rpcEnv: "ARBITRUM_SEPOLIA_RPC_URL",
+    rpcs: ["https://sepolia-rollup.arbitrum.io/rpc", "https://arbitrum-sepolia-rpc.publicnode.com", "https://arbitrum-sepolia.gateway.tenderly.co"],
+    archiveEnv: "ARBITRUM_SEPOLIA_ARCHIVE_RPC_URLS",
+    archives: ["https://arbitrum-sepolia.gateway.tenderly.co", "https://arbitrum-sepolia-rpc.publicnode.com"],
+    explorer: "https://sepolia.arbiscan.io",
+    gasCap: 16_777_216,
+  },
+};
+
+// The network in use, and what follows it.
+export let NETWORK = NETWORKS.sepolia;
+export let RPC = process.env.SEPOLIA_RPC_URL || "https://ethereum-sepolia-rpc.publicnode.com";
+export let CHAIN_ID = SEPOLIA_CHAIN_ID;
+export let CAP = 16_777_216;
+
+// Switches the scripts to network `name` (a key of NETWORKS); throws on any other name.
+export function useNetwork(name) {
+  if (!Object.hasOwn(NETWORKS, name)) throw new Error(`no network ${name}: one of ${Object.keys(NETWORKS).join(", ")}`);
+  NETWORK = NETWORKS[name];
+  RPC = process.env[NETWORK.rpcEnv] || NETWORK.rpcs[0];
+  CHAIN_ID = NETWORK.chainId;
+  CAP = NETWORK.gasCap;
+  return NETWORK;
+}
+
 export const REQUEST_GAS = 50_000_000; // what public RPCs let one eth_simulateV1 request use
 export const RECEIPT_TIMEOUT = 20 * 60_000;
 
@@ -229,7 +294,7 @@ export function check(ok, what) {
   return ok;
 }
 export const fmt = (n) => n.toLocaleString("en-US");
-export const share = (used) => `${fmt(used)} gas, ${((100 * used) / CAP).toFixed(1)}% of the 16,777,216 cap`;
+export const share = (used) => `${fmt(used)} gas, ${((100 * used) / CAP).toFixed(1)}% of the ${fmt(CAP)} cap`;
 export const qty = (n) => "0x" + BigInt(n).toString(16);
 export const gasOf = (r) => Number(BigInt(r.gasUsed));
 export const withHeadroom = (used) => Math.min(CAP, used + Math.ceil(used / 10));
@@ -325,17 +390,28 @@ export const importCall = (header, justification, signers) =>
 // account-proof.json): initialize with the set that signs the set change, the set change's
 // import, and importAndProve at the head, as is and with one signature byte flipped. The
 // checkpoint is the set change's parent; with `announced` it is the set change that started
-// the signing set (signingSet.announced), when the capture holds it.
+// the signing set (signingSet.announced), when the capture holds it. With `current` it is the set
+// change itself, and initialize installs the set it started (newSetId, with the keys of its
+// ScheduledChange), the set that signs the head: there is no set change left to import.
 export function fixtureCalls(dir, { checkpoint = "parent" } = {}) {
   const read = (name) => JSON.parse(readFileSync(join(dir, `${name}.json`), "utf8"));
   const sc = read("set-change");
   const fp = read("finality-proof-head");
   const ap = read("account-proof");
-  const at = (checkpoint === "announced" && sc.signingSet.announced?.header) || sc.parentHeader;
+  const at = checkpoint === "current" ? sc.header : (checkpoint === "announced" && sc.signingSet.announced?.header) || sc.parentHeader;
+  const initSet =
+    checkpoint === "current" ? { setId: sc.newSetId, authorities: sc.scheduledChange.nextAuthorities } : sc.signingSet;
+  if (checkpoint === "current") {
+    const same = (a, b) => a.length === b.length && a.every((k, i) => k.id.toLowerCase() === b[i].id.toLowerCase());
+    if (sc.scheduledChange.kind !== "ScheduledChange" || sc.scheduledChange.delay !== 0)
+      throw new Error(`${dir}: the set change is no ScheduledChange with delay 0`);
+    if (fp.signingSet.setId !== sc.newSetId || !same(fp.signingSet.authorities, initSet.authorities))
+      throw new Error(`${dir}: the head is signed by set ${fp.signingSet.setId}, not by the set ${sc.newSetId} the set change started`);
+  }
   const initData = initCall(
     bytes(sc.provenance.genesisHash),
-    sc.signingSet.setId,
-    sc.signingSet.authorities.map((a) => bytes(a.id)),
+    initSet.setId,
+    initSet.authorities.map((a) => bytes(a.id)),
     bytes(at.scale),
   );
   const changeData = importCall(bytes(sc.header.scale), bytes(sc.justification.scale), signersOf(sc).hint);
@@ -362,7 +438,7 @@ export function fixtureCalls(dir, { checkpoint = "parent" } = {}) {
   const invalidSignature = hex(
     concat(errorSelector("InvalidSignature(uint256,uint256)"), word(0), word(head.first[1])),
   );
-  return { sc, fp, ap, checkpoint: at, initData, changeData, head, proveData, finalityProof, tampered, invalidSignature };
+  return { sc, fp, ap, checkpoint: at, initSet, initData, changeData, head, proveData, finalityProof, tampered, invalidSignature };
 }
 
 // ------------------------------------------------------------------ fees
@@ -397,7 +473,7 @@ export function redactAlso(...values) {
   for (const v of values) if (v) secrets.push(v, v.replaceAll("\\", "\\\\"));
 }
 export const redact = (text) =>
-  [process.env.SEPOLIA_RPC_URL, ...secrets]
+  [...Object.values(NETWORKS).map((n) => process.env[n.rpcEnv]), ...secrets]
     .filter(Boolean)
     .reduce((t, s) => t.split(s).join("<redacted>"), String(text ?? ""))
     .trim();
@@ -489,10 +565,10 @@ export function signerIs(address, account, passwordFile) {
 }
 
 // The cast mktx arguments that sign transaction `name` with the keystore: explicit nonce, gas
-// limit and fees, on Sepolia's chain id. Without `to`, `data` is creation code.
+// limit and fees, on the network's chain id. Without `to`, `data` is creation code.
 export function mktxArgs(name, { to, data, nonce, gasLimit, fees, account, passwordFile }) {
   const common = [
-    "--rpc-url", RPC, "--chain", String(SEPOLIA_CHAIN_ID),
+    "--rpc-url", RPC, "--chain", String(CHAIN_ID),
     "--account", account, "--password-file", passwordFile,
     "--nonce", String(nonce), "--gas-limit", String(gasLimit),
     "--gas-price", String(fees.maxFee), "--priority-gas-price", String(fees.tip),
