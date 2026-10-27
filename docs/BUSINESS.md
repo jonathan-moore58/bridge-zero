@@ -116,7 +116,8 @@ What the testnets already show:
   hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 327 forge tests, 263 relayer
   tests and 343 fixture checks pass.
 - The limits are written down, including a six-hour gap while the machine slept on Oct 24
-  ([Known limits](../README.md#status), [THREAT_MODEL.md](THREAT_MODEL.md)).
+  ([Known limits](../README.md#status), [what the minter trusts](BRIDGE.md#what-the-minter-trusts),
+  [the trusted return path](BRIDGE.md#the-trusted-return-path)).
 
 What has to change before real value: committee members who are independent of each other, an
 outside audit, light-client admins behind a timelock, and more than one machine for the relayer
