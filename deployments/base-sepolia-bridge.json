@@ -1,0 +1,69 @@
+{
+  "network": "base-sepolia",
+  "chainId": 84532,
+  "deployer": "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071",
+  "lightClient": {
+    "name": "GrandpaLightClient #2",
+    "address": "0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6"
+  },
+  "vault": {
+    "network": "portaldot-v3-testnet",
+    "chainId": 420420777,
+    "address": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+    "codeHash": "0xa72553f50cdf645fb343b2cf089e431a1b26fb07e80f4e2236d55bf9811c663f"
+  },
+  "artifacts": {
+    "BridgeMinter": "0x41eb5506e8ae46303504b347a9b91598e07b958ae06a394eee4953e917709992",
+    "WrappedTPOT": "0xa5735203f0757a857f66866626a8719f49f1fa858387df0cbd50f5cdbc1a43f0"
+  },
+  "contracts": {
+    "BridgeMinter": "0xdc31a3bc1354545eeb985aad7b2aa662e9272348",
+    "WrappedTPOT": "0xe1130718c56de008b47c392c85895a1a605ba95e"
+  },
+  "steps": [
+    {
+      "name": "BridgeMinter",
+      "kind": "deploy",
+      "nonce": 9,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/BridgeMinter.sol:BridgeMinter",
+      "address": "0xdc31a3bc1354545eeb985aad7b2aa662e9272348",
+      "libraries": {
+        "src/trie/StorageProofs.sol:StorageProofs": "0x5da053bc5659ba9f725e4b1b5083545b933ef2a3"
+      },
+      "constructorArgs": "0x000000000000000000000000389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6000000000000000000000000a02ee16eb03d2cf1aef199f7658fb8c8e3188ffd00000000000000000000000000000000000000000000000000000000190f1ca9a72553f50cdf645fb343b2cf089e431a1b26fb07e80f4e2236d55bf9811c663f000000000000000000000000e1130718c56de008b47c392c85895a1a605ba95e",
+      "dataHash": "0xb010fa12941fbc77f147d74fe96cc66539b36a97676430714dd96034e13efc6f",
+      "gasLimit": 1539515,
+      "simulatedGas": 1399559,
+      "codeHash": "0x985fca358b9efe6f35757478f16fc0a1b61a35ffc115d7d5c8e9ccd5ab8cb0d9",
+      "txHash": "0xdf59cc5091aafe17a2ca22fcb9b04c96260eb1f4396573bb7a3045e524d00769",
+      "signedAt": "2026-10-27T20:56:28.447Z",
+      "block": 51063602,
+      "gasUsed": 1399559,
+      "effectiveGasPrice": "5001000",
+      "status": 1,
+      "ok": true
+    },
+    {
+      "name": "WrappedTPOT",
+      "kind": "deploy",
+      "nonce": 10,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/WrappedTPOT.sol:WrappedTPOT",
+      "address": "0xe1130718c56de008b47c392c85895a1a605ba95e",
+      "libraries": {},
+      "constructorArgs": "0x000000000000000000000000dc31a3bc1354545eeb985aad7b2aa662e9272348",
+      "dataHash": "0xf169bcd747c4ecb41b0ff207144fcdd56ec72eff969d6708ebc45ca547099ff9",
+      "gasLimit": 518203,
+      "simulatedGas": 471093,
+      "codeHash": "0x4f1d5c6e666c8e5cb02d9585f5688cc2bf002d999b04c0eae6f39cedc45f2ac6",
+      "txHash": "0x0c6bbe45399381f9b5d376cabd0938de0b52a652f09583101210edc06a08bdd0",
+      "signedAt": "2026-10-27T20:56:34.088Z",
+      "block": 51063630,
+      "gasUsed": 471093,
+      "effectiveGasPrice": "5001000",
+      "status": 1,
+      "ok": true
+    }
+  ]
+}

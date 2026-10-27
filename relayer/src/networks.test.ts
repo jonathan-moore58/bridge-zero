@@ -1,14 +1,23 @@
 // Unit tests of --network, offline: Sepolia stays the default, with its RPC, chain id, cap and the
 // sender's file names as before, and useNetwork moves all of them to Base Sepolia or Arbitrum
-// Sepolia (contracts/script/lib/sepolia.mjs NETWORKS). Nothing is read from a chain.
+// Sepolia (contracts/script/lib/sepolia.mjs NETWORKS). The mint tool's deploy --network: Sepolia's
+// records and nonces as before, each rollup's pair at the deployer's next two nonces there, bound to
+// that rollup's V3 light client, and the options it refuses. Nothing is read from a chain.
 //
 //   npm test
 
 import assert from "node:assert/strict";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import { CAP, CHAIN_ID, mktxArgs, NETWORK, NETWORKS, RPC, SEPOLIA_CHAIN_ID, useNetwork, type Fees } from "../../contracts/script/lib/sepolia.mjs";
+import { minterConstructorArgs, tokenConstructorArgs, V3_CHAIN_ID } from "./bridge.js";
+import { bytesToHex, hexToBytes } from "./bytes.js";
+import { bridgePair } from "./mint.js";
 import { senderOf } from "./relay.js";
+import { createAddress } from "./vault.js";
 
 const ADDRESS = "0xe94a82e2c7f38f777e8845a9d8c36b6be6a30257" as const;
 const fees: Fees = { base: 16n, tip: 1_000n, maxFee: 10_000_000n, gasPrice: 1_016n };
@@ -63,6 +72,71 @@ describe("--network", () => {
       assert.equal(new Set(net.rpcs).size, net.rpcs.length, `${name}: no RPC twice`);
       assert.ok(!ids.has(net.chainId), `${name}: chain id ${net.chainId} once`);
       ids.add(net.chainId);
+    }
+  });
+});
+
+describe("npm run mint -- deploy --network", () => {
+  const relayer = dirname(dirname(fileURLToPath(import.meta.url)));
+  const repo = dirname(relayer);
+  const record = <T>(file: string): T => JSON.parse(readFileSync(join(repo, file), "utf8")) as T;
+  type Step = { name: string; nonce: number; address: string; constructorArgs?: string; kind: string };
+  const sepoliaBridge = record<{ deployer: string; vault: { address: string; codeHash: string }; steps: Step[] }>("deployments/sepolia-bridge.json");
+  const deployer = hexToBytes(sepoliaBridge.deployer);
+  const create = (nonce: number) => bytesToHex(createAddress(deployer, BigInt(nonce)));
+  const words = (args: string) => (args.slice(2).match(/.{64}/g) ?? []).map((w) => `0x${w}`);
+
+  it("Sepolia keeps its records and nonces 31 and 32, where its pair is", () => {
+    assert.deepEqual(bridgePair("sepolia"), { clientRecord: "deployments/sepolia.json", bridgeRecord: "deployments/sepolia-bridge.json", minterNonce: 31, tokenNonce: 32 });
+    const at = (name: string) => sepoliaBridge.steps.find((s) => s.kind === "deploy" && s.name === name)!;
+    assert.deepEqual([at("BridgeMinter").nonce, at("BridgeMinter").address], [31, create(31)]);
+    assert.deepEqual([at("WrappedTPOT").nonce, at("WrappedTPOT").address], [32, create(32)]);
+  });
+
+  for (const network of ["base-sepolia", "arbitrum-sepolia"] as const) {
+    it(`${network}: the pair at the deployer's next two nonces there, bound to that rollup's V3 client`, () => {
+      const pair = bridgePair(network);
+      assert.deepEqual(pair, { clientRecord: `deployments/${network}.json`, bridgeRecord: `deployments/${network}-bridge.json`, minterNonce: 9, tokenNonce: 10 });
+      // The light client's deployment took the deployer's nonces 0 to 7 there, the relayer's funding 8.
+      const lc = record<{ chainId: number; deployer: string; contracts: Record<string, string>; steps: Step[] }>(pair.clientRecord);
+      const funding = record<{ steps: Record<string, { chain: string; from: string; nonce: number }> }>(`deployments/${network}-funding.json`);
+      assert.equal(lc.chainId, Number(NETWORKS[network].chainId));
+      assert.equal(lc.deployer.toLowerCase(), bytesToHex(deployer));
+      assert.deepEqual(lc.steps.map((s) => s.nonce), [0, 1, 2, 3, 4, 5, 6, 7]);
+      const there = Object.values(funding.steps).filter((s) => s.chain === network && s.from.toLowerCase() === bytesToHex(deployer));
+      assert.deepEqual(there.map((s) => s.nonce), [8]);
+      assert.equal(pair.minterNonce, Math.max(...lc.steps.map((s) => s.nonce), ...there.map((s) => s.nonce)) + 1);
+      assert.equal(pair.tokenNonce, pair.minterNonce + 1);
+      // The same addresses on both rollups, none that a record there holds already.
+      assert.equal(create(pair.minterNonce), "0xdc31a3bc1354545eeb985aad7b2aa662e9272348");
+      assert.equal(create(pair.tokenNonce), "0xe1130718c56de008b47c392c85895a1a605ba95e");
+      const pairAddresses: string[] = [create(pair.minterNonce), create(pair.tokenNonce)];
+      for (const s of lc.steps) assert.ok(!pairAddresses.includes(s.address.toLowerCase()), `${s.name} is elsewhere`);
+      // Sepolia's constructor arguments with the rollup's own V3 client and token: the same vault, V3 chain id and code hash.
+      const client = lc.contracts["GrandpaLightClient #2"];
+      assert.equal(client, "0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6");
+      const args = bytesToHex(minterConstructorArgs(hexToBytes(client), hexToBytes(sepoliaBridge.vault.address), V3_CHAIN_ID, hexToBytes(sepoliaBridge.vault.codeHash), hexToBytes(create(10))));
+      const sepoliaArgs = words(sepoliaBridge.steps.find((s) => s.name === "BridgeMinter")!.constructorArgs!);
+      const rollupArgs = words(args);
+      assert.equal(rollupArgs.length, 5);
+      assert.deepEqual(rollupArgs.slice(1, 4), sepoliaArgs.slice(1, 4), "vault, V3 chain id 420420777 and vault code hash as on Sepolia");
+      assert.equal(BigInt(rollupArgs[0]), BigInt(client));
+      assert.equal(BigInt(rollupArgs[4]), BigInt(create(10)));
+      assert.equal(bytesToHex(tokenConstructorArgs(hexToBytes(create(9)))), `0x${"0".repeat(24)}${create(9).slice(2)}`);
+    });
+  }
+
+  it("refuses what a deploy on a rollup does not take, before it reads anything", () => {
+    const run = (...args: string[]) => spawnSync(process.execPath, ["--import", "tsx", "src/mint.ts", ...args], { cwd: relayer, encoding: "utf8", windowsHide: true, timeout: 60_000 });
+    for (const [args, message] of [
+      [["deploy", "--network", "base-sepolia", "--nonce", "0"], /a deploy on base-sepolia reads no lock: --bundle and --nonce are for Sepolia's/],
+      [["mint", "--network", "arbitrum-sepolia"], /--network arbitrum-sepolia is for deploy: plan and mint are Sepolia's/],
+      [["deploy", "--network", "linea-sepolia"], /--network takes one of sepolia, base-sepolia, arbitrum-sepolia/],
+    ] as const) {
+      const r = run(...args);
+      assert.equal(r.status, 1, args.join(" "));
+      assert.match(r.stdout, message);
+      assert.match(r.stdout, /usage \(from relayer\/\):/);
     }
   });
 });

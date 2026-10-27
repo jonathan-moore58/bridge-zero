@@ -7,6 +7,7 @@
 //   npm run mint -- bundle --check <file>
 //   npm run mint -- plan [--bundle <file> | --nonce <n>] [--sandbox] [--from <address>]
 //   npm run mint -- deploy [--bundle <file> | --nonce <n>] [--send --account <keystore> --password-file <path>]
+//   npm run mint -- deploy --network base-sepolia|arbitrum-sepolia [--send --account <keystore> --password-file <path>]
 //   npm run mint -- mint [--bundle <file> | --nonce <n>] [--from <address>] [--send --account <keystore> --password-file <path>]
 //   npm run mint -- mint --tamper signature|header|proof|amount|recipient | --replay [--bundle <file> | --nonce <n>] [--sandbox | --from <address> | --send ...]
 //   npm run mint -- status
@@ -68,6 +69,15 @@
 // and the Etherscan verification command (sepolia profile) is printed for each contract, in the
 // dry run too. deploy needs the deployer's keystore; the mint is open to anyone. A deploy reads the
 // lock (lock 0 unless --bundle or --nonce) only for its minter address.
+// deploy --network base-sepolia or arbitrum-sepolia (contracts/script/lib/sepolia.mjs NETWORKS: that
+// rollup's chain id, RPC and gas cap) deploys the same pair from the same build there, bound to the V3
+// light client of that network (GrandpaLightClient #2 in deployments/<network>.json) and to the same
+// vault, V3 chain id and vault code hash: BridgeMinter at the deployer's nonce 9 and WrappedTPOT at 10,
+// its next two there after the light client's deployment (nonces 0 to 7, the libraries the build links
+// at the addresses they have on Sepolia) and the relayer's funding (8). It reads no lock, as none names
+// that minter yet, and records in deployments/<network>-bridge.json what deployments/sepolia-bridge.json
+// records for Sepolia; the minter there computes each commitment with that rollup's chain id. Without
+// --network, everything is Sepolia's, as above; plan, mint and status are Sepolia's only.
 // mint --tamper and mint --replay are the demo's two reverts, as transactions anyone can send. A
 // tamper is the bundle's importAndMint with one part changed (bridge.ts tamperedCall: a signature
 // byte in the finality proof, a byte of B's state root in the header, a byte of the slot proof,
@@ -192,6 +202,8 @@ import {
 } from "./vault.js";
 import {
   CAP,
+  NETWORK,
+  NETWORKS,
   PROBE,
   PROBE_CODE,
   PROBE_GAS,
@@ -199,6 +211,7 @@ import {
   RECEIPT_TIMEOUT,
   REQUEST_GAS,
   RPC,
+  useNetwork,
   eth,
   feesAt,
   findLog,
@@ -223,6 +236,7 @@ import {
   writeJsonAtomic,
   type Fees,
   type Log,
+  type NetworkName,
   type Receipt,
 } from "../../contracts/script/lib/sepolia.mjs";
 
@@ -234,16 +248,52 @@ const V3 = {
   genesis: "0xd4f9acbcf7f52388d8b095abe3c198d19fc510e0343e643e87cfbccb155283bd",
   chainId: V3_CHAIN_ID,
 } as const;
-/** The light client on Sepolia that follows V3 (deployments/sepolia.json). */
+/** The light client that follows V3, on Sepolia (deployments/sepolia.json) and on each other network (deployments/<network>.json). */
 const CLIENT_NAME = "GrandpaLightClient #2";
-/** The deployer's nonces that create the minter and the token: lock 0 names CREATE(deployer, 31) as its minter. */
-const MINTER_NONCE = 31;
-const TOKEN_NONCE = 32;
+
+/** Where a network has its pair: the record of its light client, the record of its minter and token, and the deployer's nonces that create them. */
+export interface BridgePair {
+  clientRecord: string;
+  bridgeRecord: string;
+  minterNonce: number;
+  tokenNonce: number;
+}
+
+/**
+ * The deployer's nonces that create the minter and the token. On Sepolia 31 and 32: lock 0 names
+ * CREATE(deployer, 31) as its minter. On Base Sepolia and Arbitrum Sepolia 9 and 10, the deployer's
+ * next two there after its light client's deployment (nonces 0 to 7, deployments/<network>.json) and
+ * the relayer's funding (8, deployments/<network>-funding.json).
+ */
+const PAIR_NONCES: Record<NetworkName, readonly [minter: number, token: number]> = {
+  sepolia: [31, 32],
+  "base-sepolia": [9, 10],
+  "arbitrum-sepolia": [9, 10],
+};
+
+/** The pair of `network`: its records, deployments/<network>.json and deployments/<network>-bridge.json, and its nonces. */
+export function bridgePair(network: NetworkName): BridgePair {
+  const [minterNonce, tokenNonce] = PAIR_NONCES[network];
+  return { clientRecord: `deployments/${network}.json`, bridgeRecord: `deployments/${network}-bridge.json`, minterNonce, tokenNonce };
+}
+
+/**
+ * The network of the pair this run works on (Sepolia's unless deploy --network), its records, and the
+ * nonces that create the minter and the token. Only useBridgeNetwork changes them: captureBundle, which
+ * automint.ts imports, reads Sepolia's whatever network sepolia.mjs is on.
+ */
+let BRIDGE_NETWORK: NetworkName = "sepolia";
+let { clientRecord: CLIENT_RECORD, bridgeRecord: BRIDGE_RECORD, minterNonce: MINTER_NONCE, tokenNonce: TOKEN_NONCE } = bridgePair(BRIDGE_NETWORK);
+
+/** Switches the tool to `network`: the RPC, chain id and cap (sepolia.mjs useNetwork), the records and the nonces. */
+function useBridgeNetwork(network: NetworkName): void {
+  useNetwork(network);
+  BRIDGE_NETWORK = network;
+  ({ clientRecord: CLIENT_RECORD, bridgeRecord: BRIDGE_RECORD, minterNonce: MINTER_NONCE, tokenNonce: TOKEN_NONCE } = bridgePair(network));
+}
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
-const SEPOLIA_RECORD = "deployments/sepolia.json";
 const V3_RECORD = "deployments/v3-testnet.json";
-const BRIDGE_RECORD = "deployments/sepolia-bridge.json";
 const DEFAULT_ARTIFACTS = "contracts/out-sepolia";
 const DEFAULT_OUT = "fixtures/v3-testnet-mint";
 const BUNDLE_FILE = "mint-bundle.json";
@@ -312,8 +362,8 @@ async function sepolia<R>(what: string, read: () => Promise<R>): Promise<R> {
     return await retry(what, read);
   } catch (error) {
     if (error instanceof DryRunViolation) throw error;
-    if (offline(error)) throw new Unreachable(`Sepolia RPC unreachable (${what}: ${errorText(error)})`);
-    throw new Stop(`Sepolia RPC: ${what}: ${errorText(error)}`);
+    if (offline(error)) throw new Unreachable(`${NETWORK.title} RPC unreachable (${what}: ${errorText(error)})`);
+    throw new Stop(`${NETWORK.title} RPC: ${what}: ${errorText(error)}`);
   }
 }
 
@@ -325,6 +375,7 @@ const USAGE = `usage (from relayer/):
   npm run mint -- bundle --check <file>
   npm run mint -- plan [--bundle <file> | --nonce <n>] [--sandbox] [--from <address>]
   npm run mint -- deploy [--bundle <file> | --nonce <n>] [--send --account <keystore> --password-file <path>]
+  npm run mint -- deploy --network base-sepolia|arbitrum-sepolia [--send --account <keystore> --password-file <path>]
   npm run mint -- mint [--bundle <file> | --nonce <n>] [--from <address>] [--send --account <keystore> --password-file <path>]
   npm run mint -- mint --tamper ${TAMPERS.join("|")} | --replay [--bundle <file> | --nonce <n>] [--sandbox | --from <address> | --send ...]
   npm run mint -- status
@@ -435,11 +486,19 @@ function planOptions(command: Command, args: string[]): PlanOptions {
     artifacts: { type: "string" },
     "priority-fee": { type: "string" },
     "max-fee": { type: "string" },
+    network: { type: "string" },
     ...COMMON,
   });
   let bundleFile = str(v.bundle);
   const nonceText = str(v.nonce);
   if (bundleFile !== undefined && nonceText !== undefined) usage("choose one of --bundle <file> and --nonce <n>");
+  // Another network than Sepolia: the pair's creation only, from no lock (none names that minter yet).
+  const network = str(v.network) ?? "sepolia";
+  if (!Object.hasOwn(NETWORKS, network)) usage(`--network takes one of ${Object.keys(NETWORKS).join(", ")}`);
+  if (network !== "sepolia" && command !== "deploy") usage(`--network ${network} is for deploy: plan and mint are Sepolia's`);
+  if (network !== "sepolia" && (bundleFile !== undefined || nonceText !== undefined)) usage(`a deploy on ${network} reads no lock: --bundle and --nonce are for Sepolia's, where lock 0 names the minter`);
+  // The RPC, the chain id, the records and the nonces follow --network from here on.
+  useBridgeNetwork(network as NetworkName);
   if (bundleFile === undefined && nonceText === undefined && command !== "deploy") {
     bundleFile = at(join(DEFAULT_OUT, BUNDLE_FILE));
     if (!existsSync(bundleFile)) usage(`${command} reads ${DEFAULT_OUT}/${BUNDLE_FILE} unless given --bundle <file> or --nonce <n>, and there is none: capture one with bundle --nonce <n>`);
@@ -494,7 +553,7 @@ function statusOptions(args: string[]): Common {
 // ---------------------------------------------------------------------------------------
 // The records
 
-/** What deployments/sepolia.json says: the deployer and the light client that follows V3. */
+/** What deployments/sepolia.json (deployments/<network>.json) says: the deployer and the light client that follows V3. */
 interface SepoliaDeployment {
   deployer: Hex;
   deployerName: string;
@@ -503,10 +562,11 @@ interface SepoliaDeployment {
 }
 
 function readSepolia(): SepoliaDeployment {
-  const record = readJson<{ chainId: number; deployer: string; contracts: Record<string, string>; steps: { name: string; codeHash: string | null }[] }>(at(SEPOLIA_RECORD));
+  const record = readJson<{ chainId: number; deployer: string; contracts: Record<string, string>; steps: { name: string; codeHash: string | null }[] }>(at(CLIENT_RECORD));
   const client = record.contracts?.[CLIENT_NAME];
   const codeHash = record.steps?.find((s) => s.name === CLIENT_NAME)?.codeHash;
-  if (record.chainId !== Number(SEPOLIA_CHAIN_ID) || !client || !codeHash) throw new Stop(`${SEPOLIA_RECORD} has no ${CLIENT_NAME} on Sepolia`);
+  const network = NETWORKS[BRIDGE_NETWORK];
+  if (record.chainId !== Number(network.chainId) || !client || !codeHash) throw new Stop(`${CLIENT_RECORD} has no ${CLIENT_NAME} on ${network.title}`);
   return { deployer: record.deployer.toLowerCase() as Hex, deployerName: record.deployer, client: client.toLowerCase() as Hex, clientCodeHash: codeHash.toLowerCase() as Hex };
 }
 
@@ -603,7 +663,7 @@ interface BridgeStep {
 }
 
 interface BridgeRecord {
-  network: "sepolia";
+  network: NetworkName;
   chainId: number;
   deployer: string;
   lightClient: { name: string; address: Hex };
@@ -623,7 +683,8 @@ function readBridge(): BridgeRecord | null {
   } catch (error) {
     throw new Stop(`${BRIDGE_RECORD}: ${errorText(error)}`);
   }
-  if (record.network !== "sepolia" || record.chainId !== Number(SEPOLIA_CHAIN_ID) || !Array.isArray(record.steps)) throw new Stop(`${BRIDGE_RECORD} is not a Sepolia bridge record`);
+  const network = NETWORKS[BRIDGE_NETWORK];
+  if (record.network !== network.name || record.chainId !== Number(network.chainId) || !Array.isArray(record.steps)) throw new Stop(`${BRIDGE_RECORD} is not a ${network.title} bridge record`);
   return record;
 }
 
@@ -741,7 +802,7 @@ function artifactOf(dir: string, name: ArtifactName): Artifact {
 function verifyCommand(a: Artifact, address: Hex, constructorArgs: Hex): string {
   const parts = [
     "FOUNDRY_PROFILE=sepolia forge verify-contract", checksumAddress(hexToBytes(address)), a.contractId,
-    "--chain sepolia --verifier etherscan --watch", `--compiler-version ${a.compiler}`, `--evm-version ${a.evmVersion}`,
+    `--chain ${BRIDGE_NETWORK} --verifier etherscan --watch`, `--compiler-version ${a.compiler}`, `--evm-version ${a.evmVersion}`,
   ];
   if (a.optimizerRuns !== null) parts.push(`--num-of-optimizations ${a.optimizerRuns}`);
   for (const [id, address] of Object.entries(a.libraries)) parts.push(`--libraries ${id}:${address}`);
@@ -1364,13 +1425,17 @@ interface Setting {
   balanceBefore: bigint;
 }
 
-/** The deployer creates the minter at nonce 31 and the token at 32; nothing else puts them where lock 0 expects them. */
+/**
+ * The deployer creates the minter at nonce 31 and the token at 32 (on another network at its own two,
+ * bridgePair); nothing else puts them where lock 0 expects them, or there where the record says.
+ */
 function requireDeployerNonce(s: Setting, n: { latest: number; pending: number }, nonce: number): void {
   if (n.latest === nonce && n.pending === nonce && s.deployerNonce === nonce) {
     check(true, `the deployer's next nonce is ${nonce}, mined and pending`);
     return;
   }
-  const what = nonce === MINTER_NONCE ? `BridgeMinter has to be its nonce-${MINTER_NONCE} creation, ${checksumAddress(hexToBytes(s.bridge.minter))}, the minter lock 0 names` : `WrappedTPOT has to be its nonce-${TOKEN_NONCE} creation, ${checksumAddress(hexToBytes(s.bridge.token))}, the token the minter takes`;
+  const named = BRIDGE_NETWORK === "sepolia" ? "the minter lock 0 names" : `the minter on ${NETWORKS[BRIDGE_NETWORK].title}`;
+  const what = nonce === MINTER_NONCE ? `BridgeMinter has to be its nonce-${MINTER_NONCE} creation, ${checksumAddress(hexToBytes(s.bridge.minter))}, ${named}` : `WrappedTPOT has to be its nonce-${TOKEN_NONCE} creation, ${checksumAddress(hexToBytes(s.bridge.token))}, the token the minter takes`;
   throw new Stop(
     `the deployer ${s.deployment.deployerName} is at nonce ${n.latest} (pending ${n.pending}), and ${what}` +
       (n.latest > nonce ? `: nonce ${nonce} is spent, so no transaction can put it there any more` : ": wait until the pending transaction is mined"),
@@ -1743,7 +1808,7 @@ async function simulate(plan: Plan, limitOf: (s: Step) => number, boundOf: (s: S
     }
     const blocks = await rpc<SimBlock[]>("eth_simulateV1", [{ blockStateCalls, validation: true }, block]).catch((error: unknown) => {
       if (error instanceof DryRunViolation) throw error;
-      if (offline(error)) throw new Unreachable(`Sepolia RPC unreachable (eth_simulateV1: ${errorText(error)})`);
+      if (offline(error)) throw new Unreachable(`${NETWORK.title} RPC unreachable (eth_simulateV1: ${errorText(error)})`);
       throw new Error(`request [${request.map((s) => s.index).join(",")}]: ${errorText(error)}`);
     });
 
@@ -1929,8 +1994,8 @@ const dataHash = (s: Step): Hex => bytesToHex(keccak_256(hexToBytes(s.data)));
 
 function newRecord(s: Setting): BridgeRecord {
   return {
-    network: "sepolia",
-    chainId: Number(SEPOLIA_CHAIN_ID),
+    network: BRIDGE_NETWORK,
+    chainId: Number(NETWORKS[BRIDGE_NETWORK].chainId),
     deployer: s.deployment.deployerName,
     lightClient: { name: CLIENT_NAME, address: s.deployment.client },
     vault: { network: "portaldot-v3-testnet", chainId: Number(V3.chainId), address: s.vault.address, codeHash: s.vault.codeHash },
@@ -2229,7 +2294,8 @@ async function planCommand(o: PlanOptions): Promise<number> {
         : o.command === "mint"
           ? (demo ?? "minting")
           : "planning the mint";
-  log(`${new Date().toISOString()}: ${what} on Sepolia${o.send ? "" : " (dry run)"}`);
+  const network = NETWORKS[BRIDGE_NETWORK];
+  log(`${new Date().toISOString()}: ${what} on ${network.title}${o.send ? "" : " (dry run)"}`);
   const deployment = readSepolia();
   const vault = readV3();
   let sender: Hex = deployment.deployer;
@@ -2241,18 +2307,21 @@ async function planCommand(o: PlanOptions): Promise<number> {
   } else if (o.from) sender = o.from;
 
   // The lock: from the bundle (plan, mint, or a deploy given one), else, for a deploy, as the
-  // record or the vault's log has it, without a capture.
+  // record or the vault's log has it, without a capture. A deploy on another network reads none:
+  // no lock names that minter yet.
   let captured: { bundle: MintBundleFixture; file: string | null } | null = null;
-  let lock: LockFacts;
+  let lock: LockFacts | null = null;
   if (o.command !== "deploy" || o.bundleFile !== undefined) {
     captured = await bundleFor(o);
     lock = lockOfBundle(captured.bundle);
     const b = captured.bundle;
     if (b.provenance.genesisHash !== V3.genesis || BigInt(b.vault.chainId) !== V3.chainId) throw new Stop(`the bundle is not from ${V3.title}`);
     if (b.vault.address !== vault.address || b.vault.codeHash !== vault.codeHash) throw new Stop(`the bundle's vault (${b.vault.address}, code hash ${shortHex(b.vault.codeHash)}) is not the one ${V3_RECORD} records`);
-  } else lock = await lockOf(vault, o.nonce ?? 0n, o);
-  checkLock(lock, vault, deployment);
-  log(`Lock ${lock.nonce} (${lock.source}): ${formatTpot(lock.amountNative)} for ${checksumAddress(lock.recipient)}, minter ${checksumAddress(lock.dstMinter)} = CREATE(deployer, ${MINTER_NONCE})`);
+  } else if (BRIDGE_NETWORK === "sepolia") lock = await lockOf(vault, o.nonce ?? 0n, o);
+  if (lock) {
+    checkLock(lock, vault, deployment);
+    log(`Lock ${lock.nonce} (${lock.source}): ${formatTpot(lock.amountNative)} for ${checksumAddress(lock.recipient)}, minter ${checksumAddress(lock.dstMinter)} = CREATE(deployer, ${MINTER_NONCE})`);
+  } else log(`No lock is read: none names the minter on ${network.title} yet, CREATE(deployer, ${MINTER_NONCE})`);
   const bundle = o.command === "deploy" ? null : captured!.bundle;
 
   // Everything is read at one block, the one the plan is simulated on.
@@ -2261,9 +2330,9 @@ async function planCommand(o: PlanOptions): Promise<number> {
     chainId = await rpc<string>("eth_chainId", []);
   } catch (error) {
     if (error instanceof DryRunViolation) throw error;
-    throw new Unreachable(`Sepolia RPC unreachable (${errorText(error)})`);
+    throw new Unreachable(`${network.title} RPC unreachable (${errorText(error)})`);
   }
-  if (!check(BigInt(chainId) === SEPOLIA_CHAIN_ID, `chain id ${BigInt(chainId)} is Sepolia`)) throw new Stop("the Sepolia RPC serves another chain");
+  if (!check(BigInt(chainId) === network.chainId, `chain id ${BigInt(chainId)} is ${network.title}`)) throw new Stop(`the ${network.title} RPC serves another chain`);
   const block = await sepolia("latest block", () => rpc<{ number: string; hash: string }>("eth_getBlockByNumber", ["latest", false]));
   const fees = await sepolia("fees", () => feesAt(block, { priorityFee: o.priorityFee, maxFee: o.maxFee }));
   const balanceOf = async (address: Hex) => BigInt(await sepolia("balance", () => rpc<string>("eth_getBalance", [address, block.number])));
@@ -2271,15 +2340,15 @@ async function planCommand(o: PlanOptions): Promise<number> {
   const deployerNonce = await nonceOf(deployment.deployer);
   const n = await sepolia("nonces", () => nonces(deployment.deployer));
   const senderNonce = sender === deployment.deployer ? deployerNonce : await nonceOf(sender);
-  log(`Sepolia block ${fmt(Number(BigInt(block.number)))} (${block.hash}), simulated on top of it via ${new URL(RPC).host}`);
+  log(`${network.title} block ${fmt(Number(BigInt(block.number)))} (${block.hash}), simulated on top of it via ${new URL(RPC).host}`);
   log(`Deployer ${deployment.deployerName}: nonce ${deployerNonce} (pending ${n.pending}), balance ${eth(await balanceOf(deployment.deployer))}`);
   if (sender !== deployment.deployer) log(`Sender of the mint ${checksumAddress(hexToBytes(sender))}${o.send ? ` (keystore ${o.account})` : " (--from)"}: nonce ${senderNonce}, balance ${eth(await balanceOf(sender))}`);
   const clientCode = await codeAt(deployment.client, block.number);
-  if (!check(bytesToHex(keccak_256(clientCode)) === deployment.clientCodeHash, `${CLIENT_NAME} ${deployment.client} has the code ${SEPOLIA_RECORD} recorded`)) throw new Stop("the light client is not the recorded one");
+  if (!check(bytesToHex(keccak_256(clientCode)) === deployment.clientCodeHash, `${CLIENT_NAME} ${deployment.client} has the code ${CLIENT_RECORD} recorded`)) throw new Stop("the light client is not the recorded one");
   const client = await readClient(deployment.client, block.number);
   log(`${CLIENT_NAME}: set ${client.setId}, latest #${fmt(client.latestNumber)} ${shortHex(client.latestHash)}, ${client.halted ? "HALTED" : "not halted"}, ${client.paused ? "PAUSED" : "not paused"}`);
   const bridge = await readBridgeState(deployment.deployer, block.number);
-  if (!equalBytes(hexToBytes(bridge.minter), lock.dstMinter)) throw new Stop("CREATE(deployer, 31) is not the lock's minter");
+  if (lock && !equalBytes(hexToBytes(bridge.minter), lock.dstMinter)) throw new Stop(`CREATE(deployer, ${MINTER_NONCE}) is not the lock's minter`);
   log(
     `BridgeMinter ${checksumAddress(hexToBytes(bridge.minter))} (CREATE(deployer, ${MINTER_NONCE})): ` +
       (bridge.minterDeployed ? `deployed, ${bridge.bound ? `bound to trie id ${shortHex(bridge.trieId)}` : "not bound"}, ${bridge.burnCount} burns` : "not deployed") +
@@ -2352,7 +2421,7 @@ async function planCommand(o: PlanOptions): Promise<number> {
   if (!o.send) {
     const next =
       o.command === "plan" && !o.sandbox && plan.steps.some((s) => s.sentBy === "deploy")
-        ? ` Next: npm run mint -- deploy --send ..., then npm run mint -- mint ${captured?.file ? `--bundle ${repoPath(captured.file)}` : `--nonce ${lock.nonce}`} --send ...`
+        ? ` Next: npm run mint -- deploy --send ..., then npm run mint -- mint ${captured?.file ? `--bundle ${repoPath(captured.file)}` : `--nonce ${lock!.nonce}`} --send ...`
         : "";
     log(`\nThe dry run passed. Nothing was signed or sent.${next}`);
     return OK;
