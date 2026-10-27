@@ -848,5 +848,8 @@ pinned commit and licence. Commits that add third-party code start with `vendor:
 
 ## Licence
 
-The project licence (Apache-2.0) is planned for the final submission. Third-party
-code keeps its own licence, listed in [NOTICE.md](NOTICE.md).
+Bridge Zero is licensed under the Apache License 2.0: see [LICENSE](LICENSE). It covers all of
+the project's own code, including the Solidity sources whose `SPDX-License-Identifier` line still
+reads `UNLICENSED`: those lines are left as the contracts were built and deployed, so that the
+deployed bytecode and the verified sources still match this repository byte for byte.
+Third-party code keeps its own licence, listed in [NOTICE.md](NOTICE.md).
