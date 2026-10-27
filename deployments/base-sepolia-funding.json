@@ -1,0 +1,33 @@
+{
+  "network": "base-sepolia",
+  "deployer": "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071",
+  "steps": {
+    "deposit": {
+      "kind": "deposit",
+      "chain": "sepolia",
+      "chainId": 11155111,
+      "from": "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071",
+      "to": "0xfd0Bf71F60660E2f608ed56e1659C450eB113120",
+      "call": "L1StandardBridge.bridgeETH(uint32,bytes)",
+      "value": "10000000000000000",
+      "data": "0x09fc88430000000000000000000000000000000000000000000000000000000000030d4000000000000000000000000000000000000000000000000000000000000000400000000000000000000000000000000000000000000000000000000000000000",
+      "nonce": 84,
+      "gasLimit": 832428,
+      "maxFee": "10000000",
+      "priorityFee": "1000",
+      "txHash": "0x56aba4536f65e696a1c1a007ddbe6c815cf0ea8f717449566775db6ffb0d40e2",
+      "signedAt": "2026-10-27T10:37:42.510Z",
+      "block": 12004572,
+      "status": 1,
+      "gasUsed": 635305,
+      "ok": true,
+      "l2BalanceBefore": "0",
+      "effectiveGasPrice": "1015",
+      "arrived": {
+        "at": "2026-10-27T10:42:57.016Z",
+        "balance": "10000000000000000",
+        "nonce": 0
+      }
+    }
+  }
+}

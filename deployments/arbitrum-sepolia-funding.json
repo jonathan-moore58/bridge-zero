@@ -1,0 +1,28 @@
+{
+  "network": "arbitrum-sepolia",
+  "deployer": "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071",
+  "steps": {
+    "deposit": {
+      "kind": "deposit",
+      "chain": "sepolia",
+      "chainId": 11155111,
+      "from": "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071",
+      "to": "0xaAe29B0366299461418F5324a79Afc425BE5ae21",
+      "call": "Inbox.depositEth()",
+      "value": "10000000000000000",
+      "data": "0x439370b1",
+      "nonce": 85,
+      "gasLimit": 244055,
+      "maxFee": "10000000",
+      "priorityFee": "1000",
+      "txHash": "0xb0d8e10207018c403e1ad30ae01d270f27ce472f74b484898174f1a4722c076b",
+      "signedAt": "2026-10-27T10:43:29.799Z",
+      "block": 12004601,
+      "status": 1,
+      "gasUsed": 189894,
+      "ok": true,
+      "l2BalanceBefore": "0",
+      "effectiveGasPrice": "1015"
+    }
+  }
+}
