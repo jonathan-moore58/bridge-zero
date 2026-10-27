@@ -42,13 +42,14 @@ BLAKE2F precompile.
 | **Lock to mint in 48 seconds** (rows 54 and 55) | Sepolia transaction [`0xb9134dd7…`](https://sepolia.etherscan.io/tx/0xb9134dd793b84ff53375cd6b5ec8fb51940fea0a5cce2b5924f674b530d7f943); the lock in V3 block [#118,636](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/118636) | Lock 1, Oct 20: 1 tPOT locked on V3 and minted on Sepolia, the mint's block 36 seconds after the lock's by the block timestamps; 48 seconds from sending the lock to the mint's receipt with the tools' own checks. |
 | `BridgeMinter` | Sepolia [`0x8287…cB9E`](https://sepolia.etherscan.io/address/0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E) | The minter, source-verified, with no owner and no admin. Rows 32 to 38, 47 and 56 are sent to it: the mint, then five tampered copies, each reverted with the error that names what was changed, a replay, reverted with `NonceAlreadyUsed(0)`, and burns 0 and 1, the trusted way back. |
 | The V3 light client | Sepolia [`0x4471…dcb0`](https://sepolia.etherscan.io/address/0x447171c4885ad725ee4772e8e3c228adee50dcb0) (`GrandpaLightClient` #2) | Follows the V3 testnet's finality from a checkpoint at validator set 19: every set change from 19 to 48, imported in order, each with both validators' signatures (rows 5, 6, 18 to 23, 26 to 31, 44 to 46 and 52; the later runs are in [`deployments/relay-sepolia-0xd983….jsonl`](deployments/relay-sepolia-0xd9838a86cf83c28ee486544060d1ca4ca2971071.jsonl) and, since Oct 23, [`deployments/relay-sepolia-0xe94a….jsonl`](deployments/relay-sepolia-0xe94a82e2c7f38f777e8845a9d8c36b6be6a30257.jsonl)). It is as current as the relayer's last run (see Known limits). |
+| **The V3 light client on Base Sepolia and Arbitrum Sepolia** (rows 59 to 82, proof only) | Base Sepolia [`0x3897…0ab6`](https://sepolia.basescan.org/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) and Arbitrum Sepolia [`0x3897…0ab6`](https://sepolia.arbiscan.io/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) (`GrandpaLightClient` #2 on each) | Oct 27: the same contracts, from the same build as on Sepolia, on two rollups that settle on Sepolia. On each, the client verified V3 block #214,510 with both V3 validators' signatures and proved an account balance from its state root (rows 68 and 76), then the relayer imported V3's validator-set change 59 → 60 and a newer head (rows 79 to 82). No minter or wtPOT there. On Sepolia, `0x3897…0ab6` is the old-mainnet client. |
 | The vault and lock 0 | V3 testnet: vault `0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd`, lock transaction `0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051` (block #101,009) | 1 tPOT locked for Sepolia; the vault stores the commitment `0x9eba08c9…41e23435` that the mint proved. The official V3 testnet explorer shows the [deployment](https://scanner-testnet-v3.portaldot.dev/#/extrinsics/100955-1) and [lock 0's event](https://scanner-testnet-v3.portaldot.dev/#/events/101009-4); the Portaldot Node Console shows the [deployment block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/100955) and the [lock's block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/101009), and [cast](#verify-it-yourself) reads the vault. |
 | **The way back** (rows 47 to 51, trusted) | Sepolia burn [`0x42d70ae9…`](https://sepolia.etherscan.io/tx/0x42d70ae96cd010ed114a62178b88bf2cfcfe85933448aa6010c4f0d1b22dc1d7); the release in V3 block [#117,701](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117701) | 0.5 wtPOT burned on Sepolia for `0xD983…1071` on V3; 2 of the 3 committee members approved the release through pallet-multisig, and the vault paid that address 0.5 tPOT once, for that burn id. No contract checks the release against the burn: the committee is trusted, and on the testnet one operator holds all three of its keys. |
 | **The way back in 84 seconds** (rows 56 to 58, trusted, fast mode) | Sepolia burn [`0x4e5f4c6e…`](https://sepolia.etherscan.io/tx/0x4e5f4c6e6f8fe2e85cf3bf146aaffa6d12d5eccb5d032db8d0989d66b886c262); the release in V3 block [#173,062](https://scanner-testnet-v3.portaldot.dev/#/extrinsics/173062-1) | Burn 1, Oct 24: 0.1 wtPOT burned on Sepolia for `0xD983…1071` on V3, and released to it by the auto-release watcher with 3 confirmations instead of Sepolia's finality; the release's block 84 seconds after the burn's by the block timestamps. The same trusted committee, for burns of up to 1 tPOT; a reorg deeper than 3 blocks could undo a burn after its release. |
 | **Old mainnet, 7 of 10** (row 3) | Sepolia transaction [`0x8ddd807e…`](https://sepolia.etherscan.io/tx/0x8ddd807e2880b51b397cfac898b857740f7bfd081cddd32dcc71d405ea980696) | The same light client code verified old-mainnet block #2,726,202 with 7 of its 10 validators' signatures and proved an account balance from that block's state root (Logs: `HeaderImported` with `signatures` 7, then `BalanceProven`). The old mainnet's explorer shows the same block hash and state root: [#2,726,202](https://portalscan.portaldot.io/#/blocks/2726202). |
 
-The [evidence tables](#evidence) number 58 transactions: 51 on Sepolia, and 7 on V3 (lock 1 and the
-trusted return path's 6).
+The [evidence tables](#evidence) number 82 transactions: 53 on Sepolia, 7 on V3 (lock 1 and the
+trusted return path's 6), 11 on Base Sepolia and 11 on Arbitrum Sepolia.
 
 ## How it works
 
@@ -272,8 +273,8 @@ npm run check -- --dir ../fixtures/v3-testnet-hero
 # ...
 # All checks passed: 31 passed, 0 failed.
 npm test
-# ℹ tests 213
-# ℹ pass 213
+# ℹ tests 216
+# ℹ pass 216
 # ℹ fail 0
 
 cd ../contracts
@@ -295,6 +296,7 @@ the state root to its value, and tampered copies fail. Each directory passes:
 | `../fixtures/v3-testnet-mint` | a mint bundle for lock 0 at V3 #104,587 | 31 passed |
 | `../fixtures/v3-testnet-hero` | the bundle row 32 minted with, V3 #108,424, set 30 | 31 passed |
 | `../fixtures/v3-testnet-lock1` | the bundle lock 1 was minted with (row 55), V3 #118,637, set 33 | 31 passed |
+| `../fixtures/v3-testnet-set59` | V3 testnet, set 59, head #214,510: the rollups' checkpoint and balance proof (rows 67, 68, 75 and 76) | 48 passed, 1 skipped |
 | `../fixtures/westend-asset-hub-revive` | a pallet-revive contract slot on Westend Asset Hub | 31 passed |
 
 `FOUNDRY_PROFILE=v3 forge build` writes the V3 build of the vault, which its tests check; without
@@ -329,6 +331,11 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   and
   [`deployments/relay-sepolia-0x9926….jsonl`](deployments/relay-sepolia-0x99268e630f7f24b0f9b000cea7b0350b3098c7f8.jsonl),
   outside the numbered rows.
+- The V3 light client on two rollups, proof only, since Oct 27 (UTC): on Base Sepolia and Arbitrum
+  Sepolia, the same build verified V3 block #214,510 with both validators' signatures and proved an
+  account balance from its state root (rows 68 and 76), and the relayer, with `--network
+  base-sepolia` or `arbitrum-sepolia`, imported V3's set change 59 → 60 into each (rows 79 and 81;
+  [more chains](#more-chains-the-v3-light-client-on-base-sepolia-and-arbitrum-sepolia)).
 - The vault on the V3 testnet and lock 0 ([the vault](#the-vault-on-the-portaldot-v3-testnet)).
 - The bridge from V3 to Sepolia: BridgeMinter and wtPOT (rows 24 and 25), and one `importAndMint`
   that verified V3's finality, bound the vault, proved `commitments[0]` and minted 1 wtPOT
@@ -355,7 +362,7 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   by `.github/workflows/pages.yml` on every change to the records: both light clients, the vault
   and the bridge read live, the recorded runs as the fallback when an RPC is down, and the six
   tampered mints checked live against BridgeMinter.
-- Tests: 327 forge tests, 213 relayer tests and 295 fixture checks pass
+- Tests: 327 forge tests, 216 relayer tests and 343 fixture checks pass
   ([Verify it yourself](#verify-it-yourself)).
 
 **Known limits**
@@ -374,8 +381,9 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   checkpoint while it is paused or halted. Since it can pause at any time, it could make the
   client, and so the minter, accept a state root of its choosing: the admin is trusted like the
   validator set. In production it would be a timelock or a multisig, or renounced.
-- Testnet only: every contract is on Sepolia or the V3 testnet, and the vendored ed25519, BLAKE2b
-  and trie code is treated as unaudited ([docs/GAS.md](docs/GAS.md#decision)).
+- Testnet only: every contract is on Sepolia, Base Sepolia, Arbitrum Sepolia or the V3 testnet,
+  and the vendored ed25519, BLAKE2b and trie code is treated as unaudited
+  ([docs/GAS.md](docs/GAS.md#decision)).
 - Gas, against Sepolia's 16,777,216 cap per transaction: a V3 head import about 1.87M, a V3 set
   change about 2.39M, lock 0's mint with the bind 2,952,838 (17.6%), lock 1's without it 2,391,069 (14.3%), an
   old-mainnet set change
@@ -425,12 +433,17 @@ event are in [docs/BUSINESS.md](docs/BUSINESS.md).
   (15,039,367 gas on Sepolia). On Oct 24 the whole sequence (deploy, initialize, import a
   validator-set change, prove a balance, and a tampered proof that must revert) passed in a
   simulation, with no transaction sent, on Base Sepolia, OP Sepolia, Arbitrum Sepolia, Polygon
-  Amoy, the BNB Smart Chain testnet and Avalanche Fuji. Linea Sepolia is not on the list: its node
-  answers the precompile, but its sequencer refuses every transaction that calls it, so Linea would
-  need blake2b written in Solidity. zkSync Era Sepolia does not have the precompile. Each chain gets
-  its own light client and minter; a lock's commitment already names the destination chain and
-  minter, so one vault on Portaldot can serve them all, and the liquidity providers can serve every
-  route.
+  Amoy, the BNB Smart Chain testnet and Avalanche Fuji. On Oct 27 the V3 light client went live on
+  two of them, proof only: on Base Sepolia and on Arbitrum Sepolia, `GrandpaLightClient` #2
+  verified a V3 block and `ProvenBalance` #2 proved an account balance from its state root, and the
+  relayer then imported V3's set change 59 → 60 into each (rows 59 to 82,
+  [more chains](#more-chains-the-v3-light-client-on-base-sepolia-and-arbitrum-sepolia)). A minter
+  and wtPOT on them, and the other four chains, are still to come. Linea Sepolia is not on the
+  list: its node answers the precompile, but its sequencer refuses every transaction that calls it,
+  so Linea would need blake2b written in Solidity. zkSync Era Sepolia does not have the precompile.
+  Each chain gets its own light client and minter; a lock's commitment already names the
+  destination chain and minter, so one vault on Portaldot can serve them all, and the liquidity
+  providers can serve every route.
 
 **After the event**
 
@@ -707,15 +720,86 @@ The bundle is [`fixtures/v3-testnet-lock1`](fixtures/v3-testnet-lock1).
   of Sepolia's cap.
 - After it, the vault's `outstanding` (1.5 tPOT) equals the wtPOT supply (1.5 wtPOT).
 
+### More chains: the V3 light client on Base Sepolia and Arbitrum Sepolia
+
+Oct 27 (UTC), proof only: on two rollups that settle on Sepolia, the four libraries,
+`GrandpaLightClient` #2 for the V3 testnet and `ProvenBalance` #2 bound to it, from the same build
+as on Sepolia; no minter, no wtPOT and no old-mainnet client. The deployer was funded on each
+through the rollup's canonical bridge from Sepolia (rows 59 and 60). Then
+`node contracts/script/deploy-sepolia.mjs --network base-sepolia|arbitrum-sepolia` ran the plan on
+the rollup's node with `eth_simulateV1` and sent it: the libraries first, at the deployer's nonces
+0 to 3, the addresses the build links them at; the client initialized at V3's validator set 59
+from [`fixtures/v3-testnet-set59`](fixtures/v3-testnet-set59), with the set change at #211,277 that
+started that set as its checkpoint; then V3 block #214,510 verified and an account balance proven
+from its state root. Each step is recorded in [`deployments/base-sepolia.json`](deployments/base-sepolia.json)
+and [`deployments/arbitrum-sepolia.json`](deployments/arbitrum-sepolia.json), and the funding in
+[`deployments/base-sepolia-funding.json`](deployments/base-sepolia-funding.json) and
+[`deployments/arbitrum-sepolia-funding.json`](deployments/arbitrum-sepolia-funding.json). The relayer
+(`npm run relay -- --network base-sepolia|arbitrum-sepolia --chain v3`), with its key `0xE94a…0257`
+at that key's own nonces on each rollup, then imported V3's set change 59 → 60 and a newer head
+(rows 79 to 82), recorded in
+[`deployments/relay-base-sepolia-0xe94a….jsonl`](deployments/relay-base-sepolia-0xe94a82e2c7f38f777e8845a9d8c36b6be6a30257.jsonl)
+and
+[`deployments/relay-arbitrum-sepolia-0xe94a….jsonl`](deployments/relay-arbitrum-sepolia-0xe94a82e2c7f38f777e8845a9d8c36b6be6a30257.jsonl).
+
+| Contract | Base Sepolia | Arbitrum Sepolia |
+|---|---|---|
+| `GrandpaLightClient` #2 (V3 testnet) | [`0x3897…0ab6`](https://sepolia.basescan.org/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) | [`0x3897…0ab6`](https://sepolia.arbiscan.io/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) |
+| `ProvenBalance` #2 | [`0x40f4…86f0`](https://sepolia.basescan.org/address/0x40f4b03aa20d3e7ce2503c406a4fe4a46ba886f0) | [`0x40f4…86f0`](https://sepolia.arbiscan.io/address/0x40f4b03aa20d3e7ce2503c406a4fe4a46ba886f0) |
+
+Linked libraries, at the same addresses on both rollups as on Sepolia: `SCL_EIP6565` `0x51da…b77e`,
+`GrandpaCodec` `0x482a…dfd2`, `AuthoritySets` `0xf2cd…e6d2`, `StorageProofs` `0x5da0…f2a3`.
+
+| # | What it shows | Transaction | Block | Result |
+|---|---|---|---|---|
+| 59 | 0.01 ETH bridged from Sepolia to the deployer on Base Sepolia: Base's `L1StandardBridge.bridgeETH` (`ETHBridgeInitiated`, then the OptimismPortal's `TransactionDeposited`) | [`0x56aba453…`](https://sepolia.etherscan.io/tx/0x56aba4536f65e696a1c1a007ddbe6c815cf0ea8f717449566775db6ffb0d40e2) | Sepolia 12,004,572 | success, 635,305 gas |
+| 60 | 0.01 ETH bridged from Sepolia to the deployer on Arbitrum Sepolia: the Delayed Inbox's `depositEth` (`InboxMessageDelivered`) | [`0xb0d8e102…`](https://sepolia.etherscan.io/tx/0xb0d8e10207018c403e1ad30ae01d270f27ce472f74b484898174f1a4722c076b) | Sepolia 12,004,601 | success, 189,894 gas |
+| 61 | Base Sepolia: `SCL_EIP6565` created (ed25519; the deployer's nonce 0) | [`0x4ef76f6f…`](https://sepolia.basescan.org/tx/0x4ef76f6f05f98fa41cfdc42b57ffd5f7706115c447df1817c4ee784b76912789) | Base 50,885,111 | success, 2,064,643 gas |
+| 62 | Base Sepolia: `GrandpaCodec` created (nonce 1) | [`0xdc095606…`](https://sepolia.basescan.org/tx/0xdc09560603bbc98ca6e79e183598498f2d966db53654d75d83404b47961a0b72) | Base 50,885,141 | success, 1,433,476 gas |
+| 63 | Base Sepolia: `AuthoritySets` created (nonce 2) | [`0x199de82d…`](https://sepolia.basescan.org/tx/0x199de82d28635b7c933ec91d8b858af5ce78f906f3353f213bcb94c4084e2cf0) | Base 50,885,170 | success, 1,277,278 gas |
+| 64 | Base Sepolia: `StorageProofs` created (nonce 3) | [`0x8be6efb6…`](https://sepolia.basescan.org/tx/0x8be6efb628f855783b44ca35f2c8980fb8956b6ac80d0840e8e26947a07f7023) | Base 50,885,199 | success, 1,810,064 gas |
+| 65 | Base Sepolia: `GrandpaLightClient` #2 created, for the V3 testnet | [`0x84e4e5f5…`](https://sepolia.basescan.org/tx/0x84e4e5f5700a443e692abef609212e07a6aff15ef19b093bd99d5b6f7fc66545) | Base 50,885,228 | success, 2,136,019 gas |
+| 66 | Base Sepolia: `ProvenBalance` #2 created, bound to #2 | [`0xcb9de232…`](https://sepolia.basescan.org/tx/0xcb9de232c7c46ba4d230b9e70d71b07a50a7c7ef1caf113e6d80118acf0c2e2a) | Base 50,885,257 | success, 953,593 gas |
+| 67 | Base Sepolia: V3 testnet client initialized at a checkpoint: set 59, its 2 keys, at the set change #211,277 that started it (the one trusted, admin step) | [`0xdc3826c3…`](https://sepolia.basescan.org/tx/0xdc3826c3c2143a1a6eb3c79be3d50c32962d62df855752ae75eceb4a66d0e4c3) | Base 50,885,286 | success, 502,786 gas |
+| **68** | **Base Sepolia: V3 testnet block #214,510 verified (2 of 2), and an account balance proven from its state root (System.Account, trie V1)** | [`0x195fb845…`](https://sepolia.basescan.org/tx/0x195fb84533eb6d2db40e997b6c25e08804bc67b8be9624e68f2a68db47e11ba3) | Base 50,885,313 | **success, 2,113,075 gas** |
+| 69 | Arbitrum Sepolia: `SCL_EIP6565` created (the deployer's nonce 0) | [`0x91ce1a77…`](https://sepolia.arbiscan.io/tx/0x91ce1a776cf88f7030d47860723358478a62c42d8dc2f9d10ceaf077288ea9c3) | Arbitrum 323,329,901 | success, 2,064,643 gas |
+| 70 | Arbitrum Sepolia: `GrandpaCodec` created (nonce 1) | [`0xe6dfe170…`](https://sepolia.arbiscan.io/tx/0xe6dfe170794148690d3b94ea626b6da923555e075c85b566ee2ada4bd7669c45) | Arbitrum 323,329,924 | success, 1,433,476 gas |
+| 71 | Arbitrum Sepolia: `AuthoritySets` created (nonce 2) | [`0xd7440fa1…`](https://sepolia.arbiscan.io/tx/0xd7440fa1fcb8757326e08838c515103684554c22d512b7c1265991a663c8937c) | Arbitrum 323,329,947 | success, 1,277,278 gas |
+| 72 | Arbitrum Sepolia: `StorageProofs` created (nonce 3) | [`0xdd751465…`](https://sepolia.arbiscan.io/tx/0xdd75146533631afe06a15a32e30b97e040d64145f325ee810a7303b9b0fec7a9) | Arbitrum 323,329,971 | success, 1,810,064 gas |
+| 73 | Arbitrum Sepolia: `GrandpaLightClient` #2 created, for the V3 testnet | [`0xa52718f5…`](https://sepolia.arbiscan.io/tx/0xa52718f5c55df82fe7281c31e15fb5a744b8097d161c45113375890625432b91) | Arbitrum 323,329,995 | success, 2,136,019 gas |
+| 74 | Arbitrum Sepolia: `ProvenBalance` #2 created, bound to #2 | [`0x1490d644…`](https://sepolia.arbiscan.io/tx/0x1490d6445ae77dd0d5d265600ee913f188a617de6d14b8af301dfd2297a614e3) | Arbitrum 323,330,019 | success, 953,593 gas |
+| 75 | Arbitrum Sepolia: V3 testnet client initialized at a checkpoint: set 59, its 2 keys, at the set change #211,277 that started it (the one trusted, admin step) | [`0xefa2bd11…`](https://sepolia.arbiscan.io/tx/0xefa2bd11f872dfafcb9599af460beada8569425ce546fcc5d0d1de03ba6de412) | Arbitrum 323,330,044 | success, 502,786 gas |
+| **76** | **Arbitrum Sepolia: V3 testnet block #214,510 verified (2 of 2), and an account balance proven from its state root (System.Account, trie V1)** | [`0x26ca48f1…`](https://sepolia.arbiscan.io/tx/0x26ca48f1004ec93cd7d9eb4076927981fd2519ccb12df3f0e38297449850d31e) | Arbitrum 323,330,067 | **success, 2,113,075 gas** |
+| 77 | Base Sepolia: the relayer key `0xE94a…0257` funded with 0.008 ETH by the deployer (nonce 8) | [`0x3835f070…`](https://sepolia.basescan.org/tx/0x3835f0708d8830186a348ae7aa07a288f56fb8d335183fcc1abba027f0b0e562) | Base 50,886,193 | success, 21,000 gas |
+| 78 | Arbitrum Sepolia: the relayer key `0xE94a…0257` funded with 0.008 ETH by the deployer (nonce 8) | [`0x3ca50316…`](https://sepolia.arbiscan.io/tx/0x3ca50316bc028828f967f6a2fc6452e36ccbd9683da94912944cff97e40dffe5) | Arbitrum 323,330,360 | success, 21,000 gas |
+| 79 | Base Sepolia: V3 testnet set change 59 → 60 at #214,864: 2 of 2 signatures | [`0x19944605…`](https://sepolia.basescan.org/tx/0x19944605c70f555ad4d040a75f2535e3c648f7e0c7d1b1cdd7d430a1aa978602) | Base 50,886,825 | success, 1,849,818 gas |
+| 80 | Base Sepolia: V3 testnet block #216,777 verified: the light client at the live head | [`0xe7cddd90…`](https://sepolia.basescan.org/tx/0xe7cddd909ef9473d117b6adbb1186dcdf8f285c2dbea2858a42fc30bd3ce5c5b) | Base 50,886,860 | success, 1,693,283 gas |
+| 81 | Arbitrum Sepolia: V3 testnet set change 59 → 60 at #214,864: 2 of 2 signatures | [`0xe4d14094…`](https://sepolia.arbiscan.io/tx/0xe4d14094df597447745a441f072d2ffc8205e10b913c8f43be759345e5bfb0e6) | Arbitrum 323,331,271 | success, 1,849,818 gas |
+| 82 | Arbitrum Sepolia: V3 testnet block #216,800 verified: the light client at the live head | [`0xbb74d635…`](https://sepolia.arbiscan.io/tx/0xbb74d6355f8f2597c24206cd83a7d8c317555bc932fb68ee6bb6a240d6cedcf0) | Arbitrum 323,331,302 | success, 1,693,974 gas |
+
+- Same addresses, different roles: the deployer's nonces create the same addresses on every chain,
+  so the libraries sit where they do on Sepolia, but on Base Sepolia and Arbitrum Sepolia
+  `0x3897…0ab6` is the V3 testnet's client and `0x40f4…86f0` its `ProvenBalance`, while on Sepolia
+  these two addresses are the old mainnet's (rows 1 to 4). Each network's addresses are in its
+  record, `deployments/<network>.json`.
+- The checkpoint is the set change that started set 59, so the client starts in the set that
+  signed the head and has no set change to import before it. No tampered proof is sent on the
+  rollups; rows 4, 8 and 33 show those on Sepolia.
+- Both clients hold V3 block #214,510's state root as its header on the V3 node has it,
+  `0x66209f3b…55178eda`. Each is as current as the relayer's last run there (see Known limits).
+- Cost: the 8 deployment transactions took 0.0000615 ETH on Base Sepolia and 0.000247 ETH on
+  Arbitrum Sepolia, and the relayer's first two imports 0.0000177 and 0.0000710 ETH. The two
+  deposits paid 0.0000000008 Sepolia ETH of gas.
+
 ## Layout
 
 | Path | Contents |
 |---|---|
 | `contracts/` | Foundry project: light client, proof verification, bridge contracts |
-| `relayer/` | TypeScript tools: fetch finality and storage proofs from Portaldot nodes, relay finality to the Sepolia light clients, deploy and use the vault on V3, mint wtPOT, and run the return path |
+| `relayer/` | TypeScript tools: fetch finality and storage proofs from Portaldot nodes, relay finality to the light clients on Sepolia, Base Sepolia and Arbitrum Sepolia, deploy and use the vault on V3, mint wtPOT, and run the return path |
 | `fixtures/` | Captured chain data used by the tests, each file with its source |
 | `site/` | The live page (Vite, TypeScript, Preact): reads the chains, with the records as the fallback; deployed to GitHub Pages by `.github/workflows/pages.yml` |
-| `deployments/` | Records of every Sepolia transaction, and on the V3 testnet of the vault's deployment, lock 0 and the return path: addresses, hashes, blocks, gas and fees |
+| `deployments/` | Records of every transaction on Sepolia, Base Sepolia and Arbitrum Sepolia (with the rollups' funding from Sepolia), and on the V3 testnet of the vault's deployment, lock 0 and the return path: addresses, hashes, blocks, gas and fees |
 | `docs/` | Gas measurements, deployment notes, decisions, the business model |
 
 ## Third-party code

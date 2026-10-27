@@ -28,6 +28,28 @@
         "balance": "10000000000000000",
         "nonce": 0
       }
+    },
+    "relayer": {
+      "kind": "relayer",
+      "chain": "base-sepolia",
+      "chainId": 84532,
+      "from": "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071",
+      "to": "0xE94a82E2c7f38f777E8845A9d8c36B6be6a30257",
+      "call": "a transfer to bz-relayer 0xE94a82E2c7f38f777E8845A9d8c36B6be6a30257",
+      "value": "8000000000000000",
+      "data": "0x",
+      "nonce": 8,
+      "gasLimit": 26250,
+      "maxFee": "50008280",
+      "priorityFee": "1000",
+      "txHash": "0x3835f0708d8830186a348ae7aa07a288f56fb8d335183fcc1abba027f0b0e562",
+      "signedAt": "2026-10-27T11:05:06.315Z",
+      "block": 50886193,
+      "status": 1,
+      "gasUsed": 21000,
+      "ok": true,
+      "l2BalanceBefore": "9938533038346882",
+      "effectiveGasPrice": "5001000"
     }
   }
 }
