@@ -112,8 +112,8 @@ What the testnets already show:
 
 - The relayer has run in watch mode since Oct 23, one process per light client, each with its own
   key; the auto-release watcher has run since Oct 24 ([README](../README.md#status)).
-- 85 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
-  hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 327 forge tests, 263 relayer
+- 97 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
+  hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 327 forge tests, 288 relayer
   tests and 343 fixture checks pass.
 - The limits are written down, including a six-hour gap while the machine slept on Oct 24
   ([Known limits](../README.md#status), [what the minter trusts](BRIDGE.md#what-the-minter-trusts),
