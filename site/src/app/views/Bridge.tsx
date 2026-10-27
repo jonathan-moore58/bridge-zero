@@ -1328,9 +1328,15 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                   <Icon id="i-alert" cls="i--14" />
                   <span>
                     {dir === "in"
-                      ? k.sub
-                        ? `You need ${fmt(Math.ceil((k.value + SUBSTRATE_ROOM - (k.bal ?? 0)) * 100) / 100, 2)} more tPOT. A lock uses ≈ ${LOCK_COST} tPOT besides the amount (mostly V3's storage deposit), and 0.1 tPOT stays in your account.`
-                        : `You need ${fmt(Math.ceil((k.value + LOCK_CEILING - (k.bal ?? 0)) * 100) / 100, 2)} more tPOT. A lock uses ≈ ${LOCK_COST} tPOT (mostly V3's storage deposit), and your wallet checks ≈ ${LOCK_CEILING} tPOT up front for gas.`
+                      ? `${
+                          k.sub
+                            ? `Besides the amount, a lock takes ≈ ${LOCK_COST} tPOT of V3's storage deposit and the fee, about ${SUBSTRATE_ROOM} tPOT in all.`
+                            : `Besides the amount, a lock takes ≈ ${LOCK_COST} tPOT of V3's storage deposit, and your wallet checks ≈ ${LOCK_CEILING} tPOT up front for gas.`
+                        } ${
+                          Number(k.max) > 0
+                            ? `With ${fmt(k.bal ?? 0)} tPOT you can lock up to ${k.max} tPOT.`
+                            : `This amount needs ${fmt(Math.ceil((k.value + (k.sub ? SUBSTRATE_ROOM : LOCK_CEILING) - (k.bal ?? 0)) * 100) / 100, 2)} more tPOT.`
+                        }`
                       : `You have ${fmt(k.bal ?? 0)} wtPOT on Sepolia.`}{" "}
                     {Number(k.max) > 0 ? (
                       <button type="button" class="text-link" onClick={useMax}>

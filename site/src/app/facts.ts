@@ -45,12 +45,13 @@ export const TIME: Record<"in" | Speed, readonly [string, string]> = {
 export const AUTO_TIME = ["≈ 2½ min", "auto-mint, measured Oct 27"] as const;
 
 /**
- * What a lock from a Polkadot wallet takes from the account besides the amount, for the card's
- * check before the dry run: the storage deposit's limit (3.8415 tPOT of lock 2's dry run, plus 2%),
- * the fee (about 0.025 tPOT, V3's quote) and the 0.1 tPOT that stays in the account. The review's
- * dry run says the exact figure.
+ * What a lock from a Polkadot wallet takes besides the amount, out of the balance the card shows,
+ * for the card's check before the dry run: the storage deposit's limit (3.8415 tPOT of lock 2's dry
+ * run, plus 2%) and the fee (about 0.025 tPOT, V3's quote). The card's balance is eth_getBalance,
+ * which already leaves out the 0.1 tPOT that stays in the account. The review's dry run says the
+ * exact figure.
  */
-export const SUBSTRATE_ROOM = 4.05;
+export const SUBSTRATE_ROOM = 3.95;
 
 /**
  * Sepolia's finality, from a block's arrival to the block final: 12.5 to 19.4 min, median 16, over
