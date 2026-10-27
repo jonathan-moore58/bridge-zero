@@ -101,7 +101,7 @@
 // still pending.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs, type ParseArgsConfig } from "node:util";
@@ -926,8 +926,8 @@ function checkLock(lock: LockFacts, vault: VaultDeployment, deployment: SepoliaD
   if (lock.amountNative === 0n || lock.recipient.every((b) => b === 0)) throw new Stop(`lock ${lock.nonce} has a zero amount or recipient, which the minter refuses`);
 }
 
-/** Reads the bundle of lock `nonce` at the latest finalized head, every proof walked here, and returns it; nothing is written. */
-async function captureBundle(o: Common, nonce: bigint): Promise<MintBundleFixture> {
+/** Reads the bundle of lock `nonce` at the latest finalized head, every proof walked here, and returns it; nothing is written. automint.ts uses it too. */
+export async function captureBundle(o: Common, nonce: bigint): Promise<MintBundleFixture> {
   const deployment = readSepolia();
   const vault = readV3();
   const tool = toolInfo();
@@ -2553,7 +2553,27 @@ async function main(): Promise<number> {
   }
 }
 
-main().then(
+/**
+ * True when this file is the process's entry (npm run mint), false when another tool imports it
+ * for captureBundle (automint.ts): the command runs only then. Under tsx, process.argv[1] is the
+ * entry file's path (import.meta.main is not set); compared as the file system resolves it.
+ */
+function isEntry(): boolean {
+  const argv1 = process.argv[1];
+  if (!argv1) return false;
+  const canonical = (path: string) => {
+    let p = resolve(path);
+    try {
+      p = realpathSync(p);
+    } catch {
+      // as given
+    }
+    return process.platform === "win32" ? p.toLowerCase() : p;
+  };
+  return canonical(argv1) === canonical(fileURLToPath(import.meta.url));
+}
+
+if (isEntry()) main().then(
   (code) => {
     process.exitCode = code;
   },

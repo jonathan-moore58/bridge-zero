@@ -9,6 +9,7 @@
     "node": ">=24"
   },
   "scripts": {
+    "automint": "tsx src/automint-main.ts",
     "capture": "tsx src/capture.ts",
     "capture-contract": "tsx src/capture-contract.ts",
     "check": "tsx src/check.ts",
