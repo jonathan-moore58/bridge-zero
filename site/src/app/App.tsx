@@ -8,6 +8,8 @@ import { useRoute, type Route } from "./router.ts";
 import { useBox } from "./store.ts";
 import { addWtpotToWallet, openNoWallet, openWalletPicker } from "./connect.tsx";
 import { useNet, type NetState } from "./net.ts";
+import { disconnectPolka, polka, polkaList, type PolkaState } from "./polkadot.ts";
+import { shortSs58 } from "./substrate/account.ts";
 import { Announcer, CopyButton, Icon, Mark, SheetHost, Toasts, closeSheet, fmt, short, toast } from "./ui.tsx";
 import { ActivityView } from "./views/Activity.tsx";
 import { BridgeView } from "./views/Bridge.tsx";
@@ -45,16 +47,118 @@ function BalanceRow({ mark, token, where, value }: { mark: string; token: string
   );
 }
 
+/** The Polkadot account in the wallet menu: who (its address, its wallet in the badge, as the Ethereum part names its wallet, and its name under them) and its tPOT. */
+function PolkaHead({ p }: { p: PolkaState }) {
+  const a = p.account;
+  if (!a) return null;
+  return (
+    <>
+      <div class="menu__head">
+        <span class="menu__who">
+          <span class="menu__addr mono">{shortSs58(a.address)}</span>
+          {p.wallet ? (
+            <span class="badge badge--sm badge--muted menu__via">
+              <Icon id="i-wallet" />
+              <span>{p.wallet.name}</span>
+            </span>
+          ) : null}
+        </span>
+        <CopyButton value={a.address} label="your Polkadot account" />
+      </div>
+      {a.name ? <p class="menu__acct">{a.name}</p> : null}
+      <dl class="menu__bals">
+        <BalanceRow mark="m-pdot" token="tPOT" where="on V3" value={p.balance === null ? undefined : tokenNum(p.balance, 14)} />
+      </dl>
+    </>
+  );
+}
+
+/** The Polkadot wallet's disconnect, in the wallet menu. */
+function PolkaDisconnect({ p, onClose }: { p: PolkaState; onClose: (focusButton: boolean) => void }) {
+  return (
+    <button
+      class="menu__item"
+      role="menuitem"
+      type="button"
+      onClick={() => {
+        onClose(false);
+        disconnectPolka();
+        toast("info", "Polkadot wallet disconnected", "Connect it again from the wallet button.");
+      }}
+    >
+      <Icon id="i-logout" />
+      Disconnect {p.wallet?.name ?? "Polkadot wallet"}
+    </button>
+  );
+}
+
+/** The Polkadot account in the wallet menu: who, its tPOT, and its disconnect. */
+function PolkaPart({ p, onClose }: { p: PolkaState; onClose: (focusButton: boolean) => void }) {
+  if (!p.account) return null;
+  return (
+    <>
+      <PolkaHead p={p} />
+      <PolkaDisconnect p={p} onClose={onClose} />
+    </>
+  );
+}
+
 interface MenuProps {
   address: string;
   /** The connected wallet's name and icon (a data:image/ URI, or null). */
   name: string | null;
   icon: string | null;
   balances: Balances | null;
+  /** A Polkadot account connected too: its part of the menu. */
+  p: PolkaState;
+  /** The page's next transaction is the Polkadot account's (a lock on the way in): its part comes first. */
+  polkaFirst: boolean;
   onClose: (focusButton: boolean) => void;
 }
 
-function WalletMenu({ address, name, icon, balances, onClose }: MenuProps) {
+/** The menu of a Polkadot account alone, with no Ethereum wallet connected. */
+function PolkaMenu({ p, onClose }: { p: PolkaState; onClose: (focusButton: boolean) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    ref.current?.querySelector<HTMLElement>(".menu__item")?.focus();
+  }, []);
+  return (
+    <div
+      class="menu"
+      id="wallet-menu"
+      role="menu"
+      aria-labelledby="wallet"
+      ref={ref}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose(true);
+        if (e.key === "Tab") onClose(false);
+      }}
+    >
+      <PolkaHead p={p} />
+      <div class="menu__sep" role="separator" />
+      <button
+        class="menu__item"
+        role="menuitem"
+        type="button"
+        onClick={() => {
+          onClose(false);
+          openWalletPicker(undefined, "evm", "send");
+        }}
+      >
+        <Icon id="i-plus" />
+        Connect an Ethereum wallet
+      </button>
+      <a class="menu__item" role="menuitem" href="#/activity" onClick={() => onClose(false)}>
+        <Icon id="i-activity" />
+        Your activity
+      </a>
+      <div class="menu__sep" role="separator" />
+      <PolkaDisconnect p={p} onClose={onClose} />
+    </div>
+  );
+}
+
+function WalletMenu({ address, name, icon, balances, p, polkaFirst, onClose }: MenuProps) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ref.current?.querySelector<HTMLElement>(".menu__item")?.focus();
@@ -83,8 +187,15 @@ function WalletMenu({ address, name, icon, balances, onClose }: MenuProps) {
     );
   };
   const b = balances;
+  const polkaTop = polkaFirst && p.status === "on" && p.account !== null;
   return (
     <div class="menu" id="wallet-menu" role="menu" aria-labelledby="wallet" ref={ref} onKeyDown={onKeyDown}>
+      {polkaTop ? (
+        <>
+          <PolkaHead p={p} />
+          <div class="menu__sep" role="separator" />
+        </>
+      ) : null}
       <div class="menu__head">
         <span class="menu__who">
           <span class="menu__addr mono">{short(address)}</span>
@@ -134,19 +245,34 @@ function WalletMenu({ address, name, icon, balances, onClose }: MenuProps) {
         }}
       >
         <Icon id="i-logout" />
-        Disconnect
+        {polkaTop ? `Disconnect ${name ?? "Ethereum wallet"}` : "Disconnect"}
       </button>
+      {polkaTop ? (
+        <PolkaDisconnect p={p} onClose={onClose} />
+      ) : p.status === "on" ? (
+        <>
+          <div class="menu__sep" role="separator" />
+          <PolkaPart p={p} onClose={onClose} />
+        </>
+      ) : null}
     </div>
   );
 }
 
 /**
  * `needs`: the chain the page's next transaction is sent on (the bridge card's source chain), or
- * null on pages that send nothing, where either bridge chain is fine.
+ * null on pages that send nothing, where either bridge chain is fine. `polkaFirst`: that
+ * transaction is the Polkadot account's (a lock on the way in), so the button shows the account.
  */
-function WalletButton({ needs, net }: { needs: ChainInfo | null; net: NetState }) {
+function WalletButton({ needs, polkaFirst, net }: { needs: ChainInfo | null; polkaFirst: boolean; net: NetState }) {
   const w = useBox(wallet);
+  const p = useBox(polka);
+  const polkaWallets = useBox(polkaList);
   const [open, setOpen] = useState(false);
+  /** A Polkadot account and no Ethereum wallet: the button is the account's. */
+  const polkaOnly = (w.status === "none" || w.status === "off") && p.status === "on" && p.account !== null;
+  /** Both, where the account sends: the button is the account's too, and the menu holds both. */
+  const polkaShown = polkaOnly || (polkaFirst && p.status === "on" && p.account !== null && w.status === "on" && !!w.address);
   const btn = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!open) return;
@@ -157,8 +283,8 @@ function WalletButton({ needs, net }: { needs: ChainInfo | null; net: NetState }
     return () => document.removeEventListener("click", away);
   }, [open]);
   useEffect(() => {
-    if (w.status !== "on") setOpen(false);
-  }, [w.status]);
+    if (w.status !== "on" && !polkaOnly) setOpen(false);
+  }, [w.status, polkaOnly]);
   const close = (focusButton: boolean) => {
     setOpen(false);
     if (focusButton) btn.current?.focus();
@@ -171,7 +297,20 @@ function WalletButton({ needs, net }: { needs: ChainInfo | null; net: NetState }
   let cls = "wallet";
   let label: string;
   let inner;
-  if (w.status === "none") {
+  if (polkaShown && p.account) {
+    cls += ` wallet--st-${net.cls}`;
+    const evm = !polkaOnly && w.address ? `, and ${w.name ?? "your Ethereum wallet"} ${short(w.address)}` : "";
+    label = `${p.wallet?.name ?? "Polkadot wallet"} ${shortSs58(p.account.address)} on Portaldot V3 testnet${evm}. ${net.label}. Open wallet menu`;
+    inner = (
+      <>
+        <span class="wallet__net">
+          <Mark id="m-pdot" />
+        </span>
+        <span class="wallet__addr">{shortSs58(p.account.address)}</span>
+        <Icon id="i-chevron-down" cls="wallet__chev" />
+      </>
+    );
+  } else if (w.status === "none") {
     label = "No wallet found. Get a wallet";
     inner = (
       <>
@@ -227,13 +366,14 @@ function WalletButton({ needs, net }: { needs: ChainInfo | null; net: NetState }
 
   const onClick = (e: MouseEvent) => {
     e.stopPropagation();
-    if (w.status === "none") return openNoWallet();
+    if (polkaOnly) return setOpen((o) => !o);
+    if (w.status === "none") return polkaWallets.length ? openWalletPicker() : openNoWallet();
     if (w.status === "off") return openWalletPicker();
     if (w.status === "connecting") return;
     setOpen((o) => !o);
   };
 
-  const menu = w.status === "on" && w.address;
+  const menu = (w.status === "on" && w.address) || polkaOnly;
   return (
     <div class="wallet-wrap">
       <button
@@ -243,13 +383,14 @@ function WalletButton({ needs, net }: { needs: ChainInfo | null; net: NetState }
         ref={btn}
         aria-label={label}
         aria-busy={w.status === "connecting" ? "true" : undefined}
-        aria-haspopup={w.status === "none" || w.status === "off" ? "dialog" : menu ? "menu" : undefined}
+        aria-haspopup={menu ? "menu" : w.status === "none" || w.status === "off" ? "dialog" : undefined}
         aria-expanded={menu ? open : undefined}
         onClick={onClick}
       >
         {inner}
       </button>
-      {open && w.address ? <WalletMenu address={w.address} name={w.name} icon={w.icon} balances={w.balances} onClose={close} /> : null}
+      {open && w.address ? <WalletMenu address={w.address} name={w.name} icon={w.icon} balances={w.balances} p={p} polkaFirst={polkaShown} onClose={close} /> : null}
+      {open && !w.address && polkaOnly ? <PolkaMenu p={p} onClose={close} /> : null}
     </div>
   );
 }
@@ -313,7 +454,9 @@ export function App() {
   }, []);
 
   const current = (key: string) => route.name === key || (key === "bridge" && (route.name === "tx" || route.name === "receipt"));
-  const preview = w.status === "none" || w.status === "off";
+  const p = useBox(polka);
+  const preview = (w.status === "none" || w.status === "off") && p.status !== "on";
+  const polkaIn = route.name === "bridge" && dir === "in" && p.status === "on" && p.account !== null;
 
   const view = {
     bridge: () => <BridgeView route={route} net={net} />,
@@ -358,7 +501,8 @@ export function App() {
               <span class="status__dot" aria-hidden="true" />
               <span class="status__label">{net.label}</span>
             </a>
-            <WalletButton needs={route.name === "bridge" ? fromOf(dir) : null} net={net} />
+            {/* On the way in from a Polkadot account the lock is that account's: the Ethereum wallet only fills the address and sends a mint, switched to Sepolia when it does, so no chain is wrong for it there. */}
+            <WalletButton needs={route.name === "bridge" && !polkaIn ? fromOf(dir) : null} polkaFirst={polkaIn} net={net} />
           </div>
         </div>
       </header>

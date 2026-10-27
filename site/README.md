@@ -100,6 +100,17 @@ Fontsource (`@fontsource-variable/sora` and `@fontsource-variable/geist-mono` 5.
 Font License 1.1, the Latin subset of each, served with the page). Build: `vite`, `typescript`,
 `@types/node`. The tests use Node's own test runner.
 
+The bridge app also uses `@polkadot/api` 17.0.2 (the relayer's version; its tree of 55 packages
+was published by Oct 1, two weeks or more before it was added on Oct 27) for a lock signed in a
+Polkadot wallet. It is a chunk of its own, loaded only once a visitor connects a Polkadot wallet,
+so the page's first load does not carry it. `@polkadot/wasm-crypto` is bundled as a stub that is
+never ready (`src/app/substrate/wasm-crypto-stub.ts`): the page's Content-Security-Policy lets no
+WebAssembly start, and the library's JavaScript paths do what the lock needs; the wallet signs.
+Such a lock's mint is its locker's, sent from an Ethereum wallet: auto-mint finds locks by their
+logs on V3's EVM RPC, which serves none of a Substrate extrinsic. `AUTO_MINT.substrate` in
+`src/app/handoff.ts` hands those locks to auto-mint once it reads `Revive.ContractEmitted` from
+`System.Events`.
+
 `src/assets/portaldot.png` is the Portaldot mark, 128 px.
 
 ## Layout

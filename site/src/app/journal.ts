@@ -5,18 +5,50 @@
 // Kept apart from the build's records so that node --test runs it.
 
 import type { Hex } from "../lib/hex.ts";
-import type { BurnTransfer, CheckKey, CheckState, Failure, LiveTransfer, LockTransfer, MintRoute, SentTx } from "./model.ts";
+import type { BurnTransfer, CheckKey, CheckState, ExtrinsicRef, Failure, LiveTransfer, LockSender, LockTransfer, MintRoute, SentTx } from "./model.ts";
 
 export const JOURNAL_KEY = "bz-app.transfers";
-/** The newest this many transfers are kept. */
+/** About this many transfers are kept: past it, the oldest finished ones go first (encodeJournal). */
 export const JOURNAL_MAX = 40;
 
-const VERSION = 1;
+/**
+ * 2: a lock names its sender (an Ethereum wallet's address, or a Substrate account and its wallet),
+ * its extrinsic when it is a Substrate one, who sent its mint, and whether auto-mint had a mint
+ * pending. Version 1's entries are read as Ethereum locks. A page of version 1 drops a journal of
+ * version 2: its memory of those transfers, never funds.
+ */
+const VERSION = 2;
+const READS = [1, 2];
 
-/** The journal's text: every transfer as JSON, its amount as a decimal string; the notes, which say what the page is doing now, left out. */
+/** Minted, or released. */
+const finished = (t: LiveTransfer): boolean => t.doneAt !== null || (t.dir === "in" ? t.mint?.stage === "mined" : t.release.released);
+
+/**
+ * A lock from a Polkadot wallet that is, or may be, on V3 and is not minted: locked (its nonce read),
+ * or broadcast and not settled (followed, or the page stopped following it). The journal is the only
+ * place the app finds it again: V3's EVM RPC serves no log of a Substrate extrinsic, so Activity,
+ * Finish mint and auto-mint cannot see it on the chain.
+ */
+const onlyHere = (t: LiveTransfer): boolean =>
+  t.dir === "in" && t.sender.kind === "substrate" && !finished(t) && (t.nonce !== null || (t.lock.stage === "sent" && (t.failure === null || t.failure.reason === "stopped")));
+
+/**
+ * The transfers the journal keeps: all of them up to JOURNAL_MAX; past it, the oldest finished ones
+ * go first, then the oldest others, but never one onlyHere, which stays whatever the count.
+ */
+export function keptOf(list: readonly LiveTransfer[]): LiveTransfer[] {
+  const byStart = [...list].sort((a, b) => a.startedAt - b.startedAt);
+  const over = byStart.length - JOURNAL_MAX;
+  if (over <= 0) return byStart;
+  const drop = new Set<LiveTransfer>();
+  for (const t of byStart) if (drop.size < over && finished(t)) drop.add(t);
+  for (const t of byStart) if (drop.size < over && !drop.has(t) && !onlyHere(t)) drop.add(t);
+  return byStart.filter((t) => !drop.has(t));
+}
+
+/** The journal's text: every transfer kept (keptOf) as JSON, its amount as a decimal string; the notes, which say what the page is doing now, left out. */
 export function encodeJournal(list: readonly LiveTransfer[]): string {
-  const kept = [...list].sort((a, b) => a.startedAt - b.startedAt).slice(-JOURNAL_MAX);
-  return JSON.stringify({ v: VERSION, transfers: kept.map((t) => ({ ...t, amount: t.amount.toString(), note: null })) });
+  return JSON.stringify({ v: VERSION, transfers: keptOf(list).map((t) => ({ ...t, amount: t.amount.toString(), note: null })) });
 }
 
 /**
@@ -39,7 +71,7 @@ export function decodeJournal(text: string | null): LiveTransfer[] {
   } catch {
     return [];
   }
-  if (!isObj(raw) || raw.v !== VERSION || !Array.isArray(raw.transfers)) return [];
+  if (!isObj(raw) || !READS.includes(raw.v as number) || !Array.isArray(raw.transfers)) return [];
   const out: LiveTransfer[] = [];
   for (const x of raw.transfers) {
     const t = transferOf(x);
@@ -119,6 +151,30 @@ function commonOf(x: Obj) {
   return { id, amount, recipient, startedAt, ...(fromBlock === undefined ? {} : { fromBlock }), doneAt, failure, note: null };
 }
 
+/** A lock's sender; a version-1 entry (no sender) is an Ethereum wallet's lock, its recipient the sender. */
+function senderOf(x: unknown, recipient: Hex): LockSender | null {
+  if (x === undefined) return { kind: "evm", address: recipient };
+  if (!isObj(x)) return null;
+  if (x.kind === "evm") {
+    const address = hexOf(x.address, 20);
+    return address ? { kind: "evm", address } : null;
+  }
+  const h160 = hexOf(x.h160, 20);
+  const ss58 = str(x.ss58);
+  const wallet = str(x.wallet);
+  const walletName = str(x.walletName);
+  if (x.kind !== "substrate" || !h160 || !ss58 || !/^[1-9A-HJ-NP-Za-km-z]{46,50}$/.test(ss58) || wallet === null || walletName === null) return null;
+  return { kind: "substrate", ss58, h160, wallet, walletName };
+}
+
+function extOf(x: unknown): ExtrinsicRef | null {
+  if (!isObj(x)) return null;
+  const nonce = int(x.nonce);
+  const from = int(x.from);
+  const to = int(x.to);
+  return nonce !== null && from !== null && to !== null && to >= from ? { nonce, from, to } : null;
+}
+
 function lockOf(x: Obj): LockTransfer | null {
   const c = commonOf(x);
   const lock = sentOf(x.lock);
@@ -127,6 +183,12 @@ function lockOf(x: Obj): LockTransfer | null {
   const mint = orNull(x.mint, sentOf);
   const route = orNull(x.route, routeOf);
   if (!c || !c.id.startsWith("in-") || !lock || nonce === undefined || commitment === undefined || mint === undefined || route === undefined) return null;
+  const sender = senderOf(x.sender, c.recipient);
+  const ext = x.ext === undefined ? null : orNull(x.ext, extOf);
+  const mintBy = x.mintBy === undefined ? null : orNull(x.mintBy, (y) => hexOf(y, 20));
+  if (!sender || ext === undefined || mintBy === undefined) return null;
+  // An Ethereum lock's recipient is its sender; a Substrate lock is signed as an extrinsic.
+  if (sender.kind === "evm" && (sender.address !== c.recipient || ext !== null)) return null;
   let finality: LockTransfer["finality"] = null;
   if (x.finality !== null) {
     const f = x.finality;
@@ -156,7 +218,23 @@ function lockOf(x: Obj): LockTransfer | null {
     if (!h || block === null) return null;
     relayed.push({ hash: h, block });
   }
-  return { ...c, dir: "in", lock, nonce, commitment, finality, proof: { checks, builtAt }, route, relayed, mint, resumed: x.resumed === true };
+  return {
+    ...c,
+    dir: "in",
+    sender,
+    ext,
+    lock,
+    nonce,
+    commitment,
+    finality,
+    proof: { checks, builtAt },
+    route,
+    relayed,
+    mint,
+    mintBy,
+    autoPending: x.autoPending === true,
+    resumed: x.resumed === true,
+  };
 }
 
 function burnOf(x: Obj): BurnTransfer | null {

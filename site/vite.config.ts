@@ -88,6 +88,11 @@ function preloadFonts(): Plugin {
 export default defineConfig({
   base: "/bridge-zero/",
   plugins: [records(), csp(), preloadFonts()],
+  resolve: {
+    // @polkadot/api's crypto runs on its JavaScript paths: the page's CSP lets no WebAssembly start,
+    // so the 220 KB WebAssembly build is replaced by a stub that is never ready (src/app/substrate/wasm-crypto-stub.ts).
+    alias: { "@polkadot/wasm-crypto": resolve(here, "src/app/substrate/wasm-crypto-stub.ts") },
+  },
   oxc: {
     jsx: { runtime: "automatic", importSource: "preact" },
   },

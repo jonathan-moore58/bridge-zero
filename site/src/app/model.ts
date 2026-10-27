@@ -65,7 +65,7 @@ interface Common {
   id: string;
   /** Base units, 14 decimals: tPOT and wtPOT alike. */
   amount: bigint;
-  /** The address paid on the other chain: the sender's own, today. */
+  /** The address paid on the other chain: the sender's own, but for a lock from a Substrate account, which pays the Sepolia address given. */
   recipient: Hex;
   /** When the visitor confirmed the review (or Finish mint): the transfer's clock starts here. */
   startedAt: number;
@@ -81,9 +81,32 @@ interface Common {
   note: Note | null;
 }
 
+/**
+ * Who locks: an Ethereum wallet, through V3's EVM side (the address is the lock's sender and its
+ * recipient on Sepolia), or a Substrate (5…) account of a Polkadot wallet, through revive.call: the
+ * vault records `h160`, pallet-revive's address of the account, as the sender, and the recipient is
+ * the Sepolia address the visitor gave. `wallet`: the wallet's key in window.injectedWeb3, `walletName`
+ * how the page names it.
+ */
+export type LockSender = { kind: "evm"; address: Hex } | { kind: "substrate"; ss58: string; h160: Hex; wallet: string; walletName: string };
+
+/**
+ * A lock signed as a Substrate extrinsic: the account nonce it was signed with, and the blocks its
+ * mortal era lets it in (`from` to `to`). Known before the wallet is asked: once V3 has finalized
+ * past `to` without it, it can never be included, so nothing was locked.
+ */
+export interface ExtrinsicRef {
+  nonce: number;
+  from: number;
+  to: number;
+}
+
 /** V3 to Sepolia: the lock, V3's finality of its block, the proof built and checked here, the mint. */
 export interface LockTransfer extends Common {
   dir: "in";
+  sender: LockSender;
+  /** A Substrate lock's extrinsic, once the wallet is asked for it; null for an Ethereum lock. */
+  ext: ExtrinsicRef | null;
   lock: SentTx;
   /** The vault's nonce for this lock, from its Locked log. */
   nonce: number | null;
@@ -99,8 +122,12 @@ export interface LockTransfer extends Common {
   route: MintRoute | null;
   /** The transactions of a self-relay that came before the one that mints: set changes imported. */
   relayed: { hash: Hex; block: number }[];
-  /** null until the visitor is asked to sign the mint. */
+  /** null until the visitor is asked to sign the mint, or until a mint anyone sent is found. */
   mint: SentTx | null;
+  /** Who sent the mint, once it is found: auto-mint's key, the visitor, anyone. */
+  mintBy: Hex | null;
+  /** Auto-mint's key had a transaction Sepolia had not mined, at the last read: the visitor's own mint waits longer (handoff.ts). */
+  autoPending: boolean;
   /** Finish mint: the lock was made before this page followed it, so its steps before the mint are not timed. */
   resumed: boolean;
 }

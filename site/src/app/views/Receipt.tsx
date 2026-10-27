@@ -43,6 +43,8 @@ interface Common {
   /** The address paid on the other chain. */
   to: Hex;
   source: Source;
+  /** A lock from a Polkadot wallet: it paid the Sepolia address the visitor gave, which may not be theirs. */
+  given?: boolean;
 }
 
 interface InReceipt extends Common {
@@ -179,6 +181,7 @@ function liveReceipt(x: LiveTransfer): Receipt | null {
       amount: toTokens(x.amount),
       to: x.recipient,
       source: "tab",
+      given: x.sender.kind === "substrate",
       lockTx: lock.hash,
       lockBlock: lock.block,
       mint: { tx: mint.hash, block: mint.block, gas: mint.gasUsed },
@@ -583,7 +586,15 @@ function ReceiptScreen({ m, me }: { m: Receipt; me: string | null }) {
   // "You" only for a transfer this tab sent, or when the address paid is the connected wallet's. A
   // recorded run paid the project's test address; a lock or a burn read from the chains, its own recipient.
   const mine = me !== null && me.toLowerCase() === m.to.toLowerCase();
-  const whose = mine || m.source === "tab" ? "you" : m.source === "chain" ? `the ${m.dir === "in" ? "lock" : "burn"}'s recipient` : "the project's test address";
+  const whose = mine
+    ? "you"
+    : m.given
+      ? "the address you gave"
+      : m.source === "tab"
+        ? "you"
+        : m.source === "chain"
+          ? `the ${m.dir === "in" ? "lock" : "burn"}'s recipient`
+          : "the project's test address";
   return (
     <div class="stage stage--tx" data-dir={m.dir}>
       <section class="intro intro--tx" aria-label={m.dir === "in" ? "What was checked" : "What was trusted"}>

@@ -8,10 +8,12 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { etherscanBlock, etherscanTx, nodeConsoleBlock, records } from "../../lib/chains.ts";
 import { checksum } from "../../lib/display.ts";
 import type { Hex } from "../../lib/records-types.ts";
-import { FAST_CAP, IMPORT_GAS, MINT_GAS, SEPOLIA_FINALITY, SPEED_NAME, TIME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
+import { AUTO_TIME, FAST_CAP, IMPORT_GAS, MINT_GAS, SEPOLIA_FINALITY, SPEED_NAME, TIME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
+import { AUTO_MINT, autoMints, handoffOf, handoffProgress } from "../handoff.ts";
 import type { NetState } from "../net.ts";
 import type { Route } from "../router.ts";
 import { useBox } from "../store.ts";
+import { wallet } from "../wallet.ts";
 import {
   CHAIN_EVERY,
   FAST_RUN,
@@ -92,6 +94,8 @@ interface TxState {
   failed: { reason: Failure["reason"]; title: string; text: string; action: string; change: boolean } | null;
   /** The mint was sent and is not mined. */
   stuck: { action: string; note: string } | null;
+  /** Auto-mint has not minted it in time: why, above the button that offers the visitor's own mint. */
+  offer: { title: string; text: string } | null;
   checks: Record<CheckKey, CheckState>;
   members: readonly MemberState[];
 }
@@ -124,6 +128,10 @@ interface Head {
   cardNote: string | null;
   receipt: string;
   facts: CheckFacts;
+  /** The way in, minted by auto-mint (a lock of its minimum or more): its usual time is auto-mint's. */
+  auto: boolean;
+  /** The foot's line once the lock is on V3 and the mint is auto-mint's to send. */
+  waitText: string | null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -659,6 +667,8 @@ function replayHead(r: Replay): Head {
       cardNote: null,
       receipt: "#/receipt/replay-in",
       facts: factsOf(r.run),
+      auto: false,
+      waitText: null,
     };
   }
   return {
@@ -672,6 +682,8 @@ function replayHead(r: Replay): Head {
     cardNote: null,
     receipt: `#/receipt/replay-back?speed=${r.speed}`,
     facts: NO_FACTS,
+    auto: false,
+    waitText: null,
   };
 }
 
@@ -727,7 +739,7 @@ function replayIn(r: LockRun, w: InPlan, t: number): TxState {
     M.tx = { hash: r.mintTx, href: etherscanTx(r.mintTx), label: "mint transaction" };
   }
 
-  return { steps: [L, F, P, M], t, done: t >= w.total, needs: null, failed: null, stuck: null, checks, members: NO_MEMBERS };
+  return { steps: [L, F, P, M], t, done: t >= w.total, needs: null, failed: null, stuck: null, offer: null, checks, members: NO_MEMBERS };
 }
 
 function replayBack(b: BurnRun, speed: Speed, w: BackPlan, t: number): TxState {
@@ -788,11 +800,28 @@ function replayBack(b: BurnRun, speed: Speed, w: BackPlan, t: number): TxState {
     t >= w.ran && R.st !== "pending" ? "approved" : "idle",
     "idle",
   ];
-  return { steps: [B, mid, R], t, done: t >= w.total, needs: null, failed: null, stuck: null, checks: waitingChecks(), members };
+  return { steps: [B, mid, R], t, done: t >= w.total, needs: null, failed: null, stuck: null, offer: null, checks: waitingChecks(), members };
 }
 
 // ---------------------------------------------------------------------------------------------
 // Live transfers: drawn from what the wallet and the chains have answered
+
+/**
+ * The foot's line once the lock is on V3: while auto-mint is to mint it, whom it pays and when it
+ * usually does; for a Polkadot wallet's lock, that only this browser can find it again (V3's EVM RPC
+ * serves no log of a Substrate extrinsic, so Activity elsewhere does not list it).
+ */
+function waitTextOf(x: LiveTransfer): string | null {
+  if (x.dir !== "in") return null;
+  const here = x.sender.kind === "substrate";
+  if (autoMints(x.amount, x.sender.kind)) {
+    return `You can close this page. Auto-mint usually mints ${fmt(toTokens(x.amount))} wtPOT for ${short(checksum(x.recipient))} ${AUTO_TIME[0]} after your lock; ${here ? "Activity in this browser lists it" : "Activity shows it on any device"}.`;
+  }
+  if (here) {
+    return "You can close this page. Your tPOT stays locked for you, and the lock does not expire: Activity in this browser lists it, to send its mint. Other devices cannot see a lock signed with a Polkadot wallet yet.";
+  }
+  return null;
+}
 
 function liveHead(x: LiveTransfer): Head {
   return {
@@ -806,26 +835,46 @@ function liveHead(x: LiveTransfer): Head {
     cardNote: x.dir === "in" ? routeNote(x.route) : null,
     receipt: `#/receipt/${x.id}`,
     facts: x.dir === "in" ? liveFacts(x) : NO_FACTS,
+    auto: x.dir === "in" && autoMints(x.amount, x.sender.kind),
+    waitText: waitTextOf(x),
   };
 }
 
-function liveIn(x: LockTransfer, now: number): TxState {
+/** Who sent the mint, for its line: auto-mint, the visitor, or an address. */
+function mintedBy(by: Hex | null, me: string | null): string {
+  if (!by) return "";
+  if (by === AUTO_MINT.key) return " · sent by auto-mint";
+  if (me && by === me.toLowerCase()) return " · sent by you";
+  return ` · sent by ${short(checksum(by))}`;
+}
+
+/** The offer of the visitor's own mint, when auto-mint has not minted it in time (handoff.ts). */
+function offerOf(recipient: Hex): NonNullable<TxState["offer"]> {
+  return {
+    title: "Auto-mint hasn't minted it yet",
+    text: `It runs on one machine and spends at most ${AUTO_MINT.dailyEth} ETH of gas a day: while that machine is off or the day's gas is spent, locks wait. Your tPOT stays locked for you, and the lock does not expire. You can mint it yourself now: any address can send the mint, it pays ${short(checksum(recipient))}, and it costs ≈ 2.5 M gas in Sepolia ETH.`,
+  };
+}
+
+/** `evm`: the connected Ethereum wallet's address, which can send the mint, or null. */
+function liveIn(x: LockTransfer, now: number, evm: string | null): TxState {
   const amt = fmt(toTokens(x.amount));
   const { lock, mint, finality: fin, failure, route, note } = x;
   const locked = lock.stage === "mined" && x.nonce !== null ? lock : null;
   const minted = mint?.stage === "mined" ? mint : null;
   // Stopped before the lock is on chain: not sent, or reverted.
   const early = failure !== null && locked === null;
+  const sub = x.sender.kind === "substrate" ? x.sender : null;
 
   const L = step("lock", "Lock on Portaldot V3", TRUST.lock);
-  if (lock.stage !== "asking") L.tx = { hash: lock.hash, href: lock.stage === "mined" ? nodeConsoleBlock(lock.block) : undefined, label: "lock transaction" };
+  if (lock.stage !== "asking") L.tx = { hash: lock.hash, href: lock.stage === "mined" ? nodeConsoleBlock(lock.block) : undefined, label: sub ? "lock extrinsic" : "lock transaction" };
   if (early) {
     L.st = "failed";
-    if (failure.reason === "reverted") L.title = "Lock reverted";
+    if (failure.reason === "reverted") L.title = sub ? "Lock failed" : "Lock reverted";
     else if (failure.reason !== "stopped") L.title = "Lock not sent";
   } else if (lock.stage === "asking") {
     L.st = note && !note.wallet ? "active" : "needs";
-    L.sub = note?.text ?? "Confirm the lock in your wallet";
+    L.sub = note?.text ?? `Confirm the lock in ${sub ? sub.walletName : "your wallet"}`;
   } else if (!locked) {
     activeFrom(L, x.startedAt, MEASURED?.lock, now);
     L.sub = note?.text ?? "Sent · waiting for a V3 block";
@@ -871,28 +920,53 @@ function liveIn(x: LockTransfer, now: number): TxState {
   const M = step("mint", "Mint on Sepolia", TRUST.mint);
   let needs: TxState["needs"] = null;
   let stuck: TxState["stuck"] = null;
+  let offer: TxState["offer"] = null;
   const built = x.proof.builtAt ?? now;
   const of = route && route.steps > 1 ? ` ${route.step} of ${route.steps}` : "";
   const gas = route?.gas != null ? `≈ ${gasText(route.gas)} gas` : `≈ ${MINT_GAS} M gas`;
+  // Auto-mint's mint, or the visitor's own (handoff.ts), from the lock's V3 block; before the lock is on V3, by its amount and its sender.
+  const kind = x.sender.kind;
+  const handoff = locked ? handoffOf(x.amount, kind, locked.minedAt, now, x.autoPending) : autoMints(x.amount, kind) ? null : ({ kind: "self" } as const);
+  const theirs = locked ? handoff?.kind !== "self" : autoMints(x.amount, kind);
   if (mint && mint.stage !== "asking") M.tx = { hash: mint.hash, href: etherscanTx(mint.hash), label: "mint transaction" };
   if (minted) {
     M.st = "done";
-    M.sub = `${amt} wtPOT minted · Sepolia #${num(minted.block)}${minted.gasUsed !== null ? ` · ${num(minted.gasUsed)} gas` : ""}`;
+    M.sub = `${amt} wtPOT minted · Sepolia #${num(minted.block)}${x.mintBy ? mintedBy(x.mintBy, evm) : minted.gasUsed !== null ? ` · ${num(minted.gasUsed)} gas` : ""}`;
     if (x.proof.builtAt !== null) M.time = span(x.proof.builtAt, minted.minedAt);
   } else if (failure?.reason === "refused" && locked) {
     // The mint's own check refused it (Sepolia ETH for its gas): the lock stays.
     M.st = "failed";
     M.title = "Mint not sent";
-  } else if (P.st !== "done" || failure) M.sub = `Your wallet, on Sepolia · ${gas}`;
+  } else if (P.st !== "done" || failure) M.sub = theirs && !mint ? `Auto-mint, ${AUTO_TIME[0]} after your lock · nothing to sign` : `${sub ? "Your Ethereum wallet" : "Your wallet"}, on Sepolia · ${gas}`;
   else if (!mint) {
     if (note) {
       // Switching the wallet's network, or checking the plan again before the wallet asks.
       M.st = note.wallet ? "needs" : "active";
       M.sub = note.text;
+    } else if (handoff?.kind === "waiting" || handoff?.kind === "pending") {
+      M.st = "active";
+      M.p = locked ? handoffProgress(locked.minedAt, now) : 0;
+      // Pending: auto-mint's key has a transaction Sepolia has not mined, this lock's mint or another's
+      // it sends first (one at a time): the page cannot tell which, so it says only that.
+      M.sub =
+        handoff.kind === "pending"
+          ? [{ nb: "Auto-mint has a transaction waiting on Sepolia" }, " · ", { nb: "yours may be queued behind it" }, " · ", { nb: "nothing to sign" }]
+          : [{ nb: "Auto-mint sends it for you" }, " · ", { nb: `usually ${AUTO_TIME[0]} after your lock` }, " · ", { nb: "nothing to sign" }];
+    } else if (handoff?.kind === "offer") {
+      M.st = "needs";
+      M.sub = "Auto-mint hasn't minted it yet · you can send the mint";
+      needs = evm
+        ? { action: "Mint it yourself", note: `Your wallet asks for the mint on Sepolia, ≈ 2.5 M gas in Sepolia ETH. It pays ${short(checksum(x.recipient))}.` }
+        : { action: "Connect an Ethereum wallet to mint", note: "Any Ethereum wallet with Sepolia ETH can send the mint: it pays the lock's recipient, whoever sends it." };
+      offer = offerOf(x.recipient);
     } else {
       M.st = "needs";
       M.sub = route ? `${route.title} · ${gas}` : NEEDS.action;
-      needs = needsOf(route);
+      // A Polkadot wallet's lock is minted from an Ethereum wallet: connected first.
+      needs =
+        sub && !evm
+          ? { action: "Connect an Ethereum wallet to mint", note: `Any Ethereum wallet with Sepolia ETH can send the mint, ${gas}: it pays ${short(checksum(x.recipient))}, whoever sends it.` }
+          : needsOf(route);
     }
   } else if (mint.stage === "asking") {
     M.st = "needs";
@@ -915,6 +989,7 @@ function liveIn(x: LockTransfer, now: number): TxState {
     needs,
     failed: failure ? failedOf(failure, "in", locked !== null) : null,
     stuck,
+    offer,
     checks,
     members: NO_MEMBERS,
   };
@@ -1009,6 +1084,7 @@ function liveBack(x: BurnTransfer, now: number): TxState {
     needs: null,
     failed: failure ? failedOf(failure, "back", burned !== null) : null,
     stuck: null,
+    offer: null,
     checks: waitingChecks(),
     members,
   };
@@ -1040,10 +1116,14 @@ function chainHead(x: ChainTransfer, id: string): Head {
     cardNote: null,
     receipt: `#/receipt/${id}`,
     facts: NO_FACTS,
+    // Read from V3's EVM logs: an Ethereum wallet's lock.
+    auto: x.dir === "in" && autoMints(x.amount, "evm"),
+    waitText: null,
   };
 }
 
-function chainIn(x: ChainLock, now: number): TxState {
+/** `evm`: the connected Ethereum wallet's address, which can send the mint, or null. */
+function chainIn(x: ChainLock, now: number, evm: string | null): TxState {
   const amt = fmt(toTokens(x.amount));
   const L = step("lock", "Lock on Portaldot V3", TRUST.lock);
   L.st = "done";
@@ -1069,14 +1149,28 @@ function chainIn(x: ChainLock, now: number): TxState {
 
   const M = step("mint", "Mint on Sepolia", TRUST.mint);
   let needs: TxState["needs"] = null;
+  let offer: TxState["offer"] = null;
+  // Auto-mint mints a lock of its minimum or more (handoff.ts): the visitor's own mint is offered when it has not, in time.
+  // A lock read from V3's EVM logs is an Ethereum wallet's.
+  const handoff =
+    x.at !== null ? handoffOf(x.amount, "evm", x.at, now, false) : autoMints(x.amount, "evm") ? ({ kind: "waiting", offerAt: now } as const) : ({ kind: "self" } as const);
   if (x.minted === null) M.sub = "Could not read whether it was minted";
-  else if (x.final === true) {
+  else if (x.final === true && handoff.kind === "waiting") {
+    M.st = "active";
+    M.p = x.at !== null ? handoffProgress(x.at, now) : 0;
+    M.sub = [{ nb: "Auto-mint sends it" }, " · ", { nb: `usually ${AUTO_TIME[0]} after the lock` }, " · ", { nb: "nothing to sign" }];
+  } else if (x.final === true && handoff.kind === "offer") {
+    M.st = "needs";
+    M.sub = "Auto-mint hasn't minted it yet · you can send the mint";
+    needs = evm ? { action: "Mint it yourself", note: `Your wallet asks for the mint on Sepolia. It pays ${short(checksum(x.recipient))}.` } : { action: "Connect an Ethereum wallet to mint", note: "Any Ethereum wallet with Sepolia ETH can send the mint." };
+    offer = offerOf(x.recipient);
+  } else if (x.final === true) {
     M.st = "needs";
     M.sub = NEEDS.action;
     needs = NEEDS;
-  } else M.sub = `Your wallet, on Sepolia · ≈ ${MINT_GAS} M gas`;
+  } else M.sub = handoff.kind === "self" ? `Your wallet, on Sepolia · ≈ ${MINT_GAS} M gas` : `Auto-mint, ${AUTO_TIME[0]} after your lock · nothing to sign`;
 
-  return { steps: [L, F, P, M], t: elapsed(x.at, now), done: false, needs, failed: null, stuck: null, checks: waitingChecks(), members: NO_MEMBERS };
+  return { steps: [L, F, P, M], t: elapsed(x.at, now), done: false, needs, failed: null, stuck: null, offer, checks: waitingChecks(), members: NO_MEMBERS };
 }
 
 function chainBack(x: ChainBurn, now: number): TxState {
@@ -1122,7 +1216,7 @@ function chainBack(x: ChainBurn, now: number): TxState {
     R.sub = "Not released yet · nothing to sign";
   } else R.sub = releaseAhead(fast);
 
-  return { steps: [B, mid, R], t: elapsed(x.at, now), done: false, needs: null, failed: null, stuck: null, checks: waitingChecks(), members: NO_MEMBERS };
+  return { steps: [B, mid, R], t: elapsed(x.at, now), done: false, needs: null, failed: null, stuck: null, offer: null, checks: waitingChecks(), members: NO_MEMBERS };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1212,6 +1306,15 @@ function Foot({ h, s, asking, onAct }: { h: Head; s: TxState; asking: boolean; o
   if (s.needs) {
     return (
       <>
+        {s.offer ? (
+          <div class="notice notice--trust">
+            <Icon id="i-clock" />
+            <div>
+              <p class="notice__title">{s.offer.title}</p>
+              <p>{s.offer.text}</p>
+            </div>
+          </div>
+        ) : null}
         <ActBar>
           <button class="btn btn--primary btn--lg btn--block" type="button" onClick={() => onAct("sign")}>
             <span>{s.needs.action}</span>
@@ -1264,7 +1367,7 @@ function Foot({ h, s, asking, onAct }: { h: Head; s: TxState; asking: boolean; o
   const text =
     first?.st === "done"
       ? inDir
-        ? "You can close this page. Your tPOT stays locked for you, and Activity can finish the mint on any device."
+        ? (h.waitText ?? "You can close this page. Your tPOT stays locked for you, and Activity can finish the mint on any device.")
         : "You can close this page. The burn is on Sepolia; the release is up to the committee."
       : first?.tx
         ? `Sent, not on ${where} yet: this page follows the ${what} until a block takes it, and again when you come back.`
@@ -1281,7 +1384,7 @@ function TxScreen({ h, s, onAct }: { h: Head; s: TxState; onAct: (a: TransferAct
   const dir: Dir = h.mode === "in" ? "in" : "back";
   const from = fromOf(dir);
   const to = toOf(dir);
-  const T = TIME[h.mode];
+  const T = h.auto ? AUTO_TIME : TIME[h.mode];
   const usual = `${h.mode === "in" ? "" : `${h.fallback ? "Standard (fallback)" : SPEED_NAME[h.mode]} · `}usually ${T[0]} · ${T[1]}`;
   const [mm, ss] = s.t === null ? ["–", "––"] : clock(s.t).split(":");
   const asking = s.steps.some((x) => x.st === "needs") && !s.needs;
@@ -1515,11 +1618,18 @@ const actOn = (id: string) => (a: TransferAction) => {
   else toast("info", "Not ready yet", "The page is still starting: try again in a moment.");
 };
 
+/** The connected Ethereum wallet's address, which can send a mint, or null. */
+function useEvm(): string | null {
+  const w = useBox(wallet);
+  return w.status === "on" && w.address ? w.address : null;
+}
+
 function LiveTx({ x }: { x: LiveTransfer }) {
   const done = isDone(x);
+  const evm = useEvm();
   useTick(1000, !done && x.failure === null);
   const now = Date.now();
-  const s = x.dir === "in" ? liveIn(x, now) : liveBack(x, now);
+  const s = x.dir === "in" ? liveIn(x, now, evm) : liveBack(x, now);
   const h = liveHead(x);
   useFinish(x.id, done, h.receipt);
   return <TxScreen h={h} s={s} onAct={actOn(x.id)} />;
@@ -1528,13 +1638,14 @@ function LiveTx({ x }: { x: LiveTransfer }) {
 /** A lock or a burn read from the chains: read again every 15 s until it is done, then its receipt. */
 function ChainTx({ id }: { id: string }) {
   const read = useChainRead(id, chainDone);
+  const evm = useEvm();
   const x = read.state === "live" ? read.value : null;
   useTick(1000, x !== null && x.at !== null && !chainDone(x));
   if (read.state === "none") return <NotFound what="transfer" id={id} />;
   if (!x) return <ChainWait id={id} read={read} />;
   if (chainDone(x)) return <Redirect to={`#/receipt/${id}`} />;
   const now = Date.now();
-  return <TxScreen h={chainHead(x, id)} s={x.dir === "in" ? chainIn(x, now) : chainBack(x, now)} onAct={actOn(id)} />;
+  return <TxScreen h={chainHead(x, id)} s={x.dir === "in" ? chainIn(x, now, evm) : chainBack(x, now)} onAct={actOn(id)} />;
 }
 
 export function TxView({ route }: { route: Route; net: NetState }) {

@@ -90,13 +90,18 @@ type Checked<T> = ({ ok: true } & T) | { ok: false; why: string };
 const argOf = (args: { name: string; value: AbiValue }[], name: string): AbiValue | undefined => args.find((a) => a.name === name)?.value;
 const sameAddress = (a: AbiValue | undefined, b: string): boolean => typeof a === "string" && a.toLowerCase() === b.toLowerCase();
 
-/** What the lock's receipt has to show: this vault, this bridge's minter and chains, and the sender's own amount and recipient. */
+/**
+ * What the lock's receipt has to show: this vault, this bridge's minter and chains, the sender (an
+ * Ethereum wallet's address, or pallet-revive's address of a Substrate account), its amount, and the
+ * recipient on Sepolia (the sender's own address, for an Ethereum wallet's lock).
+ */
 export interface LockExpect {
   vault: string;
   v3ChainId: bigint;
   sepoliaChainId: bigint;
   minter: string;
   sender: string;
+  recipient: string;
   amount: bigint;
 }
 
@@ -115,9 +120,10 @@ export function lockedOf(logs: readonly ReceiptLog[], registry: AbiRegistry, e: 
     const commitment = argOf(d.args, "commitment");
     if (typeof nonce !== "bigint" || typeof amount !== "bigint" || typeof commitment !== "string") return { ok: false, why: "the Locked log does not decode" };
     if (argOf(d.args, "dstChainId") !== e.sepoliaChainId || !sameAddress(argOf(d.args, "dstMinter"), e.minter)) return { ok: false, why: "the lock names another chain or minter" };
-    if (!sameAddress(argOf(d.args, "sender"), e.sender) || !sameAddress(argOf(d.args, "recipient"), e.sender)) return { ok: false, why: "the lock's sender or recipient is not your address" };
+    if (!sameAddress(argOf(d.args, "sender"), e.sender)) return { ok: false, why: "the lock's sender is not your address" };
+    if (!sameAddress(argOf(d.args, "recipient"), e.recipient)) return { ok: false, why: "the lock's recipient is not the address you gave" };
     if (amount !== e.amount) return { ok: false, why: `the vault locked ${amount} base units, not ${e.amount}` };
-    const expected = lockCommitment({ v3ChainId: e.v3ChainId, vault: e.vault, dstChainId: e.sepoliaChainId, minter: e.minter, recipient: e.sender, amountNative: e.amount, nonce });
+    const expected = lockCommitment({ v3ChainId: e.v3ChainId, vault: e.vault, dstChainId: e.sepoliaChainId, minter: e.minter, recipient: e.recipient, amountNative: e.amount, nonce });
     if (expected !== commitment.toLowerCase()) return { ok: false, why: `the vault stored ${commitment}, and this lock's fields give ${expected}` };
     return { ok: true, nonce, commitment: expected };
   }

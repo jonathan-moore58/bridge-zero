@@ -42,7 +42,7 @@ const burns = steps.filter((s) => s.kind === "burn");
 const burn1 = burns.find((s) => s.burn?.burnNonce === "1");
 const mint1 = steps.find((s) => s.kind === "mint" && s.lock?.nonce === 1);
 
-const expectLock1: LockExpect = { vault: VAULT, v3ChainId: V3_ID, sepoliaChainId: SEPOLIA_ID, minter: MINTER, sender: lock1.from, amount: BigInt(lock1.amountNative) };
+const expectLock1: LockExpect = { vault: VAULT, v3ChainId: V3_ID, sepoliaChainId: SEPOLIA_ID, minter: MINTER, sender: lock1.from, recipient: lock1.recipient, amount: BigInt(lock1.amountNative) };
 
 /** Lock 1's Locked log, as the vault emitted it, with any field changed. */
 function lockedLog(over: { address?: string; nonce?: bigint; sender?: string; recipient?: string; dstChainId?: bigint; dstMinter?: string; amount?: bigint; commitment?: Hex } = {}): ReceiptLog {
@@ -126,8 +126,12 @@ test("a Locked log that is not this lock is refused, saying why", () => {
   assert.match(why(lockedLog({ address: MINTER })), /no Locked log of the vault/);
   assert.match(why(lockedLog({ dstMinter: VAULT })), /another chain or minter/);
   assert.match(why(lockedLog({ dstChainId: 1n })), /another chain or minter/);
-  assert.match(why(lockedLog({ recipient: VAULT })), /not your address/);
-  assert.match(why(lockedLog({ sender: MINTER })), /not your address/);
+  assert.match(why(lockedLog({ recipient: VAULT })), /recipient is not the address you gave/);
+  assert.match(why(lockedLog({ sender: MINTER })), /sender is not your address/);
+  // A Substrate account's lock: the vault's sender is the account's address on V3, the recipient the one given.
+  const h160 = "0xb621f9a9dd96ba88681c40b04657cef602854e24";
+  assert.match(why(lockedLog({ sender: h160 })), /sender is not your address/);
+  assert.equal(lockedOf([lockedLog({ sender: h160 })], registry, { ...expectLock1, sender: h160 }).ok, true);
   assert.match(why(lockedLog(), { ...expectLock1, amount: 2n * expectLock1.amount }), /locked 100000000000000 base units/);
   assert.match(why(lockedLog({ commitment: topic(1n) })), /the vault stored/);
   // The nonce is the log's: another nonce under lock 1's commitment does not hold.

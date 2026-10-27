@@ -22,6 +22,8 @@ const lock: LockTransfer = {
   doneAt: null,
   failure: null,
   note: { text: "Checking the mint again", wallet: false },
+  sender: { kind: "evm", address: ME },
+  ext: null,
   lock: { stage: "mined", hash: H(1), sentAt: 1_761_500_001_000, block: 208_101, minedAt: 1_761_500_010_000, gasUsed: 103_974_591_156_436 },
   nonce: 7,
   commitment: H(2),
@@ -30,6 +32,8 @@ const lock: LockTransfer = {
   route: { path: "selfRelay", imports: 7, title: "2 of 2: Import 1 set change and mint 1.5 wtPOT", gas: 5_300_000, step: 2, steps: 2, total: 20_800_000 },
   relayed: [{ hash: H(4), block: 12_000_100 }],
   mint: { stage: "sent", hash: H(5), sentAt: 1_761_500_060_000 },
+  mintBy: null,
+  autoPending: false,
   resumed: false,
 };
 
@@ -69,7 +73,7 @@ const declined: LockTransfer = {
   mint: null,
 };
 
-const text = (list: unknown[], v = 1) => JSON.stringify({ v, transfers: list });
+const text = (list: unknown[], v = 2) => JSON.stringify({ v, transfers: list });
 /** An entry as the journal writes it: its amount as a decimal string. */
 const raw = (t: LiveTransfer): Record<string, unknown> => JSON.parse(encodeJournal([t])).transfers[0];
 
@@ -88,7 +92,7 @@ test("nothing, another version, or text that is not JSON reads as no transfers",
   assert.deepEqual(decodeJournal(""), []);
   assert.deepEqual(decodeJournal("{"), []);
   assert.deepEqual(decodeJournal("[]"), []);
-  assert.deepEqual(decodeJournal(text([raw(lock)], 2)), []);
+  assert.deepEqual(decodeJournal(text([raw(lock)], 3)), []);
   assert.deepEqual(decodeJournal(JSON.stringify({ v: 1, transfers: "no" })), []);
 });
 
@@ -183,4 +187,78 @@ test(`the journal keeps the newest ${JOURNAL_MAX} transfers by when they started
       .map((t) => t.id)
       .sort(),
   );
+});
+
+// ---------------------------------------------------------------------------------------------
+// Version 2: a lock's sender, a Substrate lock's extrinsic, who minted it, auto-mint pending
+
+/** A lock from a Polkadot wallet's account: sent as an extrinsic, its era from #220,910 to #220,973. */
+const substrate: LockTransfer = {
+  ...sent,
+  id: "in-mh9a0000-5u8",
+  recipient: "0x00000000000000000000000000000000000000aa",
+  sender: { kind: "substrate", ss58: "5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7", h160: "0xb621f9a9dd96ba88681c40b04657cef602854e24", wallet: "subwallet-js", walletName: "SubWallet" },
+  ext: { nonce: 7, from: 220_910, to: 220_973 },
+  fromBlock: 220_910,
+  lock: { stage: "sent", hash: H(11), sentAt: 1_761_500_301_000 },
+  mintBy: "0x57cc2ba3b883339a9f32726e6d0d3a9ee861a113",
+  autoPending: true,
+};
+
+test("a lock from a Polkadot wallet comes back with its account, its wallet, its extrinsic's nonce and era, who minted it, and auto-mint's pending flag", () => {
+  assert.deepEqual(decodeJournal(encodeJournal([substrate])), [{ ...substrate, note: null }]);
+  assert.equal(JSON.parse(encodeJournal([substrate])).v, 2);
+});
+
+test("past the cap the oldest finished transfers go first, and a Polkadot wallet's lock that may be on V3 and is not minted is never dropped: only the journal finds it again", () => {
+  const t0 = 1_761_000_000_000;
+  // Broadcast, not settled: the oldest of all.
+  const old: LockTransfer = { ...substrate, id: "in-old0-sub", startedAt: t0 };
+  const ids = (list: LiveTransfer[]) => new Set(decodeJournal(encodeJournal(list)).map((t) => t.id));
+  // 40 released burns, then an Ethereum lock not minted yet (on chain, so findable there too): two too many.
+  const done = Array.from({ length: JOURNAL_MAX }, (_, i): LiveTransfer => ({ ...burn, id: `back-d${i}-x`, startedAt: t0 + (10 + i) * 1000 }));
+  const open: LockTransfer = { ...lock, id: "in-old1-evm", startedAt: t0 + 1000 };
+  const a = ids([...done, old, open]);
+  assert.equal(a.size, JOURNAL_MAX);
+  assert.ok(a.has(old.id) && a.has(open.id));
+  assert.ok(!a.has("back-d0-x") && !a.has("back-d1-x") && a.has("back-d2-x"));
+  // Nothing finished to drop: the oldest others go, never that lock.
+  const locks = Array.from({ length: JOURNAL_MAX + 3 }, (_, i): LiveTransfer => ({ ...lock, id: `in-e${i}-x`, startedAt: t0 + (10 + i) * 1000 }));
+  const b = ids([...locks, old]);
+  assert.equal(b.size, JOURNAL_MAX);
+  assert.ok(b.has(old.id) && !b.has("in-e0-x") && !b.has("in-e3-x") && b.has("in-e4-x"));
+  // Locked, its nonce read: kept too. Nothing on V3 (expired, declined): dropped like any other.
+  assert.ok(ids([...locks, { ...old, lock: { stage: "mined", hash: H(12), sentAt: t0, block: 220_920, minedAt: t0 + 6000, gasUsed: null }, nonce: 3 }]).has(old.id));
+  const expired: LockTransfer = { ...old, failure: { reason: "refused", at: t0 + 400_000, title: "The lock expired", text: null } };
+  assert.ok(!ids([...locks, expired]).has(old.id));
+  assert.ok(!ids([...locks, { ...old, lock: { stage: "asking" }, failure: { reason: "rejected", at: t0 + 9000, title: null, text: null } }]).has(old.id));
+});
+
+test("a version-1 journal still reads: its locks are Ethereum wallets' locks, paid to their own address", () => {
+  const v1 = raw(lock);
+  for (const k of ["sender", "ext", "mintBy", "autoPending"]) delete v1[k];
+  const back = decodeJournal(text([v1, raw(burn)], 1));
+  assert.equal(back.length, 2);
+  const l = back[0] as LockTransfer;
+  assert.deepEqual(l.sender, { kind: "evm", address: ME });
+  assert.equal(l.ext, null);
+  assert.equal(l.mintBy, null);
+  assert.equal(l.autoPending, false);
+});
+
+test("a lock whose sender or extrinsic does not read is dropped: an Ethereum sender is its own recipient, a Substrate one names its account", () => {
+  const r = raw(substrate);
+  const s = r.sender as Record<string, unknown>;
+  const bad: unknown[] = [
+    { ...raw(lock), sender: { kind: "evm", address: "0x00000000000000000000000000000000000000bb" } },
+    { ...raw(lock), sender: { kind: "evm", address: ME }, ext: { nonce: 1, from: 1, to: 64 } },
+    { ...r, sender: { ...s, kind: "ink" } },
+    { ...r, sender: { ...s, ss58: "0xb621f9a9dd96ba88681c40b04657cef602854e24" } },
+    { ...r, sender: { ...s, h160: "0x12" } },
+    { ...r, sender: { ...s, wallet: 7 } },
+    { ...r, ext: { nonce: 7, from: 220_973, to: 220_910 } },
+    { ...r, ext: { nonce: -1, from: 1, to: 2 } },
+    { ...r, mintBy: "auto-mint" },
+  ];
+  assert.deepEqual(decodeJournal(text([...bad, raw(burn)])), [{ ...burn, note: null }]);
 });

@@ -1,18 +1,36 @@
-// Connecting a wallet: the picker of the wallets this browser has, the sheet for a browser that has
-// none, and adding wtPOT to the wallet.
+// Connecting a wallet: the picker of the wallets this browser has, Ethereum wallets (EIP-6963) and
+// Polkadot wallets (window.injectedWeb3) in two groups, the account picker of a Polkadot wallet, the
+// sheet for a browser that has none, and adding wtPOT to the wallet.
 
-import { useEffect } from "preact/hooks";
-import { TOKEN } from "../lib/chains.ts";
+import { useEffect, useState } from "preact/hooks";
+import { TOKEN, V3_EVM } from "../lib/chains.ts";
 import { checksum } from "../lib/display.ts";
+import { request } from "../lib/rpc.ts";
+import { MINT_GAS } from "./facts.ts";
+import { connectPolka, normalize, pickAccount, polka, polkaList } from "./polkadot.ts";
 import { useBox } from "./store.ts";
-import { Chip, Icon, closeSheet, openSheet, short, toast } from "./ui.tsx";
+import { senderOf, shortSs58 } from "./substrate/account.ts";
+import { faultOf, faultText, PORTALDOT_WALLET_URL, type AccountRow, type PolkaWallet } from "./substrate/inject.ts";
+import { Chip, Icon, Mark, closeSheet, fmt, openSheet, short, toast } from "./ui.tsx";
 import { addWtpot, connect, wallet, walletCode, wallets } from "./wallet.ts";
+
+/** What an Ethereum wallet is wanted for, where only it can do it: the Sepolia address filled in, the mint, the burn, or any of these. */
+export type EthUse = "fill" | "mint" | "burn" | "send";
+
+/** A Polkadot wallet is in this browser, or connected. */
+const polkaHere = (): boolean => polkaList.get().length > 0 || polka.get().status === "on";
+
+/** No Ethereum wallet in this browser: the sheet that says so, for `use`; with no Polkadot wallet either, the sheet for a browser with none. */
+function noEthWallet(use: EthUse): void {
+  if (polkaHere()) openNoEthWallet(use);
+  else openNoWallet();
+}
 
 /** Adds wtPOT to the wallet, and says what the wallet answered. A wallet not connected yet is connected first. */
 export async function addWtpotToWallet(): Promise<void> {
   const status = wallet.get().status;
-  if (status === "none") return openNoWallet();
-  if (status === "off") return openWalletPicker(() => void addWtpotToWallet());
+  if (status === "none") return noEthWallet("send");
+  if (status === "off") return openWalletPicker(() => void addWtpotToWallet(), "evm");
   if (status === "connecting") return toast("info", "Check your wallet", "It already has a connection request open.");
   const token = `${short(checksum(TOKEN))} on Sepolia, 14 decimals.`;
   try {
@@ -50,13 +68,45 @@ export function WalletIcon({ icon }: { icon: string | null }) {
   );
 }
 
-function WalletList({ after }: { after: (() => void) | undefined }) {
+/** A Polkadot wallet's icon: the Portaldot mark the app ships for Portaldot's own wallet, else the sprite's wallet (no third-party logos are shipped). */
+export function PolkaIcon({ portaldot }: { portaldot: boolean }) {
+  return portaldot ? (
+    <span class="wallet-ico wallet-ico--mark" aria-hidden="true">
+      <Mark id="m-pdot" cls="mark--28" />
+    </span>
+  ) : (
+    <WalletIcon icon={null} />
+  );
+}
+
+function EvmList({ after }: { after: (() => void) | undefined }) {
   const list = useBox(wallets);
   const status = useBox(wallet).status;
   // Connected some other way while this is open (from the wallet itself, say): nothing left to pick.
   useEffect(() => {
     if (status === "on") closeSheet();
   }, [status]);
+  if (!list.length) {
+    return (
+      <ul class="picker__list">
+        <li>
+          <a class="list-row" href="https://metamask.io/download/" target="_blank" rel="noopener">
+            <WalletIcon icon={null} />
+            <span class="list-row__text">
+              <span class="list-row__title">MetaMask</span>
+              <span class="list-row__meta">No Ethereum wallet in this browser</span>
+            </span>
+            <span class="list-row__end">
+              <Chip kind="muted" cls="badge--sm">
+                Get it
+              </Chip>
+              <Icon id="i-external" cls="i--14" />
+            </span>
+          </a>
+        </li>
+      </ul>
+    );
+  }
   return (
     <ul class="picker__list">
       {list.map((o, i) => (
@@ -92,19 +142,256 @@ function WalletList({ after }: { after: (() => void) | undefined }) {
   );
 }
 
-/** Connects a wallet first when none is, then runs `after`: the picker, or the sheet for a browser without one. */
-export function connectThen(after: () => void): void {
-  const status = wallet.get().status;
-  if (status === "on") return after();
-  if (status === "none") return openNoWallet();
-  if (status === "connecting") return toast("info", "Check your wallet", "It already has a connection request open.");
-  openWalletPicker(after);
+function PolkaList({ after }: { after: (() => void) | undefined }) {
+  const list = useBox(polkaList);
+  const p = useBox(polka);
+  if (!list.length) {
+    return (
+      <ul class="picker__list">
+        <li>
+          <a class="list-row" href={PORTALDOT_WALLET_URL} target="_blank" rel="noopener">
+            <PolkaIcon portaldot />
+            <span class="list-row__text">
+              <span class="list-row__title">Portaldot Wallet</span>
+              <span class="list-row__meta">Portaldot's own wallet, for 5… accounts</span>
+            </span>
+            <span class="list-row__end">
+              <Chip kind="muted" cls="badge--sm">
+                Get it
+              </Chip>
+              <Icon id="i-external" cls="i--14" />
+            </span>
+          </a>
+        </li>
+      </ul>
+    );
+  }
+  return (
+    <ul class="picker__list">
+      {list.map((o) => {
+        const on = p.status === "on" && p.wallet?.key === o.key;
+        return (
+          <li key={o.key}>
+            <button
+              class="list-row"
+              type="button"
+              aria-current={on ? "true" : undefined}
+              onClick={() => {
+                closeSheet(true);
+                void connectPolkaWallet(o, after);
+              }}
+            >
+              <PolkaIcon portaldot={o.portaldot} />
+              <span class="list-row__text">
+                <span class="list-row__title">{o.name}</span>
+                {o.note ? <span class="list-row__meta">{o.note}</span> : null}
+              </span>
+              <span class="list-row__end">
+                {on ? (
+                  <Chip kind="verified" cls="badge--sm">
+                    Connected
+                  </Chip>
+                ) : (
+                  <Chip kind="muted" cls="badge--sm">
+                    Installed
+                  </Chip>
+                )}
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
-/** The wallets this browser has, to connect one; `after` runs once it is connected. */
-export function openWalletPicker(after?: () => void): void {
-  if (!wallets.get().length) return openNoWallet();
-  openSheet({ title: "Connect a wallet", cls: "picker", body: <WalletList after={after} /> });
+/** The picker's two groups: Ethereum wallets (0x addresses) and Polkadot wallets (5… addresses). `only`: Ethereum wallets alone, for what only they can send. */
+function Picker({ after, only }: { after: (() => void) | undefined; only: "evm" | null }) {
+  return (
+    <div class="picker__groups">
+      <section class="picker__group" aria-labelledby="pg-evm">
+        <p class="eyebrow picker__group-h" id="pg-evm">
+          Ethereum wallets · 0x addresses
+        </p>
+        <EvmList after={after} />
+      </section>
+      {only === "evm" ? null : (
+        <section class="picker__group" aria-labelledby="pg-polka">
+          <p class="eyebrow picker__group-h" id="pg-polka">
+            Polkadot wallets · 5… addresses
+          </p>
+          <PolkaList after={after} />
+        </section>
+      )}
+    </div>
+  );
+}
+
+/** Connects an Ethereum wallet first when none is, then runs `after`: what only an Ethereum wallet sends (a burn, a mint, `use`), so the picker shows those. */
+export function connectThen(after: () => void, use: EthUse = "send"): void {
+  const status = wallet.get().status;
+  if (status === "on") return after();
+  if (status === "none") return noEthWallet(use);
+  if (status === "connecting") return toast("info", "Check your wallet", "It already has a connection request open.");
+  openWalletPicker(after, "evm", use);
+}
+
+/** The wallets this browser has, to connect one; `after` runs once it is connected. `only` "evm": Ethereum wallets alone, wanted for `use`. */
+export function openWalletPicker(after?: () => void, only: "evm" | null = null, use: EthUse = "send"): void {
+  const none = !wallets.get().length;
+  if (none && only === "evm") return noEthWallet(use);
+  if (none && !polkaHere()) return openNoWallet();
+  openSheet({ title: only === "evm" ? "Connect an Ethereum wallet" : "Connect a wallet", cls: "picker", body: <Picker after={after} only={only} /> });
+}
+
+// ---------------------------------------------------------------------------------------------
+// A Polkadot wallet: its prompt, then the account
+
+/** Enables the Polkadot wallet picked (its prompt asks to share accounts), then the account picker. */
+export async function connectPolkaWallet(w: PolkaWallet, after?: () => void): Promise<void> {
+  let rows: AccountRow[];
+  try {
+    rows = await connectPolka(w.key);
+  } catch (e) {
+    const fault = faultOf(e);
+    if (fault === "rejected") toast("info", "Not connected", `${w.name} declined the connection. Nothing was shared.`);
+    else toast("revert", "Could not connect", faultText(e) || `${w.name} did not answer.`);
+    return;
+  }
+  openAccountPicker(w, rows, after);
+}
+
+function openAccountPicker(w: PolkaWallet, rows: AccountRow[], after?: () => void): void {
+  openSheet({ title: "Choose an account", cls: "picker", body: <AccountList wallet={w} rows={rows} after={after} /> });
+}
+
+/** The account's tPOT on V3, read through its address on V3, which pallet-revive maps to it. */
+async function tpotOf(address: string): Promise<bigint | null> {
+  const h160 = senderOf(address);
+  if (!h160) return null;
+  try {
+    return BigInt((await request<string>(V3_EVM, "eth_getBalance", [h160, "latest"])).result) / 10_000n;
+  } catch {
+    return null;
+  }
+}
+
+function AccountList({ wallet: w, rows: first, after }: { wallet: PolkaWallet; rows: AccountRow[]; after: (() => void) | undefined }) {
+  const p = useBox(polka);
+  // The wallet's list as it changes while this is open (accounts.subscribe).
+  const rows = p.wallet?.key === w.key && p.accounts.length ? p.accounts : first;
+  const [bal, setBal] = useState<Record<string, bigint | null>>({});
+  useEffect(() => {
+    let live = true;
+    for (const r of rows) {
+      if (r.why || r.address in bal) continue;
+      void tpotOf(r.address).then((v) => {
+        if (live) setBal((b) => ({ ...b, [r.address]: v }));
+      });
+    }
+    return () => {
+      live = false;
+    };
+  }, [rows]);
+  if (!rows.length) {
+    return (
+      <div class="sheet-stack">
+        <p class="sheet-lead">{w.name} shares no account with this page. In it, add an account or allow one for this site, then connect again.</p>
+        <button
+          class="btn btn--primary btn--lg btn--block"
+          type="button"
+          data-autofocus
+          onClick={() => {
+            closeSheet(true);
+            void connectPolkaWallet(w, after);
+          }}
+        >
+          Connect again
+        </button>
+      </div>
+    );
+  }
+  const usable = rows.filter((r) => !r.why);
+  return (
+    <>
+      <ul class="picker__list">
+        {rows.map((r) => {
+          const h160 = r.why ? null : senderOf(r.address);
+          const v = bal[r.address];
+          const current = p.account?.address === normalize(r.address);
+          return (
+            <li key={r.address}>
+              <button
+                class="list-row"
+                type="button"
+                aria-disabled={r.why ? "true" : undefined}
+                aria-current={current ? "true" : undefined}
+                data-autofocus={!r.why && r === usable[0] ? "" : undefined}
+                onClick={() => {
+                  if (r.why) return;
+                  pickAccount(r);
+                  closeSheet();
+                  toast("verify", "Polkadot account connected", `${r.name ? `${r.name} · ` : ""}${shortSs58(normalize(r.address) ?? r.address)}, in ${w.name}.`);
+                  after?.();
+                }}
+              >
+                <PolkaIcon portaldot={w.portaldot} />
+                <span class="list-row__text">
+                  <span class="list-row__title">
+                    {r.name ?? "Account"} <span class="mono list-row__addr">{shortSs58(normalize(r.address) ?? r.address)}</span>
+                  </span>
+                  <span class="list-row__meta">{r.why ?? (h160 ? <>on V3 as <span class="mono">{short(checksum(h160))}</span></> : null)}</span>
+                </span>
+                <span class="list-row__end">
+                  {r.why ? null : v === undefined ? (
+                    <span class="skel" />
+                  ) : (
+                    <span class="mono list-row__bal">{v === null ? "—" : `${fmt(Number(v) / 1e14)} tPOT`}</span>
+                  )}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {w.note ? (
+        <p class="sheet-foot">
+          <Icon id="i-info" cls="i--14" /> {w.note}: Settings, Networks & Tokens, Manage networks, Add network, Polkadot, RPC wss://test-node-v3.portaldot.dev.
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+/** What an Ethereum wallet does for a visitor with a Polkadot wallet, by `use`. */
+const ETH_USE: Record<EthUse, string> = {
+  fill: "Its mint is sent on Sepolia from an Ethereum wallet such as MetaMask, with Sepolia ETH for gas, and that wallet's address can fill in the recipient.",
+  mint: `The mint is a Sepolia transaction: you send it from an Ethereum wallet such as MetaMask, with Sepolia ETH for its gas, about ${MINT_GAS} M gas.`,
+  burn: "The way back's burn is a Sepolia transaction: you send it from an Ethereum wallet such as MetaMask, with Sepolia ETH for its gas.",
+  send: "The mint you send yourself and the way back's burn are Sepolia transactions, sent from an Ethereum wallet such as MetaMask, with Sepolia ETH for gas.",
+};
+
+/** A Polkadot wallet here and no Ethereum wallet: what an Ethereum wallet is wanted for (`use`), and where to get one. */
+export function openNoEthWallet(use: EthUse = "send"): void {
+  const name = polka.get().wallet?.name ?? polkaList.get()[0]?.name ?? "Your Polkadot wallet";
+  openSheet({
+    title: "No Ethereum wallet in this browser",
+    body: (
+      <div class="sheet-stack">
+        <div class="empty-mark" aria-hidden="true">
+          <Mark id="m-eth" cls="mark--28" />
+        </div>
+        <p class="sheet-lead">
+          {name} signs {use === "fill" || use === "mint" ? "the lock" : "locks"} on V3. {ETH_USE[use]} Install one, then reload this page.
+        </p>
+        <a class="btn btn--primary btn--lg btn--block" href="https://metamask.io/download/" target="_blank" rel="noopener" data-autofocus>
+          Get MetaMask
+          <Icon id="i-external" />
+        </a>
+        <p class="sheet-foot">Any public Sepolia faucet gives Sepolia ETH. On a phone, open this page in the MetaMask app's browser.</p>
+      </div>
+    ),
+  });
 }
 
 export function openNoWallet(): void {
@@ -115,7 +402,7 @@ export function openNoWallet(): void {
         <div class="empty-mark" aria-hidden="true">
           <Icon id="i-wallet" cls="i--20" />
         </div>
-        <p class="sheet-lead">Bridge Zero works with MetaMask and other browser wallets. The same address is used on both chains.</p>
+        <p class="sheet-lead">Bridge Zero works with MetaMask and other browser wallets, and with Portaldot Wallet and other Polkadot wallets for 5… accounts.</p>
         <ol class="howto">
           <li>
             <span class="howto__n mono">1</span>
@@ -134,6 +421,10 @@ export function openNoWallet(): void {
         </ol>
         <a class="btn btn--primary btn--lg btn--block" href="https://metamask.io/download/" target="_blank" rel="noopener" data-autofocus>
           Get MetaMask
+          <Icon id="i-external" />
+        </a>
+        <a class="btn btn--secondary btn--lg btn--block" href={PORTALDOT_WALLET_URL} target="_blank" rel="noopener">
+          Get Portaldot Wallet
           <Icon id="i-external" />
         </a>
         <p class="sheet-foot">On a phone, open this page in the MetaMask app's browser.</p>

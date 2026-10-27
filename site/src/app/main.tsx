@@ -1,6 +1,7 @@
 import { render } from "preact";
 import { startLive } from "../lib/live.ts";
 import { App } from "./App.tsx";
+import { startPolka } from "./polkadot.ts";
 import { startSends } from "./sends.ts";
 import { insertSprite } from "./sprite.ts";
 import { startWallet } from "./wallet.ts";
@@ -17,5 +18,6 @@ if (root) {
   render(<App />, root);
   startLive();
   startWallet();
+  startPolka();
   startSends();
 }

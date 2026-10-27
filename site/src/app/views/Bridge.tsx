@@ -3,10 +3,15 @@
 
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
+import { MINTER, SEPOLIA, TOKEN, VAULT } from "../../lib/chains.ts";
+import { checksum } from "../../lib/display.ts";
 import { formatUnits } from "../../lib/format.ts";
+import type { Hex } from "../../lib/hex.ts";
 import { CALLS_PER_TX } from "../../lib/proof/plan.ts";
-import { openNoWallet, openWalletPicker } from "../connect.tsx";
+import { request } from "../../lib/rpc.ts";
+import { openWalletPicker } from "../connect.tsx";
 import {
+  AUTO_TIME,
   BURN_GAS,
   BURN_GAS_FULL,
   CH,
@@ -20,6 +25,7 @@ import {
   MINT_GAS_FULL,
   README,
   SPEED_NAME,
+  SUBSTRATE_ROOM,
   TIME,
   V3_RPC,
   fromOf,
@@ -28,10 +34,14 @@ import {
   type Dir,
   type Speed,
 } from "../facts.ts";
+import { AUTO_MINT, autoMints } from "../handoff.ts";
 import type { NetState } from "../net.ts";
+import { loadChain, normalize, polka, polkaList, type PolkaState } from "../polkadot.ts";
 import type { Route } from "../router.ts";
-import { startBurn, startLock } from "../sends.ts";
+import { startBurn, startLock, startSubstrateLock } from "../sends.ts";
 import { Box, useBox } from "../store.ts";
+import { checkRecipient, recipientNote, senderOf, shortSs58, type RecipientCheck } from "../substrate/account.ts";
+import type { PreparedLock } from "../substrate/send.ts";
 import { DECIMALS, parseAmount } from "../txmath.ts";
 import { CopyChip, Icon, Mark, Mono, Nb, Tip, announce, closeSheet, fmt, openSheet, short, toast } from "../ui.tsx";
 import { readBalances, switchTo, wallet, walletCode, type WalletState } from "../wallet.ts";
@@ -41,10 +51,13 @@ interface Form {
   details: boolean;
   /** The wallet refused to add V3: show the network's parameters to add by hand. */
   addHelp: boolean;
+  /** A lock from a Polkadot wallet: the Sepolia address it pays, as typed or filled in from the Ethereum wallet. */
+  to: string;
+  toFrom: "typed" | "wallet";
 }
 
 /** Kept across pages, so the amount survives a visit to Activity. */
-const form = new Box<Form>({ amount: "1", details: false, addHelp: false });
+const form = new Box<Form>({ amount: "1", details: false, addHelp: false, to: "", toFrom: "typed" });
 
 const setForm = (p: Partial<Form>) => form.set((f) => ({ ...f, ...p }));
 
@@ -88,25 +101,46 @@ interface Facts {
   speed: Speed;
   time: readonly [string, string];
   max: string;
+  /** The way in from a Polkadot wallet's account: it signs the lock, and the recipient is the Sepolia address given. */
+  sub: boolean;
+  /** The way in below auto-mint's minimum. */
+  below: boolean;
+  /** The way in, minted by auto-mint: an Ethereum wallet's lock of its minimum or more (handoff.ts). Otherwise the visitor mints it, with Sepolia ETH. */
+  auto: boolean;
+  /** The visitor's own Sepolia transaction is part of this transfer: the burn, or a mint auto-mint does not send. */
+  ethNeeded: boolean;
+  /** A lock from a Polkadot wallet: the Sepolia address typed, checked. */
+  rc: RecipientCheck | null;
 }
 
-function work(dir: Dir, f: Form, w: WalletState): Facts {
+function work(dir: Dir, f: Form, w: WalletState, p: PolkaState): Facts {
   const from = fromOf(dir);
   const to = toOf(dir);
   const value = amountValue(f.amount);
-  const conn = w.status === "on" && !!w.address;
-  const loading = w.status === "connecting" || (conn && !w.balances);
+  const sub = dir === "in" && p.status === "on" && p.account !== null;
+  const evmOn = w.status === "on" && !!w.address;
+  const conn = sub || evmOn;
+  const loading = sub ? p.balance === null : w.status === "connecting" || (conn && !w.balances);
   const ready = conn && !loading;
-  const raw = dir === "in" ? w.balances?.tpot : w.balances?.wtpot;
+  const raw = sub ? p.balance : dir === "in" ? w.balances?.tpot : w.balances?.wtpot;
   const bal = raw == null ? null : Number(raw) / 1e14;
-  const eth = w.balances?.eth == null ? null : Number(w.balances.eth) / 1e18;
-  const room = dir === "in" ? LOCK_CEILING : 0;
+  const eth = evmOn && w.balances?.eth != null ? Number(w.balances.eth) / 1e18 : null;
+  const room = dir === "in" ? (sub ? SUBSTRATE_ROOM : LOCK_CEILING) : 0;
+  const exact = parseAmount(f.amount);
+  const kind = sub ? "substrate" : "evm";
+  const below = dir === "in" && exact !== null && exact < AUTO_MINT.min;
+  // Auto-mint mints an Ethereum wallet's lock of 0.001 tPOT or more, and no Polkadot wallet's yet
+  // (handoff.ts): the burn, and any other lock, need the visitor's Sepolia ETH. With no amount in,
+  // whether it takes this sender's locks at all.
+  const auto = dir === "in" && autoMints(exact ?? AUTO_MINT.min, kind);
+  const ethNeeded = dir === "back" || !auto;
   // The burn carries no speed: the watcher releases a burn of up to 1 tPOT fast (while no other fast
   // release waits for finality), and a larger one after Sepolia's finality. So the card shows the
   // speed the amount gets; it offers no choice the watcher would not honour.
   const speed: Speed = value > FAST_CAP ? "std" : "fast";
   let max = "0";
   if (raw != null) max = dir === "back" ? units(raw, 14) : String(Math.max(0, Math.floor(((bal ?? 0) - room) * 100) / 100));
+  const rc = sub && p.account ? checkRecipient(f.to, { mapped: p.account.h160, others: othersOf(p), minter: MINTER, token: TOKEN, vault: VAULT }) : null;
   return {
     dir,
     from,
@@ -118,13 +152,144 @@ function work(dir: Dir, f: Form, w: WalletState): Facts {
     bal,
     eth,
     short: ready && bal !== null && value > 0 && value > bal - room,
-    noEth: ready && eth !== null && eth <= 0,
-    wrong: ready && w.chainId !== null && w.chainId !== from.chainId,
+    noEth: ready && ethNeeded && (sub ? eth === null || eth <= 0 : eth !== null && eth <= 0),
+    wrong: !sub && ready && w.chainId !== null && w.chainId !== from.chainId,
     fastOK: value <= FAST_CAP,
     speed,
-    time: TIME[dir === "in" ? "in" : speed],
+    time: auto ? AUTO_TIME : TIME[dir === "in" ? "in" : speed],
     max,
+    sub,
+    below,
+    auto,
+    ethNeeded,
+    rc,
   };
+}
+
+/** Each wallet account's address on V3, worked out once. */
+const h160s = new Map<string, Hex | null>();
+
+/** The V3 addresses of the other accounts the Polkadot wallet shares, and how to name each: keyless on Sepolia, like the connected one's. */
+function othersOf(p: PolkaState): { h160: Hex; label: string }[] {
+  const out: { h160: Hex; label: string }[] = [];
+  for (const r of p.accounts) {
+    if (r.why) continue;
+    let h = h160s.get(r.address);
+    if (h === undefined) {
+      h = senderOf(r.address);
+      h160s.set(r.address, h);
+    }
+    if (!h || h === p.account?.h160) continue;
+    const s = shortSs58(normalize(r.address) ?? r.address);
+    out.push({ h160: h, label: r.name ? `${r.name} (${s})` : s });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// The Sepolia address a lock from a Polkadot wallet pays
+
+const notes = new Map<string, string | null>();
+
+/** What Sepolia says of a recipient the checks passed: a contract, or an address with no history (account.ts, recipientNote). Read once per address. */
+function useRecipientNote(address: Hex | null): string | null | undefined {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    if (!address || notes.has(address)) return;
+    let live = true;
+    const t = setTimeout(() => {
+      void Promise.all([
+        request<string>(SEPOLIA, "eth_getCode", [address, "latest"]),
+        request<string>(SEPOLIA, "eth_getTransactionCount", [address, "latest"]),
+        request<string>(SEPOLIA, "eth_getBalance", [address, "latest"]),
+      ]).then(
+        ([code, count, balance]) => {
+          notes.set(address, recipientNote(code.result, BigInt(count.result), BigInt(balance.result)));
+          if (live) bump((n) => n + 1);
+        },
+        () => undefined,
+      );
+    }, 350);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [address]);
+  return address ? notes.get(address) : null;
+}
+
+/** The connected Ethereum wallet's address in the To field: what "Connect an Ethereum wallet to fill it" does once the wallet is connected. */
+function fillFromWallet(): void {
+  const a = wallet.get().address;
+  if (a) setForm({ to: checksum(a), toFrom: "wallet" });
+}
+
+/** The To line of a lock from a Polkadot wallet: the Sepolia address, its check, and the Ethereum wallet's address to fill it with. */
+function RecipientField({ k, f, w }: { k: Facts; f: Form; w: WalletState }) {
+  const rc = k.rc;
+  const note = useRecipientNote(rc?.ok ? rc.address : null);
+  const mine = w.status === "on" && w.address ? w.address : null;
+  const filled = !!mine && rc?.ok === true && rc.address === mine.toLowerCase();
+  const bad = rc && !rc.ok && rc.kind !== "empty";
+  return (
+    <div class="amount__line amount__line--to">
+      <dt>
+        <label for="to">To, on Sepolia</label>
+      </dt>
+      <dd class="recip">
+      <input
+        class={`recip__input mono${bad ? " is-error" : ""}`}
+        id="to"
+        type="text"
+        inputMode="text"
+        autoComplete="off"
+        spellcheck={false}
+        placeholder="Sepolia address (0x…)"
+        aria-invalid={bad ? "true" : undefined}
+        aria-describedby="to-note"
+        value={f.to}
+        onInput={(e) => setForm({ to: e.currentTarget.value.trim(), toFrom: "typed" })}
+      />
+      <p class={`recip__note${bad ? " recip__note--err" : note ? " recip__note--warn" : ""}`} id="to-note" role={bad ? "alert" : undefined}>
+        {bad ? (
+          <>
+            <Icon id="i-alert" cls="i--12" />
+            <span>{rc.text}</span>
+          </>
+        ) : rc?.ok ? (
+          note ? (
+            <>
+              <Icon id="i-alert" cls="i--12" />
+              <span>{note}</span>
+            </>
+          ) : (
+            <>
+              <Icon id="i-check" cls="i--12" />
+              <span class="mono">{short(rc.shown)}</span>
+              <span>{f.toFrom === "wallet" ? `· your ${w.name ?? "Ethereum wallet"}'s address` : "· checksum and form checked"}</span>
+            </>
+          )
+        ) : (
+          <span>The address that receives the wtPOT. It cannot be changed once the lock is on V3.</span>
+        )}
+      </p>
+      <p class="recip__fill">
+        {mine ? (
+          filled ? null : (
+            <button class="recip__chip" type="button" onClick={() => setForm({ to: checksum(mine), toFrom: "wallet" })}>
+              <Icon id="i-wallet" cls="i--12" />
+              Use {short(checksum(mine))} ({w.name ?? "your wallet"})
+            </button>
+          )
+        ) : (
+          <button class="text-link recip__connect" type="button" onClick={() => openWalletPicker(fillFromWallet, "evm", "fill")}>
+            Connect an Ethereum wallet to fill it
+          </button>
+        )}
+      </p>
+      </dd>
+    </div>
+  );
 }
 
 function swapDir(dir: Dir): void {
@@ -242,52 +407,164 @@ const mintGas = (behind: number): string => fmt(Number(MINT_GAS) + IMPORT_GAS * 
 /** The Sepolia transactions of a mint that imports `behind` set changes first: the plan's calls, at most CALLS_PER_TX to a transaction (../../lib/proof/plan.ts). */
 const sepoliaTxs = (behind: number): number => Math.ceil((behind + 1) / CALLS_PER_TX);
 
+/** A lock from a Polkadot wallet, as the review checks it on V3 before Confirm: the dry run from the account, its deposit, the fee. */
+type LockCheck = { state: "checking" } | { state: "ok"; prep: PreparedLock } | { state: "problem"; title: string; text: string };
+
+const lockCheck = new Box<LockCheck>({ state: "checking" });
+let checkSeq = 0;
+
+/** Checks the lock on V3 (read-only: a dry run and a fee quote), for the review's costs and its Confirm. */
+function checkLock(origin: string, amount: bigint, recipient: Hex): void {
+  const seq = ++checkSeq;
+  lockCheck.set({ state: "checking" });
+  void loadChain()
+    .then((c) => c.prepareLock(origin, amount, recipient))
+    .then(
+      (prep) => {
+        if (seq === checkSeq) lockCheck.set("problem" in prep ? { state: "problem", ...prep.problem } : { state: "ok", prep });
+      },
+      (e: unknown) => {
+        if (seq === checkSeq) lockCheck.set({ state: "problem", title: "Could not check the lock on V3", text: `${e instanceof Error ? e.message : String(e)}. Close this and try again.` });
+      },
+    );
+}
+
+const tpot = (units: bigint, max = 4): string => fmt(Number(units) / 1e14, max);
+
+/** The review's costs of a lock from a Polkadot wallet: V3's dry run's storage deposit and its fee quote. */
+function LockCosts() {
+  const c = useBox(lockCheck);
+  if (c.state === "checking") {
+    return (
+      <span class="kv__check">
+        <span class="skel" /> <span class="kv__note">checking on V3</span>
+      </span>
+    );
+  }
+  if (c.state === "problem") return <span class="kv__bad">{c.title}</span>;
+  return (
+    <>
+      <Nb>
+        <Mono>{tpot(c.prep.deposit)}</Mono> tPOT deposit
+      </Nb>{" "}
+      +{" "}
+      <Nb>
+        ≈ <Mono>{tpot(c.prep.fee, 3)}</Mono> tPOT fee
+      </Nb>
+      <span class="kv__note kv__line">storage deposit and fee, from V3's dry run of this lock</span>
+    </>
+  );
+}
+
+/** The lock step's cost in the review: what V3's dry run said it takes besides the amount. */
+function LockStepCost() {
+  const c = useBox(lockCheck);
+  if (c.state !== "ok") return <span class="skel" />;
+  return (
+    <>
+      <Nb>≈ {tpot(c.prep.deposit + c.prep.fee, 3)} tPOT</Nb> · <Nb>{tpot(c.prep.deposit)} storage deposit + fee</Nb>
+    </>
+  );
+}
+
+/** What the review's check found wrong, under the steps. */
+function LockProblem() {
+  const c = useBox(lockCheck);
+  if (c.state !== "problem") return null;
+  return (
+    <div class="notice notice--revert" role="alert">
+      <Icon id="i-alert" />
+      <div>
+        <p class="notice__title">{c.title}</p>
+        <p>{c.text}</p>
+      </div>
+    </div>
+  );
+}
+
+/** Who signs a lock from a Polkadot wallet, and where it pays: what the review names. */
+interface SubLock {
+  address: string;
+  name: string | null;
+  h160: Hex;
+  walletName: string;
+  recipient: Hex;
+  shown: string;
+  /** Filled in from the Ethereum wallet, or typed. */
+  from: "wallet" | "typed";
+  ethWallet: string | null;
+}
+
 /**
  * `amount`: the field's text, which the sends parse exactly; `value` is how the sheet shows it, to
  * its last decimal; `address`: the account the sheet names, which Confirm locks or burns for and
- * from, or nothing; `txs`: the mint's Sepolia transactions.
+ * from, or nothing; `txs`: the mint's Sepolia transactions; `sub`: a lock from a Polkadot wallet.
  */
-function ReviewFoot({ k, value, amount, address, txs }: { k: Facts; value: string; amount: string; address: string; txs: number }) {
+function ReviewFoot({ k, value, amount, address, txs, sub }: { k: Facts; value: string; amount: string; address: string; txs: number; sub: SubLock | null }) {
   const inDir = k.dir === "in";
   const [consent, setConsent] = useState(false);
+  const check = useBox(lockCheck);
+  // A burn is asked to be understood as trusted; a typed recipient, to be checked: it cannot be undone.
+  const needsConsent = !inDir || (sub !== null && sub.from === "typed");
+  const blocked = sub !== null && check.state !== "ok";
   const confirm = () => {
     closeSheet(true);
-    if (inDir) startLock(amount, address);
+    if (sub) startSubstrateLock(amount, sub.address, sub.recipient);
+    else if (inDir) startLock(amount, address);
     else startBurn(amount, address);
   };
   return (
     <>
-      {inDir ? null : (
+      {needsConsent ? (
         <label class="check">
           <input type="checkbox" checked={consent} data-autofocus="" onChange={(e) => setConsent(e.currentTarget.checked)} />{" "}
           <span>
-            {k.speed === "fast"
-              ? "I understand Fast is trusted: the committee releases before Sepolia finality, and once sent, a burn cannot be cancelled."
-              : "I understand the release is trusted: the committee releases after Sepolia finality, and once sent, a burn cannot be cancelled."}
+            {inDir
+              ? "I checked the recipient: wtPOT minted to a wrong address cannot be recovered."
+              : k.speed === "fast"
+                ? "I understand Fast is trusted: the committee releases before Sepolia finality, and once sent, a burn cannot be cancelled."
+                : "I understand the release is trusted: the committee releases after Sepolia finality, and once sent, a burn cannot be cancelled."}
           </span>
         </label>
-      )}
-      <button class="btn btn--primary btn--lg btn--block" type="button" disabled={!inDir && !consent} data-autofocus={inDir ? "" : undefined} onClick={confirm}>
+      ) : null}
+      <button
+        class={`btn btn--primary btn--lg btn--block${sub && check.state === "checking" ? " is-loading" : ""}`}
+        type="button"
+        disabled={(needsConsent && !consent) || blocked}
+        aria-busy={sub && check.state === "checking" ? "true" : undefined}
+        data-autofocus={needsConsent ? undefined : ""}
+        onClick={confirm}
+      >
         {inDir ? `Lock ${value} tPOT on V3` : `Burn ${value} wtPOT on Sepolia`}
       </button>
       <p class="sheet-foot">
-        {!inDir
-          ? "Your wallet asks once. Nothing is sent until you confirm."
-          : txs > 1
-            ? `Your wallet asks for the lock on V3, then for ${txs} transactions on Sepolia, each after the one before is mined. Nothing is sent until you confirm.`
-            : "Your wallet asks twice: the lock on V3, then the mint on Sepolia. Nothing is sent until you confirm."}
+        {!inDir || k.auto
+          ? sub
+            ? `Your wallet asks once: ${sub.walletName}, for the lock. Nothing is sent until you confirm.`
+            : "Your wallet asks once. Nothing is sent until you confirm."
+          : sub
+            ? // Two wallets: the Polkadot one signs the lock, the Ethereum one sends the mint.
+              `${sub.walletName} asks for the lock on V3, then ${sub.ethWallet ?? "your Ethereum wallet"} for ${txs > 1 ? `${txs} transactions on Sepolia, each after the one before is mined` : "the mint on Sepolia"}. Nothing is sent until you confirm.`
+            : txs > 1
+              ? `Your wallet asks for the lock on V3, then for ${txs} transactions on Sepolia, each after the one before is mined. Nothing is sent until you confirm.`
+              : "Your wallet asks twice: the lock on V3, then the mint on Sepolia. Nothing is sent until you confirm."}
       </p>
     </>
   );
 }
 
-function openReview(k: Facts, address: string, amount: string, net: NetState): void {
+function openReview(k: Facts, address: string, amount: string, net: NetState, sub: SubLock | null = null): void {
   // What Confirm sends, to its last decimal: the sends parse the field exactly, so no rounding here.
   const exact = parseAmount(amount);
   const v = exact === null ? fmt(k.value) : formatUnits(exact, DECIMALS);
   const inDir = k.dir === "in";
+  // Auto-mint mints it: nothing to sign on Sepolia.
+  const auto = inDir && k.auto;
   const behind = inDir && net.key === "relay" ? net.behind : 0;
+  // Who sends the mint when it is the visitor's: a Polkadot wallet's lock is minted from the Ethereum wallet.
+  const minter = sub ? (sub.ethWallet ?? "Your Ethereum wallet") : "Your wallet";
   const txs = behind ? sepoliaTxs(behind) : 1;
+  if (sub && exact !== null) checkLock(sub.address, exact, sub.recipient);
   const sumRow = (label: string, c: ChainInfo) => (
     <div class="sum__row">
       <Mark id={c.markId} cls="mark--36" />
@@ -311,26 +588,28 @@ function openReview(k: Facts, address: string, amount: string, net: NetState): v
       </span>
     </li>
   );
+  const lockCost = sub ? (
+    <LockStepCost />
+  ) : (
+    <>
+      <Nb>≈ {LOCK_COST} tPOT</Nb> · <Nb>{LOCK_DEPOSIT} storage deposit + gas</Nb>
+    </>
+  );
   const steps = inDir ? (
     <>
-      {step(
-        1,
-        "Lock on Portaldot V3",
-        "Your wallet, on V3",
-        <>
-          <Nb>≈ {LOCK_COST} tPOT</Nb> · <Nb>{LOCK_DEPOSIT} storage deposit + gas</Nb>
-        </>,
-      )}
-      {step(
-        2,
-        "Mint on Sepolia",
-        behind
-          ? `Your wallet, on Sepolia, after V3 finality and the proof · it imports the ${behind === 1 ? "validator-set change" : `${behind} validator-set changes`} the light client lacks first${txs > 1 ? `, in ${txs} transactions` : ""}`
-          : "Your wallet, on Sepolia, after V3 finality and the proof",
-        <>
-          <Nb>≈ {behind ? mintGas(behind) : MINT_GAS} M gas</Nb> <Nb>in Sepolia ETH</Nb>
-        </>,
-      )}
+      {step(1, "Lock on Portaldot V3", sub ? `${sub.walletName}, once` : "Your wallet, on V3", lockCost)}
+      {auto
+        ? step(2, "Mint on Sepolia", `Auto-mint, ${AUTO_TIME[0]} after your lock · nothing to sign`, null)
+        : step(
+            2,
+            "Mint on Sepolia",
+            behind
+              ? `${minter}, on Sepolia, after V3 finality and the proof · it imports the ${behind === 1 ? "validator-set change" : `${behind} validator-set changes`} the light client lacks first${txs > 1 ? `, in ${txs} transactions` : ""}`
+              : `${minter}, on Sepolia, after V3 finality and the proof`,
+            <>
+              <Nb>≈ {behind ? mintGas(behind) : MINT_GAS} M gas</Nb> <Nb>in Sepolia ETH</Nb>
+            </>,
+          )}
     </>
   ) : (
     <>
@@ -404,11 +683,30 @@ function openReview(k: Facts, address: string, amount: string, net: NetState): v
           {sumRow("You receive", k.to)}
         </div>
         <dl class="review__kv">
-          <div class="kv">
+          {sub ? (
+            <div class="kv">
+              <dt class="kv__k">From</dt>
+              <dd class="kv__v">
+                {sub.name ? `${sub.name} · ` : ""}
+                <span class="mono">{shortSs58(sub.address)}</span>
+                <span class="kv__note kv__line">
+                  {sub.walletName} · the vault records <span class="mono">{short(checksum(sub.h160))}</span>
+                </span>
+              </dd>
+            </div>
+          ) : null}
+          <div class={`kv${sub ? " kv--full" : ""}`}>
             <dt class="kv__k">Recipient</dt>
-            <dd class="kv__v">
-              <span class="mono">{short(address)}</span> <span class="kv__note">· you, on {k.to.short}</span>
-            </dd>
+            {sub ? (
+              <dd class="kv__v kv__v--wrap">
+                <span class="mono kv__full">{sub.shown}</span>
+                <span class="kv__note kv__line">on Sepolia · {sub.from === "wallet" ? `your ${sub.ethWallet ?? "Ethereum wallet"}'s address` : "typed"}</span>
+              </dd>
+            ) : (
+              <dd class="kv__v">
+                <span class="mono">{short(address)}</span> <span class="kv__note">· you, on {k.to.short}</span>
+              </dd>
+            )}
           </div>
           {inDir ? null : (
             <div class="kv">
@@ -428,6 +726,14 @@ function openReview(k: Facts, address: string, amount: string, net: NetState): v
               </dd>
             </div>
           )}
+          {sub ? (
+            <div class="kv">
+              <dt class="kv__k">Costs</dt>
+              <dd class="kv__v">
+                <LockCosts />
+              </dd>
+            </div>
+          ) : null}
           <div class="kv">
             <dt class="kv__k">Time</dt>
             <dd class="kv__v">
@@ -454,19 +760,44 @@ function openReview(k: Facts, address: string, amount: string, net: NetState): v
               </span>
             </p>
           ) : null}
+          {auto ? (
+            <p class="rnote">
+              <Icon id="i-info" cls="i--14" />
+              <span>
+                If auto-mint has not minted it within 5 minutes of your lock, this page offers you the mint: any Ethereum wallet with Sepolia ETH can send it.
+                Auto-mint takes locks of {tpot(AUTO_MINT.min, 3)} tPOT or more.
+              </span>
+            </p>
+          ) : inDir && sub && !k.below ? (
+            <p class="rnote">
+              <Icon id="i-info" cls="i--14" />
+              <span>
+                Auto-mint does not see locks from Polkadot wallets yet, so you send the mint on Sepolia from {sub.ethWallet ?? "your Ethereum wallet"}: about {MINT_GAS} M
+                gas in Sepolia ETH. It pays the recipient above.
+              </span>
+            </p>
+          ) : inDir ? (
+            <p class="rnote">
+              <Icon id="i-info" cls="i--14" />
+              <span>
+                Below auto-mint's {tpot(AUTO_MINT.min, 3)} tPOT minimum: you mint it on Sepolia, about {MINT_GAS} M gas in Sepolia ETH.
+              </span>
+            </p>
+          ) : null}
         </div>
+        {sub ? <LockProblem /> : null}
         {inDir ? trust : null}
       </div>
     ),
-    foot: <ReviewFoot k={k} value={v} amount={amount} address={address} txs={txs} />,
+    foot: <ReviewFoot k={k} value={v} amount={amount} address={address} txs={txs} sub={sub} />,
   });
 }
 
 // ---------------------------------------------------------------------------------------------
 // The card
 
-/** The strip under the card: what each way trusts, and its recorded numbers. */
-function ProofStrip({ dir }: { dir: Dir }) {
+/** The strip under the card: what each way trusts, and its recorded numbers; the way in's time is auto-mint's when it mints the card's lock (`auto`). */
+function ProofStrip({ dir, auto }: { dir: Dir; auto: boolean }) {
   const back = dir === "back";
   return (
     <aside class="proof" aria-labelledby="proof-title" data-dir={dir}>
@@ -544,12 +875,21 @@ function ProofStrip({ dir }: { dir: Dir }) {
           </>
         ) : (
           <>
-            <li class="fact">
-              <span class="fact__num">
-                48<span class="unit">s</span>
-              </span>
-              <span class="fact__text">lock to mint, measured Oct 20</span>
-            </li>
+            {auto ? (
+              <li class="fact">
+                <span class="fact__num">
+                  <span class="fact__approx">≈</span>2½<span class="unit">min</span>
+                </span>
+                <span class="fact__text">lock to mint, sent by auto-mint · measured Oct 27</span>
+              </li>
+            ) : (
+              <li class="fact">
+                <span class="fact__num">
+                  48<span class="unit">s</span>
+                </span>
+                <span class="fact__text">lock to mint, the mint sent by its locker · measured Oct 20</span>
+              </li>
+            )}
             <li class="fact">
               <a class="fact__link" href="#/lab">
                 <span class="fact__num">
@@ -578,15 +918,23 @@ function ProofStrip({ dir }: { dir: Dir }) {
   );
 }
 
-function ChainButton({ side, c, dir }: { side: "from" | "to"; c: ChainInfo; dir: Dir }) {
+/** `who`: the Polkadot account the lock is sent from, under the chain's name. */
+function ChainButton({ side, c, dir, who = null }: { side: "from" | "to"; c: ChainInfo; dir: Dir; who?: { line: string; title: string } | null }) {
   const name = side === "from" ? "From" : "To";
   return (
-    <button class="chain-btn" type="button" aria-haspopup="dialog" aria-label={`${name}: ${c.full}, ${c.token}. Change network`} onClick={() => openPicker(side, dir)}>
+    <button
+      class="chain-btn"
+      type="button"
+      aria-haspopup="dialog"
+      aria-label={`${name}: ${c.full}, ${c.token}${who ? `, ${who.title}` : ""}. Change network`}
+      title={who?.title}
+      onClick={() => openPicker(side, dir)}
+    >
       <Mark id={c.markId} />
       <span class="chain-btn__text">
         <span class="chain-btn__label">{name}</span>
         <span class="chain-btn__name">{c.name}</span>
-        <span class="chain-btn__sub">{c.sub}</span>
+        <span class={`chain-btn__sub${who ? " chain-btn__sub--who" : ""}`}>{who ? who.line : c.sub}</span>
       </span>
       <Icon id="i-chevron-down" cls="i--16 chain-btn__chev" />
     </button>
@@ -602,10 +950,70 @@ interface Action {
   run?: () => void;
 }
 
-function action(k: Facts, f: Form, w: WalletState, net: NetState, busy: string | null, run: (fn: () => Promise<void>, wait: string) => void): Action {
+/** The lock from a Polkadot wallet's account: its gates, then the review. */
+function subAction(k: Facts, f: Form, w: WalletState, p: PolkaState, net: NetState): Action {
+  if (k.loading) return { label: <span>Reading balances</span>, hint: `Reading your tPOT on ${k.from.short}…`, busy: true, disabled: true };
+  if (net.key === "paused") return { label: <span>Mints are paused</span>, hint: "Watch Network for the light client to resume.", disabled: true };
+  if (net.key === "rpc" && net.down === "v3") return { label: <span>Can't reach Portaldot V3</span>, hint: "Retrying every 30 s.", disabled: true };
+  if (!k.value) return { label: <span>Enter an amount</span>, hint: "", disabled: true };
+  // Auto-mint does not mint this lock (handoff.ts: a Polkadot wallet's, or below its minimum): its
+  // mint is the visitor's, sent from an Ethereum wallet with Sepolia ETH, so that comes first.
+  if (!k.auto && k.noEth) {
+    const why = k.below
+      ? `Below ${tpot(AUTO_MINT.min, 3)} tPOT auto-mint skips the lock, so you send its mint on Sepolia: about ${MINT_GAS} M gas in Sepolia ETH, from an Ethereum wallet.`
+      : `Auto-mint does not see locks from Polkadot wallets yet, so you send the mint on Sepolia: about ${MINT_GAS} M gas in Sepolia ETH, from an Ethereum wallet such as MetaMask.`;
+    if (w.status === "on" && w.address) return { label: <span>Get Sepolia ETH first</span>, hint: why, warn: true, disabled: true };
+    return {
+      label: (
+        <>
+          <Icon id="i-wallet" />
+          <span>Connect an Ethereum wallet</span>
+        </>
+      ),
+      hint: why,
+      run: () => openWalletPicker(undefined, "evm", "mint"),
+    };
+  }
+  if (k.short) return { label: <span>Not enough tPOT</span>, hint: `A lock uses about ${LOCK_COST} tPOT besides the amount: V3's storage deposit for its record, and the fee.`, disabled: true };
+  const rc = k.rc;
+  if (!rc || !rc.ok) {
+    return { label: <span>{rc?.kind === "empty" ? "Enter a Sepolia address" : "Check the Sepolia address"}</span>, hint: rc?.kind === "empty" ? "The address that receives the wtPOT on Sepolia." : "", disabled: true };
+  }
+  const a = p.account;
+  return {
+    label: <span>Review transfer</span>,
+    hint: "",
+    run: () => {
+      if (!a || !p.wallet) return;
+      const sub: SubLock = {
+        address: a.address,
+        name: a.name,
+        h160: a.h160,
+        walletName: p.wallet.name,
+        recipient: rc.address,
+        shown: rc.shown,
+        from: f.toFrom === "wallet" && w.address?.toLowerCase() === rc.address ? "wallet" : "typed",
+        ethWallet: w.name,
+      };
+      openReview(k, a.address, f.amount, net, sub);
+    },
+  };
+}
+
+function action(
+  k: Facts,
+  f: Form,
+  w: WalletState,
+  p: PolkaState,
+  net: NetState,
+  busy: string | null,
+  run: (fn: () => Promise<void>, wait: string) => void,
+  polkaWallets: boolean,
+): Action {
   const { dir, from, to } = k;
   if (busy) return { label: <span>{busy}</span>, hint: "", busy: true, disabled: true };
-  if (w.status === "none") {
+  if (k.sub) return subAction(k, f, w, p, net);
+  if (w.status === "none" && !polkaWallets) {
     return {
       label: (
         <>
@@ -614,10 +1022,23 @@ function action(k: Facts, f: Form, w: WalletState, net: NetState, busy: string |
         </>
       ),
       hint: "No wallet in this browser. Everything else here works without one.",
-      run: openNoWallet,
+      run: () => openWalletPicker(),
     };
   }
-  if (w.status === "off") {
+  if (w.status === "none" && dir === "back") {
+    // A Polkadot wallet is here, and the burn is a Sepolia transaction.
+    return {
+      label: (
+        <>
+          <Icon id="i-wallet" />
+          <span>Connect an Ethereum wallet to burn</span>
+        </>
+      ),
+      hint: "The way back burns wtPOT on Sepolia from an Ethereum wallet such as MetaMask. Nothing is sent until you sign.",
+      run: () => openWalletPicker(undefined, "evm", "burn"),
+    };
+  }
+  if (w.status === "off" || w.status === "none") {
     return {
       label: (
         <>
@@ -625,8 +1046,8 @@ function action(k: Facts, f: Form, w: WalletState, net: NetState, busy: string |
           <span>Connect wallet</span>
         </>
       ),
-      hint: "Connect to see your balances. Nothing is sent until you sign.",
-      run: () => openWalletPicker(),
+      hint: dir === "back" ? "The burn is sent from an Ethereum wallet. Nothing is sent until you sign." : "Connect to see your balances. Nothing is sent until you sign.",
+      run: () => (dir === "back" ? openWalletPicker(undefined, "evm", "burn") : openWalletPicker()),
     };
   }
   if (k.loading) {
@@ -656,7 +1077,7 @@ function action(k: Facts, f: Form, w: WalletState, net: NetState, busy: string |
       label: <span>Get Sepolia ETH first</span>,
       hint:
         dir === "in"
-          ? `The mint needs ≈ ${MINT_GAS} M gas in Sepolia ETH. Get some before you lock, so the mint doesn't wait on you.`
+          ? `Below ${tpot(AUTO_MINT.min, 3)} tPOT you send the mint yourself: ≈ ${MINT_GAS} M gas in Sepolia ETH. Get some before you lock, or lock ${tpot(AUTO_MINT.min, 3)} tPOT or more and auto-mint mints it for you.`
           : `The burn needs ≈ ${BURN_GAS} k gas in Sepolia ETH.`,
       warn: true,
       disabled: true,
@@ -710,7 +1131,10 @@ function Notice({ k, f, net }: { k: Facts; f: Form; net: NetState }) {
       "notice--trust",
       "i-refresh",
       `The light client is ${net.behind} validator-set change${one ? "" : "s"} behind V3`,
-      `You can lock and mint now: your mint imports ${one ? "the change" : `the ${net.behind} changes`} first, through Multicall3${txs > 1 ? `, in ${txs} transactions` : ""}, for about ${fmt(IMPORT_GAS * net.behind, 1)} M gas more (≈ ${mintGas(net.behind)} M in all, in Sepolia ETH). Nothing waits for the relayer.`,
+      k.auto
+        ? // Auto-mint imports no change itself: a lock after the client's latest header waits for the relayer's import (relayer/src/automint.ts).
+          `Auto-mint mints your lock once the relayer has imported ${one ? "it" : "them"}, usually within minutes, so it can take longer than ${AUTO_TIME[0]}. If it has not minted it within 5 minutes of your lock, this page offers you the mint, which imports ${one ? "the change" : "the changes"} itself.`
+        : `You can lock and mint now: your mint imports ${one ? "the change" : `the ${net.behind} changes`} first, through Multicall3${txs > 1 ? `, in ${txs} transactions` : ""}, for about ${fmt(IMPORT_GAS * net.behind, 1)} M gas more (≈ ${mintGas(net.behind)} M in all, in Sepolia ETH). Nothing waits for the relayer.`,
     ];
   } else if (k.dir === "in" && net.key === "paused") {
     n = ["notice--revert", "i-alert", "The light client is paused by its admin", "Mints are refused until it resumes. Nothing you hold is affected. Burns still work."];
@@ -734,24 +1158,26 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
   const dir: Dir = route.parts[1] === "back" ? "back" : "in";
   const f = useBox(form);
   const w = useBox(wallet);
+  const p = useBox(polka);
+  const polkaWallets = useBox(polkaList).length > 0;
   const [busy, setBusy] = useState<string | null>(null);
 
   // Deep links: #/bridge/back?amount=0.5&details=1 (and review=1 once connected).
   const query = route.q.toString();
   useEffect(() => {
     const q = new URLSearchParams(query);
-    const p: Partial<Form> = {};
+    const patch: Partial<Form> = {};
     const a = q.get("amount");
-    if (a) p.amount = cleanAmount(a);
-    if (q.get("details")) p.details = true;
-    if (Object.keys(p).length) setForm(p);
+    if (a) patch.amount = cleanAmount(a);
+    if (q.get("details")) patch.details = true;
+    if (Object.keys(patch).length) setForm(patch);
   }, [query]);
 
-  const k = work(dir, f, w);
+  const k = work(dir, f, w, p);
   const { from, to } = k;
 
   useEffect(() => {
-    if (route.q.get("review") && k.ready && w.address && !k.wrong && k.value) openReview(k, w.address, f.amount, net);
+    if (route.q.get("review") && k.ready && !k.sub && w.address && !k.wrong && k.value) openReview(k, w.address, f.amount, net);
     // Only when the page opens with ?review=1 and the wallet is read.
   }, [query, k.ready]);
 
@@ -770,7 +1196,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
       },
     );
   };
-  const a = action(k, f, w, net, busy, run);
+  const a = action(k, f, w, p, net, busy, run, polkaWallets);
 
   const useMax = () => {
     setForm({ amount: k.max });
@@ -832,7 +1258,19 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
           </div>
 
           <div class="pair">
-            <ChainButton side="from" c={from} dir={dir} />
+            <ChainButton
+              side="from"
+              c={from}
+              dir={dir}
+              who={
+                k.sub && p.account
+                  ? {
+                      line: shortSs58(p.account.address),
+                      title: `${p.account.name ? `${p.account.name}, ` : ""}${p.account.address}, in ${p.wallet?.name ?? "your Polkadot wallet"}`,
+                    }
+                  : null
+              }
+            />
             <button class="swap-btn" type="button" aria-label={`Swap direction: send from ${to.full} to ${from.full}`} onClick={() => swapDir(dir)}>
               <Icon id="i-swap-h" />
             </button>
@@ -890,7 +1328,9 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                   <Icon id="i-alert" cls="i--14" />
                   <span>
                     {dir === "in"
-                      ? `You need ${fmt(Math.ceil((k.value + LOCK_CEILING - (k.bal ?? 0)) * 100) / 100, 2)} more tPOT. A lock uses ≈ ${LOCK_COST} tPOT (mostly V3's storage deposit), and your wallet checks ≈ ${LOCK_CEILING} tPOT up front for gas.`
+                      ? k.sub
+                        ? `You need ${fmt(Math.ceil((k.value + SUBSTRATE_ROOM - (k.bal ?? 0)) * 100) / 100, 2)} more tPOT. A lock uses ≈ ${LOCK_COST} tPOT besides the amount (mostly V3's storage deposit), and 0.1 tPOT stays in your account.`
+                        : `You need ${fmt(Math.ceil((k.value + LOCK_CEILING - (k.bal ?? 0)) * 100) / 100, 2)} more tPOT. A lock uses ≈ ${LOCK_COST} tPOT (mostly V3's storage deposit), and your wallet checks ≈ ${LOCK_CEILING} tPOT up front for gas.`
                       : `You have ${fmt(k.bal ?? 0)} wtPOT on Sepolia.`}{" "}
                     {Number(k.max) > 0 ? (
                       <button type="button" class="text-link" onClick={useMax}>
@@ -912,27 +1352,33 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                   <strong class="mono">{k.value ? fmt(k.value) : "0"}</strong> <span>{to.token}</span> <span class="amount__on">on {to.short}</span>
                 </dd>
               </div>
-              <div class="amount__line">
-                <dt>To</dt>
-                <dd class="amount__to">
-                  {w.address ? <span class="mono">{short(w.address)}</span> : null}
-                  <span class="amount__you">{w.address ? `you, on ${to.short}` : `your address, on ${to.short}`}</span>
-                  {dir === "back" && w.address ? (
-                    <span class="tag tag--verify amount__ctrl">
-                      <Icon id="i-check" cls="i--12" />
-                      Controlled by you
+              {k.sub ? (
+                <RecipientField k={k} f={f} w={w} />
+              ) : (
+                <div class="amount__line">
+                  <dt>To</dt>
+                  <dd class="amount__to">
+                    {w.address ? <span class="mono">{short(w.address)}</span> : null}
+                    <span class="amount__you">{w.address ? `you, on ${to.short}` : `your address, on ${to.short}`}</span>
+                    {dir === "back" && w.address ? (
+                      <span class="tag tag--verify amount__ctrl">
+                        <Icon id="i-check" cls="i--12" />
+                        Controlled by you
+                      </span>
+                    ) : null}
+                    <span class="tip tip--change">
+                      <button class="text-link amount__change" type="button" aria-disabled="true" aria-describedby="tip-change">
+                        Change
+                      </button>
+                      <span class="tip__bubble tip__bubble--end" role="tooltip" id="tip-change">
+                        {dir === "in"
+                          ? "From an Ethereum wallet the recipient is your own address. From a Polkadot wallet you give the Sepolia address."
+                          : "The committee pays your own address on V3."}
+                      </span>
                     </span>
-                  ) : null}
-                  <span class="tip tip--change">
-                    <button class="text-link amount__change" type="button" aria-disabled="true" aria-describedby="tip-change">
-                      Change
-                    </button>
-                    <span class="tip__bubble tip__bubble--end" role="tooltip" id="tip-change">
-                      Later: send to another address. Today the recipient is your own address.
-                    </span>
-                  </span>
-                </dd>
-              </div>
+                  </dd>
+                </div>
+              )}
             </dl>
           </div>
 
@@ -950,10 +1396,28 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                 ) : null}
               </p>
               <p class="route__sub">2 of 2 validator signatures · storage proof · nonce</p>
+              <p class="route__sub route__sub--auto">
+                {k.auto ? (
+                  <>
+                    <Nb>Auto-mint mints it for you {AUTO_TIME[0]} after your lock</Nb> · <Nb>nothing to sign on Sepolia</Nb> ·{" "}
+                    <Nb>for locks of {tpot(AUTO_MINT.min, 3)} tPOT or more</Nb>
+                  </>
+                ) : k.below ? (
+                  <>
+                    Below {tpot(AUTO_MINT.min, 3)} tPOT you mint it on Sepolia · ≈ {MINT_GAS} M gas
+                  </>
+                ) : (
+                  <>
+                    <Nb>From a Polkadot wallet you mint it on Sepolia</Nb> · <Nb>≈ {MINT_GAS} M gas</Nb> · <Nb>auto-mint does not see these locks yet</Nb>
+                  </>
+                )}
+              </p>
             </div>
-            <Tip id="tip-in" label="What the way in checks and trusts">
+            <Tip id="tip-in" label="What the way in checks and trusts, and auto-mint">
               Sepolia checks 2 of 2 V3 validator signatures, a storage proof of your lock and its nonce. It still trusts V3's validator set (2 keys on the testnet),
-              V3's sudo key and the light client's admin.
+              V3's sudo key and the light client's admin. Auto-mint is the operator's process: about 2½ minutes after your lock it sends the mint from its own key and
+              pays the gas, at most {AUTO_MINT.dailyEth} ETH a day, on one machine. It can only mint what your lock commits to. Anyone can still send the mint: if
+              auto-mint has not minted it within 5 minutes, this page offers it to you. It does not see locks signed with a Polkadot wallet yet: you send their mint.
             </Tip>
           </div>
 
@@ -1070,9 +1534,15 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                       ·
                     </span>
                     {dir === "in" ? (
-                      <span class="nowrap" title={`≈ ${LOCK_COST} tPOT on V3 for the lock, ≈ ${MINT_GAS} M gas on Sepolia for the mint`}>
-                        ≈ <Mono>{LOCK_COST}</Mono> tPOT + <Mono>{MINT_GAS}</Mono> M gas
-                      </span>
+                      !k.auto ? (
+                        <span class="nowrap" title={`≈ ${LOCK_COST} tPOT on V3 for the lock, ≈ ${MINT_GAS} M gas on Sepolia for the mint`}>
+                          ≈ <Mono>{LOCK_COST}</Mono> tPOT + <Mono>{MINT_GAS}</Mono> M gas
+                        </span>
+                      ) : (
+                        <span class="nowrap" title={`≈ ${LOCK_COST} tPOT on V3 for the lock; auto-mint pays the mint's gas`}>
+                          ≈ <Mono>{LOCK_COST}</Mono> tPOT
+                        </span>
+                      )
                     ) : (
                       <Nb>
                         Gas ≈ <Mono>{BURN_GAS}</Mono> k
@@ -1107,8 +1577,10 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                         <>
                           ≈ <Mono>{LOCK_COST}</Mono> tPOT
                           <Tip id="tip-lock" label="About the lock cost">
-                            A lock uses ≈ {LOCK_COST} tPOT: V3's storage deposit for your lock's record ({LOCK_DEPOSIT} tPOT), plus gas. Your wallet also checks ≈{" "}
-                            {LOCK_CEILING} tPOT up front for gas before it sends.
+                            A lock uses ≈ {LOCK_COST} tPOT: V3's storage deposit for your lock's record ({LOCK_DEPOSIT} tPOT), plus gas.{" "}
+                            {k.sub
+                              ? "From a Polkadot wallet the review shows V3's dry run of your lock: its deposit and its fee."
+                              : `Your wallet also checks ≈ ${LOCK_CEILING} tPOT up front for gas before it sends.`}
                           </Tip>
                         </>
                       ) : (
@@ -1128,12 +1600,21 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                     </dt>
                     <dd class="kv__v">
                       {dir === "in" ? (
-                        <>
-                          ≈ <Mono>{MINT_GAS}</Mono> M gas
-                          <Tip id="tip-mint" label="About the mint gas">
-                            Lock 1's mint used {MINT_GAS_FULL} gas. You send the mint, so you pay its gas in Sepolia ETH.
-                          </Tip>
-                        </>
+                        !k.auto ? (
+                          <>
+                            ≈ <Mono>{MINT_GAS}</Mono> M gas
+                            <Tip id="tip-mint" label="About the mint gas">
+                              Lock 1's mint used {MINT_GAS_FULL} gas.{" "}
+                              {k.below
+                                ? `Below auto-mint's ${tpot(AUTO_MINT.min, 3)} tPOT minimum you send the mint, so you pay its gas in Sepolia ETH.`
+                                : "Auto-mint does not see locks from Polkadot wallets yet: you send the mint from an Ethereum wallet, so you pay its gas in Sepolia ETH."}
+                            </Tip>
+                          </>
+                        ) : (
+                          <>
+                            Nothing to pay <span class="kv__note">· auto-mint</span>
+                          </>
+                        )
                       ) : (
                         <>
                           Nothing to pay <span class="kv__note">· committee</span>
@@ -1171,16 +1652,18 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                     </a>
                   ) : null}
                 </li>
-                <li class={`need ${k.noEth ? "is-miss" : "is-ok"}`}>
-                  <Icon id={k.noEth ? "i-alert" : "i-check"} cls="i--14" />
-                  <span class="need__label">ETH for the {dir === "in" ? "mint" : "burn"}</span>
-                  <span class="need__val mono">{k.eth === null ? "—" : fmt(k.eth, 3)}</span>
-                  {k.noEth && w.address ? (
-                    <button class="text-link need__fix" type="button" onClick={() => openGetEth(dir, w.address ?? "")}>
-                      Get Sepolia ETH
-                    </button>
-                  ) : null}
-                </li>
+                {k.ethNeeded ? (
+                  <li class={`need ${k.noEth ? "is-miss" : "is-ok"}`}>
+                    <Icon id={k.noEth ? "i-alert" : "i-check"} cls="i--14" />
+                    <span class="need__label">ETH for the {dir === "in" ? "mint" : "burn"}</span>
+                    <span class="need__val mono">{k.eth === null ? "—" : fmt(k.eth, 3)}</span>
+                    {k.noEth && w.address ? (
+                      <button class="text-link need__fix" type="button" onClick={() => openGetEth(dir, w.address ?? "")}>
+                        Get Sepolia ETH
+                      </button>
+                    ) : null}
+                  </li>
+                ) : null}
               </ul>
             </div>
           ) : null}
@@ -1213,7 +1696,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
         </p>
       </div>
 
-      <ProofStrip dir={dir} />
+      <ProofStrip dir={dir} auto={k.auto} />
     </div>
   );
 }

@@ -578,3 +578,236 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ------------------------------------------------------------------ 11. Polkadot wallets
+   The picker's second group (window.injectedWeb3) under the same .eyebrow as the first, the
+   account picker on the same rows, and, for a lock from a 5… account, the Sepolia address in the
+   amount well's To line: a field styled as the card's own controls, its check under it in the
+   meaning colours, and a chip that fills it from the Ethereum wallet. */
+
+.picker__groups {
+  display: grid;
+  gap: 14px;
+}
+
+.picker__group {
+  display: grid;
+  gap: 6px;
+}
+
+.picker__group + .picker__group {
+  padding-top: 12px;
+  border-top: 1px solid var(--line-1);
+}
+
+.picker__group-h {
+  padding: 0 12px;
+}
+
+.wallet-ico--mark {
+  display: grid;
+  place-items: center;
+  background: var(--brand-wash);
+  box-shadow: inset 0 0 0 1px var(--line-brand);
+}
+
+.list-row__addr {
+  margin-left: 4px;
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--text-3);
+}
+
+.list-row__bal {
+  font-size: var(--fs-small);
+  color: var(--text-value);
+}
+
+.list-row[aria-disabled="true"] .wallet-ico {
+  opacity: 0.5;
+}
+
+.chain-btn__sub--who {
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  color: var(--text-2);
+}
+
+.amount__line--to {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.recip {
+  display: grid;
+  gap: 6px;
+}
+
+.recip__input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  /* The browser's own inset border off: the field's edge is its inset shadow, as the card's controls draw theirs. */
+  border: 0;
+  border-radius: var(--radius-3);
+  font-size: var(--fs-small);
+  color: var(--text-1);
+  background: rgb(255 255 255 / 0.03);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  transition: box-shadow var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+
+.recip__input::placeholder {
+  color: var(--text-3);
+  opacity: 1;
+}
+
+.recip__input:hover {
+  box-shadow: inset 0 0 0 1px var(--line-3);
+}
+
+.recip__input:focus-visible {
+  outline: none;
+  background: rgb(255 255 255 / 0.045);
+  box-shadow: inset 0 0 0 1px var(--line-brand-strong), 0 0 0 3px rgb(177 151 255 / 0.16);
+}
+
+.recip__input.is-error {
+  box-shadow: inset 0 0 0 1px var(--revert-line);
+}
+
+/* An address the check refused keeps its red edge, and still shows where the focus is. */
+.recip__input.is-error:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--revert-line), 0 0 0 3px rgb(255 138 120 / 0.16);
+}
+
+.recip__note {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: var(--fs-caption);
+  line-height: 1.45;
+  color: var(--text-3);
+}
+
+.recip__note .i {
+  flex: none;
+  margin-top: 2px;
+  color: var(--verify);
+}
+
+.recip__note .mono {
+  color: var(--text-value);
+}
+
+.recip__note--err,
+.recip__note--err .i {
+  color: var(--revert-soft);
+}
+
+.recip__note--warn,
+.recip__note--warn .i {
+  color: var(--trust);
+}
+
+.recip__fill {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 0;
+}
+
+.recip__fill:empty {
+  display: none;
+}
+
+.recip__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--lilac);
+  background: var(--brand-wash);
+  box-shadow: inset 0 0 0 1px var(--line-brand);
+  transition: box-shadow var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+
+.recip__chip:hover {
+  box-shadow: inset 0 0 0 1px var(--line-brand-strong);
+  background: rgb(108 39 226 / 0.2);
+}
+
+.recip__connect {
+  font-size: var(--fs-caption);
+}
+
+.route__sub--auto {
+  color: var(--text-3);
+}
+
+.kv__v--wrap {
+  flex-wrap: wrap;
+}
+
+.kv__full {
+  word-break: break-all;
+}
+
+.kv__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kv__bad {
+  color: var(--revert-soft);
+}
+
+.kv__line {
+  display: block;
+  margin-top: 1px;
+}
+
+.kv__v--wrap,
+.kv__v--wrap .kv__full {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* A full Sepolia address on one line in the review: 42 characters at the caption size. */
+.kv__v .kv__full {
+  font-size: var(--fs-caption);
+}
+
+/* On a phone the label leaves no room for the 42 characters beside it: the address goes on its own line under it. */
+@media (max-width: 480px) {
+  .review__kv .kv--full {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  .review__kv .kv--full .kv__v {
+    text-align: left;
+  }
+}
+
+/* The Polkadot account in the wallet menu: its address on one line, the wallet in the badge, its name under them. */
+.menu__addr {
+  flex: none;
+  white-space: nowrap;
+}
+
+.menu__acct {
+  margin: -6px 0 6px;
+  padding: 0 12px;
+  overflow: hidden;
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

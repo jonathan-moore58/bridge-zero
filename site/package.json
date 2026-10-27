@@ -13,7 +13,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
-    "test": "node --test test/abi.test.ts test/scale.test.ts test/records.test.ts test/rpc.test.ts test/proof-scale.test.ts test/proof-trie.test.ts test/proof-revive.test.ts test/proof-grandpa.test.ts test/proof-calldata.test.ts test/proof-reads.test.ts test/proof-plan.test.ts test/app-txmath.test.ts test/app-journal.test.ts test/app-preflight.test.ts test/app-tabs.test.ts",
+    "test": "node --test test/abi.test.ts test/scale.test.ts test/records.test.ts test/rpc.test.ts test/proof-scale.test.ts test/proof-trie.test.ts test/proof-revive.test.ts test/proof-grandpa.test.ts test/proof-calldata.test.ts test/proof-reads.test.ts test/proof-plan.test.ts test/app-txmath.test.ts test/app-journal.test.ts test/app-preflight.test.ts test/app-tabs.test.ts test/app-substrate.test.ts test/app-handoff.test.ts",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
@@ -21,6 +21,7 @@
     "@fontsource-variable/sora": "5.3.0",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
+    "@polkadot/api": "17.0.2",
     "@wagmi/core": "3.6.5",
     "preact": "10.29.8",
     "viem": "2.57.4"

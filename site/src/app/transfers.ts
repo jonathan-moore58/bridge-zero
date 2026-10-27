@@ -328,6 +328,8 @@ export interface ChainMint {
   block: number;
   /** null when the receipt could not be read. */
   gasUsed: number | null;
+  /** Who sent it (auto-mint's key, the locker, anyone), from the receipt; null when it could not be read. */
+  from: Hex | null;
   /** The V3 block its proofs were read at: Minted's block hash, and the light client's HeaderImported for it in the same transaction. */
   final: { hash: Hex; block: number | null; setId: number | null; signatures: number | null };
 }
@@ -509,11 +511,12 @@ async function mintOf(nonce: number): Promise<ChainMint | null> {
     const hash = d?.name === "Minted" && argOf(d, "nonce") === BigInt(nonce) ? argOf(d, "blockHash") : undefined;
     if (typeof hash !== "string") continue;
     const tx = log.transactionHash.toLowerCase() as Hex;
-    const mint: ChainMint = { tx, block: Number(BigInt(log.blockNumber)), gasUsed: null, final: { hash: hash as Hex, block: null, setId: null, signatures: null } };
+    const mint: ChainMint = { tx, block: Number(BigInt(log.blockNumber)), gasUsed: null, from: null, final: { hash: hash as Hex, block: null, setId: null, signatures: null } };
     try {
-      const r = await request<{ gasUsed: string; logs: RawLog[] } | null>(SEPOLIA_HISTORY, "eth_getTransactionReceipt", [tx], { accept: (x) => x !== null, timeoutMs: 10000 });
+      const r = await request<{ gasUsed: string; from?: string; logs: RawLog[] } | null>(SEPOLIA_HISTORY, "eth_getTransactionReceipt", [tx], { accept: (x) => x !== null, timeoutMs: 10000 });
       if (r.result) {
         mint.gasUsed = Number(BigInt(r.result.gasUsed));
+        if (typeof r.result.from === "string" && /^0x[0-9a-fA-F]{40}$/.test(r.result.from)) mint.from = r.result.from.toLowerCase() as Hex;
         // importAndMint imports the block through the light client first, in the same transaction.
         for (const l of r.result.logs) {
           const h = same(l.address, LC.v3.address) ? registry.decodeLog(l) : null;

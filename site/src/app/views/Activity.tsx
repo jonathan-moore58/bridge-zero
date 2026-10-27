@@ -4,7 +4,7 @@
 // BridgeMinter's BurnRequested events on Sepolia, each with its status (used(nonce) on Sepolia,
 // released(burnId) on V3).
 
-import { useEffect } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { decode, encodeCall, type AbiValue, type DecodedLog } from "../../lib/abi.ts";
 import {
   DECIMALS,
@@ -26,8 +26,11 @@ import { registry } from "../../lib/live.ts";
 import { request, SubstrateClient, type Endpoint } from "../../lib/rpc.ts";
 import { decodeTimestampInherent } from "../../lib/scale.ts";
 import { SPEED_NAME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
+import { handoffOf } from "../handoff.ts";
+import { polka } from "../polkadot.ts";
 import type { Route } from "../router.ts";
 import { Box, useBox } from "../store.ts";
+import { shortSs58 } from "../substrate/account.ts";
 import { chainIdOf, isDone, transfers, type LiveTransfer } from "../transfers.ts";
 import { Chip, Icon, Mark, dur, fmt, num, secs, short } from "../ui.tsx";
 import { wallet } from "../wallet.ts";
@@ -390,6 +393,8 @@ interface Row {
   live: boolean;
   /** This browser's own page for it, when it follows the transfer: its live screen or its receipt. */
   href: string | null;
+  /** A lock auto-mint is to mint (handoff.ts): waiting for it, or past the time when the visitor is offered the mint. */
+  handoff: "waiting" | "offer" | null;
 }
 
 const GROUP: Record<Status, Group> = {
@@ -439,6 +444,7 @@ function runRow(r: Run): Row {
     speed: r.speed,
     live: false,
     href: null,
+    handoff: null,
   };
 }
 
@@ -447,12 +453,18 @@ function runRow(r: Run): Row {
  * by its lock's or its burn's, the row the chains' reads give it too. A lock on chain whose mint
  * waits for the visitor needs action (Finish mint); one that was never sent too (Not sent).
  */
-function journalRow(t: LiveTransfer): Row {
+function journalRow(t: LiveTransfer, now: number): Row {
   const chainId = chainIdOf(t);
   const lock = t.dir === "in";
   const n = lock ? t.nonce : t.burnNonce;
   const done = isDone(t);
-  const waitsForYou = lock && n !== null && !done && (t.failure !== null || (t.mint === null && t.note === null && t.proof.builtAt !== null));
+  // A lock auto-mint mints (handoff.ts) waits for it, not for the visitor, until the transfer's page
+  // offers the visitor's own mint (its proof checked, nothing sent yet); one it does not take waits
+  // for the visitor once its plan is ready.
+  const h = lock && n !== null && !done && t.lock.stage === "mined" ? handoffOf(t.amount, t.sender.kind, t.lock.minedAt, now, t.autoPending) : null;
+  const own = lock && t.mint === null && t.note === null && t.proof.builtAt !== null;
+  const offered = h?.kind === "offer" && own;
+  const waitsForYou = lock && n !== null && !done && (t.failure !== null || offered || (h?.kind === "self" && own));
   // Stopped before its receipt gave a nonce. Not sent: declined, or refused before the wallet sent
   // it. Stopped: the page stopped following it, sent or perhaps sent (sends.ts, stopped).
   const stage = lock ? t.lock.stage : t.burn.stage;
@@ -475,12 +487,16 @@ function journalRow(t: LiveTransfer): Row {
     speed: t.dir === "back" ? t.speed : null,
     live: true,
     href: done ? `#/receipt/${t.id}` : `#/tx/${t.id}`,
+    handoff: t.failure !== null || !h || h.kind === "self" || (lock && t.mint !== null) ? null : offered ? "offer" : "waiting",
   };
 }
 
-function liveRows(f: Found): Row[] {
+function liveRows(f: Found, now: number): Row[] {
   const locks = f.locks.items.map((l): Row => {
-    const status: Status = l.minted === true ? "minted" : l.minted === false ? "locked" : "unread";
+    // Read from V3's EVM logs: an Ethereum wallet's lock. Auto-mint's, until the page offers its mint (handoff.ts); one whose block time was not read is taken as offered.
+    const h = l.minted === false && l.at !== null ? handoffOf(l.amount, "evm", l.at, now, false) : null;
+    const waiting = h?.kind === "waiting" || h?.kind === "pending";
+    const status: Status = l.minted === true ? "minted" : l.minted === false ? (waiting ? "progress" : "locked") : "unread";
     return {
       id: `lock-${l.nonce}`,
       dir: "in",
@@ -495,6 +511,7 @@ function liveRows(f: Found): Row[] {
       speed: null,
       live: true,
       href: null,
+      handoff: waiting ? "waiting" : h?.kind === "offer" ? "offer" : null,
     };
   });
   const burns = f.burns.items.map((b): Row => {
@@ -514,6 +531,7 @@ function liveRows(f: Found): Row[] {
       speed: null,
       live: true,
       href: null,
+      handoff: null,
     };
   });
   return [...locks, ...burns];
@@ -551,12 +569,12 @@ function newestFirst(rows: Row[]): Row[] {
  * address's other transfers, and this browser's own (`journal`): those link to their live page,
  * and the chains have the last word on whether they are done.
  */
-function allRows(mine: Found | null, journal: Row[]): { rows: Row[]; own: number } {
-  const live = mine ? liveRows(mine) : [];
+function allRows(mine: Found | null, journal: Row[], now: number): { rows: Row[]; own: number } {
+  const live = mine ? liveRows(mine, now) : [];
   const recorded = RUNS.map((r) => {
     const row = runRow(r);
     const l = live.find((x) => x.id === row.id);
-    return l && l.status !== "unread" ? { ...row, status: l.status, live: true } : row;
+    return l && l.status !== "unread" ? { ...row, status: l.status, handoff: l.handoff, live: true } : row;
   });
   const rest = live.filter((l) => !recorded.some((r) => r.id === l.id));
   const rows = [...rest, ...recorded];
@@ -578,8 +596,12 @@ function ActRow({ x, connected }: { x: Row; connected: boolean }) {
   const s = STATUS[x.status];
   const action = x.status === "locked";
   const done = x.dir === "in" ? "locked" : "burned";
+  // Auto-mint has not minted it in time (handoff.ts): the transfer's page offers the visitor's own mint.
+  const offer = x.handoff === "offer";
   const why = action
-    ? "Your tPOT is in the vault. The mint hasn't been sent."
+    ? offer
+      ? "Auto-mint hasn't minted it: you can send the mint yourself."
+      : "Your tPOT is in the vault. The mint hasn't been sent."
     : x.status === "unread"
       ? `Could not read whether it was ${x.dir === "in" ? "minted" : "released"}.`
       : x.status === "failed"
@@ -598,7 +620,7 @@ function ActRow({ x, connected }: { x: Row; connected: boolean }) {
   const statusChip =
     x.status === "progress" ? (
       <Chip kind="progress badge--sm" icon="dot">
-        {x.dir === "in" ? "Minting" : "Awaiting committee"}
+        {x.dir === "in" ? (x.handoff === "waiting" ? "Auto-mint minting" : "Minting") : "Awaiting committee"}
       </Chip>
     ) : (
       <Chip kind={`${s[0]} badge--sm`} icon={s[2]}>
@@ -636,7 +658,7 @@ function ActRow({ x, connected }: { x: Row; connected: boolean }) {
           <span class="arow__cta">
             <span class="arow__why">{why}</span>
             <span class="btn btn--primary btn--sm" aria-hidden="true">
-              Finish mint
+              {offer ? "Mint it yourself" : "Finish mint"}
             </span>
           </span>
         ) : why ? (
@@ -731,14 +753,33 @@ export function ActivityView({ route }: { route: Route }) {
   const d = route.q.get("d") ?? "both";
   const mine = address && cur && cur.address === address ? cur : null;
   // This browser's transfers for the connected address, from its journal: the page is about that address.
+  // A Polkadot account's locks come from the journal only: V3's EVM RPC serves no log of a Substrate extrinsic.
   const followed = useBox(transfers);
-  const journal = address ? [...followed.values()].filter((t) => t.recipient.toLowerCase() === address).map(journalRow) : [];
-  const { rows, own } = allRows(mine, journal);
+  const p = useBox(polka);
+  const ss58 = p.status === "on" ? (p.account?.address ?? null) : null;
+  // A Polkadot account alone: the page is about its locks this browser sent.
+  const polkaOnly = !address && ss58 !== null;
+  const now = Date.now();
+  const journal = [...followed.values()]
+    .filter((t) => (address !== null && t.recipient.toLowerCase() === address) || (ss58 !== null && t.dir === "in" && t.sender.kind === "substrate" && t.sender.ss58 === ss58))
+    .map((t) => journalRow(t, now));
+  const { rows, own } = allRows(mine, journal, now);
   const shown = rows.filter((x) => (f === "all" || GROUP[x.status] === f) && (d === "both" || x.dir === d));
   const counts: Record<"all" | Group, number> = { all: rows.length, action: 0, progress: 0, done: 0 };
   for (const x of rows) counts[GROUP[x.status]]++;
 
-  const who = address && w.address ? short(w.address) : PROJECT_SHORT;
+  // A lock waiting for auto-mint moves to Needs action when its page offers the visitor's mint: read again every 15 s meanwhile.
+  const [, tick] = useState(0);
+  const timed = rows.some((x) => x.handoff === "waiting");
+  useEffect(() => {
+    if (!timed) return;
+    const t = setInterval(() => {
+      if (!document.hidden) tick((n) => n + 1);
+    }, 15_000);
+    return () => clearInterval(t);
+  }, [timed]);
+
+  const who = address && w.address ? short(w.address) : polkaOnly && ss58 ? shortSs58(ss58) : PROJECT_SHORT;
   const other = !!address && address !== PROJECT;
   // Both reads answered and found nothing for the address: the empty state, above the recorded runs.
   const none = !!mine && mine.locks.state === "live" && mine.burns.state === "live" && own === 0 && f === "all" && d === "both";
@@ -758,20 +799,36 @@ export function ActivityView({ route }: { route: Route }) {
     <div class="page page--narrow">
       <header class="page__head">
         <div>
-          <p class="eyebrow page__eyebrow">{address ? "Your address, on both chains" : "Recorded · the project's test address"}</p>
+          <p class="eyebrow page__eyebrow">{address ? "Your address, on both chains" : polkaOnly ? "Your Polkadot account, in this browser" : "Recorded · the project's test address"}</p>
           <h1 class="page__title">Activity</h1>
-          <p class="page__lead">
-            Locks, mints, burns and releases for <span class="mono">{who}</span>, read from V3 and Sepolia. Locks made with the command-line tools appear here too.
-            {other ? (
-              <>
-                {" "}
-                The recorded runs are the project's test address, <span class="mono">{PROJECT_SHORT}</span>.
-              </>
-            ) : null}
-          </p>
+          {polkaOnly && ss58 ? (
+            <p class="page__lead">
+              Locks from <span class="mono">{shortSs58(ss58)}</span> that this browser sent, and their mints. The project's recorded runs are listed too, each marked
+              recorded.
+            </p>
+          ) : (
+            <p class="page__lead">
+              Locks, mints, burns and releases for <span class="mono">{who}</span>, read from V3 and Sepolia. Locks made with the command-line tools appear here too.
+              {other ? (
+                <>
+                  {" "}
+                  The recorded runs are the project's test address, <span class="mono">{PROJECT_SHORT}</span>.
+                </>
+              ) : null}
+            </p>
+          )}
         </div>
       </header>
       {mine ? <ReadNotice mine={mine} /> : null}
+      {ss58 ? (
+        <div class="notice notice--muted page__notice" role="note">
+          <Icon id="i-info" />
+          <div>
+            <p class="notice__title">Locks from {shortSs58(ss58)} are listed from this browser</p>
+            <p>Locks you sign with a Polkadot wallet are listed only in the browser that sent them: other devices cannot find them on the chain yet.</p>
+          </div>
+        </div>
+      ) : null}
       <nav class="filters" aria-label="Filter transfers">
         <div class="filters__scroll">
           <div class="filter-group" role="group" aria-label="Status">
@@ -801,7 +858,7 @@ export function ActivityView({ route }: { route: Route }) {
                 </h2>
                 <ul class="alist">
                   {gr.map((x) => (
-                    <ActRow key={x.id} x={x} connected={!!address} />
+                    <ActRow key={x.id} x={x} connected={!!address || polkaOnly} />
                   ))}
                 </ul>
               </section>
