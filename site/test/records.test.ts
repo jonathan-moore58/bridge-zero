@@ -64,6 +64,8 @@ test("totals follow the records: minted, burned, released", () => {
   // Every lock minted and every release paid: what the vault holds equals the wtPOT supply.
   const released = r.returnPath.releases.filter((x) => x.status === "released").reduce((n, x) => n + BigInt(x.amountNative ?? "0"), 0n);
   assert.equal(BigInt(t.outstandingNative), BigInt(t.minted) - released);
+  // Lock 2 was minted by auto-mint, from its own key (deployments/automint-sepolia-*.jsonl).
+  if (t.locks >= 3) assert.ok(BigInt(t.minted) >= 201000000000000n, "lock 2's 0.01 wtPOT, minted by auto-mint");
   if (t.locks === 2 && released === 50000000000000n) {
     assert.equal(t.supply, "150000000000000");
     assert.equal(t.outstandingNative, "150000000000000");

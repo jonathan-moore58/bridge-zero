@@ -436,6 +436,34 @@ function readRelayHistories(root: string, dir: string): { files: string[]; entri
   return { files, entries };
 }
 
+/** An auto-mint history: one file per sender, automint-sepolia-<sender>.jsonl, the sender in lowercase. */
+const AUTOMINT_FILE = /^automint-sepolia-(0x[0-9a-f]{40})\.jsonl$/;
+
+/**
+ * The nonces of the locks auto-mint minted, from every auto-mint history in `dir`: a "result" line
+ * with the outcome "minted" names its lock. A line cut short by a crash is skipped, as the tool
+ * itself skips it.
+ */
+function readAutoMints(dir: string): Set<number> {
+  const minted = new Set<number>();
+  const names = existsSync(dir) ? readdirSync(dir).filter((f) => AUTOMINT_FILE.test(f)).sort() : [];
+  for (const name of names) {
+    for (const line of readFileSync(join(dir, name), "utf8").split("\n")) {
+      if (!line.trim()) continue;
+      let e: Json;
+      try {
+        e = JSON.parse(line) as Json;
+      } catch {
+        continue;
+      }
+      // The lock's nonce is written as a decimal string (a bigint), or as a number.
+      const lock = typeof e.lock === "number" ? e.lock : typeof e.lock === "string" && /^\d+$/.test(e.lock) ? Number(e.lock) : null;
+      if (e.kind === "result" && e.outcome === "minted" && lock !== null) minted.add(lock);
+    }
+  }
+  return minted;
+}
+
 function latestOk(entries: RelayEntry[], chain: "mainnet" | "v3"): RelayEntry | null {
   const ok = entries.filter((e) => e.chain === chain && e.ok === true && e.status === 1);
   return ok.sort((a, b) => a.block.number - b.block.number).at(-1) ?? null;
@@ -1019,6 +1047,14 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"))
   const lockedAmounts = locks.filter((l) => l.status === "locked").map((l, i) => BigInt(str(l.amountNative, V3F, `lock ${i}.amountNative`)));
   const releasedAmounts = releases.filter((r) => r.status === "released").map((r) => BigInt(r.amountNative ?? "0"));
   const mints = steps.filter((s) => s.kind === "mint" && s.ok === true && s.status === 1).map((s) => obj(s.lock, BR, "mint.lock"));
+  // The locks auto-mint minted from its own key (deployments/automint-sepolia-<sender>.jsonl), each
+  // counted once, with the amount and recipient the V3 record holds for it.
+  const mintedNonces = new Set(mints.map((l) => num(l.nonce, BR, "mint.lock.nonce")));
+  for (const nonce of readAutoMints(join(root, "deployments"))) {
+    if (mintedNonces.has(nonce)) continue;
+    mintedNonces.add(nonce);
+    mints.push(locks.find((l) => l.nonce === nonce) ?? fail(V3F, `no lock ${nonce} for auto-mint's mint`));
+  }
   const minted = mints.reduce((n, l) => n + BigInt(str(l.amountNative, BR, "mint.lock.amountNative")), 0n);
   const okBurns = burns.filter((b) => b.ok === true && b.status === 1);
   const burned = okBurns.reduce((n, b) => n + BigInt(b.amount), 0n);

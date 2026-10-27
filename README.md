@@ -194,12 +194,13 @@ cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "used(uint256)(bool)" 0 --r
 cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "vaultTrieId()(bytes32)" --rpc-url $SEPOLIA
 # 0xbe307c2d11dbc9391cda93d17e9772542d1300c9af14e7431918fb49e2f47c3a
 
-# WrappedTPOT (Sepolia, 14 decimals): locks 0 and 1 minted 1 wtPOT each to their recipient, who
-# burned 0.5 (row 47) and 0.1 (row 56); nothing else is minted
+# WrappedTPOT (Sepolia, 14 decimals): locks 0 and 1 minted 1 wtPOT each and lock 2, by auto-mint,
+# 0.01 (row 85), all to the same recipient, who burned 0.5 (row 47) and 0.1 (row 56); nothing else
+# is minted
 cast call 0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14 "balanceOf(address)(uint256)" 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 --rpc-url $SEPOLIA
-# 140000000000000 [1.4e14]
+# 141000000000000 [1.41e14]
 cast call 0x1fcBbd66922AC5AA20219a5c16c2591A76B4Cb14 "totalSupply()(uint256)" --rpc-url $SEPOLIA
-# 140000000000000 [1.4e14]
+# 141000000000000 [1.41e14]
 
 # The vault (V3 testnet, through its EVM RPC): 899 bytes of code, whose keccak-256 is the code hash
 # BridgeMinter was deployed with (its vaultCodeHash)
@@ -229,7 +230,7 @@ cast logs --from-block 101009 --to-block 101009 --address 0xa02EE16EB03d2cf1aeF1
 #   transactionHash: 0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051
 
 # The way back (trusted, rows 47 to 51 and 56 to 58): burns 0 and 1 on Sepolia and their burn ids,
-# then on V3 the vault's released flag for each id, and what it still holds for wtPOT (2 tPOT
+# then on V3 the vault's released flag for each id, and what it still holds for wtPOT (2.01 tPOT
 # locked, 0.6 released)
 cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "burnCount()(uint256)" --rpc-url $SEPOLIA
 # 2
@@ -242,7 +243,7 @@ cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "released(bytes32)(bool)" 0
 cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "released(bytes32)(bool)" 0x1573ff21c0f6cae223a42566b061f39bc0a982dafe451b86b29a8bf5f9219c0e --rpc-url $V3
 # true
 cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "outstanding()(uint256)" --rpc-url $V3
-# 140000000000000 [1.4e14]
+# 141000000000000 [1.41e14]
 ```
 
 The `Locked` event's data is the destination chain (`0xaa36a7`, 11155111), the minter, the amount
