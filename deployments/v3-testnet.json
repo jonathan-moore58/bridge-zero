@@ -120,6 +120,36 @@
       "vaultNonce": "1",
       "commitment": "0x2d1ab009f006fd70b9653d09a56a3b4927775d6251c4879df9c7a1364b0ad0a7",
       "slot": "0xada5013122d395ba3c54772283fb069b10426056ef8ca54750cb9bb552a59e7d"
+    },
+    {
+      "status": "locked",
+      "txHash": "0xed0435a79a88e9bcc34889f183027d0455ca5ee889267b1cbcccedbbeed84f79",
+      "from": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "nonce": 2,
+      "vault": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+      "dstChainId": "11155111",
+      "dstMinter": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "amountNative": "1000000000000",
+      "value": "10000000000000000",
+      "gasLimit": "149523695698469",
+      "gasPrice": "28875",
+      "maxFee": "32484",
+      "expected": {
+        "vaultNonce": "2",
+        "commitment": "0x7a4d0e3ffc22ddc8d3c4c84b1032c0cd87432edd727dfd21be45090eb7e78636"
+      },
+      "signedAt": "2026-10-27T15:48:53.476Z",
+      "block": {
+        "number": 219589,
+        "hash": "0xd8753e3f401ecc7f4473d106db7bc9f57202a6b7374b64456e2a3598f25c0b6a"
+      },
+      "gasUsed": "133822075295677",
+      "effectiveGasPrice": "28875",
+      "cost": "3864112424162673375",
+      "vaultNonce": "2",
+      "commitment": "0x7a4d0e3ffc22ddc8d3c4c84b1032c0cd87432edd727dfd21be45090eb7e78636",
+      "slot": "0xabbb5caa7dda850e60932de0934eb1f9d0f59695050f761dc64e443e5030a569"
     }
   ],
   "committeeFunding": [

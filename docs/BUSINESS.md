@@ -9,7 +9,7 @@ assumptions. Other bridges' fees were read on Oct 24, 2026 from the sources link
 
 | User | What they get | Today |
 |---|---|---|
-| POT holders | POT on Ethereum as wtPOT (an ERC-20) to hold, trade or lend in EVM wallets and apps, and a way back | Live on the testnets: the way in in 48 seconds, proven (rows 54 and 55); the way back in 84 seconds in fast mode for up to 1 tPOT (rows 56 to 58), or about 20 minutes (rows 47 to 51) |
+| POT holders | POT on Ethereum as wtPOT (an ERC-20) to hold, trade or lend in EVM wallets and apps, and a way back | Live on the testnets: the way in in 48 seconds, proven (rows 54 and 55), or with auto-mint, where the user signs only the lock and needs no ETH, in 144 seconds (rows 83 to 85); the way back in 84 seconds in fast mode for up to 1 tPOT (rows 56 to 58), or about 20 minutes (rows 47 to 51) |
 | EVM apps and wallets | Portaldot state inside a contract (an account's balance, a contract's storage), checked against Portaldot's finality instead of an oracle or a relayer | Live: `ProvenBalance` and `BridgeMinter` on Sepolia read V3 state through the light client |
 | Portaldot | A path for EVM users and liquidity into POT, built on V3's own GRANDPA finality and its EVM (pallet-revive) | Live on the V3 testnet |
 | Liquidity providers | A fee for paying a user on V3 at once, repaid from the vault about 20 minutes later | Planned: LP fast-fill ([Roadmap](../README.md#roadmap)) |
@@ -112,8 +112,8 @@ What the testnets already show:
 
 - The relayer has run in watch mode since Oct 23, one process per light client, each with its own
   key; the auto-release watcher has run since Oct 24 ([README](../README.md#status)).
-- 82 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
-  hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 327 forge tests, 216 relayer
+- 85 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
+  hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 327 forge tests, 263 relayer
   tests and 343 fixture checks pass.
 - The limits are written down, including a six-hour gap while the machine slept on Oct 24
   ([Known limits](../README.md#status), [THREAT_MODEL.md](THREAT_MODEL.md)).
