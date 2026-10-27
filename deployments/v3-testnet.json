@@ -150,6 +150,51 @@
       "vaultNonce": "2",
       "commitment": "0x7a4d0e3ffc22ddc8d3c4c84b1032c0cd87432edd727dfd21be45090eb7e78636",
       "slot": "0xabbb5caa7dda850e60932de0934eb1f9d0f59695050f761dc64e443e5030a569"
+    },
+    {
+      "status": "locked",
+      "via": "substrate",
+      "txHash": "0x953fc65cac111af0db9f6109ece77984067425be6b58b610b52ebc2d4627b7f7",
+      "from": "0xb621f9a9dd96ba88681c40b04657cef602854e24",
+      "substrate": {
+        "ss58": "5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7",
+        "accountId": "0x682eb86097c5da7e886fe086e59ede2303801fb28de24c10db23a560321b7777"
+      },
+      "nonce": 10,
+      "vault": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+      "dstChainId": "11155111",
+      "dstMinter": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "amountNative": "100000000000",
+      "value": "1000000000000000",
+      "weightLimit": {
+        "refTime": "612367009",
+        "proofSize": "35329"
+      },
+      "storageDepositLimit": "391833000000000",
+      "dryRun": {
+        "refTime": "556697281",
+        "proofSize": "32118",
+        "storageDeposit": "384150000000000"
+      },
+      "expected": {
+        "vaultNonce": "3",
+        "commitment": "0x423bce04e121e2cdd972a7dd5edf9fdceab4b72d2461200d85f56bfed7c052f0"
+      },
+      "signedAt": "2026-10-27T19:53:33.031Z",
+      "submittedAfter": 222021,
+      "block": {
+        "number": 222024,
+        "hash": "0xeaf6ab5f907c7c1c0d58798141d5f7ee11bea414e0e5ccd801a442930b324a47"
+      },
+      "extrinsicIndex": 1,
+      "fee": "2531001217525",
+      "lockedLog": "not served",
+      "deposit": "384150000000000",
+      "cost": "3866810012175250000",
+      "vaultNonce": "3",
+      "commitment": "0x423bce04e121e2cdd972a7dd5edf9fdceab4b72d2461200d85f56bfed7c052f0",
+      "slot": "0x101e368776582e57ab3d116ffe2517c0a585cd5b23174b01e275c2d8329c3d83"
     }
   ],
   "committeeFunding": [

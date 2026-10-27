@@ -38,8 +38,10 @@ import {
   keyDirsOf,
   loadState,
   LOG_WINDOW,
+  lookupHint,
   MAX_BACKOFF_SECONDS,
   MAX_FAILED_SENDS,
+  MAX_LOOKUPS_PER_ROUND,
   minterLockOf,
   nextWait,
   openAttempts,
@@ -82,7 +84,9 @@ import {
   type Signer,
   type State,
   type Stuck,
+  type SubstrateLookup,
 } from "./automint.js";
+import type { FoundLock } from "./substrate-locks.js";
 import { bundleCalldata, MINTED_TOPIC } from "./bridge.js";
 import { bytesToHex, hexToBytes, type Hex } from "./bytes.js";
 import type { MintBundleFixture } from "./fixture.js";
@@ -966,18 +970,40 @@ describe("the vault's nonces against the state", () => {
     return { run, asked };
   };
 
+  /** A stand-in for the lookup in System.Events: `found` by nonce, every call recorded. */
+  const lookup = (found: Map<bigint, FoundLock | Error> = new Map()) => {
+    const calls: { nonce: bigint; hint: { from?: number; block?: number } }[] = [];
+    const fn: SubstrateLookup = async (nonce, hint) => {
+      calls.push({ nonce, hint });
+      const f = found.get(nonce);
+      if (f instanceof Error) throw f;
+      return f ?? null;
+    };
+    return { fn, calls };
+  };
+  /** Lock 3 as the lookup finds it in System.Events of #222,024: a Substrate extrinsic's Locked event, as the log eth_getLogs would give. */
+  const EXTRINSIC: Hex = "0x953fc65cac111af0db9f6109ece77984067425be6b58b610b52ebc2d4627b7f7";
+  const LOCK3: FoundLock = {
+    log: { ...lockedLog({ nonce: 3n, block: 222_024, amount: 10n ** 11n }), transactionHash: EXTRINSIC, blockHash: `0x${"ea".repeat(32)}`, logIndex: "0x3" },
+    block: { number: 222_024, hash: `0x${"ea".repeat(32)}` },
+    extrinsic: { index: 1, hash: EXTRINSIC },
+  };
+
   it("takes in a lock the scan missed, reads nextNonce at the finalized block, and looks up in windows of 10,000 blocks", async () => {
     const { run, asked } = runWith(3);
+    const none = lookup();
     quiet.length = 0;
-    await accountForNonces(run, 219_100);
+    await accountForNonces(run, 219_100, none.fn);
     assert.deepEqual(asked[0], { method: "eth_getStorageAt", params: [VAULT, "0x1", "0x357dc"] }, "nextNonce at #219,100");
     assert.equal(run.state.locks["2"]?.status, "pending");
+    assert.equal(run.state.locks["2"]?.via, undefined, "found by eth_getLogs");
     assert.match(quiet.join("\n"), /WARN the scan missed lock 2 \(#218,500/);
     assert.deepEqual([...run.accounted].sort(), ["0", "1"]);
     assert.match(quiet.join("\n"), /lock 0 \(#101,009, below the scan's start #218,400\): minted already/);
+    assert.equal(none.calls.length, 0, "eth_getLogs had every log: System.Events was not read");
     // The next round looks nothing up again.
     asked.length = 0;
-    await accountForNonces(run, 219_200);
+    await accountForNonces(run, 219_200, none.fn);
     assert.deepEqual(
       asked.map((a) => a.method),
       ["eth_getStorageAt"],
@@ -986,11 +1012,65 @@ describe("the vault's nonces against the state", () => {
 
   it("warns of a nonce the vault counts at a final block that no lookup finds, and looks it up again next round", async () => {
     const { run } = runWith(4);
+    const none = lookup();
     quiet.length = 0;
-    await accountForNonces(run, 219_100);
-    assert.match(quiet.join("\n"), /WARN the vault's nextNonce at V3 #219,100, a final block, counts lock 3, but V3's EVM RPC returns no Locked log of it/);
+    await accountForNonces(run, 219_100, none.fn);
+    assert.match(quiet.join("\n"), /WARN the vault's nextNonce at V3 #219,100, a final block, counts lock 3, but neither V3's EVM RPC \(eth_getLogs\) nor System\.Events at the V3 node's finalized head has its Locked event yet/);
+    assert.deepEqual(none.calls, [{ nonce: 3n, hint: { from: 218_500 } }], "System.Events searched from lock 2's block");
     assert.equal(run.state.locks["3"], undefined);
     assert.ok(!run.accounted.has("3"));
+  });
+
+  it("takes in a lock only System.Events holds (a Substrate extrinsic's), once, whichever source finds it", async () => {
+    const { run, asked } = runWith(4);
+    const found = lookup(new Map([[3n, LOCK3]]));
+    quiet.length = 0;
+    await accountForNonces(run, 222_100, found.fn);
+    const rec = run.state.locks["3"];
+    assert.equal(rec?.status, "pending");
+    assert.equal(rec?.via, "System.Events");
+    assert.equal(rec?.txHash, EXTRINSIC, "the extrinsic's hash stands for the transaction's");
+    assert.deepEqual([rec?.block, rec?.amount], [222_024, (10n ** 11n).toString()]);
+    assert.deepEqual(found.calls, [{ nonce: 3n, hint: { from: 218_500 } }]);
+    assert.match(quiet.join("\n"), /new lock 3 \(#222,024, 0\.001 tPOT for 0xD9838A86…a2971071\), found in System\.Events of #222,024, extrinsic 0x953fc65c\w+: a lock sent as a Substrate extrinsic/);
+    assert.doesNotMatch(quiet.join("\n"), /WARN[^\n]*lock 3/, "a Substrate extrinsic's lock is expected there, not a warning");
+    // Its EVM log, should eth_getLogs ever give it: the same lock, taken in once.
+    const again = absorbLogs(run.state, [lockedLog({ nonce: 3n, block: 222_024, amount: 10n ** 11n })], BRIDGE);
+    assert.deepEqual([again.added.length, again.conflicts.length, run.state.locks["3"].status], [0, 0, "pending"]);
+    // The other order: a lock eth_getLogs gave, then System.Events.
+    const s = freshState();
+    absorbLogs(s, [lockedLog({ nonce: 3n, block: 222_024, amount: 10n ** 11n })], BRIDGE);
+    const later = absorbLogs(s, [LOCK3.log], BRIDGE, Date.now(), "System.Events");
+    assert.deepEqual([later.added.length, later.conflicts.length, Object.keys(s.locks).length, s.locks["3"].via], [0, 0, 1, undefined]);
+    // The next round looks nothing up.
+    found.calls.length = 0;
+    asked.length = 0;
+    await accountForNonces(run, 222_200, found.fn);
+    assert.deepEqual([found.calls.length, asked.map((a) => a.method)], [0, ["eth_getStorageAt"]]);
+  });
+
+  it("looks up at most MAX_LOOKUPS_PER_ROUND nonces a round, and goes on past one whose lookup fails", async () => {
+    const { run } = runWith(3 + MAX_LOOKUPS_PER_ROUND + 2);
+    const failing = lookup(new Map<bigint, FoundLock | Error>([[3n, new Error("the node answered something else")]]));
+    quiet.length = 0;
+    await accountForNonces(run, 222_100, failing.fn);
+    assert.deepEqual(
+      failing.calls.map((c) => c.nonce),
+      Array.from({ length: MAX_LOOKUPS_PER_ROUND }, (_, i) => BigInt(3 + i)),
+    );
+    assert.match(quiet.join("\n"), /WARN lock 3: its lookup failed \(the node answered something else\): looked up again next round/);
+    assert.match(quiet.join("\n"), new RegExp(`more nonces of the vault are not in the state yet, from ${3 + MAX_LOOKUPS_PER_ROUND}: a later round looks them up`));
+    // A node that does not answer ends the check for the round (the round goes on with the locks it has).
+    const down = lookup(new Map([[3n, new Unreachable("the V3 node did not answer")]]));
+    await assert.rejects(accountForNonces(runWith(4).run, 222_100, down.fn), Unreachable);
+  });
+
+  it("lookupHint: a lookup starts at the block of the state's latest lock below the nonce", () => {
+    const s = freshState();
+    assert.deepEqual(lookupHint(s, 3n), {});
+    absorbLogs(s, [lockedLog({ nonce: 1n, block: 218_450 }), lockedLog({ nonce: 2n, block: 218_500 }), lockedLog({ nonce: 5n, block: 230_000 })], BRIDGE);
+    assert.deepEqual(lookupHint(s, 3n), { from: 218_500 });
+    assert.deepEqual(lookupHint(s, 2n), { from: 218_450 });
   });
 });
 
@@ -1005,7 +1085,7 @@ describe("the options", () => {
     assert.equal(o.send, false);
     assert.equal(o.graceMs, 90_000, "the app still offers the locker its own mint: it is not raced");
     assert.equal(o.replaceAfterMs, 10 * 60_000);
-    assert.equal(o.minAmount, 10n ** 12n, "0.01 tPOT");
+    assert.equal(o.minAmount, 10n ** 11n, "0.001 tPOT");
     assert.equal(o.maxSpend, 2n * 10n ** 16n, "0.02 ETH a day");
     assert.equal(o.keep, 5n * 10n ** 16n);
     assert.equal(o.maxBaseFee, 1_500_000_000n);

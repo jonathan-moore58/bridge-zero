@@ -809,7 +809,9 @@ Linked libraries, at the same addresses on both rollups as on Sepolia: `SCL_EIP6
 Oct 27 (UTC). `npm run automint` ([`relayer/src/automint.ts`](relayer/src/automint.ts)) runs in
 watch mode next to the relayer, from a key of its own, `0x57cc…A113`, that holds only gas: `mint`
 and `importAndMint` take nothing from `msg.sender`, so the key has no rights. Each round it reads
-the vault's `Locked` events on V3, waits for V3's finality and a 90-second grace (so that a user
+the vault's `Locked` events on V3 (by `eth_getLogs`, and in `System.Events` for a lock sent as a
+Substrate extrinsic from a `5…` account, whose event `eth_getLogs` does not return; see
+[docs/V3.md](docs/V3.md#lock)), waits for V3's finality and a 90-second grace (so that a user
 minting from the page is not raced), checks that the lock names this chain and minter and is at
 least 0.001 tPOT, and sends the cheapest mint that needs no waiting: `mint` at a V3 header the
 light client already holds, or `importAndMint` at V3's finalized head. Before every send it

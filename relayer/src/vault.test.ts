@@ -1,14 +1,18 @@
 // Unit tests of vault.ts, offline: amounts, the lock commitment and the burn id against values
 // computed independently with cast (cast keccak of cast abi-encode) and pinned in
-// contracts/test/unit/PortaldotVault.t.sol, calldata and events, and the addresses V3 derives.
+// contracts/test/unit/PortaldotVault.t.sol, calldata and events, the addresses V3 derives, and
+// the recipients and destinations a lock may name.
 //
 //   npm test
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import { Keyring } from "@polkadot/api";
 import { bytesToHex, hexToBytes } from "./bytes.js";
 import {
+  bridgeDestination,
   burnId,
   checksumAddress,
   commitmentSlot,
@@ -30,6 +34,7 @@ import {
   parseTpot,
   readImmutables,
   readVaultBuild,
+  recipientProblem,
   releasedSlot,
   RELEASED_TOPIC,
   reviveAddress,
@@ -193,6 +198,39 @@ describe("addresses", () => {
     assert.notDeepEqual(multisigAccountId(members, 3), multisig);
     assert.throws(() => multisigAccountId(members, 4), /threshold/);
     assert.throws(() => multisigAccountId([members[0], members[0]], 1), /twice/);
+  });
+});
+
+describe("a lock's recipient and destination", () => {
+  it("refuses a recipient that is a Substrate account's address on V3: no Ethereum key holds it", () => {
+    const keyring = new Keyring({ ss58Format: 42 });
+    const five = keyring.decodeAddress("5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7");
+    const fives = reviveAddress(five);
+    assert.equal(checksumAddress(fives), "0xB621f9A9Dd96BA88681c40B04657CEf602854e24");
+    // revive.originalAccount maps it to 5ERJ… (AutoMap): refused, from an EVM lock or a Substrate one.
+    for (const sender of [null, five, ethAccountId(RECIPIENT)]) {
+      assert.match(recipientProblem(fives, "5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7", sender) ?? "", /Substrate account 5ERJ.*no Ethereum key holds it/);
+    }
+    // The locking account's own address, before revive.originalAccount maps it.
+    assert.match(recipientProblem(fives, null, five) ?? "", /locking Substrate account's own address/);
+    // An Ethereum key's address: from an EVM lock, from 5ERJ…, and from the account that stands for that key (its own address is the key's).
+    for (const sender of [null, five, ethAccountId(RECIPIENT)]) assert.equal(recipientProblem(RECIPIENT, null, sender), null);
+  });
+
+  it("reads the destination a bridge record names for the vault: its chain and BridgeMinter", () => {
+    const record = JSON.parse(readFileSync(fileURLToPath(new URL("../../deployments/sepolia-bridge.json", import.meta.url)), "utf8")) as Record<string, unknown>;
+    const d = bridgeDestination(record, VAULT, V3);
+    assert.ok(d);
+    assert.equal(d.chainId, SEPOLIA);
+    assert.equal(checksumAddress(d.minter), "0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E");
+    // A record of a minter for another vault, or for this address on another chain, names no destination of this vault.
+    assert.equal(bridgeDestination(record, MINTER, V3), null);
+    assert.equal(bridgeDestination({ ...record, vault: { ...(record.vault as object), chainId: 1 } }, VAULT, V3), null);
+    // A record without that shape is refused.
+    assert.throws(() => bridgeDestination({ ...record, contracts: {} }, VAULT, V3), /BridgeMinter/);
+    assert.throws(() => bridgeDestination({ ...record, chainId: "sepolia" }, VAULT, V3), /chain id/);
+    assert.throws(() => bridgeDestination({ ...record, vault: null }, VAULT, V3), /vault\.address/);
+    assert.throws(() => bridgeDestination([], VAULT, V3), /object/);
   });
 });
 

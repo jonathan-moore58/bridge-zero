@@ -7,7 +7,7 @@
 //   npm run automint [-- --watch <seconds>] [--grace <seconds>] [--from <V3 block>] [--sender <address>] [--rehearse <nonce>]
 //   npm run automint -- --send --account <keystore> --password-file <path> [--watch <seconds>] [--grace <seconds>] [--keep <eth>] [--from <V3 block>] [--retry <nonce>]
 //   more options: --state-dir <path> (default ~/.bridge-zero), --rpc <wss url> (the V3 node), --evm <http(s) url> (its EVM RPC),
-//   --grace <seconds> (default 90), --replace-after <minutes> (default 10), --min-amount <tPOT> (default 0.01),
+//   --grace <seconds> (default 90), --replace-after <minutes> (default 10), --min-amount <tPOT> (default 0.001),
 //   --max-spend <eth> a day (default 0.02), --priority-fee <gwei>, --max-fee <gwei>, --max-base-fee <gwei> (default 1.5)
 //
 // A round:
@@ -21,9 +21,19 @@
 // 2. Reads the vault's Locked events on V3's EVM RPC with eth_getLogs, in windows of 10,000 blocks,
 //    from the state's next block (less 64 blocks, read again in case the RPC's index lagged) up to
 //    the RPC's finalized block, and checks the vault's nextNonce at that block against the locks in
-//    the state: one the scan missed is looked up by its nonce and taken in, with a WARN. A lock for
-//    another destination chain or minter, or whose commitment is not the one its fields give, is
-//    recorded as skipped and never minted.
+//    the state. A nonce the state lacks is looked up: first its Locked log by eth_getLogs (one the
+//    scan missed as the RPC's index lagged is taken in, with a WARN), else in System.Events
+//    (substrate-locks.ts): a lock sent as a Substrate extrinsic (revive.call from a 5... account, as
+//    the app's Portaldot Wallet path sends it) emits its Locked event only as Revive.ContractEmitted,
+//    which eth_getLogs never returns. That lookup finds the block where the vault's nextNonce passed
+//    the nonce (a binary search over the node's old state), decodes the vault's Locked event there,
+//    checks it against commitments(nonce), and the lock is taken in as the EVM logs' parser reads
+//    it (via "System.Events"). Both sources give a lock by its nonce, which keys the state: a lock
+//    is taken in once, whichever source finds it, and used(nonce), the history and the minter stop
+//    a second mint anyway. At most MAX_LOOKUPS_PER_ROUND nonces are looked up in a round, each
+//    within TIMEOUTS.lookupMs and with its requests paced. A lock for another destination chain or
+//    minter, or whose commitment is not the one its fields give, is recorded as skipped and never
+//    minted.
 // 3. For each lock not minted yet, in nonce order: used(nonce) on Sepolia (true: minted, by whoever
 //    sent it); --min-amount (a lock below it is skipped: dust costs its locker nearly nothing, and
 //    its locker mints it from the app); V3's finality of its block, by the V3 node the proofs come
@@ -75,8 +85,9 @@
 //
 // Timeouts: every request has one, so no hung request stalls the loop: Sepolia 15 s a request
 // (SEPOLIA_RPC_URL when set, else publicnode, then tenderly, each tried twice), V3's EVM RPC 20 s
-// (twice), the V3 node 15 s to connect and 30 s a request, a captureBundle 4 minutes in all, each
-// cast 2 minutes, the receipt 5 minutes.
+// (twice), the V3 node 15 s to connect and 30 s a request (at most 10 a second in a lookup), a
+// lookup in System.Events 3 minutes in all, a captureBundle 4 minutes in all, each cast 2 minutes,
+// the receipt 5 minutes.
 //
 // Without --send nothing is signed, --account and --password-file are refused, and every RPC client
 // of this process refuses eth_send*, eth_sign*, personal_* and author_submit* (bridge.ts
@@ -134,6 +145,7 @@ import { captureBundle } from "./mint.js";
 import { reviveSlotKey } from "./revive.js";
 import { RpcClient, RpcError } from "./rpc.js";
 import { decodeU64 } from "./scale.js";
+import { findSubstrateLock, nodeReads, type FoundLock, type V3Reads } from "./substrate-locks.js";
 import { readProof } from "./trie.js";
 import { checksumAddress, commitmentSlot, decodeLocked, formatTpot, LOCKED_TOPIC, lockCommitment, parseTpot, SLOTS, uintWord, type LockedEvent, type LogJson } from "./vault.js";
 import { LOCK_STALE, takeLock, type Lock } from "./watch.js";
@@ -166,6 +178,8 @@ export const SCAN_OVERLAP = 64;
 export const MAX_FAILED_SENDS = 3;
 /** The most blocks one eth_getLogs asks for (bridge.ts logWindows' default): the scan's and every lookup's windows. */
 export const LOG_WINDOW = 10_000;
+/** The most lookups in System.Events one round makes (each a binary search on the V3 node, for a nonce eth_getLogs has no log of); the nonces after wait for later rounds. */
+export const MAX_LOOKUPS_PER_ROUND = 4;
 /** The window --max-spend counts our mined transactions' cost over. */
 export const SPEND_WINDOW_MS = 24 * 3_600_000;
 /** Every wait is bounded (see the header). */
@@ -174,6 +188,7 @@ export const TIMEOUTS = {
   evmMs: 20_000,
   v3ConnectMs: 15_000,
   v3RequestMs: 30_000,
+  lookupMs: 180_000,
   captureMs: 240_000,
   castMs: 120_000,
   receiptMs: 300_000,
@@ -186,7 +201,7 @@ const DEFAULT_GRACE = "90";
 /** --replace-after, in minutes: our transaction pending this long is signed again at its nonce, with higher fees. */
 const DEFAULT_REPLACE_AFTER = "10";
 /** --min-amount, in tPOT: a lock below it is not ours to pay for (dust locks cost their locker nearly nothing). */
-const DEFAULT_MIN_AMOUNT = "0.01";
+const DEFAULT_MIN_AMOUNT = "0.001";
 /** --max-spend, in ETH: the most our mined transactions may cost over SPEND_WINDOW_MS. */
 const DEFAULT_MAX_SPEND = "0.02";
 const MAX_REPLACE_AFTER_MINUTES = 1_440;
@@ -798,6 +813,8 @@ export interface LockRecord {
   commitment: Hex;
   status: "pending" | "minted" | "skipped";
   why?: string;
+  /** Where the lock was found when not by eth_getLogs: System.Events, for a lock sent as a Substrate extrinsic (txHash is then the extrinsic's hash). */
+  via?: "System.Events";
   /**
    * Why a skipped lock was left to the operator, when it may be minted after all (--retry takes it
    * in again): our transactions were mined without minting it, or it is below --min-amount. A lock
@@ -1877,10 +1894,11 @@ export function scanRange(state: Pick<State, "startBlock" | "nextBlock">, finali
 
 /**
  * Adds the locks of `logs` to the state: a new nonce as pending (or skipped, with why); a nonce seen
- * already, with the same block and commitment, changes nothing; one whose log disagrees with the
- * record is left to the operator (skipped, and returned as a conflict).
+ * already, with the same block and commitment, changes nothing, whichever source gave it (eth_getLogs
+ * or System.Events, `via`); one whose log disagrees with the record is left to the operator
+ * (skipped, and returned as a conflict).
  */
-export function absorbLogs(state: State, logs: (LogJson & { removed?: boolean })[], bridge: Pick<Bridge, "vault" | "v3ChainId" | "chainId" | "minter">, now = Date.now()) {
+export function absorbLogs(state: State, logs: (LogJson & { removed?: boolean })[], bridge: Pick<Bridge, "vault" | "v3ChainId" | "chainId" | "minter">, now = Date.now(), via?: "System.Events") {
   const added: LockRecord[] = [];
   const conflicts: string[] = [];
   let ignored = 0;
@@ -1893,7 +1911,7 @@ export function absorbLogs(state: State, logs: (LogJson & { removed?: boolean })
     const key = p.lock.nonce.toString();
     const known = state.locks[key];
     if (!known) {
-      state.locks[key] = recordOf(p, now);
+      state.locks[key] = { ...recordOf(p, now), ...(via ? { via } : {}) };
       added.push(state.locks[key]);
       continue;
     }
@@ -1930,6 +1948,8 @@ export interface Run {
   genesisChecked: boolean;
   /** Nonces below the scan's start whose lock was looked up, once per process. */
   accounted: Set<string>;
+  /** The V3 runtime's metadata by spec version, read once per process for the lookups in System.Events. */
+  metadata: Map<number, Promise<Uint8Array>>;
 }
 
 interface RoundFacts {
@@ -2022,12 +2042,16 @@ async function v3Head(chain: Chain): Promise<{ finalized: number; hash: Hex; set
   return { finalized: header.number, hash, setId: decodeU64(scale, "Grandpa.CurrentSetId") };
 }
 
+/** Once per process, before the V3 node's answers count: it serves the V3 testnet's genesis. */
+async function checkGenesis(run: Run, chain: Chain): Promise<void> {
+  if (run.genesisChecked) return;
+  const genesis = (await v3("genesis", () => chain.rpc.request<Hex>("chain_getBlockHash", [0]))).toLowerCase();
+  if (genesis !== run.bridge.v3Genesis) throw new Fatal(`the V3 node serves genesis ${genesis}, not the V3 testnet's ${run.bridge.v3Genesis}`);
+  run.genesisChecked = true;
+}
+
 async function readFacts(run: Run, chain: Chain): Promise<RoundFacts> {
-  if (!run.genesisChecked) {
-    const genesis = (await v3("genesis", () => chain.rpc.request<Hex>("chain_getBlockHash", [0]))).toLowerCase();
-    if (genesis !== run.bridge.v3Genesis) throw new Fatal(`the V3 node serves genesis ${genesis}, not the V3 testnet's ${run.bridge.v3Genesis}`);
-    run.genesisChecked = true;
-  }
+  await checkGenesis(run, chain);
   const head = await v3("V3's finalized head", () => v3Head(chain));
   const client = await run.sepolia.client();
   const m = await run.sepolia.minter();
@@ -2055,7 +2079,7 @@ async function buildJob(run: Run, chain: Chain, rec: LockRecord, path: Path, f: 
     }
   }
   try {
-    const b = await withDeadline(captureBundle({ rpc: run.o.rpc, evm: run.o.evm }, BigInt(rec.nonce)), TIMEOUTS.captureMs, `the capture of lock ${rec.nonce}'s bundle`);
+    const b = await withDeadline(captureBundle({ rpc: run.o.rpc, evm: run.o.evm }, BigInt(rec.nonce), { block: rec.block }), TIMEOUTS.captureMs, `the capture of lock ${rec.nonce}'s bundle`);
     return headJob(b, rec, f.client, f.minter.bound, run.bridge.minter);
   } catch (error) {
     if (error instanceof Unreachable || error instanceof Fatal || error instanceof DryRunViolation) throw error;
@@ -2106,28 +2130,87 @@ function sendCtx(run: Run): SendCtx {
 }
 
 /**
- * The vault's nextNonce at `evmFinal` (the block the scan read up to, so every lock it counts is in
- * a final block) against the locks in the state. A nonce the state lacks is looked up by its Locked
- * log (in LOG_WINDOW windows from the vault's block): at or above the scan's start, the scan missed
- * it (the RPC's log index lagged more than SCAN_OVERLAP blocks), and it is taken in now, with a
- * WARN; below the start, once per process, it is printed, minted or not (a lock not minted there is
- * left to --from, never minted unseen); one no lookup finds is a WARN, looked up again next round.
+ * Lock `nonce` of the vault in System.Events (substrate-locks.ts findSubstrateLock): its Locked event
+ * as a log, or null while no final block counts it. `hint` narrows the search. The round's lookup
+ * reads the V3 node, paced, within TIMEOUTS.lookupMs; the tests give a stand-in.
  */
-export async function accountForNonces(run: Run, evmFinal: number): Promise<void> {
+export type SubstrateLookup = (nonce: bigint, hint: { from?: number; block?: number }) => Promise<FoundLock | null>;
+
+/** Where a lookup of `nonce` in System.Events starts: the block of the state's latest lock below it (the vault's nonces grow block by block). */
+export function lookupHint(state: Pick<State, "locks">, nonce: bigint): { from?: number } {
+  const below = Object.values(state.locks).filter((r) => BigInt(r.nonce) < nonce);
+  return below.length === 0 ? {} : { from: Math.max(...below.map((r) => r.block)) };
+}
+
+/** A lock's Locked log, and where it was found. */
+interface FoundLog {
+  logs: (LogJson & { removed?: boolean })[];
+  parsed: Exclude<Parsed, { kind: "ignore" }>;
+  via?: "System.Events";
+}
+
+/**
+ * Lock `nonce`'s Locked log: by eth_getLogs (in LOG_WINDOW windows from the vault's block to
+ * `evmFinal`), else, for a lock sent as a Substrate extrinsic, from System.Events (`substrate`);
+ * null when neither has it (yet). A log of the vault that does not parse as a lock is a CheckError.
+ */
+async function lockLogOf(run: Run, nonce: bigint, evmFinal: number, substrate: SubstrateLookup): Promise<FoundLog | null> {
+  const logs = await scanLocks(run.evm, run.bridge.vault, run.bridge.vaultBlock, evmFinal, LOG_WINDOW, [LOCKED_TOPIC, bytesToHex(uintWord(nonce))]);
+  const p = logs.map((l) => parseLockedLog(l, run.bridge)).find((x) => x.kind !== "ignore");
+  if (p) return { logs, parsed: p };
+  const found = await substrate(nonce, lookupHint(run.state, nonce));
+  if (!found) return null;
+  const q = parseLockedLog(found.log, run.bridge);
+  if (q.kind === "ignore") throw new CheckError(`System.Events of V3 #${n(found.block.number)}: the vault's Locked event of nonce ${nonce} does not read as a lock: ${q.why}`);
+  return { logs: [found.log], parsed: q, via: "System.Events" };
+}
+
+/**
+ * The vault's nextNonce at `evmFinal` (the block the scan read up to, so every lock it counts is in
+ * a final block) against the locks in the state. A nonce the state lacks is looked up (lockLogOf:
+ * eth_getLogs, else System.Events), at most MAX_LOOKUPS_PER_ROUND a round. A lock found at or above
+ * the scan's start is taken in now: one eth_getLogs returns was missed by the scan (the RPC's log
+ * index lagged more than SCAN_OVERLAP blocks), a WARN; one only System.Events holds was sent as a
+ * Substrate extrinsic, whose log eth_getLogs never returns. Below the start, once per process, it is
+ * printed, minted or not (a lock not minted there is left to --from, never minted unseen). One no
+ * lookup finds, or whose lookup fails, is a WARN, looked up again next round.
+ */
+export async function accountForNonces(run: Run, evmFinal: number, substrate: SubstrateLookup): Promise<void> {
   const next = BigInt(await run.evm.call<string>("eth_getStorageAt", [run.bridge.vault, qty(SLOTS.nextNonce), qty(evmFinal)]));
   let below = 0;
+  // The lookups in System.Events this round: each is a binary search on the V3 node.
+  let lookups = 0;
+  const counted: SubstrateLookup = (nonce, hint) => {
+    lookups += 1;
+    return substrate(nonce, hint);
+  };
   for (let i = 0n; i < next; i++) {
     const key = i.toString();
     if (run.state.locks[key] || run.accounted.has(key)) continue;
-    const logs = await scanLocks(run.evm, run.bridge.vault, run.bridge.vaultBlock, evmFinal, LOG_WINDOW, [LOCKED_TOPIC, bytesToHex(uintWord(i))]);
-    const p = logs.map((l) => parseLockedLog(l, run.bridge)).find((x) => x.kind !== "ignore");
-    if (!p) {
-      log(`WARN the vault's nextNonce at V3 #${n(evmFinal)}, a final block, counts lock ${key}, but V3's EVM RPC returns no Locked log of it: looked up again next round`);
+    if (lookups >= MAX_LOOKUPS_PER_ROUND) {
+      log(`     more nonces of the vault are not in the state yet, from ${key}: a later round looks them up (${MAX_LOOKUPS_PER_ROUND} lookups in System.Events a round)`);
+      break;
+    }
+    let found: FoundLog | null;
+    try {
+      found = await lockLogOf(run, i, evmFinal, counted);
+    } catch (error) {
+      if (error instanceof Unreachable || error instanceof Fatal || error instanceof DryRunViolation) throw error;
+      log(`WARN lock ${key}: its lookup failed (${errorText(error)}): looked up again next round`);
       continue;
     }
+    if (!found) {
+      log(`WARN the vault's nextNonce at V3 #${n(evmFinal)}, a final block, counts lock ${key}, but neither V3's EVM RPC (eth_getLogs) nor System.Events at the V3 node's finalized head has its Locked event yet: looked up again next round`);
+      continue;
+    }
+    const p = found.parsed;
+    const where = found.via ? `System.Events of #${n(p.lock.block)}, extrinsic ${p.lock.txHash ?? "?"}: a lock sent as a Substrate extrinsic, whose log eth_getLogs does not return` : "";
     if (p.lock.block >= run.state.startBlock) {
-      const a = absorbLogs(run.state, logs, run.bridge);
-      for (const r of a.added) log(`WARN the scan missed ${labelOf(r)} (the RPC's log index lagged?): taken in now${r.status === "skipped" ? `, skipped, never minted: ${r.why}` : ""}`);
+      const a = absorbLogs(run.state, found.logs, run.bridge, Date.now(), found.via);
+      for (const r of a.added) {
+        const skipped = r.status === "skipped" ? `, skipped, never minted: ${r.why}` : "";
+        log(found.via ? `     new ${labelOf(r)}, found in ${where}${skipped}` : `WARN the scan missed ${labelOf(r)} (the RPC's log index lagged?): taken in now${skipped}`);
+      }
       for (const c of a.conflicts) check(false, c);
       save(run);
       continue;
@@ -2135,12 +2218,13 @@ export async function accountForNonces(run: Run, evmFinal: number): Promise<void
     run.accounted.add(key);
     below += 1;
     const minted = p.kind === "lock" && (await run.sepolia.used(i));
+    const from = found.via ? ` (${where})` : "";
     log(
       p.kind === "skip"
-        ? `     lock ${key} (#${n(p.lock.block)}, below the scan's start #${n(run.state.startBlock)}) is not for this minter: ${p.why}`
+        ? `     lock ${key} (#${n(p.lock.block)}, below the scan's start #${n(run.state.startBlock)}) is not for this minter: ${p.why}${from}`
         : minted
-          ? `     lock ${key} (#${n(p.lock.block)}, below the scan's start #${n(run.state.startBlock)}): minted already`
-          : `WARN lock ${key} (#${n(p.lock.block)}) is below the scan's start #${n(run.state.startBlock)} and not minted: auto-mint leaves it; run once with --from ${p.lock.block} to take it in`,
+          ? `     lock ${key} (#${n(p.lock.block)}, below the scan's start #${n(run.state.startBlock)}): minted already${from}`
+          : `WARN lock ${key} (#${n(p.lock.block)}) is below the scan's start #${n(run.state.startBlock)} and not minted: auto-mint leaves it; run once with --from ${p.lock.block} to take it in${from}`,
     );
   }
   const seen = Object.keys(run.state.locks).length;
@@ -2148,17 +2232,16 @@ export async function accountForNonces(run: Run, evmFinal: number): Promise<void
 }
 
 /** --rehearse: the mint of a lock that is minted already, on each path that applies now; each eth_call must revert NonceAlreadyUsed(nonce). */
-async function rehearse(run: Run, chain: Chain, f: RoundFacts, nonce: bigint, evmFinal: number): Promise<void> {
+async function rehearse(run: Run, chain: Chain, f: RoundFacts, nonce: bigint, evmFinal: number, substrate: SubstrateLookup): Promise<void> {
   const key = nonce.toString();
   let rec = run.state.locks[key];
   if (!rec) {
-    const logs = await scanLocks(run.evm, run.bridge.vault, run.bridge.vaultBlock, evmFinal, LOG_WINDOW, [LOCKED_TOPIC, bytesToHex(uintWord(nonce))]);
-    const p = logs.map((l) => parseLockedLog(l, run.bridge)).find((x) => x.kind === "lock");
-    if (!p || p.kind !== "lock") {
-      check(false, `rehearsal: no final Locked log of lock ${key} for this minter`);
+    const found = await lockLogOf(run, nonce, evmFinal, substrate);
+    if (!found || found.parsed.kind !== "lock") {
+      check(false, `rehearsal: no final Locked log or event of lock ${key} for this minter`);
       return;
     }
-    rec = recordOf(p);
+    rec = { ...recordOf(found.parsed), ...(found.via ? { via: found.via } : {}) };
   }
   log(`\nRehearsal of ${labelOf(rec)}:`);
   if (!check(await run.sepolia.used(nonce), `used(${key}) is true: the lock is minted already, as a rehearsal needs (it can only revert)`)) return;
@@ -2173,7 +2256,7 @@ async function rehearse(run: Run, chain: Chain, f: RoundFacts, nonce: bigint, ev
         path === "held"
           ? await heldJob(chain, run.sepolia, rec, f.client, f.minter.trieId, run.bridge.minter)
           : headJob(
-              await withDeadline(captureBundle({ rpc: run.o.rpc, evm: run.o.evm }, nonce), TIMEOUTS.captureMs, `the capture of lock ${key}'s bundle`),
+              await withDeadline(captureBundle({ rpc: run.o.rpc, evm: run.o.evm }, nonce, { block: rec.block }), TIMEOUTS.captureMs, `the capture of lock ${key}'s bundle`),
               rec,
               f.client,
               f.minter.bound,
@@ -2198,7 +2281,16 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
   failures = 0;
   const { o, state } = run;
   log(`\n${iso()}: auto-mint round${o.send ? "" : " (dry run)"}, sender ${run.sender}`);
-  let chain: Chain | null = null;
+  // The V3 node, opened when the round first needs it (a lookup in System.Events, or a lock to plan) and closed at its end.
+  const node: { chain: Chain | null; reads: V3Reads | null } = { chain: null, reads: null };
+  const v3Chain = async (): Promise<Chain> => (node.chain ??= await openV3(o.rpc));
+  const substrate: SubstrateLookup = async (nonce, hint) => {
+    const chain = await v3Chain();
+    await checkGenesis(run, chain);
+    const reads = (node.reads ??= nodeReads(chain.rpc, undefined, run.metadata));
+    const q = { vault: run.bridge.vault, vaultBlock: run.bridge.vaultBlock, nonce, ...hint };
+    return v3(`lock ${nonce} in System.Events`, () => withDeadline(findSubstrateLock(reads, q), TIMEOUTS.lookupMs, `the lookup of lock ${nonce} in System.Events`));
+  };
   let pendingTx: Hex | null = null;
   /** Our pending transactions past --replace-after: the next mint planned signs their nonce again (once a round). */
   let stuck: Stuck | null = null;
@@ -2241,7 +2333,7 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
       save(run);
     }
     try {
-      await accountForNonces(run, evmFinal);
+      await accountForNonces(run, evmFinal, substrate);
     } catch (error) {
       // A check of the scan, not a step of the mint: the locks in the state are planned anyway.
       if (error instanceof Fatal || error instanceof DryRunViolation) throw error;
@@ -2256,7 +2348,7 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
       if (once) log(`     nothing to mint${pendingTx ? `; ${pendingTx} is still pending` : ""}`);
       return { code: failures > 0 ? FAILED : pendingTx ? PENDING : OK, trouble: false };
     }
-    chain = await openV3(o.rpc);
+    const chain = await v3Chain();
     let facts = await readFacts(run, chain);
     for (const rec of pending) {
       const nonce = BigInt(rec.nonce);
@@ -2323,7 +2415,7 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
       const sent = end.kind === "pending" || ((end.kind === "minted" || end.kind === "failed") && !!end.txHash);
       if (sent) facts = await readFacts(run, chain);
     }
-    if (o.rehearse !== undefined) await rehearse(run, chain, facts, o.rehearse, evmFinal);
+    if (o.rehearse !== undefined) await rehearse(run, chain, facts, o.rehearse, evmFinal, substrate);
     save(run);
     return { code: failures > 0 ? FAILED : pendingTx ? PENDING : OK, trouble: false };
   } catch (error) {
@@ -2340,7 +2432,7 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
     check(false, errorText(error));
     return { code: FAILED, trouble: false };
   } finally {
-    await chain?.rpc.close();
+    await node.chain?.rpc.close();
   }
 }
 
@@ -2474,6 +2566,7 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       wired: false,
       genesisChecked: false,
       accounted: new Set(),
+      metadata: new Map(),
     };
     save(run);
     if (o.retry !== undefined && !retryLock(run, o.retry)) return FAILED;

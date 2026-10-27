@@ -27,9 +27,11 @@
 // commitments[n] in the child trie (chain.ts, as capture-contract.ts reads them). Each proof is
 // walked here; the account entry must be a contract whose code hash is the recorded vault's, and
 // the slot must hold the commitment recomputed from the lock in deployments/v3-testnet.json (or the
-// vault's Locked log). The node discards state after about 256 blocks, so the proofs are read at
-// the head; the bundle stays usable while the light client is in B's set and not past B. bundle
-// --check verifies a bundle file offline the same way (check.ts verifies it again in its own style).
+// vault's Locked log; for a lock sent as a Substrate extrinsic, whose log eth_getLogs does not
+// return, its Locked event in System.Events, substrate-locks.ts). The node discards state after
+// about 256 blocks, so the proofs are read at the head; the bundle stays usable while the light
+// client is in B's set and not past B. bundle --check verifies a bundle file offline the same way
+// (check.ts verifies it again in its own style).
 //
 // plan and mint take a bundle file (--bundle), a capture of lock <n> that is checked the same way
 // and not written (--nonce), or else fixtures/v3-testnet-mint/mint-bundle.json, where bundle writes.
@@ -99,7 +101,9 @@
 // it falls back to the views: burnCount and burnIdOf on Sepolia, nextNonce and the commitments with
 // the record's lock fields on V3. A release has its Released log through eth_getLogs only when V3's
 // EVM RPC serves it, which it does for Ethereum transactions; the committee's releases are
-// Substrate extrinsics, counted from released[burnId] and the burn's amount.
+// Substrate extrinsics, counted from released[burnId] and the burn's amount. Likewise a lock sent
+// as a Substrate extrinsic: a nonce below nextNonce without a Locked log is read from System.Events
+// (substrate-locks.ts) and counted like the others.
 //
 // Nothing is signed without --send, and --account and --password-file are refused without it.
 // Every RPC client of this process refuses eth_send*, eth_sign*, personal_* and author_submit*
@@ -181,6 +185,7 @@ import { CHILD_STORAGE_DEFAULT_PREFIX, childRootKey, storageKey } from "./hash.j
 import { decodeReviveAccountInfo, reviveAccountInfoKey, reviveSlotKey } from "./revive.js";
 import { RpcClient, RpcError } from "./rpc.js";
 import { decodeAuthorityList, decodeFinalityProof, decodeJustification, decodeU64, grandpaLogs } from "./scale.js";
+import { findSubstrateLock, findSubstrateLocks, LookupError, nodeReads, type FoundLock, type V3Reads } from "./substrate-locks.js";
 import { readProof } from "./trie.js";
 import {
   addressWord,
@@ -581,6 +586,8 @@ interface RecordedLock {
   amountNative: string;
   vaultNonce?: string;
   commitment?: Hex;
+  /** Its V3 block (for a lock sent as a Substrate extrinsic, the Substrate block's hash). */
+  block?: { number: number; hash: Hex };
 }
 
 /** A release round as deployments/v3-testnet.json records it (release.ts). */
@@ -939,7 +946,40 @@ interface LockFacts {
   txHash?: Hex;
 }
 
-async function lockOf(vault: VaultDeployment, nonce: bigint, o: Common): Promise<LockFacts> {
+/**
+ * Lock `nonce` from System.Events (substrate-locks.ts): a lock sent as a Substrate extrinsic emits
+ * its Locked event only as Revive.ContractEmitted, which eth_getLogs does not return. Null while no
+ * final block counts it. `hint.block` (a block where the lock is said to be) narrows the search.
+ */
+async function substrateLockOf(vault: VaultDeployment, nonce: bigint, o: Common, hint: { block?: number }): Promise<FoundLock | null> {
+  return withV3Reads(o, (reads) => findSubstrateLock(reads, { vault: vault.address, vaultBlock: vault.block, nonce, ...hint }));
+}
+
+/** `work` on the V3 node's reads (paced, substrate-locks.ts nodeReads), once its genesis is V3's; a LookupError is a Stop. */
+async function withV3Reads<R>(o: Common, work: (reads: V3Reads) => Promise<R>): Promise<R> {
+  const chain = await connectV3(o.rpc);
+  try {
+    const genesis = (await chain.rpc.request<Hex>("chain_getBlockHash", [0])).toLowerCase();
+    if (genesis !== V3.genesis) throw new Stop(`the node serves genesis ${genesis}, not ${V3.title}`);
+    return await work(nodeReads(chain.rpc));
+  } catch (error) {
+    if (noAnswer(error)) throw new Unreachable(`the V3 node is unreachable (${errorText(error)})`);
+    if (error instanceof LookupError) throw new Stop(`System.Events: ${errorText(error)}`);
+    throw error;
+  } finally {
+    await chain.rpc.close();
+  }
+}
+
+/** Where a lock's facts came from when they came from System.Events: lockOf's source, which the bundle keeps. */
+const SYSTEM_EVENTS_SOURCE = "System.Events";
+
+/**
+ * Lock `nonce` of the vault: the record's, else the vault's Locked log (eth_getLogs), else, for a lock
+ * sent as a Substrate extrinsic, its Locked event in System.Events (`hint.block` narrows that search).
+ * Exported so that a check can run it with a vault whose record lacks the lock.
+ */
+export async function lockOf(vault: VaultDeployment, nonce: bigint, o: Common, hint: { block?: number } = {}): Promise<LockFacts> {
   const recorded = vault.locks.find((l) => l.status === "locked" && l.vault === vault.address && l.vaultNonce === nonce.toString());
   if (recorded?.commitment) {
     return {
@@ -961,8 +1001,17 @@ async function lockOf(vault: VaultDeployment, nonce: bigint, o: Common): Promise
     if (error instanceof RpcError) throw new Stop(`the EVM RPC's eth_getLogs: ${errorText(error)}`);
     throw error;
   }
+  let source = "the vault's Locked log";
+  if (logs.length === 0) {
+    const found = await substrateLockOf(vault, nonce, o, hint);
+    if (!found) throw new Stop(`${V3_RECORD} has no lock ${nonce}, the vault's logs hold no Locked event for that nonce, and no final block of V3 counts it in the vault's nextNonce`);
+    logs = [found.log];
+    source = `${SYSTEM_EVENTS_SOURCE} of V3 #${fmt(found.block.number)}`;
+    log(`     lock ${nonce} is in ${source} (extrinsic ${found.extrinsic?.hash ?? "none"}): a lock sent as a Substrate extrinsic, whose log eth_getLogs does not return`);
+  }
   if (logs.length !== 1) throw new Stop(`${V3_RECORD} has no lock ${nonce}, and the vault's logs hold ${logs.length} Locked events for that nonce`);
   const e = decodeLocked(logs[0]);
+  if (e.nonce !== nonce) throw new Stop(`the Locked event found for lock ${nonce} is of nonce ${e.nonce}`);
   return {
     nonce,
     recipient: e.recipient,
@@ -970,7 +1019,7 @@ async function lockOf(vault: VaultDeployment, nonce: bigint, o: Common): Promise
     dstChainId: e.dstChainId,
     dstMinter: e.dstMinter,
     commitment: e.commitment,
-    source: "the vault's Locked log",
+    source,
     ...(logs[0].transactionHash ? { txHash: logs[0].transactionHash.toLowerCase() as Hex } : {}),
   };
 }
@@ -987,12 +1036,16 @@ function checkLock(lock: LockFacts, vault: VaultDeployment, deployment: SepoliaD
   if (lock.amountNative === 0n || lock.recipient.every((b) => b === 0)) throw new Stop(`lock ${lock.nonce} has a zero amount or recipient, which the minter refuses`);
 }
 
-/** Reads the bundle of lock `nonce` at the latest finalized head, every proof walked here, and returns it; nothing is written. automint.ts uses it too. */
-export async function captureBundle(o: Common, nonce: bigint): Promise<MintBundleFixture> {
+/**
+ * Reads the bundle of lock `nonce` at the latest finalized head, every proof walked here, and
+ * returns it; nothing is written. automint.ts uses it too, with the lock's block as `hint` (which
+ * narrows the search in System.Events for a lock sent as a Substrate extrinsic).
+ */
+export async function captureBundle(o: Common, nonce: bigint, hint: { block?: number } = {}): Promise<MintBundleFixture> {
   const deployment = readSepolia();
   const vault = readV3();
   const tool = toolInfo();
-  const lock = await lockOf(vault, nonce, o);
+  const lock = await lockOf(vault, nonce, o, hint);
   checkLock(lock, vault, deployment);
   log(`Lock ${nonce} (${lock.source}): ${formatTpot(lock.amountNative)} for ${checksumAddress(lock.recipient)} on chain ${lock.dstChainId}, minter ${checksumAddress(lock.dstMinter)}`);
   log(`Connecting to ${new URL(o.rpc).host}`);
@@ -1141,7 +1194,7 @@ export async function captureBundle(o: Common, nonce: bigint): Promise<MintBundl
         `The signers hint names ${hint.counted.map((p) => `precommit ${p.index} (key ${p.authorityIndex})`).join(" and ")}, each signature checked with the light client's own check (grandpa.ts clientVerifies).`,
         `${direct === undefined ? "The node does not expose childstate_getStorage: the slot's value comes from the child proof alone." : "childstate_getStorage returns the same word as the child proof."} ` +
           `state_getChildReadProof served ${served.length} items: the ${mainTrieItems} main-trie items of childRoot.proof and the ${childNodes.length} child-trie items in slot.proof.`,
-        `The lock is ${lock.source === V3_RECORD ? `the one ${V3_RECORD} records` : "the vault's Locked log for this nonce"}; the slot holds the commitment recomputed from its fields.`,
+        `The lock is ${lock.source === V3_RECORD ? `the one ${V3_RECORD} records` : lock.source.startsWith(SYSTEM_EVENTS_SOURCE) ? `the vault's Locked event in ${lock.source} (a Substrate extrinsic's, whose log eth_getLogs does not return)` : "the vault's Locked log for this nonce"}; the slot holds the commitment recomputed from its fields.`,
         "A light client at the signing set whose latest header is below B imports B with this finality proof (B's parent is such a checkpoint); one that holds B already verifies it again and writes nothing.",
       ],
     };
@@ -2540,7 +2593,25 @@ async function status(o: Common): Promise<number> {
       await lockLine(e, where);
       lockCount += 1;
     }
-    check(BigInt(lockNonces.size) === nextNonce && [...lockNonces].every((x) => x < nextNonce), `one Locked log for each of the ${nextNonce} nonces`);
+    // A lock sent as a Substrate extrinsic has its Locked event only in System.Events, which eth_getLogs does not return.
+    const missing = Array.from({ length: Number(nextNonce) }, (_, i) => BigInt(i)).filter((x) => !lockNonces.has(x));
+    const blocks = new Map(vault.locks.filter((l) => l.status === "locked" && l.vaultNonce !== undefined && l.block).map((l) => [BigInt(l.vaultNonce!), l.block!.number] as const));
+    const fromEvents = missing.length === 0 ? new Map<bigint, FoundLock | null>() : await withV3Reads(o, (reads) => findSubstrateLocks(reads, { vault: vault.address, vaultBlock: vault.block, nonces: missing, blocks }));
+    for (const [n, f] of fromEvents) {
+      if (!f) {
+        log(`     lock ${n}: no final block of V3 counts it yet (it is not in eth_getLogs either): run again in a minute`);
+        continue;
+      }
+      const e = decodeLocked(f.log);
+      lockNonces.add(e.nonce);
+      await lockLine(e, `#${fmt(f.block.number)} ${shortHex(f.extrinsic?.hash ?? "0x")}, from System.Events: a Substrate extrinsic's, whose log eth_getLogs does not return`);
+      lockCount += 1;
+    }
+    const counted = [...fromEvents.values()].filter(Boolean).length;
+    check(
+      BigInt(lockNonces.size) === nextNonce && [...lockNonces].every((x) => x < nextNonce),
+      `one Locked event for each of the ${nextNonce} nonces${counted > 0 ? ` (${counted} from System.Events)` : ""}`,
+    );
   }
   log(`     ${ours} of ${lockCount} lock${lockCount === 1 ? "" : "s"} for this minter, ${minted} minted`);
 

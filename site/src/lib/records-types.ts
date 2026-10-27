@@ -305,11 +305,18 @@ export interface Records {
   /** Every sender's history in deployments/, merged: `files` are their paths, `entries` their transactions, each once. */
   relay: { files: string[]; entries: RelayEntry[] };
   returnPath: ReturnPath;
-  /** Totals from the records: the recorded fallback of the vault's and the token's live state. */
+  /**
+   * Totals from the records: the recorded fallback of the vault's and the token's live state. Over
+   * the locks the records know (the V3 record's, and any a mint names): outstandingNative is what
+   * the vault took for them (the V3 record's amounts, and what was minted for a lock it lacks) less
+   * what was released, which is minted + pending - released, pending being the recorded locks no
+   * mint names yet (the build refuses records that disagree on a lock's amount).
+   */
   totals: {
     locks: number;
     outstandingNative: string;
     minted: string;
+    pending: string;
     burned: string;
     supply: string;
     recipientBalance: string;

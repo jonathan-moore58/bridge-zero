@@ -371,7 +371,14 @@ sent, or the burn, is not final yet; and 4, a fatal stop or the committee's halt
 V3's EVM RPC serves the logs of Ethereum transactions, and a release is a Substrate extrinsic
 (`multisig.asMulti` dispatching `revive.call`): its `Released` event is the `revive.ContractEmitted`
 event the tool checks, and `eth_getLogs` may not return it (the tool says which it sees, and the
-status commands count such a release from `released[burnId]` and its burn's amount).
+status commands count such a release from `released[burnId]` and its burn's amount). The same holds
+for a lock sent from a Substrate account (`revive.call`, as the app's Portaldot Wallet path and
+`v3-vault lock --key-file` send it): `eth_getLogs` does not return its `Locked` event, so auto-mint,
+the mint tool (`bundle`, `plan`, `mint` and `status`) and `v3-vault status` find it in `System.Events`
+of the block where the vault's `nextNonce` passed its nonce (`relayer/src/substrate-locks.ts`: a
+binary search over the node's old state, then the block's events decoded with the metadata of the
+runtime that ran the block, its parent's), check it against `commitments(nonce)`, and read it as they
+read a log.
 
 ### What the way back costs
 

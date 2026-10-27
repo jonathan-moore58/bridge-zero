@@ -439,15 +439,27 @@ function readRelayHistories(root: string, dir: string): { files: string[]; entri
 /** An auto-mint history: one file per sender, automint-sepolia-<sender>.jsonl, the sender in lowercase. */
 const AUTOMINT_FILE = /^automint-sepolia-(0x[0-9a-f]{40})\.jsonl$/;
 
+/** A lock auto-mint minted: the amount and recipient its attempt line gives (null when the history lacks that line), the mint's transaction, and the history's file name. */
+export interface AutoMint {
+  amountNative: string | null;
+  recipient: Hex | null;
+  txHash: Hex | null;
+  file: string;
+}
+
 /**
- * The nonces of the locks auto-mint minted, from every auto-mint history in `dir`: a "result" line
- * with the outcome "minted" names its lock. A line cut short by a crash is skipped, as the tool
- * itself skips it.
+ * The locks auto-mint minted, by nonce, from every auto-mint history in `dir`: a "result" line with
+ * the outcome "minted" names its lock, and the "attempt" line of the same id (written before the
+ * mint was signed, with what the mint pays) gives its amount and recipient, so a lock the V3
+ * record does not hold (one sent from the app) counts too. A line cut short by a crash is skipped,
+ * as the tool itself skips it.
  */
-function readAutoMints(dir: string): Set<number> {
-  const minted = new Set<number>();
+export function readAutoMints(dir: string): Map<number, AutoMint> {
+  const minted = new Map<number, AutoMint>();
   const names = existsSync(dir) ? readdirSync(dir).filter((f) => AUTOMINT_FILE.test(f)).sort() : [];
   for (const name of names) {
+    const attempts = new Map<string, Json>();
+    const results: Json[] = [];
     for (const line of readFileSync(join(dir, name), "utf8").split("\n")) {
       if (!line.trim()) continue;
       let e: Json;
@@ -456,13 +468,94 @@ function readAutoMints(dir: string): Set<number> {
       } catch {
         continue;
       }
+      if (e.kind === "attempt" && typeof e.id === "string" && !attempts.has(e.id)) attempts.set(e.id, e);
+      if (e.kind === "result" && e.outcome === "minted") results.push(e);
+    }
+    for (const e of results) {
       // The lock's nonce is written as a decimal string (a bigint), or as a number.
       const lock = typeof e.lock === "number" ? e.lock : typeof e.lock === "string" && /^\d+$/.test(e.lock) ? Number(e.lock) : null;
-      if (e.kind === "result" && e.outcome === "minted" && lock !== null) minted.add(lock);
+      if (lock === null || minted.has(lock)) continue;
+      const a = typeof e.id === "string" ? attempts.get(e.id) : undefined;
+      const same = a !== undefined && String(a.lock) === String(e.lock);
+      minted.set(lock, {
+        amountNative: same && typeof a.amount === "string" && /^\d+$/.test(a.amount) ? a.amount : null,
+        recipient: same ? optHex(a.recipient) : null,
+        txHash: optHex(e.txHash),
+        file: name,
+      });
     }
   }
   return minted;
 }
+
+/** A lock, by its vault nonce: its amount in native base units, its recipient, and the record that names it. */
+export interface KnownLock {
+  nonce: number;
+  amountNative: bigint;
+  recipient: Hex | null;
+  /** The record it comes from, for messages. */
+  from?: string;
+}
+
+/** A lock both records name, with another amount (or recipient) in each. */
+export interface Disagreement {
+  recorded: KnownLock;
+  minted: KnownLock;
+}
+
+/**
+ * The locks the records know and what became of them, each nonce once (the first entry that names
+ * it): every lock deployments/v3-testnet.json holds as locked (`recorded`), and every lock a mint
+ * names (`mints`: a mint step of sepolia-bridge.json, or auto-mint's history, which can name a lock
+ * the V3 record does not hold, one sent from the app). `locked` is what the vault took for them: the
+ * V3 record's amount of each lock it holds, and what was minted for each one it does not. `minted`
+ * sums the mints, and `pending` the recorded locks no mint names yet. So the vault's outstanding,
+ * `locked` - released, is minted + pending - released exactly when every lock both records name has
+ * the same amount in both: `disagree` lists those that do not (in amount, or in recipient where the
+ * mint names one), and the build refuses them. A lock locked and not recorded, never minted, is not
+ * among them: nothing in the records names it.
+ */
+export function lockTotals(
+  recorded: KnownLock[],
+  mints: KnownLock[],
+): { locks: number; locked: bigint; minted: bigint; pending: bigint; mintedTo: (recipient: Hex) => bigint; disagree: Disagreement[] } {
+  const byNonce = (ls: KnownLock[]) => {
+    const m = new Map<number, KnownLock>();
+    for (const l of ls) if (!m.has(l.nonce)) m.set(l.nonce, l);
+    return m;
+  };
+  const held = byNonce(recorded);
+  const minted = byNonce(mints);
+  const sum = (ls: Iterable<KnownLock>) => [...ls].reduce((n, l) => n + l.amountNative, 0n);
+  const unrecorded = [...minted.values()].filter((m) => !held.has(m.nonce));
+  const disagree = [...minted.values()].flatMap((m) => {
+    const r = held.get(m.nonce);
+    return r && (r.amountNative !== m.amountNative || (m.recipient !== null && m.recipient !== r.recipient)) ? [{ recorded: r, minted: m }] : [];
+  });
+  return {
+    locks: held.size + unrecorded.length,
+    locked: sum(held.values()) + sum(unrecorded),
+    minted: sum(minted.values()),
+    pending: sum([...held.values()].filter((l) => !minted.has(l.nonce))),
+    mintedTo: (recipient) => sum([...minted.values()].filter((m) => m.recipient === recipient)),
+    disagree,
+  };
+}
+
+/**
+ * The newest of the successful mint steps `okMints` (by Sepolia block) whose lock the V3 record
+ * holds (`recorded`, vault nonces): the latest transfer, which the page shows with its lock as that
+ * record has it. A mint of a lock the record lacks (one sent from the app, which the mint tool finds
+ * in System.Events) counts in the totals only.
+ */
+export function latestRecordedMint(okMints: Record<string, unknown>[], recorded: Set<number>): Record<string, unknown> | null {
+  const BR = "deployments/sepolia-bridge.json";
+  const shown = okMints.filter((s) => recorded.has(num(obj(s.lock, BR, "mint.lock").nonce, BR, "mint.lock.nonce")));
+  return shown.sort((a, b) => num(a.block, BR, "mint.block") - num(b.block, BR, "mint.block")).at(-1) ?? null;
+}
+
+/** A lock entry's vault nonce (its nonce field is the sender's account nonce). */
+const vaultNonceOf = (l: Json): number | null => (typeof l.vaultNonce === "string" && /^\d+$/.test(l.vaultNonce) ? Number(l.vaultNonce) : null);
 
 function latestOk(entries: RelayEntry[], chain: "mainnet" | "v3"): RelayEntry | null {
   const ok = entries.filter((e) => e.chain === chain && e.ok === true && e.status === 1);
@@ -642,8 +735,8 @@ function gitCommit(root: string): string | null {
   }
 }
 
-/** `relayDir` is where the relayer histories are read: deployments/ unless a test gives its own. */
-export function buildRecords(root: string, relayDir = join(root, "deployments")): Records {
+/** `relayDir` and `automintDir` are where the relayer and auto-mint histories are read: deployments/ unless a test gives its own. */
+export function buildRecords(root: string, relayDir = join(root, "deployments"), automintDir = join(root, "deployments")): Records {
 
   // Sepolia: the light clients and libraries
   const SEP = "deployments/sepolia.json";
@@ -665,7 +758,8 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"))
   const v3 = readJson(root, V3F);
   const vault = obj(v3.vault, V3F, "vault");
   const locks = arr(v3.locks, V3F, "locks").map((l, i) => obj(l, V3F, `lock ${i}`));
-  const lock0 = locks.find((l) => l.nonce === 0 && l.status === "locked") ?? fail(V3F, "no lock 0");
+  // A lock is named by its vault nonce: its nonce field is its sender's account nonce (a Substrate account's is not the vault's).
+  const lock0 = locks.find((l) => vaultNonceOf(l) === 0 && l.status === "locked") ?? fail(V3F, "no lock 0");
   const committee = obj(vault.committee, V3F, "vault.committee");
 
   // README evidence, with the V3 rows' extrinsic hashes resolved against the V3 record
@@ -804,14 +898,16 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"))
   if (bridge.lock.slot !== bridge.proofs.slot.index) fail(bundleFile, "slot index is not lock 0's slot");
   if (bridge.lock.amountNative !== bridge.mint.amountNative) fail(BR, "the mint's amount is not lock 0's");
 
-  // The latest recorded transfer: the newest successful mint, its lock and its bundle.
+  // The latest recorded transfer: the newest successful mint of a lock the V3 record holds, its lock
+  // and its bundle (latestRecordedMint; a mint of a lock sent from the app counts in the totals).
   const okMints = steps.filter((s) => s.kind === "mint" && s.ok === true && s.status === 1);
-  const newest = [...okMints].sort((a, b) => num(a.block, BR, "mint.block") - num(b.block, BR, "mint.block")).at(-1) ?? null;
+  const recordedNonces = new Set(locks.filter((l) => l.status === "locked").flatMap((l) => vaultNonceOf(l) ?? []));
+  const newest = latestRecordedMint(okMints, recordedNonces);
   let latestRun: LatestRun | null = null;
   if (newest) {
     const ml = obj(newest.lock, BR, "latest mint.lock");
     const nonce = num(ml.nonce, BR, "latest mint.lock.nonce");
-    const lk = locks.find((l) => l.nonce === nonce && l.status === "locked") ?? fail(V3F, `no lock ${nonce} for the latest mint`);
+    const lk = locks.find((l) => vaultNonceOf(l) === nonce && l.status === "locked") ?? fail(V3F, `no lock ${nonce} for the latest mint`);
     const lkBlock = obj(lk.block, V3F, `lock ${nonce} block`);
     const bFile = str(obj(newest.bundle, BR, "latest mint.bundle").file, BR, "latest mint.bundle.file");
     const b = readJson(root, bFile);
@@ -1044,30 +1140,65 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"))
     ...Object.keys(roles).map((name) => ({ name, address: addr(name), role: roles[name] ?? "" })),
   ];
 
-  const lockedAmounts = locks.filter((l) => l.status === "locked").map((l, i) => BigInt(str(l.amountNative, V3F, `lock ${i}.amountNative`)));
   const releasedAmounts = releases.filter((r) => r.status === "released").map((r) => BigInt(r.amountNative ?? "0"));
-  const mints = steps.filter((s) => s.kind === "mint" && s.ok === true && s.status === 1).map((s) => obj(s.lock, BR, "mint.lock"));
-  // The locks auto-mint minted from its own key (deployments/automint-sepolia-<sender>.jsonl), each
-  // counted once, with the amount and recipient the V3 record holds for it.
-  const mintedNonces = new Set(mints.map((l) => num(l.nonce, BR, "mint.lock.nonce")));
-  for (const nonce of readAutoMints(join(root, "deployments"))) {
-    if (mintedNonces.has(nonce)) continue;
-    mintedNonces.add(nonce);
-    mints.push(locks.find((l) => l.nonce === nonce) ?? fail(V3F, `no lock ${nonce} for auto-mint's mint`));
+  // The locks the V3 record holds, by vault nonce, and the mints: the mint steps, then the locks
+  // auto-mint minted from its own key (deployments/automint-sepolia-<sender>.jsonl), each nonce once,
+  // with the amount and recipient its history's attempt line gives (the V3 record's when that line
+  // is missing). A lock recorded and not minted yet is pending, and a mint of a lock the V3 record
+  // does not hold (one sent from the app) counts with what was minted: neither fails the build. A
+  // nonce recorded as locked twice, minted twice, or minted with another amount or recipient than the
+  // V3 record holds does: the records then contradict each other and the chain.
+  const recorded: KnownLock[] = locks
+    .filter((l) => l.status === "locked")
+    .map((l, i) => ({
+      nonce: vaultNonceOf(l) ?? fail(V3F, `locked lock ${i} has no vaultNonce`),
+      amountNative: BigInt(str(l.amountNative, V3F, `lock ${i}.amountNative`)),
+      recipient: hex(l.recipient, V3F, `lock ${i}.recipient`, 20),
+      from: V3F,
+    }));
+  const mints: KnownLock[] = steps
+    .filter((s) => s.kind === "mint" && s.ok === true && s.status === 1)
+    .map((s) => obj(s.lock, BR, "mint.lock"))
+    .map((l) => ({
+      nonce: num(l.nonce, BR, "mint.lock.nonce"),
+      amountNative: BigInt(str(l.amountNative, BR, "mint.lock.amountNative")),
+      recipient: hex(l.recipient, BR, "mint.lock.recipient", 20),
+      from: BR,
+    }));
+  const twice = (ls: KnownLock[]) => ls.find((l, i) => ls.findIndex((x) => x.nonce === l.nonce) !== i);
+  const lockedTwice = twice(recorded);
+  if (lockedTwice) fail(V3F, `lock ${lockedTwice.nonce} is recorded as locked twice`);
+  const mintedTwice = twice(mints);
+  if (mintedTwice) fail(BR, `two successful mints of lock ${mintedTwice.nonce}`);
+  for (const [nonce, m] of readAutoMints(automintDir)) {
+    if (mints.some((x) => x.nonce === nonce)) continue;
+    const r = recorded.find((x) => x.nonce === nonce);
+    const amountNative = m.amountNative !== null ? BigInt(m.amountNative) : r?.amountNative;
+    if (amountNative === undefined) {
+      console.warn(`deployments/: auto-mint minted lock ${nonce}${m.txHash ? ` (${m.txHash})` : ""}, and neither its history's attempt line nor ${V3F} gives its amount: left out of the totals`);
+      continue;
+    }
+    mints.push({ nonce, amountNative, recipient: m.recipient ?? r?.recipient ?? null, from: `deployments/${m.file}` });
   }
-  const minted = mints.reduce((n, l) => n + BigInt(str(l.amountNative, BR, "mint.lock.amountNative")), 0n);
+  const known = lockTotals(recorded, mints);
+  const contradiction = known.disagree[0];
+  if (contradiction) {
+    const { recorded: r, minted: m } = contradiction;
+    fail(m.from ?? "deployments/", `lock ${m.nonce} was minted as ${m.amountNative} for ${m.recipient}, and ${V3F} holds ${r.amountNative} for ${r.recipient}`);
+  }
+  const minted = known.minted;
   const okBurns = burns.filter((b) => b.ok === true && b.status === 1);
   const burned = okBurns.reduce((n, b) => n + BigInt(b.amount), 0n);
   const burnedByRecipient = steps
     .filter((s) => s.kind === "burn" && s.ok === true && s.status === 1 && String(s.sender).toLowerCase() === bridge.lock.recipient)
     .reduce((n, s) => n + BigInt(str(obj(s.burn, BR, "burn").amount, BR, "burn.amount")), 0n);
-  const mintedToRecipient = mints
-    .filter((l) => String(l.recipient).toLowerCase() === bridge.lock.recipient)
-    .reduce((n, l) => n + BigInt(str(l.amountNative, BR, "mint.lock.amountNative")), 0n);
+  const mintedToRecipient = known.mintedTo(bridge.lock.recipient);
   const totals = {
-    locks: lockedAmounts.length,
-    outstandingNative: (lockedAmounts.reduce((a, b) => a + b, 0n) - releasedAmounts.reduce((a, b) => a + b, 0n)).toString(),
+    locks: known.locks,
+    // What the vault took for the known locks, less what the committee released.
+    outstandingNative: (known.locked - releasedAmounts.reduce((a, b) => a + b, 0n)).toString(),
     minted: minted.toString(),
+    pending: known.pending.toString(),
     burned: burned.toString(),
     supply: (minted - burned).toString(),
     recipientBalance: (mintedToRecipient - burnedByRecipient).toString(),
