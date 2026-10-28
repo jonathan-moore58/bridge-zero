@@ -302,7 +302,8 @@ describe("the watcher's halted() port", () => {
     const source = readFileSync(join(RELAYER, "src", "release.ts"), "utf8");
     const once = source.slice(source.indexOf("async function watchOnce("), source.indexOf("function leaveHalt("));
     assert.match(once, /\bhalted: \(\) => haltedOrRecorded\(o\.send, \(\) => haltedBy\(d\.v\.multisig\), findingsOf\(d\.record\), \(f\) => leaveHalt\(d\.v\.multisig, f\), warnOnce\)/);
-    assert.match(source, /const findingsOf = \(record: VaultRecord\): RecordedFindings\[\] =>\s*\(record\.releases \?\? \[\]\)\.map\(\(r\) => \(\{ burn: r\.burn\.burnNonce, approvals: r\.approvals, finalizedCheck: r\.finalizedCheck \}\)\);/);
+    // Each burn as roundLabel names it: its nonce on Sepolia, as before (wayback.test.ts burnLabel), and with its chain on a rollup.
+    assert.match(source, /const findingsOf = \(record: VaultRecord\): RecordedFindings\[\] =>\s*\(record\.releases \?\? \[\]\)\.map\(\(r\) => \(\{ burn: roundLabel\(r\), approvals: r\.approvals, finalizedCheck: r\.finalizedCheck, \.\.\.chainOfRound\(r\) \}\)\);/);
   });
 });
 

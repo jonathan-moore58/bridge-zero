@@ -218,6 +218,11 @@ export interface PayeeFacts {
   /** Transactions sent from the address: its nonce on Sepolia and on V3 (eth_getTransactionCount). */
   sepoliaNonce: number;
   v3Nonce: number;
+  /**
+   * The chain of the burn, where sepoliaContract, burner and sepoliaNonce were read: Sepolia when
+   * absent, or a rollup's title ("Base Sepolia", "Arbitrum Sepolia") for a burn there (wayback.ts).
+   */
+  chain?: string;
 }
 
 export type PayeeKind = "substrate" | "contract" | "burner" | "signer" | "unproven";
@@ -237,19 +242,21 @@ export const isDelegation = (code: Uint8Array): boolean => code.length === 23 &&
  * code; anything else is refused.
  */
 export function payeeVerdict(f: PayeeFacts): { ok: boolean; kind: PayeeKind; why: string } {
+  // The burn's chain: Sepolia, or the rollup the burn is on (its code and nonce were read there).
+  const chain = f.chain ?? "Sepolia";
   if (f.original) return { ok: true, kind: "substrate", why: "the address of a Substrate account that exists: revive.originalAccount maps it to that account, which the vault pays" };
   if (f.contract) return { ok: true, kind: "contract", why: "a contract on V3: the vault's payout calls it, and the dry run shows whether it takes the value" };
-  if (f.burner && !f.sepoliaContract) return { ok: true, kind: "burner", why: "the burn's own sender, which has no code on Sepolia: the Ethereum key that signed the burn controls the same address on V3" };
+  if (f.burner && !f.sepoliaContract) return { ok: true, kind: "burner", why: `the burn's own sender, which has no code on ${chain}: the Ethereum key that signed the burn controls the same address on V3` };
   if ((f.sepoliaNonce > 0 && !f.sepoliaContract) || f.v3Nonce > 0) {
-    return { ok: true, kind: "signer", why: `an address that has signed transactions (nonce ${f.sepoliaNonce} on Sepolia, ${f.v3Nonce} on V3) and has no code: an Ethereum key controls it` };
+    return { ok: true, kind: "signer", why: `an address that has signed transactions (nonce ${f.sepoliaNonce} on ${chain}, ${f.v3Nonce} on V3) and has no code: an Ethereum key controls it` };
   }
   return {
     ok: false,
     kind: "unproven",
     why: f.sepoliaContract
-      ? "a contract on Sepolia that is not on V3: no key controls its address on V3, and nothing else shows that anyone does"
+      ? `a contract on ${chain} that is not on V3: no key controls its address on V3, and nothing else shows that anyone does`
       : "nothing shows that anyone controls it on V3: no Substrate account is mapped to it, it has no code, it is not the burn's sender, and it has sent no " +
-        "transaction on Sepolia or V3. If it is the address of a Substrate account that does not exist yet, the payout goes to a fallback account nobody controls",
+        `transaction on ${chain} or V3. If it is the address of a Substrate account that does not exist yet, the payout goes to a fallback account nobody controls`,
   };
 }
 

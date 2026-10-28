@@ -64,6 +64,36 @@
       "effectiveGasPrice": "5001000",
       "status": 1,
       "ok": true
+    },
+    {
+      "name": "burn 0.001 wtPOT for 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 on V3",
+      "kind": "burn",
+      "nonce": 12,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/bridge/BridgeMinter.sol:BridgeMinter",
+      "address": "0xdc31a3bc1354545eeb985aad7b2aa662e9272348",
+      "burn": {
+        "amount": "100000000000",
+        "v3Recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "expected": {
+          "burnNonce": "0",
+          "burnId": "0x6ae40d53f7c3d1156db402387484ed10011948fca8a2dfedd2b25eabbedb6d8d"
+        },
+        "burnNonce": "0",
+        "burnId": "0x6ae40d53f7c3d1156db402387484ed10011948fca8a2dfedd2b25eabbedb6d8d"
+      },
+      "dataHash": "0x9d6bb2a3228484fc14e3e2669beeb953b458d473ddd6d9fde10b0bfdd33c8780",
+      "gasLimit": 68769,
+      "simulatedGas": 52822,
+      "codeHash": null,
+      "txHash": "0xaffaf9e0f464552686c3478cb4ffb3b822accb98b656cbd2053579de70eefd2e",
+      "signedAt": "2026-10-28T03:16:42.849Z",
+      "block": 51177673,
+      "gasUsed": 52822,
+      "effectiveGasPrice": "5001000",
+      "status": 1,
+      "ok": true,
+      "l1Fee": "666738"
     }
   ]
 }

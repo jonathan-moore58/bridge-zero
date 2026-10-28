@@ -16,6 +16,8 @@
 //   [--fast-cap <tPOT>] [--fast-budget <tPOT>, --watch] [--fast-cap-override, for either above 10 tPOT]
 //   more options: --rpc <wss url> (the V3 node), --evm <http(s) url> (its EVM RPC), --priority-fee
 //   <gwei> and --max-fee <gwei> (burn)
+//   --network sepolia|base-sepolia|arbitrum-sepolia (burn, release, status; Sepolia's by default), or
+//   several comma separated for release --watch: the chain whose minter the burn is on (below)
 //
 // burn dry-runs BridgeMinter.burn(amount, v3Recipient) on Sepolia with eth_simulateV1, validation
 // on, from the sender (--from, by default the deployer 0xD983…1071) at its nonce and with its
@@ -194,6 +196,48 @@
 // open operations, the record), the members' and the multisig's balances, and the accounting: the
 // vault's outstanding covers the wtPOT supply and the burns not released yet.
 //
+// --network: the chain of the burn, Sepolia's by default and everything above as written. Base
+// Sepolia (84532) and Arbitrum Sepolia (421614) have a BridgeMinter each, at the same address
+// (0xdc31…2348), bound to the same vault on V3. A burn there takes that chain's records
+// (deployments/<network>-bridge.json, where a burn is a step of kind "burn"), its RPCs (sepolia.mjs
+// NETWORKS: <NETWORK>_RPC_URL when set, else its first public one), its chain id in the burn id
+// (keccak256(abi.encode(BURN_TAG, block.chainid, minter, nonce)): burn ids differ per chain) and
+// its rule (wayback.ts): final is that chain's finalized block tag, which follows Sepolia's finality
+// of the batch that holds the burn (about 20 minutes); fast mode reads the burn --confirmations of
+// its blocks below its latest, 1 to 7,200, and with --send at least 180 on Base Sepolia and 144 on
+// Arbitrum Sepolia (36 seconds of their 0.2 s and 0.25 s blocks, the time Sepolia's 3 take). Where
+// "Sepolia" stands above, read that chain. A burn's dry run there runs its first pass at 1,000,000
+// gas (the cap at the max fee needs more ETH than a burner holds there), takes eth_estimateGas's +
+// 10% as the gas limit (a burn of the sender's whole balance clears storage, whose refund leaves the
+// gas used below what the burn needs to run), adds Arbitrum's L1 gas once more to it and counts
+// Base's L1 data fee in the balance a send needs (l1.ts), and the record keeps the receipt's l1Fee
+// (Base) or gasUsedForL1 (Arbitrum). A read of state that the
+// rollup's RPC no longer serves (Arbitrum Sepolia's own keeps about 4,500 blocks, about as deep as
+// its finalized block) goes to that network's archive RPCs. release --watch takes several chains,
+// comma separated, and serves them from one process, a round for one chain after the other, each
+// with its own wait (a chain whose RPC fails backs off alone), its own round count (--rounds n is n
+// rounds of each chain, and the exit code the worst of each chain's last round's) and burn cache
+// (release-watch-<multisig>.<network>.burns.json; Sepolia's as before); --confirmations takes one
+// number for every chain or <network>=<n> pairs, a chain left out waiting for finality. The
+// committee, its lock, its halt file and the fast budget are shared: one vault and one committee
+// release for every chain, so the fast releases of every chain whose blocks are not final there
+// (and with --send, those not checked against their chain's final blocks yet, whatever their blocks)
+// stay within --fast-budget in all; a dry run reads another chain's finalized head (its RPC must
+// answer that chain's id) to tell whether that chain's fast release is final. An approval by hand in
+// fast mode keeps to the budget too, counted as the watcher with --send counts it, across every
+// chain (by hand the budget is --fast-cap): above it, the burn waits for finality. Each release in
+// deployments/v3-testnet.json names its burn's chain id and minter, and the watcher keeps each
+// chain's releases apart by both, as the rollups' minters share one address; messages and the halt
+// file name a rollup's burn with its chain ("0 on Base Sepolia"), Sepolia's by its nonce as before.
+// The watcher warns at the start of each chain with a bridge record here that it does not serve
+// (its burns wait), and with --send it does not start (exit code 4, no halt file) while the record
+// holds a release of such a chain that only that chain's round finishes: one left half done, or one
+// made in fast mode and not checked against its chain's final blocks yet; a start with fewer chains
+// (an older command line, as the one that starts it at logon may keep) cannot leave those unseen.
+// One member opens every release, and its deposit is reserved until the release runs: while another
+// chain's release it opened is not run yet and it cannot cover a second deposit, an opening waits,
+// naming that release. fund is V3's alone and takes no --network.
+//
 // Nothing is signed without --send, and --account, --password-file, --key-file and --member-keys
 // are refused without it. Every fetch of this process refuses eth_send*, eth_sign* and personal_* before
 // anything reaches the wire (bridge.ts installDryRunGuard), and the V3 node's provider refuses
@@ -231,7 +275,6 @@ import {
   logWindows,
   MINTER,
   revertName,
-  SEPOLIA_CHAIN_ID,
   TOKEN,
   TRANSFER_TOPIC,
   uintAt,
@@ -296,6 +339,7 @@ import {
   gasOf,
   keystoreAddress,
   mktxArgs,
+  NETWORKS,
   nextNonceIs,
   nonces,
   parseGwei,
@@ -309,12 +353,36 @@ import {
   share,
   signAndPublish,
   sleep,
+  useNetwork,
   withHeadroom,
   writeJsonAtomic,
   type Fees,
   type Log,
+  type NetworkName,
   type Receipt,
 } from "../../contracts/script/lib/sepolia.mjs";
+import { L1_KIND, l1Request, limitWithL1, NO_L1, receiptL1Fee, type L1Cost } from "./l1.js";
+import {
+  burnCacheName,
+  burnLabel,
+  burnOn,
+  chainIdOf,
+  confirmationsBy,
+  fastExposure,
+  fastReleasesOf,
+  otherFastChains,
+  parseNetwork,
+  parseNetworks,
+  prunedState,
+  rulesBy,
+  sendConfirmationsProblem,
+  unservedRounds,
+  WatchSchedule,
+  WAYBACK,
+  WAYBACK_NETWORKS,
+  waybackOf,
+  type WaybackChain,
+} from "./wayback.js";
 import {
   addHalt,
   approvalOutcome,
@@ -327,11 +395,8 @@ import {
   haltedOrRecorded,
   haltRefusal,
   MAX_WATCH_SECONDS,
-  MIN_WATCH_CONFIRMATIONS,
   MIN_WATCH_SECONDS,
   missingBurnVerdict,
-  nextWait,
-  parseConfirmations,
   parseMemberKeys,
   readBurnCache,
   readHalt,
@@ -388,8 +453,28 @@ const watchLockPath = (multisig: string) => join(STATE_DIR, `release-watch-${mul
  * with --send starts, and nothing is signed by hand without --despite-halt, while it is there.
  */
 const haltPathOf = (multisig: string) => join(STATE_DIR, `release-watch-${multisig}.halt`);
-const BRIDGE_RECORD = "deployments/sepolia-bridge.json";
 const at = (path: string) => resolve(ROOT, path);
+
+/**
+ * The chain whose burns the command works on, or whose round the watcher runs (wayback.ts): its
+ * bridge record (NET.record, deployments/sepolia-bridge.json on Sepolia), its rule's bounds and its
+ * name in what the tool prints. Sepolia's unless --network.
+ */
+let NET: WaybackChain = WAYBACK.sepolia;
+
+/**
+ * Switches the tool to `network`: sepolia.mjs useNetwork moves the RPC, the chain id and the cap
+ * that every read and send on the burn's chain below follows, and NET the records and the rule. The
+ * watcher switches before each chain's round; nothing of one round runs while another's does.
+ */
+function useReleaseNetwork(network: NetworkName): WaybackChain {
+  useNetwork(network);
+  NET = WAYBACK[network];
+  return NET;
+}
+
+/** What a command line names after `npm run release -- ... --burn-nonce <n>` for the chain in use: nothing on Sepolia, as before. */
+const networkFlag = () => (NET.network === "sepolia" ? "" : ` --network ${NET.network}`);
 
 /** Gas limit of each view read at the end of a simulated burn. */
 const VIEW_GAS = 200_000;
@@ -447,15 +532,61 @@ class RpcError extends Stop {
 const offline = (error: unknown) =>
   error instanceof TypeError || error instanceof SyntaxError || (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError"));
 
-/** A Sepolia read, retried as a load-balanced RPC can lag: Unreachable when it never got an answer, Stop with the RPC's error otherwise. */
+/**
+ * A read on the burn's chain (Sepolia, or NET's rollup), retried as a load-balanced RPC can lag:
+ * Unreachable when it never got an answer, Stop with the RPC's error otherwise.
+ */
 async function sepolia<R>(what: string, read: () => Promise<R>): Promise<R> {
   try {
     return await retry(what, read);
   } catch (error) {
     if (error instanceof DryRunViolation) throw error;
-    if (offline(error)) throw new Unreachable(`Sepolia RPC unreachable (${what}: ${errorText(error)})`);
-    throw new RpcError(`Sepolia RPC: ${what}: ${errorText(error)}`);
+    if (offline(error)) throw new Unreachable(`${NET.title} RPC unreachable (${what}: ${errorText(error)})`);
+    throw new RpcError(`${NET.title} RPC: ${what}: ${errorText(error)}`);
   }
+}
+
+/** The archive RPCs of the chain in use (sepolia.mjs NETWORKS archives, or its archiveEnv, comma separated). */
+const archivesOf = (network: NetworkName): string[] =>
+  (process.env[NETWORKS[network].archiveEnv] ?? NETWORKS[network].archives.join(","))
+    .split(",")
+    .map((u) => u.trim())
+    .filter((u) => URL.canParse(u));
+
+/**
+ * A read of state at a block (eth_call, eth_getCode) on the burn's chain. On a rollup (NET.archiveState),
+ * when the RPC answers that it no longer serves that block's state, each of the network's archive
+ * RPCs is asked once in turn: Arbitrum Sepolia's own RPC keeps about 4,500 blocks, about as deep as
+ * its finalized block. Otherwise, and on Sepolia always, the read as before (sepolia()).
+ */
+async function stateRead<T>(what: string, method: string, params: unknown[]): Promise<T> {
+  if (NET.archiveState) {
+    const first = await sepolia(what, () => rpcBody(method, params));
+    if (!first.error) return first.result as T;
+    const text = JSON.stringify(first.error);
+    if (prunedState(text)) {
+      for (const url of archivesOf(NET.network)) {
+        try {
+          const body = (await (
+            await fetch(url, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+              signal: AbortSignal.timeout(60_000),
+            })
+          ).json()) as { result?: unknown; error?: unknown };
+          if (body.error === undefined && body.result !== undefined) {
+            log(`     (${what}: ${new URL(RPC).host} no longer serves that state; read from ${new URL(url).host})`);
+            return body.result as T;
+          }
+        } catch (error) {
+          if (error instanceof DryRunViolation) throw error;
+        }
+      }
+      throw new RpcError(`${NET.title} RPC: ${what}: ${redact(text)}, and no archive RPC (${archivesOf(NET.network).map((u) => new URL(u).host).join(", ") || "none"}) served it; ${NETWORKS[NET.network].archiveEnv} names others`);
+    }
+  }
+  return sepolia(what, () => rpc<T>(method, params));
 }
 
 /** @polkadot/api, loaded when a command reads V3. The tool never calls process.exit (v3-vault.ts says why). */
@@ -475,6 +606,9 @@ const USAGE = `usage (from relayer/):
   npm run release -- fund --member <1|2|3> | --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]
   npm run release -- status
   more options: --rpc <wss url>, --evm <http(s) url>, --priority-fee <gwei> and --max-fee <gwei> (burn)
+  --network sepolia|base-sepolia|arbitrum-sepolia: the chain of the burn (burn, release, status), Sepolia's by default;
+    release --watch takes several, comma separated, and --confirmations one number for each or <network>=<n> pairs
+    (Base Sepolia 1 to 7,200, 180 or more with --send; Arbitrum Sepolia 1 to 7,200, 144 or more with --send)
   the return path is trusted: the committee's multisig releases on V3, and no contract checks a release against its burn`;
 
 function usage(problem: string): never {
@@ -487,6 +621,8 @@ interface Common {
 }
 
 interface BurnOptions extends Common {
+  /** --network: the chain of the minter that burns. */
+  network: NetworkName;
   amount: bigint;
   v3Recipient: Uint8Array;
   from?: Uint8Array;
@@ -511,7 +647,7 @@ interface ReleaseRun {
   send: boolean;
   keyFile?: string;
   passwordFile?: string;
-  /** Where the burn is read on Sepolia: the finalized block, or --confirmations below the latest up to --fast-cap. */
+  /** Where the burn is read on its chain (Sepolia, or --network's): the finalized block, or --confirmations below the latest up to --fast-cap. */
   rule: Rule;
   /** The member's key, which the watcher loads once. */
   pair?: Pair;
@@ -531,6 +667,8 @@ interface BurnHint {
 }
 
 interface ReleaseOptions extends Common, ReleaseRun {
+  /** --network: the chain of the burn. */
+  network: NetworkName;
   /** --despite-halt: sign by hand although the committee's halt file is there (a member looked). */
   despiteHalt?: boolean;
 }
@@ -540,7 +678,10 @@ interface WatchOptions extends Common {
   watch: number;
   /** Stop after this many rounds (--rounds); null: run until stopped. */
   rounds: number | null;
-  rule: Rule;
+  /** --network: the chains whose burns it releases, in the order given, one round each in turn (Sepolia alone by default). */
+  networks: NetworkName[];
+  /** Each chain's rule: its own confirmations, the fast cap and the one fast budget they share. */
+  rules: Map<NetworkName, Rule>;
   send: boolean;
   /** The two members whose keys sign (--member-keys); without --send, members 1 and 2. */
   memberKeys: { member: Member; path: string | null }[];
@@ -616,6 +757,11 @@ function parseCommon(values: Record<string, string | boolean | undefined>): Comm
 }
 
 const COMMON = { rpc: { type: "string" }, evm: { type: "string" } } as const;
+/** --network: burn, release and status take it; fund, on V3 alone, does not. */
+const NETWORK_OPTION = { network: { type: "string" } } as const;
+
+/** --network of a command on one chain (burn, release --burn-nonce, status): Sepolia's by default. */
+const networkOption = (v: Record<string, string | boolean | undefined>): NetworkName => option("--network", () => parseNetwork(str(v.network)));
 
 function burnOptions(args: string[]): BurnOptions {
   const v = parse(args, {
@@ -628,6 +774,7 @@ function burnOptions(args: string[]): BurnOptions {
     "priority-fee": { type: "string" },
     "max-fee": { type: "string" },
     ...COMMON,
+    ...NETWORK_OPTION,
   });
   const amountText = str(v.amount);
   const recipientText = str(v["v3-recipient"]);
@@ -647,6 +794,7 @@ function burnOptions(args: string[]): BurnOptions {
   };
   return {
     ...parseCommon(v),
+    network: networkOption(v),
     amount: option("--amount", () => parseWtpot(amountText)),
     v3Recipient: option("--v3-recipient", () => nonZeroAddress(recipientText, "--v3-recipient")),
     from: fromText === undefined ? undefined : option("--from", () => parseAddress(fromText, "--from")),
@@ -658,8 +806,14 @@ function burnOptions(args: string[]): BurnOptions {
   };
 }
 
-/** --confirmations, --fast-cap and --fast-budget (by default the cap): the rule a burn is read by. */
-function ruleOf(v: Record<string, string | boolean | undefined>): Rule {
+/**
+ * --confirmations, --fast-cap and --fast-budget (by default the cap): the rule a burn is read by on
+ * each chain of `networks`. Without --confirmations every chain waits for finality. --confirmations
+ * takes one number for every chain, or <network>=<n> pairs where a chain left out waits for
+ * finality, each within its chain's bounds (wayback.ts confirmationsBy; Sepolia's 1 to 64 as
+ * before). The cap and the budget are one for every chain: the budget is counted across them.
+ */
+function rulesOf(v: Record<string, string | boolean | undefined>, networks: NetworkName[]): Map<NetworkName, Rule> {
   const confirmationsText = str(v.confirmations);
   const capText = str(v["fast-cap"]);
   const budgetText = str(v["fast-budget"]);
@@ -667,7 +821,7 @@ function ruleOf(v: Record<string, string | boolean | undefined>): Rule {
     if (capText !== undefined) usage("--fast-cap is for fast mode: add --confirmations <n>");
     if (budgetText !== undefined) usage("--fast-budget is for fast mode: add --confirmations <n>");
     if (v["fast-cap-override"] === true) usage("--fast-cap-override is for fast mode: add --confirmations <n>");
-    return FINALITY;
+    return new Map(networks.map((x) => [x, FINALITY]));
   }
   const fastCap = capText === undefined ? DEFAULT_FAST_CAP : option("--fast-cap", () => parseTpot(capText));
   const fastBudget = budgetText === undefined ? fastCap : option("--fast-budget", () => parseTpot(budgetText));
@@ -677,11 +831,11 @@ function ruleOf(v: Record<string, string | boolean | undefined>): Rule {
       if (value > FAST_LIMIT) usage(`${name}: ${formatTpot(value)} is above ${formatTpot(FAST_LIMIT)}; add --fast-cap-override if that much may be released before finality`);
     }
   }
-  return {
-    confirmations: option("--confirmations", () => parseConfirmations(confirmationsText)),
+  return rulesBy(
+    option("--confirmations", () => confirmationsBy(confirmationsText, networks)),
     fastCap,
     fastBudget,
-  };
+  );
 }
 
 /** A whole number written as digits only, within [min, max]. */
@@ -714,11 +868,15 @@ function releaseOptions(args: string[]): ReleaseOptions | WatchOptions {
     "state-dir": { type: "string" },
     "despite-halt": { type: "boolean", default: false },
     ...COMMON,
+    ...NETWORK_OPTION,
   });
   if (str(v.watch) !== undefined) return watchOptions(v);
   for (const name of ["rounds", "member-keys", "state-dir", "fast-budget"]) if (v[name] !== undefined) usage(`--${name} is for --watch`);
+  // The chain of the burn, which the rest of the line is read for.
+  const network = networkOption(v);
+  const chain = WAYBACK[network];
   const nonceText = str(v["burn-nonce"]);
-  if (nonceText === undefined) usage("release needs --burn-nonce <n>, the burn on Sepolia to release, or --watch <seconds>");
+  if (nonceText === undefined) usage(`release needs --burn-nonce <n>, the burn on ${chain.title} to release, or --watch <seconds>`);
   const rehearse = v.rehearse === true;
   const approve = v.approve === true;
   const cancel = v.cancel === true;
@@ -729,26 +887,27 @@ function releaseOptions(args: string[]): ReleaseOptions | WatchOptions {
   const keyText = str(v["key-file"]);
   const passwordText = str(v["password-file"]);
   if (approve && cancel) usage("choose one of --approve and --cancel");
-  if (rehearse && (cancel || send)) usage("--rehearse is a dry run of a burn that is not on Sepolia: nothing is sent or cancelled for it (--approve dry-runs an approval)");
+  if (rehearse && (cancel || send)) usage(`--rehearse is a dry run of a burn that is not on ${chain.title}: nothing is sent or cancelled for it (--approve dry-runs an approval)`);
   if (rehearse && (amountText === undefined || toText === undefined)) usage("--rehearse needs --amount <wtPOT> and --to <h160>: the burn it stands for");
   if (!rehearse && amountText !== undefined) usage("--amount is for --rehearse: a release pays exactly what its burn burned");
-  if (rehearse && v.confirmations !== undefined) usage("--confirmations reads a burn on Sepolia, and a rehearsal has none");
+  if (rehearse && v.confirmations !== undefined) usage(`--confirmations reads a burn on ${chain.title}, and a rehearsal has none`);
   if ((approve || cancel) && memberText === undefined) usage(`--${approve ? "approve" : "cancel"} needs --member <1|2|3>`);
   if (!approve && !cancel && memberText !== undefined) usage("--member is for --approve and --cancel");
   if (send && !approve && !cancel) usage("--send signs an approval or a cancellation: add --approve or --cancel with --member");
   if (send && !(keyText && passwordText)) usage("--send needs --key-file <member json> and --password-file <path>");
   if (!send && v["despite-halt"] === true) usage("--despite-halt is for --send: a dry run signs nothing, halt file or not");
   if (!send && (keyText !== undefined || passwordText !== undefined)) usage("--key-file and --password-file are for --send; a dry run signs nothing");
-  const rule = ruleOf(v);
-  // As for the watcher: a reorg of one or two blocks could undo a burn released that shallow.
-  if (send && rule.confirmations !== null && rule.confirmations < MIN_WATCH_CONFIRMATIONS) {
-    usage(`--send takes --confirmations ${MIN_WATCH_CONFIRMATIONS} or more: reorgs of one or two blocks happen on Sepolia`);
-  }
+  const rule = rulesOf(v, [network]).get(network)!;
+  // As for the watcher: a reorg of one or two blocks could undo a burn released that shallow (on a
+  // rollup, 36 seconds of its blocks: wayback.ts).
+  const shallow = send && rule.confirmations !== null ? sendConfirmationsProblem(chain, rule.confirmations) : null;
+  if (shallow) usage(`--send ${shallow}`);
   // The key file and the password file are opened only to sign; their paths are not printed either.
   const keyFile = secretPath(keyText, "--key-file");
   const passwordFile = secretPath(passwordText, "--password-file");
   return {
     ...parseCommon(v),
+    network,
     burnNonce: option("--burn-nonce", () => parseBurnNonce(nonceText)),
     to: toText === undefined ? undefined : option("--to", () => nonZeroAddress(toText, "--to")),
     rehearse,
@@ -772,9 +931,13 @@ function watchOptions(v: Record<string, string | boolean | undefined>): WatchOpt
   const passwordText = str(v["password-file"]);
   if (send && !(keysText && passwordText)) usage("--watch --send needs --member-keys <k>:<member json>,<j>:<member json> and --password-file <path>, which opens both");
   if (!send && (keysText !== undefined || passwordText !== undefined)) usage("--member-keys and --password-file are for --send; a dry run signs nothing");
-  const rule = ruleOf(v);
-  if (send && rule.confirmations !== null && rule.confirmations < MIN_WATCH_CONFIRMATIONS) {
-    usage(`--watch --send takes --confirmations ${MIN_WATCH_CONFIRMATIONS} or more: reorgs of one or two blocks happen on Sepolia`);
+  // The chains served, one process for all: the committee's lock is one per committee.
+  const networks = option("--network", () => parseNetworks(str(v.network)));
+  const rules = rulesOf(v, networks);
+  for (const x of networks) {
+    const c = rules.get(x)!.confirmations;
+    const shallow = send && c !== null ? sendConfirmationsProblem(WAYBACK[x], c) : null;
+    if (shallow) usage(`--watch --send ${shallow}`);
   }
   const roundsText = str(v.rounds);
   const memberKeys = keysText === undefined
@@ -784,7 +947,8 @@ function watchOptions(v: Record<string, string | boolean | undefined>): WatchOpt
     ...parseCommon(v),
     watch: option("--watch", () => wholeIn(str(v.watch)!, MIN_WATCH_SECONDS, MAX_WATCH_SECONDS)),
     rounds: roundsText === undefined ? null : option("--rounds", () => wholeIn(roundsText, 1, Number.MAX_SAFE_INTEGER)),
-    rule,
+    networks,
+    rules,
     send,
     memberKeys,
     passwordFile: secretPath(passwordText, "--password-file"),
@@ -822,8 +986,9 @@ function fundOptions(args: string[]): FundOptions {
   };
 }
 
-function statusOptions(args: string[]): Common {
-  return parseCommon(parse(args, COMMON));
+function statusOptions(args: string[]): Common & { network: NetworkName } {
+  const v = parse(args, { ...COMMON, ...NETWORK_OPTION });
+  return { ...parseCommon(v), network: networkOption(v) };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -858,6 +1023,10 @@ interface BridgeStep {
   effectiveGasPrice: string | null;
   status: number | null;
   ok: boolean | null;
+  /** On an OP Stack rollup (Base Sepolia): the receipt's l1Fee, wei paid for L1 data besides the gas. */
+  l1Fee?: string;
+  /** On Arbitrum: the receipt's gasUsedForL1, the L1 part of gasUsed. */
+  gasUsedForL1?: number;
   dropped?: Hex[];
   note?: string;
 }
@@ -870,8 +1039,11 @@ interface BridgeRecord {
   steps: BridgeStep[];
 }
 
-/** The minter and the token as the record has them. */
+/** The minter and the token as the record has them, on the chain the record is for. */
 interface Bridge {
+  /** The chain (wayback.ts): its record is `chain.record`, its chain id goes into every burn id. */
+  chain: WaybackChain;
+  chainId: bigint;
   record: BridgeRecord;
   minter: Hex;
   token: Hex;
@@ -882,23 +1054,27 @@ interface Bridge {
   tokenCodeHash: Hex;
 }
 
+/** The bridge record of the chain in use (NET): deployments/sepolia-bridge.json on Sepolia, deployments/<network>-bridge.json on a rollup. */
 function readBridge(): Bridge {
-  const path = at(BRIDGE_RECORD);
-  if (!existsSync(path)) throw new Stop(`no ${BRIDGE_RECORD}: the bridge is deployed with npm run mint -- deploy`);
+  const chain = NET;
+  const path = at(chain.record);
+  if (!existsSync(path)) throw new Stop(`no ${chain.record}: the bridge is deployed with npm run mint -- deploy${networkFlag()}`);
   let record: BridgeRecord;
   try {
     record = JSON.parse(readFileSync(path, "utf8")) as BridgeRecord;
   } catch (error) {
-    throw new Stop(`${BRIDGE_RECORD}: ${errorText(error)}`);
+    throw new Stop(`${chain.record}: ${errorText(error)}`);
   }
-  if (record.network !== "sepolia" || record.chainId !== Number(SEPOLIA_CHAIN_ID) || !Array.isArray(record.steps)) throw new Stop(`${BRIDGE_RECORD} is not a Sepolia bridge record`);
+  if (record.network !== chain.network || record.chainId !== Number(chain.chainId) || !Array.isArray(record.steps)) throw new Stop(`${chain.record} is not a ${chain.title} bridge record`);
   const deployed = (name: string) => record.steps.find((s) => s.kind === "deploy" && s.name === name && s.ok && s.block !== null && s.codeHash);
   const minter = deployed("BridgeMinter");
   const token = deployed("WrappedTPOT");
   if (!minter || !token || record.contracts?.BridgeMinter !== minter.address || record.contracts?.WrappedTPOT !== token.address) {
-    throw new Stop(`${BRIDGE_RECORD} records no deployed BridgeMinter and WrappedTPOT`);
+    throw new Stop(`${chain.record} records no deployed BridgeMinter and WrappedTPOT`);
   }
   return {
+    chain,
+    chainId: chain.chainId,
     record,
     minter: minter.address,
     token: token.address,
@@ -909,11 +1085,11 @@ function readBridge(): Bridge {
   };
 }
 
-function saveBridge(record: BridgeRecord): void {
+function saveBridge(b: Bridge): void {
   try {
-    writeJsonAtomic(at(BRIDGE_RECORD), record);
+    writeJsonAtomic(at(b.chain.record), b.record);
   } catch (error) {
-    throw new Stop(`${BRIDGE_RECORD} could not be written: ${errorText(error)}`);
+    throw new Stop(`${b.chain.record} could not be written: ${errorText(error)}`);
   }
 }
 
@@ -1094,17 +1270,19 @@ function gitCommit(): string | null {
 /** A block a read is made at: a number or tag, or (EIP-1898) a block hash that must be canonical, so that every read of a block not final yet is of the same block. */
 type BlockTag = string | { blockHash: string; requireCanonical: true };
 
-const sepoliaView = async (to: Hex, data: Uint8Array, block: BlockTag) => hexToBytes(await sepolia("view", () => rpc<Hex>("eth_call", [{ to, data: bytesToHex(data) }, block])));
+/** A view on the burn's chain at `block`; on a rollup, from an archive RPC when its RPC no longer serves that state (stateRead). */
+const sepoliaView = async (to: Hex, data: Uint8Array, block: BlockTag) => hexToBytes(await stateRead<Hex>("view", "eth_call", [{ to, data: bytesToHex(data) }, block]));
 
+/** The RPC of the chain in use (NET) serves that chain: Sepolia's, or the rollup's. */
 async function checkSepolia(): Promise<void> {
   let chainId: string;
   try {
     chainId = await rpc<string>("eth_chainId", []);
   } catch (error) {
     if (error instanceof DryRunViolation) throw error;
-    throw new Unreachable(`Sepolia RPC unreachable (${errorText(error)})`);
+    throw new Unreachable(`${NET.title} RPC unreachable (${errorText(error)})`);
   }
-  if (!check(BigInt(chainId) === SEPOLIA_CHAIN_ID, `chain id ${BigInt(chainId)} is Sepolia (${new URL(RPC).host})`)) throw new Stop("the Sepolia RPC serves another chain");
+  if (!check(BigInt(chainId) === NET.chainId, `chain id ${BigInt(chainId)} is ${NET.title} (${new URL(RPC).host})`)) throw new Stop(`the ${NET.title} RPC serves another chain`);
 }
 
 interface SepoliaState {
@@ -1115,8 +1293,8 @@ interface SepoliaState {
 /** The minter and the token at `block`: their code must be the record's. */
 async function sepoliaState(b: Bridge, block: BlockTag): Promise<SepoliaState> {
   for (const [name, address, hash] of [["BridgeMinter", b.minter, b.minterCodeHash], ["WrappedTPOT", b.token, b.tokenCodeHash]] as const) {
-    const code = hexToBytes(await sepolia("code", () => rpc<Hex>("eth_getCode", [address, block])));
-    if (bytesToHex(keccak_256(code)) !== hash) throw new Stop(`${name} ${checksumAddress(hexToBytes(address))} does not have the code ${BRIDGE_RECORD} records`);
+    const code = hexToBytes(await stateRead<Hex>("code", "eth_getCode", [address, block]));
+    if (bytesToHex(keccak_256(code)) !== hash) throw new Stop(`${name} ${checksumAddress(hexToBytes(address))} does not have the code ${b.chain.record} records`);
   }
   return {
     burnCount: uintAt(await sepoliaView(b.minter, callData(MINTER.burnCount), block), 0),
@@ -1192,7 +1370,7 @@ async function findBurn(b: Bridge, n: bigint, to: number, hint?: BurnHint): Prom
   const recorded = b.record.steps.find((s) => s.kind === "burn" && s.ok && s.burn?.burnNonce === n.toString() && s.block !== null && s.block <= to);
   for (const [from, until] of recorded ? [[recorded.block!, recorded.block!], [b.deployBlock, to]] : [[b.deployBlock, to]]) {
     const found = await sepoliaLogs(filter, from, until);
-    if ("refused" in found) throw new Stop(`the Sepolia RPC refuses eth_getLogs: ${found.refused}; set SEPOLIA_RPC_URL to an RPC that keeps the minter's logs from #${fmt(b.deployBlock)}`);
+    if ("refused" in found) throw new Stop(`the ${b.chain.title} RPC refuses eth_getLogs: ${found.refused}; set ${NETWORKS[b.chain.network].rpcEnv} to an RPC that keeps the minter's logs from #${fmt(b.deployBlock)}`);
     const logs = found.logs.filter((l) => l.address.toLowerCase() === b.minter && !(l as { removed?: boolean }).removed);
     if (logs.length > 1) throw new Stop(`${logs.length} BurnRequested logs for burn ${n}`);
     if (logs.length === 1) return burnOfLog(logs[0]);
@@ -1395,6 +1573,8 @@ async function payeeFacts(evm: EvmRpc, head: V3Head, payee: Uint8Array, burner: 
       burner: burner !== null && equalBytes(burner, payee),
       sepoliaNonce,
       v3Nonce,
+      // The burn's chain, where the nonce and the code above were read: named on a rollup.
+      ...(NET.network === "sepolia" ? {} : { chain: NET.title }),
     },
     account,
     exists: state.exists,
@@ -1702,7 +1882,7 @@ async function simulateBurn(p: { sender: Hex; nonce: number; minter: Hex; token:
   const stateOverrides = { [PROBE]: { code: PROBE_CODE }, [PROBE_SENDER]: { balance: qty(10n ** 18n) } };
   const blocks = await rpc<{ baseFeePerGas: string; calls: SimulatedBurn["call"][] }[]>("eth_simulateV1", [{ blockStateCalls: [{ stateOverrides, calls }], validation: true }, block]).catch((error: unknown) => {
     if (error instanceof DryRunViolation) throw error;
-    if (offline(error)) throw new Unreachable(`Sepolia RPC unreachable (eth_simulateV1: ${errorText(error)})`);
+    if (offline(error)) throw new Unreachable(`${NET.title} RPC unreachable (eth_simulateV1: ${errorText(error)})`);
     throw new Stop(`eth_simulateV1: ${errorText(error)}`);
   });
   const done = blocks[0].calls;
@@ -1730,8 +1910,8 @@ function burnLogChecks(logs: Log[] | undefined, b: Bridge, sender: Hex, v3Recipi
   ]);
   if (burn) {
     if (burn.burnNonce !== expectedNonce) log(`     note: another burn took nonce ${expectedNonce} first; this one is burn ${burn.burnNonce}`);
-    const convention = burnId(SEPOLIA_CHAIN_ID, hexToBytes(b.minter), burn.burnNonce);
-    lines.push([equalBytes(burn.burnId, convention), `its burn id ${bytesToHex(burn.burnId)} is the vault's convention keccak256(abi.encode(BURN_TAG, 11155111, minter, ${burn.burnNonce}))`]);
+    const convention = burnId(b.chainId, hexToBytes(b.minter), burn.burnNonce);
+    lines.push([equalBytes(burn.burnId, convention), `its burn id ${bytesToHex(burn.burnId)} is the vault's convention keccak256(abi.encode(BURN_TAG, ${b.chainId}, minter, ${burn.burnNonce}))`]);
   }
   const transfer = findLog(logs, b.token, TRANSFER_TOPIC, bytesToHex(uintWord(BigInt(sender))));
   let burned = false;
@@ -1767,17 +1947,25 @@ async function settleOpenBurns(b: Bridge): Promise<number | typeof PENDING> {
     entry.txHash = null;
     entry.ok = false;
     entry.note = n.latest > entry.nonce ? `nonce ${entry.nonce} was used by another transaction` : `neither mined nor pending at ${new Date().toISOString()}`;
-    saveBridge(b.record);
+    saveBridge(b);
     log(`     ${entry.dropped.at(-1)}, burned by an earlier run, was never mined (${entry.note})`);
   }
   return mined;
 }
 
+/** What a rollup's receipt adds (l1.ts): an OP Stack chain's l1Fee, wei paid for L1 data besides the gas; Arbitrum's gasUsedForL1, the L1 part of gasUsed. */
+type RollupReceipt = Receipt & { l1Fee?: string | null; gasUsedForL1?: string | null };
+
 /** Checks a mined burn against its entry and completes it in the record; true when it passed. */
 async function completeBurn(b: Bridge, entry: BridgeStep, receipt: Receipt): Promise<boolean> {
   const status = Number(BigInt(receipt.status));
   const block = Number(BigInt(receipt.blockNumber));
-  const lines: [boolean, string][] = [[status === 1, `${receipt.transactionHash}: status ${status}, block ${fmt(block)}, ${share(gasOf(receipt))} (simulated ${fmt(entry.simulatedGas ?? 0)})`]];
+  // A rollup's receipt: what it paid for L1 (none on Sepolia, whose line and record are as before).
+  const rollup = receipt as RollupReceipt;
+  const l1Fee = typeof rollup.l1Fee === "string" ? receiptL1Fee(rollup) : null;
+  const l1Gas = typeof rollup.gasUsedForL1 === "string" && /^0x[0-9a-fA-F]+$/.test(rollup.gasUsedForL1) ? Number(BigInt(rollup.gasUsedForL1)) : null;
+  const l1Text = l1Fee !== null ? `; an L1 data fee of ${eth(l1Fee)} besides the gas` : l1Gas !== null ? `, ${fmt(l1Gas)} of it L1 gas` : "";
+  const lines: [boolean, string][] = [[status === 1, `${receipt.transactionHash}: status ${status}, block ${fmt(block)}, ${share(gasOf(receipt))} (simulated ${fmt(entry.simulatedGas ?? 0)})${l1Text}`]];
   const facts = entry.burn!;
   const { lines: logLines, burn } = burnLogChecks(receipt.logs, b, entry.sender, hexToBytes(facts.v3Recipient), BigInt(facts.amount), BigInt(facts.expected.burnNonce));
   lines.push(...logLines);
@@ -1795,13 +1983,17 @@ async function completeBurn(b: Bridge, entry: BridgeStep, receipt: Receipt): Pro
     effectiveGasPrice: BigInt(receipt.effectiveGasPrice ?? 0).toString(),
     ok,
     burn: { ...facts, burnNonce: burn ? burn.burnNonce.toString() : null, burnId: burn ? bytesToHex(burn.burnId) : null },
+    ...(l1Fee !== null ? { l1Fee: l1Fee.toString() } : {}),
+    ...(l1Gas !== null ? { gasUsedForL1: l1Gas } : {}),
   });
-  saveBridge(b.record);
+  saveBridge(b);
   return ok;
 }
 
 async function burnCommand(o: BurnOptions): Promise<number> {
-  log(`${new Date().toISOString()}: burning ${formatWtpot(o.amount)} on Sepolia for ${checksumAddress(o.v3Recipient)} on V3${o.send ? "" : " (dry run)"}`);
+  // The chain of the minter that burns: its RPC, records and chain id from here on.
+  useReleaseNetwork(o.network);
+  log(`${new Date().toISOString()}: burning ${formatWtpot(o.amount)} on ${NET.title} for ${checksumAddress(o.v3Recipient)} on V3${o.send ? "" : " (dry run)"}`);
   log(`     the return path is ${TRUST}`);
   const b = readBridge();
   let sender: Hex = b.deployer;
@@ -1823,13 +2015,13 @@ async function burnCommand(o: BurnOptions): Promise<number> {
   const wtpot = await balanceOf(sender);
   const ethBalance = BigInt(await sepolia("balance", () => rpc<string>("eth_getBalance", [sender, block.number])));
   const nonce = Number(BigInt(await sepolia("nonce", () => rpc<string>("eth_getTransactionCount", [sender, block.number]))));
-  log(`Sepolia block ${fmt(Number(BigInt(block.number)))} (${block.hash}), simulated on top of it via ${new URL(RPC).host}`);
+  log(`${NET.title} block ${fmt(Number(BigInt(block.number)))} (${block.hash}), simulated on top of it via ${new URL(RPC).host}`);
   log(`BridgeMinter ${checksumAddress(hexToBytes(b.minter))}: ${n} burn${n === 1n ? "" : "s"} so far; WrappedTPOT ${checksumAddress(hexToBytes(b.token))}: total supply ${formatWtpot(state.totalSupply)}`);
   log(`Sender ${checksumAddress(hexToBytes(sender))}${o.send ? ` (keystore ${o.account})` : o.from ? " (--from)" : ""}: nonce ${nonce}, ${formatWtpot(wtpot)}, ${eth(ethBalance)}`);
   if (!check(wtpot >= o.amount, `the sender holds ${formatWtpot(wtpot)}, at least the ${formatWtpot(o.amount)} it burns`)) return FAILED;
 
-  // The burn id the minter will give it, by the view and by the vault's convention.
-  const id = burnId(SEPOLIA_CHAIN_ID, hexToBytes(b.minter), n);
+  // The burn id the minter will give it, by the view and by the vault's convention (this chain's id in it).
+  const id = burnId(b.chainId, hexToBytes(b.minter), n);
   const viaView = wordAt(await sepoliaView(b.minter, callData(MINTER.burnIdOf, uintWord(n)), block.number), 0);
   check(equalBytes(viaView, id), `burn ${n} will carry burn id ${bytesToHex(id)}: burnIdOf(${n}) and the vault's convention agree`);
 
@@ -1860,12 +2052,22 @@ async function burnCommand(o: BurnOptions): Promise<number> {
     await api.disconnect();
   }
 
-  // The dry run: the cap as gas limit, then the limit it is sent with.
+  // The dry run: the cap as gas limit (on a rollup NET.burnProbeGas, below), then the limit it is sent with.
   const data = burnCalldata(o.amount, o.v3Recipient);
   const errors = errorMap(BRIDGE_ERRORS);
   log(`\nFees: next base fee ${fmt(fees.base)} wei, priority fee ${fmt(fees.tip)} wei, max fee ${fmt(fees.maxFee)} wei (node gas price ${fmt(fees.gasPrice)} wei)`);
+  // A rollup's L1 part (l1.ts): Arbitrum's L1 gas, part of the gas used and added once more to the
+  // gas limit; Base's L1 data fee, paid besides the gas. Sepolia has none.
+  const kind = L1_KIND[NET.network];
+  const l1Ask = l1Request(kind, b.minter, bytesToHex(data));
+  const l1: L1Cost = l1Ask ? l1Ask.decode(await sepolia("L1 estimate", () => rpc<Hex>("eth_call", [{ to: l1Ask.to, data: l1Ask.data }, block.number]))) : NO_L1;
+  if (l1.kind === "arbitrum") log(`L1: ${fmt(l1.gas)} L1 gas by NodeInterface (L1 base fee estimate ${fmt(l1.l1BaseFee ?? 0n)} wei), in the gas used and added once more to the gas limit`);
+  if (l1.kind === "op") log(`L1: an L1 data fee of at most ${eth(l1.fee)} by GasPriceOracle, paid besides the gas`);
   const run = (gas: number) => simulateBurn({ sender, nonce, minter: b.minter, token: b.token, data, gas, fees, burnNonce: n }, block.number);
-  const first = await run(CAP);
+  // Sepolia's first pass runs at the cap, as before; a rollup's at NET.burnProbeGas, as the cap at the
+  // max fee would need more ETH than a burner holds there.
+  const probe = NET.burnProbeGas;
+  const first = await run(probe);
   if (first.call.status !== "0x1") {
     const revert = first.call.error?.data ?? first.call.returnData;
     const name = /^0x([0-9a-fA-F]{2})*$/.test(revert ?? "") ? revertName(hexToBytes(revert), errors) : null;
@@ -1873,9 +2075,19 @@ async function burnCommand(o: BurnOptions): Promise<number> {
     return FAILED;
   }
   const gas = gasOf(first.call);
-  const gasLimit = withHeadroom(gas);
+  // Sepolia's limit as before, the gas used + 10%. A rollup's eth_estimateGas's + 10% (on Arbitrum
+  // it holds the L1 gas, added once more), as the mint tools send there: a burn of the sender's whole
+  // balance clears storage, whose refund leaves the gas used below what the burn needs to run.
+  const estimate = NET.burnGasByEstimate
+    ? Number(BigInt(await sepolia("gas estimate", () => rpc<string>("eth_estimateGas", [{ from: sender, to: b.minter, data: bytesToHex(data) }, block.number]))))
+    : null;
+  const gasLimit = limitWithL1(kind, withHeadroom(estimate ?? gas), l1);
   const second = await run(gasLimit);
-  check(second.call.status === "0x1" && gasOf(second.call) === gas, `burn(${o.amount}, ${checksumAddress(o.v3Recipient)}): ${share(gas)} with the cap and with gas limit ${fmt(gasLimit)}`);
+  const passes =
+    estimate === null
+      ? `with the cap and with gas limit ${fmt(gasLimit)}`
+      : `with gas limit ${fmt(probe)} and with ${fmt(gasLimit)}, eth_estimateGas's ${fmt(estimate)} + 10%${l1.kind === "arbitrum" ? ` + ${fmt(l1.gas)} L1 gas` : ""}`;
+  check(second.call.status === "0x1" && gasOf(second.call) === gas, `burn(${o.amount}, ${checksumAddress(o.v3Recipient)}): ${share(gas)} ${passes}`);
   const { lines } = burnLogChecks(second.call.logs, b, sender, o.v3Recipient, o.amount, n);
   for (const [ok, what] of lines) check(ok, `     ${what}`);
   const [balanceAfter, supplyAfter, countAfter, idAfter] = second.views.map((x) => x.data);
@@ -1885,14 +2097,19 @@ async function burnCommand(o: BurnOptions): Promise<number> {
     check(uintAt(countAfter, 0) === n + 1n && equalBytes(wordAt(idAfter, 0), id), `     burnCount after: ${uintAt(countAfter, 0)}; burnIdOf(${n}) ${shortHex(wordAt(idAfter, 0))}`);
   } else check(false, "     the views after the burn were not read");
   const paid = ethBalance - second.balanceAfter;
-  const most = BigInt(gasLimit) * fees.maxFee;
-  check(most <= ethBalance, `the sender pays ${eth(paid)} at the current fees (base fee ${fmt(second.baseFee)} wei + priority fee, as simulated); at most ${eth(most)} at the max fee; it has ${eth(ethBalance)}`);
+  // On an OP Stack rollup the L1 data fee is charged besides the gas: the balance covers both.
+  const l1Fee = l1.kind === "op" ? l1.fee : 0n;
+  const most = BigInt(gasLimit) * fees.maxFee + l1Fee;
+  check(
+    most <= ethBalance,
+    `the sender pays ${eth(paid)} at the current fees (base fee ${fmt(second.baseFee)} wei + priority fee, as simulated); at most ${eth(most)} at the max fee${l1Fee > 0n ? ", the L1 data fee's bound included" : ""}; it has ${eth(ethBalance)}`,
+  );
   if (failures > 0) {
     log("\nThe dry run failed: nothing is sent.");
     return FAILED;
   }
   if (!o.send) {
-    log(`\nThe dry run passed. Nothing was signed or sent. Once sent and final on Sepolia, the committee releases it on V3: npm run release -- release --burn-nonce ${n}`);
+    log(`\nThe dry run passed. Nothing was signed or sent. Once sent and final on ${NET.title}, the committee releases it on V3: npm run release -- release --burn-nonce ${n}${networkFlag()}`);
     return OK;
   }
 
@@ -1906,7 +2123,7 @@ async function burnCommand(o: BurnOptions): Promise<number> {
   if (n2.latest !== nonce) throw new Stop(`the sender's nonce moved from ${nonce} to ${n2.latest} since the dry run: run again`);
   const dataHash = bytesToHex(keccak_256(data));
   const reusable = b.record.steps.find((s) => s.sender === sender && s.nonce === nonce);
-  if (reusable && (reusable.kind !== "burn" || reusable.dataHash !== dataHash || reusable.txHash !== null)) throw new Stop(`${BRIDGE_RECORD} has another transaction at nonce ${nonce} of ${sender} (${reusable.name}): look at it before sending`);
+  if (reusable && (reusable.kind !== "burn" || reusable.dataHash !== dataHash || reusable.txHash !== null)) throw new Stop(`${b.chain.record} has another transaction at nonce ${nonce} of ${sender} (${reusable.name}): look at it before sending`);
   const entry: BridgeStep = reusable ?? {
     name: `burn ${formatWtpot(o.amount)} for ${checksumAddress(o.v3Recipient)} on V3`,
     kind: "burn",
@@ -1929,24 +2146,25 @@ async function burnCommand(o: BurnOptions): Promise<number> {
   };
   if (!reusable) b.record.steps.push(entry);
   Object.assign(entry, { gasLimit, simulatedGas: gas, ok: null });
-  saveBridge(b.record);
+  saveBridge(b);
   if (!(await nextNonceIs(sender, nonce))) return FAILED;
+  // mktxArgs signs for sepolia.mjs's chain id and RPC, which useReleaseNetwork set to this chain's.
   const args = mktxArgs(entry.name, { to: b.minter, data: bytesToHex(data), nonce, gasLimit, fees, account: o.account!, passwordFile: o.passwordFile! });
   const hash = signAndPublish(args, entry.name, (signed) => {
     log(`     burn: signed ${signed}, gas limit ${fmt(gasLimit)}`);
     Object.assign(entry, { txHash: signed, signedAt: new Date().toISOString() });
-    saveBridge(b.record);
+    saveBridge(b);
   });
   if (!hash) return FAILED;
   const receipt = await sepolia("receipt", () => receiptOf(hash, true));
   if (!receipt) {
-    log(`     ${hash} is not mined yet; run again to settle it (${BRIDGE_RECORD} keeps it as signed)`);
+    log(`     ${hash} is not mined yet; run again to settle it (${b.chain.record} keeps it as signed)`);
     return PENDING;
   }
   const ok = await completeBurn(b, entry, receipt);
   if (ok) {
-    log(`\nBurn ${entry.burn!.burnNonce} is mined and checked; ${BRIDGE_RECORD} records it. Once Sepolia finalizes its block (about 13 minutes), the committee releases it on V3:`);
-    log(`     npm run release -- release --burn-nonce ${entry.burn!.burnNonce}`);
+    log(`\nBurn ${entry.burn!.burnNonce} is mined and checked; ${b.chain.record} records it. Once ${NET.title} finalizes its block (${NET.finalizesIn}), the committee releases it on V3:`);
+    log(`     npm run release -- release --burn-nonce ${entry.burn!.burnNonce}${networkFlag()}`);
   }
   return ok ? OK : FAILED;
 }
@@ -2217,7 +2435,7 @@ async function settleSubmitted(api: ApiPromise, evm: EvmRpc, keyring: Keyring, v
       }
       // The halt file before the record: once the record holds the approval as failed, no later run
       // sees it fail, so a process that dies between the two must leave the halt file behind.
-      if (approval.status === "failed" && approval.block) leaveHalt(v.multisig, onChainFailure(round.burn.burnNonce, approval));
+      if (approval.status === "failed" && approval.block) leaveHalt(v.multisig, onChainFailure(roundLabel(round), approval));
       saveV3Record(record);
     }
   }
@@ -2236,10 +2454,13 @@ async function settleSubmitted(api: ApiPromise, evm: EvmRpc, keyring: Keyring, v
   return OK;
 }
 
+/** A release round's burn as messages and the halt file name it: Sepolia's by its nonce, as before; a rollup's with its chain (wayback.ts burnLabel). */
+const roundLabel = (r: ReleaseEntry): string => burnLabel(chainIdOf(r.burn), r.burn.burnNonce);
+
 /** The approvals the record holds as submitted, with their burns: what a settling may find on chain. */
 function submittedOf(record: VaultRecord): { key: string; burn: string; extrinsicHash: string; approval: ApprovalEntry }[] {
   return (record.releases ?? []).flatMap((r) =>
-    r.approvals.filter((a) => a.status === "submitted").map((a) => ({ key: a.extrinsicHash, burn: r.burn.burnNonce, extrinsicHash: a.extrinsicHash, approval: a })),
+    r.approvals.filter((a) => a.status === "submitted").map((a) => ({ key: a.extrinsicHash, burn: roundLabel(r), extrinsicHash: a.extrinsicHash, approval: a })),
   );
 }
 
@@ -2277,7 +2498,7 @@ async function settleOrStop(api: ApiPromise, evm: EvmRpc, keyring: Keyring, v: V
   );
 }
 
-/** The deployments a release reads: the bridge on Sepolia, the vault and its committee on V3. */
+/** The deployments a release reads: the bridge on the burn's chain (Sepolia, or NET's rollup), the vault and its committee on V3. */
 interface Deployed {
   b: Bridge;
   record: VaultRecord;
@@ -2293,17 +2514,29 @@ async function deployed(): Promise<Deployed> {
   return { b, record, keyring, v: vaultFacts(record, keyring) };
 }
 
-const ruleText = (rule: Rule, watch = false) =>
+/**
+ * The rule a burn on `chain` is read by, as the tool prints it: Sepolia's words as before. With
+ * `shared` (the watcher serves several chains), the budget is said to count every chain's fast
+ * releases.
+ */
+const ruleText = (rule: Rule, watch = false, chain: WaybackChain = WAYBACK.sepolia, shared = false) =>
   rule.confirmations === null
-    ? "the burn is read at Sepolia's finalized block"
-    : `${tradeOff(rule.confirmations)}. A burn of at most --fast-cap ${formatTpot(rule.fastCap)} is read ${rule.confirmations} block${rule.confirmations === 1 ? "" : "s"} below Sepolia's latest; a larger one waits for finality` +
-      (watch ? `, and so does one that would take the burns released fast and not final yet (with --send: or not checked against Sepolia's final chain yet) above --fast-budget ${formatTpot(rule.fastBudget)} in all` : "");
+    ? `the burn is read at ${chain.title}'s finalized block`
+    : `${tradeOff(rule.confirmations, chain.title)}. A burn of at most --fast-cap ${formatTpot(rule.fastCap)} is read ${rule.confirmations} block${rule.confirmations === 1 ? "" : "s"} below ${chain.title}'s latest; a larger one waits for finality` +
+      (watch
+        ? shared
+          ? `, and so does one that would take the burns released fast on any chain and not final there yet (with --send: or not checked against their chain's final blocks yet) above --fast-budget ${formatTpot(rule.fastBudget)} in all`
+          : `, and so does one that would take the burns released fast and not final yet (with --send: or not checked against ${chain.title}'s final chain yet) above --fast-budget ${formatTpot(rule.fastBudget)} in all`
+        : "");
 
 async function releaseCommand(o: ReleaseOptions): Promise<number> {
+  // The chain of the burn: its RPC, records and rule from here on.
+  useReleaseNetwork(o.network);
   const what = o.action === "approve" ? `member ${o.member}'s approval of` : o.action === "cancel" ? `member ${o.member}'s cancellation of` : "the release of";
-  log(`${new Date().toISOString()}: ${what} burn ${o.burnNonce} on ${V3.title}${o.rehearse ? " (rehearsal)" : ""}${o.send ? "" : " (dry run)"}`);
+  const whose = NET.network === "sepolia" ? "" : ` of ${NET.title}`;
+  log(`${new Date().toISOString()}: ${what} burn ${o.burnNonce}${whose} on ${V3.title}${o.rehearse ? " (rehearsal)" : ""}${o.send ? "" : " (dry run)"}`);
   log(`     the return path is ${TRUST}`);
-  if (o.rule.confirmations !== null) log(`     ${ruleText(o.rule)}`);
+  if (o.rule.confirmations !== null) log(`     ${ruleText(o.rule, false, NET)}`);
   const d = await deployed();
   // After a fatal stop, nothing is signed by hand either until a member looked (--despite-halt).
   const haltPath = haltPathOf(d.v.multisig);
@@ -2373,13 +2606,15 @@ async function releaseCommand(o: ReleaseOptions): Promise<number> {
 }
 
 /**
- * Burn n on Sepolia, read and checked at the finalized block, or with --confirmations c at the block
- * c below the latest (the finalized block when that is higher); for a rehearsal, the burn --amount
- * and --to describe. PENDING while the burn is not that deep yet, or, in fast mode, while a burn
- * above --fast-cap is not final; FAILED when a check fails.
+ * Burn n on Sepolia (or on the chain of d.b, a rollup's: its finalized tag and its blocks), read and
+ * checked at the finalized block, or with --confirmations c at the block c below the latest (the
+ * finalized block when that is higher); for a rehearsal, the burn --amount and --to describe.
+ * PENDING while the burn is not that deep yet, or, in fast mode, while a burn above --fast-cap is
+ * not final; FAILED when a check fails.
  */
 async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease | number> {
   const { b } = d;
+  const chain = b.chain;
   const n = o.burnNonce;
   const c = o.rule.confirmations;
   await checkSepolia();
@@ -2403,26 +2638,26 @@ async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease 
   // load-balanced RPC could otherwise answer each read from another fork.
   const tag: BlockTag = at.number === F ? qty(at.number) : { blockHash: at.hash, requireCanonical: true };
   const state = await sepoliaState(b, tag);
-  const id = burnId(SEPOLIA_CHAIN_ID, hexToBytes(b.minter), n);
+  const id = burnId(b.chainId, hexToBytes(b.minter), n);
   const viaView = wordAt(await sepoliaView(b.minter, callData(MINTER.burnIdOf, uintWord(n)), tag), 0);
   const where = at.number === F ? `finalized block ${fmt(F)} (${at.hash})` : `block ${fmt(at.number)} (${at.hash}), ${fmt(L - at.number)} below the latest #${fmt(L)}; finalized #${fmt(F)}`;
-  log(`Sepolia, ${where}: BridgeMinter ${checksumAddress(hexToBytes(b.minter))}, ${state.burnCount} burn${state.burnCount === 1n ? "" : "s"}`);
-  check(equalBytes(viaView, id), `burnIdOf(${n}) is ${bytesToHex(id)}, the vault's convention keccak256(abi.encode(BURN_TAG, 11155111, minter, ${n}))`);
+  log(`${chain.title}, ${where}: BridgeMinter ${checksumAddress(hexToBytes(b.minter))}, ${state.burnCount} burn${state.burnCount === 1n ? "" : "s"}`);
+  check(equalBytes(viaView, id), `burnIdOf(${n}) is ${bytesToHex(id)}, the vault's convention keccak256(abi.encode(BURN_TAG, ${b.chainId}, minter, ${n}))`);
   let burn: BurnToRelease;
   if (o.rehearse) {
-    if (n < state.burnCount) throw new Stop(`burn ${n} is on Sepolia: release it without --rehearse`);
+    if (n < state.burnCount) throw new Stop(`burn ${n} is on ${chain.title}: release it without --rehearse`);
     burn = { final: true, burnNonce: n, burnId: id, from: null, v3Recipient: o.to!, amount: o.amount!, txHash: null, block: null, blockHash: null };
-    log(`     rehearsal: burn ${n} is not on Sepolia; the V3 side runs as if it burned ${formatWtpot(burn.amount)} for ${checksumAddress(burn.v3Recipient)}. Nothing can be sent for it.`);
+    log(`     rehearsal: burn ${n} is not on ${chain.title}; the V3 side runs as if it burned ${formatWtpot(burn.amount)} for ${checksumAddress(burn.v3Recipient)}. Nothing can be sent for it.`);
   } else {
     if (n >= state.burnCount) {
       const latest = await sepolia("latest block", () => rpc<{ number: string }>("eth_getBlockByNumber", ["latest", false]));
       const count = uintAt(await sepoliaView(b.minter, callData(MINTER.burnCount), latest.number), 0);
       if (n < count) {
-        if (c === null) log(`     burn ${n} is on Sepolia after the finalized block #${fmt(F)}: the committee releases a burn once it is final (about 13 minutes after its block); run again then`);
-        else log(`     burn ${n} is on Sepolia after block #${fmt(at.number)}: fewer than ${c} blocks are on top of it yet (fast mode); run again in a few blocks`);
+        if (c === null) log(`     burn ${n} is on ${chain.title} after the finalized block #${fmt(F)}: the committee releases a burn once it is final (${chain.finalizesIn} after its block); run again then`);
+        else log(`     burn ${n} is on ${chain.title} after block #${fmt(at.number)}: fewer than ${c} blocks are on top of it yet (fast mode); run again in a few blocks`);
         return PENDING;
       }
-      throw new Stop(`there is no burn ${n} on Sepolia (burnCount ${count}); a dry run of one that is not there yet takes --rehearse --amount <wtPOT> --to <h160>`);
+      throw new Stop(`there is no burn ${n} on ${chain.title} (burnCount ${count}); a dry run of one that is not there yet takes --rehearse --amount <wtPOT> --to <h160>`);
     }
     const found = await findBurn(b, n, at.number, o.hint);
     if (!found) throw new Stop(`burnCount is ${state.burnCount} at #${fmt(at.number)}, but no BurnRequested log of burn ${n} is there from #${fmt(b.deployBlock)}`);
@@ -2445,7 +2680,7 @@ async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease 
     if (!final) {
       // Fast mode: the burn is c blocks deep at least (it is in a block at most the one read), not final.
       if (found.amount > o.rule.fastCap) {
-        log(`     burn ${n} burns ${formatWtpot(found.amount)}, above --fast-cap ${formatTpot(o.rule.fastCap)}: it waits for Sepolia's finality (its block #${fmt(found.block)}, finalized #${fmt(F)}); run again then`);
+        log(`     burn ${n} burns ${formatWtpot(found.amount)}, above --fast-cap ${formatTpot(o.rule.fastCap)}: it waits for ${chain.title}'s finality (its block #${fmt(found.block)}, finalized #${fmt(F)}); run again then`);
         return PENDING;
       }
       // Not final: the log's block is the canonical one of its number, and the block read at is
@@ -2456,7 +2691,7 @@ async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease 
       check(canonical !== null && canonical === found.blockHash, `block #${fmt(found.block)} is canonical with the log's block hash (${canonical ? shortHex(canonical) : "no block"})`);
       const still = await blockHashAt(at.number);
       check(still === at.hash.toLowerCase(), `block #${fmt(at.number)} is still ${shortHex(at.hash)} after the reads`);
-      log(`     ${tradeOff(c!)}`);
+      log(`     ${tradeOff(c!, chain.title)}`);
     }
     burn = { ...found, final };
   }
@@ -2540,7 +2775,7 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
     const mine = ops.filter((x) => x.release !== null && equalBytes(x.release.burnId, burn.burnId));
     const others = ops.filter((x) => !mine.includes(x));
     for (const x of others) log(`     another open operation of the committee: ${shortHex(x.hash)}, opened at #${fmt(x.when.height)}${x.release ? `, the release of burn id ${shortHex(x.release.burnId)}` : x.call ? ", not a release of this vault" : `, call unknown (${x.source})`}`);
-    if (mine.length > 1) throw new Stop(`${mine.length} open operations release burn ${n}: cancel all but one (npm run release -- release --burn-nonce ${n} --cancel --member <depositor>)`);
+    if (mine.length > 1) throw new Stop(`${mine.length} open operations release burn ${n}: cancel all but one (npm run release -- release --burn-nonce ${n}${networkFlag()} --cancel --member <depositor>)`);
     const op: Operation | null = mine[0] ?? null;
     // The operation's call when one is open (its call is known: it decodes as this burn's
     // release), else this run's.
@@ -2549,7 +2784,7 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
       const p = !equalBytes(op.release!.to, release.to) || op.release!.amountNative !== release.amountNative ? `it pays ${formatTpot(op.release!.amountNative)} to ${checksumAddress(op.release!.to)}` : limitsProblem(op.revive!, needs, floor);
       if (p) {
         check(false, `the open operation ${shortHex(op.hash)} for burn ${n} (from ${op.source}) is not this burn's release: ${p}`);
-        log(`     its depositor, member ${memberOf(v, keyring, op.depositor) ?? "?"}, cancels it: npm run release -- release --burn-nonce ${n} --cancel --member ${memberOf(v, keyring, op.depositor) ?? "<k>"} --send ...`);
+        log(`     its depositor, member ${memberOf(v, keyring, op.depositor) ?? "?"}, cancels it: npm run release -- release --burn-nonce ${n}${networkFlag()} --cancel --member ${memberOf(v, keyring, op.depositor) ?? "<k>"} --send ...`);
         if (o.action !== "cancel") return FAILED;
       } else if (op.hash !== bytesToHex(callHash(freshBytes))) {
         log(`     the open operation's call (from ${op.source}) has other limits than this run's (${limitsText(op.revive!)}); they cover the dry run, and it is the call to approve`);
@@ -2591,11 +2826,11 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
     log(`     members now: ${balances.map((x, i) => `${i + 1}: ${formatTpot(x.free)} free${x.reserved ? `, ${formatTpot(x.reserved)} reserved` : ""}`).join("; ")}`);
     const commands = (verb: "approve" | "cancel", members: number[]) => {
       const who = members.length === 1 ? String(members[0]) : `<${members.join("|")}>`;
-      const dry = `npm run release -- release --burn-nonce ${n} --${verb} --member ${who}`;
+      const dry = `npm run release -- release --burn-nonce ${n}${networkFlag()} --${verb} --member ${who}`;
       return `     ${dry}\n     ${dry} --send --key-file <member json> --password-file <path>`;
     };
     if (o.action === "plan") {
-      if (o.rehearse) log("\nThe rehearsal passed: the V3 side of this release runs. Nothing was signed or sent, and nothing can be approved until the burn is on Sepolia and final.");
+      if (o.rehearse) log(`\nThe rehearsal passed: the V3 side of this release runs. Nothing was signed or sent, and nothing can be approved until the burn is on ${b.chain.title} and final.`);
       else if (!op) {
         log(`Next: any member opens it with asMulti, no timepoint and the call in full, which reserves ${formatTpot(deposit)} of that member's until the release runs:`);
         log(commands("approve", [1, 2, 3]));
@@ -2639,12 +2874,26 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
       log(`     fund it first: npm run release -- fund --member ${k} --amount ${wholeTpot(need - balance.free)}, then with --send --key-file <path>`);
       return FAILED;
     }
+    // By hand, an approval in fast mode keeps to the fast budget too, as the watcher with --send counts
+    // it (by hand the budget is --fast-cap): the releases made in fast mode on any chain that are not
+    // checked against their chains' final blocks yet, with this burn, at most the budget. One vault
+    // and one committee release for every chain. The record read now: another run may have released
+    // since this one read it. The watcher's own approvals keep to the budget in its round (watch.ts).
+    if (!o.watcher && action !== "cancel" && !burn.final) {
+      const exposed = fastExposure(readV3Record().releases ?? [], bytesToHex(burn.burnId));
+      const held = exposed.burns.map((x) => `burn ${burnLabel(x.chainId, x.burnNonce)}, ${formatTpot(x.amount)}`).join("; ");
+      const within = check(
+        exposed.total + burn.amount <= o.rule.fastBudget,
+        `the releases made in fast mode and not checked against their chains' final blocks yet hold ${formatTpot(exposed.total)}${held ? ` (${held})` : ""}; with this burn's ${formatTpot(burn.amount)} that is ${exposed.total + burn.amount <= o.rule.fastBudget ? "within" : "above"} the fast budget, ${formatTpot(o.rule.fastBudget)} (by hand, --fast-cap)`,
+      );
+      if (!within) log(`     the release waits for ${b.chain.title}'s finality (run it again without --confirmations then), or until those are checked: the watcher checks a fast release once its burn's block is final`);
+    }
     if (failures > 0) {
       log("\nThe dry run failed: nothing is sent.");
       return FAILED;
     }
     if (!o.send) {
-      if (o.rehearse) log(`\nThe rehearsal of member ${k}'s approval passed. Nothing was signed or sent, and nothing can be until burn ${n} is on Sepolia and final.`);
+      if (o.rehearse) log(`\nThe rehearsal of member ${k}'s approval passed. Nothing was signed or sent, and nothing can be until burn ${n} is on ${b.chain.title} and final.`);
       else if (o.watcher) log(`\nThe dry run of member ${k}'s approval passed. Nothing was signed or sent.`);
       else log(`\nThe dry run passed. Nothing was signed or sent. To send it:\n${commands(o.action === "cancel" ? "cancel" : "approve", [k]).split("\n")[1]}`);
       return OK;
@@ -2661,7 +2910,8 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
       status: "open",
       trust: TRUST,
       burn: {
-        chainId: SEPOLIA_CHAIN_ID.toString(),
+        // The burn's chain: Base Sepolia's and Arbitrum Sepolia's minters share one address.
+        chainId: b.chainId.toString(),
         minter: b.minter,
         burnNonce: n.toString(),
         burnId: bytesToHex(burn.burnId),
@@ -2722,7 +2972,7 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
     // watcher (whose round stops on this FAILED): the halt file first, before the record holds the
     // approval as failed and no later run would see it fail.
     const failedOnChain = !ok && approval.block !== null;
-    if (failedOnChain) leaveHalt(v.multisig, onChainFailure(n.toString(), approval));
+    if (failedOnChain) leaveHalt(v.multisig, onChainFailure(burnLabel(b.chainId, n), approval));
     saveV3Record(record);
     if (!ok) return failedOnChain && !o.watcher ? HALTED : FAILED;
     if (action === "open") {
@@ -2778,9 +3028,20 @@ class Halted extends Error {
   override name = "Halted";
 }
 
-/** The record's releases as recordedStop reads them: each burn, its approvals and its check against Sepolia's final chain. */
+/** A rollup round's chain, as recordedStop names its final chain: { chain: its title }; nothing for Sepolia's, whose words stay as before. */
+const chainOfRound = (r: ReleaseEntry): { chain?: string } => {
+  const id = chainIdOf(r.burn);
+  if (id === WAYBACK.sepolia.chainId) return {};
+  return { chain: waybackOf(id)?.title ?? `chain ${id}` };
+};
+
+/**
+ * The record's releases as recordedStop reads them: each burn (its nonce on Sepolia, as before; with
+ * its chain on a rollup, roundLabel, as every chain has a burn 0), its approvals and its check
+ * against its chain's final chain (`chain`: a rollup's title; none on Sepolia, as before).
+ */
 const findingsOf = (record: VaultRecord): RecordedFindings[] =>
-  (record.releases ?? []).map((r) => ({ burn: r.burn.burnNonce, approvals: r.approvals, finalizedCheck: r.finalizedCheck }));
+  (record.releases ?? []).map((r) => ({ burn: roundLabel(r), approvals: r.approvals, finalizedCheck: r.finalizedCheck, ...chainOfRound(r) }));
 
 /** Why the committee's halt file stops a run, or null when there is none. */
 function haltedBy(multisig: string): string | null {
@@ -2839,7 +3100,8 @@ async function recentBurn(b: Bridge, n: bigint, from: number, to: number): Promi
 async function burnsSince(d: Deployed, heads: Heads, cache: BurnCache): Promise<WatchedBurn[]> {
   const latest = heads.latest;
   const { b, record } = d;
-  const releases = (record.releases ?? []).filter((r) => r.status === "released" && r.burn.minter === b.minter);
+  // This chain's releases: its chain id and its minter, as Base Sepolia's and Arbitrum Sepolia's minters share one address.
+  const releases = (record.releases ?? []).filter((r) => r.status === "released" && burnOn(r.burn, b.chainId, b.minter));
   const { nextNonce, fromBlock } = cursorOf(
     releases.map((r) => ({ burnNonce: BigInt(r.burn.burnNonce), block: r.burn.block })),
     b.deployBlock,
@@ -2863,7 +3125,7 @@ async function burnsSince(d: Deployed, heads: Heads, cache: BurnCache): Promise<
     } else {
       const found = await recentBurn(b, n, fromBlock, latest);
       if (found !== null && "refused" in found) {
-        out.push({ burnNonce: n, amount: 0n, block: 0, payee: "?", onChain: null, missing: `the Sepolia RPC refuses eth_getLogs (${found.refused}) before its log is found; an RPC that keeps the minter's logs from #${fmt(fromBlock)} finds it (SEPOLIA_RPC_URL)` });
+        out.push({ burnNonce: n, amount: 0n, block: 0, payee: "?", onChain: null, missing: `the ${b.chain.title} RPC refuses eth_getLogs (${found.refused}) before its log is found; an RPC that keeps the minter's logs from #${fmt(fromBlock)} finds it (${NETWORKS[b.chain.network].rpcEnv})` });
         continue;
       }
       if (found === null) {
@@ -2889,19 +3151,25 @@ async function burnsSince(d: Deployed, heads: Heads, cache: BurnCache): Promise<
   return out;
 }
 
-/** The burn on V3 at the finalized head (released[burnId], the committee's open operation for it) and in the record. */
-async function burnStateOf(api: ApiPromise, d: Deployed, burn: WatchedBurn): Promise<BurnState> {
+/**
+ * The burn on V3 at the finalized head (released[burnId], the committee's open operation for it) and
+ * in the record. With nothing open for it, whether `opener` (the member who would open it: the
+ * watcher's first key) is busy elsewhere (openerBusyOf).
+ */
+async function burnStateOf(api: ApiPromise, d: Deployed, burn: WatchedBurn, opener?: number): Promise<BurnState> {
   const { v, record, keyring } = d;
   if (!burn.onChain) throw new Error(`burn ${burn.burnNonce}: no log`);
   const onChain = burn.onChain;
   const head = await finalizedHead(api);
   const released = (await vaultWord(head, v.address, releasedSlot(onChain.burnId))) !== 0n;
-  const ops = (await operations(api, head, v, record, api.tx.revive.call.callIndex)).filter((x) => x.release !== null && equalBytes(x.release.burnId, onChain.burnId));
+  const all = await operations(api, head, v, record, api.tx.revive.call.callIndex);
+  const ops = all.filter((x) => x.release !== null && equalBytes(x.release.burnId, onChain.burnId));
   const id = bytesToHex(onChain.burnId);
   const rounds = (record.releases ?? [])
     .filter((r) => r.burn.burnId === id)
     .map((r) => ({ status: r.status, approvals: r.approvals.map((a) => ({ member: a.member, action: a.action, status: a.status, onChain: a.block !== null })) }));
   const op = ops[0];
+  const busy = !released && !op && opener !== undefined ? await openerBusyOf(api, head, d, all, opener) : null;
   return {
     released,
     op: op
@@ -2912,7 +3180,38 @@ async function burnStateOf(api: ApiPromise, d: Deployed, burn: WatchedBurn): Pro
         }
       : null,
     rounds,
+    ...(busy ? { openerBusy: busy } : {}),
   };
+}
+
+/**
+ * Why member `opener` cannot open a release now, or null: its deposit is reserved by the release of
+ * a burn on another chain than the round's (the committee's operations `ops` on V3, each burn's chain
+ * by the record), opened and not run yet, which that chain's round runs first, and what it holds free
+ * does not cover another opening's deposit and the existential deposit. The opening then waits
+ * (watch.ts nextStep) instead of being refused on the balance every round. A release of the round's
+ * own chain is left as before: the round resumes it first, in nonce order.
+ */
+async function openerBusyOf(api: ApiPromise, head: V3Head, d: Deployed, ops: Operation[], opener: number): Promise<string | null> {
+  const { v, record, keyring, b } = d;
+  const me = keyring.decodeAddress(v.members[opener - 1]);
+  const elsewhere = ops.flatMap((x) => {
+    if (x.release === null || !equalBytes(x.depositor, me)) return [];
+    const burnIdHex = bytesToHex(x.release.burnId).toLowerCase();
+    const round = [...(record.releases ?? [])].reverse().find((r) => r.burn.burnId.toLowerCase() === burnIdHex);
+    return round && !burnOn(round.burn, b.chainId, b.minter) ? [{ op: x, round }] : [];
+  });
+  if (elsewhere.length === 0) return null;
+  const deposit = multisigDeposit(api.consts.multisig.depositBase.toBigInt(), api.consts.multisig.depositFactor.toBigInt(), v.threshold);
+  const ed = api.consts.balances.existentialDeposit.toBigInt();
+  const free = (await accountState(head.apiAt, me)).free;
+  if (free >= deposit + ed) return null;
+  const which = elsewhere.map(({ op, round }) => `burn ${roundLabel(round)} (opened at #${fmt(op.when.height)})`).join(" and ");
+  return (
+    `member ${opener}'s deposit is reserved by the release of ${which}, opened and not run yet, which its chain's round runs first; ` +
+    `member ${opener} holds ${formatTpot(free)} free, less than another opening's deposit ${formatTpot(deposit)} and the existential deposit ${formatTpot(ed)}: ` +
+    `this burn's opening waits until that release runs (or member ${opener} is funded for two openings)`
+  );
 }
 
 /**
@@ -2944,7 +3243,7 @@ async function approveFor(
     action: "approve",
     member: step.member as Member,
     send: o.send,
-    rule: by === "finality" ? FINALITY : o.rule,
+    rule: by === "finality" ? FINALITY : o.rules.get(d.b.chain.network)!,
     pair: keys?.get(step.member),
     guard: lock
       ? () => {
@@ -2956,13 +3255,14 @@ async function approveFor(
     watcher: true,
     hint: { block: onChain.block, blockHash: onChain.blockHash, txHash: onChain.txHash },
   };
-  log(`\n--- burn ${burn.burnNonce}: member ${step.member} ${step.kind === "open" ? "opens" : "runs"} its release${o.send ? "" : " (dry run)"}`);
+  const title = d.b.chain.title;
+  log(`\n--- burn ${burnLabel(d.b.chainId, burn.burnNonce)}: member ${step.member} ${step.kind === "open" ? "opens" : "runs"} its release${o.send ? "" : " (dry run)"}`);
   try {
     const read = await burnOnSepolia(d, run);
-    if (read === PENDING) return { kind: "pending", why: "the burn is not as deep on Sepolia as the round saw it (a reorg, or an RPC behind)" };
-    if (typeof read === "number") return { kind: "refused", why: "a check of the burn on Sepolia failed" };
+    if (read === PENDING) return { kind: "pending", why: `the burn is not as deep on ${title} as the round saw it (a reorg, or an RPC behind)` };
+    if (typeof read === "number") return { kind: "refused", why: `a check of the burn on ${title} failed` };
     if (!equalBytes(read.burnId, onChain.burnId) || !equalBytes(read.v3Recipient, onChain.v3Recipient) || read.amount !== burn.amount) {
-      return { kind: "refused", why: "the burn on Sepolia is not the one the round saw (a reorg?)" };
+      return { kind: "refused", why: `the burn on ${title} is not the one the round saw (a reorg?)` };
     }
     const code = await releaseOnV3(d, api, evm, run, read);
     return approvalOutcome({ code: code === OK ? "ok" : code === PENDING ? "pending" : "failed" }, sent(), failures);
@@ -2974,7 +3274,7 @@ async function approveFor(
   }
 }
 
-/** Per fast release (minter/burn nonce), the rounds in a row its burn was found nowhere (missingBurnVerdict); in memory. */
+/** Per fast release (chain id/minter/burn nonce), the rounds in a row its burn was found nowhere (missingBurnVerdict); in memory. */
 const reconcileMisses = new Map<string, number>();
 
 /**
@@ -3009,23 +3309,26 @@ async function burnReceipt(b: Bridge, n: bigint, txHash: Hex, finalized: number)
 /**
  * The releases made in fast mode whose burns' blocks are final now and that are not checked yet:
  * BurnRequested(n) on the final chain (eth_getLogs from 128 blocks below the recorded block to the
- * finalized block, the log's block canonical), compared with the record (reconcileVerdict) and the
- * check recorded with --send. A release that does not stand is fatal. When the logs do not show the
- * burn (none, or the RPC refuses them), its transaction's receipt decides (missingBurnVerdict): in a
- * final canonical block, its BurnRequested log there is checked; above the finalized block, in a
- * block not canonical yet, or with the logs refused, a later round looks again; found nowhere
- * RECONCILE_MISSES rounds in a row, the release does not stand.
+ * finalized block, the log's block canonical; on a rollup from its reconcileBack blocks below,
+ * wayback.ts), compared with the record (reconcileVerdict) and the check recorded with --send. A
+ * release that does not stand is fatal. When the logs do not show the burn (none, or the RPC refuses
+ * them), its transaction's receipt decides (missingBurnVerdict): in a final canonical block, its
+ * BurnRequested log there is checked; above the finalized block, in a block not canonical yet, or
+ * with the logs refused, a later round looks again; found nowhere RECONCILE_MISSES rounds in a row,
+ * the release does not stand. The round's chain's releases alone (its chain id and minter).
  */
 async function reconcileFast(d: Deployed, h: Heads, send: boolean): Promise<{ checked: number; fatal: FatalStop | null }> {
   const { b } = d;
+  const title = b.chain.title;
   let checked = 0;
   const factsOf = (x: BurnOnChain): FinalBurn => ({ txHash: x.txHash, blockHash: x.blockHash, block: x.block, payee: bytesToHex(x.v3Recipient), amount: x.amount, burnId: bytesToHex(x.burnId) });
   for (const round of d.record.releases ?? []) {
-    if (round.status !== "released" || round.by !== "fast" || round.finalizedCheck || round.burn.minter !== b.minter || round.burn.block > h.finalized) continue;
+    if (round.status !== "released" || round.by !== "fast" || round.finalizedCheck || !burnOn(round.burn, b.chainId, b.minter) || round.burn.block > h.finalized) continue;
     const n = BigInt(round.burn.burnNonce);
-    const missKey = `${b.minter}/${n}`;
+    const label = burnLabel(b.chainId, n);
+    const missKey = `${b.chainId}/${b.minter}/${n}`;
     const recorded: FinalBurn = { txHash: round.burn.txHash, blockHash: round.burn.blockHash ?? null, block: round.burn.block, payee: round.payee, amount: BigInt(round.amountNative), burnId: round.burn.burnId };
-    const found = await recentBurn(b, n, Math.max(b.deployBlock, round.burn.block - 128), h.finalized);
+    const found = await recentBurn(b, n, Math.max(b.deployBlock, round.burn.block - b.chain.reconcileBack), h.finalized);
     let verdict: { ok: boolean; why: string };
     if (found !== null && !("refused" in found)) {
       const canonical = await sepolia("block", () => rpc<{ hash: string } | null>("eth_getBlockByNumber", [qty(found.block), false]));
@@ -3042,18 +3345,18 @@ async function reconcileFast(d: Deployed, h: Heads, send: boolean): Promise<{ ch
       const missing = missingBurnVerdict(await burnReceipt(b, n, round.burn.txHash, h.finalized), h.finalized, reconcileMisses.get(missKey) ?? 0, refused !== null);
       if (missing.kind === "later") {
         if (missing.missed) reconcileMisses.set(missKey, (reconcileMisses.get(missKey) ?? 0) + 1);
-        warn(`the release of burn ${n}, made in fast mode, is not checked against Sepolia's final chain yet: ${refused === null ? "eth_getLogs shows no BurnRequested log of it" : `the RPC refuses eth_getLogs (${refused})`}, and ${missing.why}; a later round tries again`);
+        warn(`the release of burn ${label}, made in fast mode, is not checked against ${title}'s final chain yet: ${refused === null ? "eth_getLogs shows no BurnRequested log of it" : `the RPC refuses eth_getLogs (${refused})`}, and ${missing.why}; a later round tries again`);
         continue;
       }
       reconcileMisses.delete(missKey);
       verdict = missing.kind === "fatal" ? { ok: false, why: missing.why } : reconcileVerdict(recorded, missing.final);
     }
     checked += 1;
-    log(`${verdict.ok ? "ok  " : "FAIL"} the release of burn ${n}, made in fast mode, against Sepolia's finalized block #${fmt(h.finalized)}: ${verdict.why}`);
+    log(`${verdict.ok ? "ok  " : "FAIL"} the release of burn ${label}, made in fast mode, against ${title}'s finalized block #${fmt(h.finalized)}: ${verdict.why}`);
     const executed = round.approvals.filter((a) => a.action === "execute" && a.block).at(-1);
     const fatal: FatalStop | null = verdict.ok
       ? null
-      : { why: `the release of burn ${n}, made in fast mode, does not stand on Sepolia's final chain: ${verdict.why}; the vault paid ${formatTpot(BigInt(round.amountNative))} for a burn a reorg changed or undid`, burn: n.toString(), extrinsicHash: executed?.extrinsicHash ?? null };
+      : { why: `the release of burn ${label}, made in fast mode, does not stand on ${title}'s final chain: ${verdict.why}; the vault paid ${formatTpot(BigInt(round.amountNative))} for a burn a reorg changed or undid`, burn: label, extrinsicHash: executed?.extrinsicHash ?? null };
     if (send) {
       // The halt file before the record: a round skips a release whose check is recorded, so a
       // process that dies between the two must leave the halt file behind.
@@ -3072,8 +3375,11 @@ async function reconcileFast(d: Deployed, h: Heads, send: boolean): Promise<{ ch
 /** One round: the record read again, Sepolia's heads and the burns since the last one handled, V3 connected for the round. */
 async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<number, Pair> | null }, lock: Lock | null): Promise<RoundResult> {
   const record = readV3Record();
+  // The round's chain: watchCommand switched to it (useReleaseNetwork), and readBridge reads its record.
   const d: Deployed = { b: readBridge(), record, keyring, v: vaultFacts(record, keyring) };
-  const cachePath = join(o.stateDir, `release-watch-${d.v.multisig}.burns.json`);
+  const rule = o.rules.get(d.b.chain.network)!;
+  // Each chain's burn cache: Sepolia's file as before; a rollup's its own, as the rollups' minters share one address.
+  const cachePath = join(o.stateDir, burnCacheName(d.v.multisig, d.b.chain.network));
   const cache: BurnCache = { path: cachePath, burns: readBurnCache(cachePath, d.b.minter), write: o.send };
   await checkSepolia();
   const evm = new EvmRpc(o.evm);
@@ -3122,25 +3428,90 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
         return heads;
       },
       burns: () => burnsSince(d, heads, cache),
-      fastReleases: async () =>
-        (d.record.releases ?? [])
-          .filter((r) => r.status === "released" && r.by === "fast" && r.burn.minter === d.b.minter)
-          .map((r) => {
-            const checked = fastReleaseChecked(r.finalizedCheck);
-            if (r.finalizedCheck?.ok === false && !checked) {
-              warn(`the release of burn ${r.burn.burnNonce}, made in fast mode, failed its check against Sepolia's final chain (${r.finalizedCheck.why}): its ${formatTpot(BigInt(r.amountNative))} count toward --fast-budget until a member, having looked, sets finalizedCheck.acknowledged in ${V3_RECORD}`);
-            }
-            return { amount: BigInt(r.amountNative), block: r.burn.block, checked };
-          }),
+      // Every chain's fast releases: one vault and one committee release for all, so the fast budget
+      // counts them across chains. The round's chain's as before; another chain's, in a dry run, as
+      // final there once its block is at or below that chain's finalized head, read now (wayback.ts
+      // fastReleasesOf). With --send another chain's counts until its check against its chain's final
+      // blocks passes, whatever its block (watch.ts watchRound): no head is read, and an RPC of a
+      // chain that hangs does not hold up the round.
+      fastReleases: async () => {
+        const here = { chainId: d.b.chainId, minter: d.b.minter };
+        const rounds = d.record.releases ?? [];
+        const finalized = new Map<bigint, number>();
+        if (!o.send) {
+          for (const chainId of otherFastChains(rounds, here)) {
+            const head = await finalizedOn(chainId);
+            if (head !== null) finalized.set(chainId, head);
+          }
+        }
+        return fastReleasesOf(rounds, here, finalized).map(({ round: r, ...item }) => {
+          if (r.finalizedCheck?.ok === false && !item.checked) {
+            const chain = waybackOf(chainIdOf(r.burn))?.title ?? `chain ${chainIdOf(r.burn)}`;
+            warn(`the release of burn ${burnLabel(chainIdOf(r.burn), r.burn.burnNonce)}, made in fast mode, failed its check against ${chain}'s final chain (${r.finalizedCheck.why}): its ${formatTpot(BigInt(r.amountNative))} count toward --fast-budget until a member, having looked, sets finalizedCheck.acknowledged in ${V3_RECORD}`);
+          }
+          return item;
+        });
+      },
       reconcile: (h) => reconcileFast(d, h, o.send),
-      state: (burn) => burnStateOf(api, d, burn),
+      // The member who would open a release: nextStep's first key.
+      state: (burn) => burnStateOf(api, d, burn, o.memberKeys[0]?.member),
       approve: (burn, by, step) => approveFor({ d, api, evm, o, keys: keys.pairs, lock }, burn, by, step),
       log,
     };
-    return await watchRound(ports, o.rule, { send: o.send, keyed: o.memberKeys.map((k) => k.member), threshold: d.v.threshold });
+    // Sepolia alone: its words as before. Several chains, or a rollup: the round names its chain, and the budget every chain's.
+    const shared = o.networks.length > 1 || d.b.chain.network !== "sepolia";
+    return await watchRound(ports, rule, {
+      send: o.send,
+      keyed: o.memberKeys.map((k) => k.member),
+      threshold: d.v.threshold,
+      ...(shared ? { title: d.b.chain.title, finalChain: "their chains' final blocks" } : {}),
+      // A burn as the lines and a fatal stop's halt file name it: its nonce on Sepolia, with its chain on a rollup.
+      label: (n) => burnLabel(d.b.chainId, n),
+    });
   } finally {
     await api.disconnect();
   }
+}
+
+/**
+ * The finalized block of the chain with chain id `chainId` (wayback.ts), read from its RPC
+ * (<NETWORK>_RPC_URL when set, else its first public one) without moving the RPC the round reads,
+ * once that RPC answers this chain's id (eth_chainId); one short attempt, so that an RPC that hangs
+ * does not hold up the round. Null, with a warning, when it cannot be read, or the RPC serves
+ * another chain: that chain's fast releases then count toward the fast budget as not final. The
+ * watcher's dry run alone reads it (watchOnce, fastReleases).
+ */
+async function finalizedOn(chainId: bigint): Promise<number | null> {
+  const chain = waybackOf(chainId);
+  if (!chain) {
+    warn(`a release in ${V3_RECORD} is for a burn on chain ${chainId}, which this tool does not know: its fast release counts toward --fast-budget`);
+    return null;
+  }
+  const url = process.env[NETWORKS[chain.network].rpcEnv] || NETWORKS[chain.network].rpcs[0];
+  const ask = async <T>(method: string, params: unknown[]): Promise<T | undefined> =>
+    (
+      (await (
+        await fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+          signal: AbortSignal.timeout(10_000),
+        })
+      ).json()) as { result?: T }
+    ).result;
+  try {
+    const served = await ask<string>("eth_chainId", []);
+    if (typeof served !== "string" || BigInt(served) !== chainId) {
+      warn(`${new URL(url).host}, the RPC read for ${chain.title}'s finalized block, answers chain id ${typeof served === "string" ? BigInt(served) : "none"}, not ${chainId}: its fast releases count toward --fast-budget as not final this round`);
+      return null;
+    }
+    const block = await ask<{ number?: string } | null>("eth_getBlockByNumber", ["finalized", false]);
+    if (block?.number) return Number(BigInt(block.number));
+  } catch (error) {
+    if (error instanceof DryRunViolation) throw error;
+  }
+  warn(`${chain.title}'s finalized block could not be read (${new URL(url).host}): its fast releases count toward --fast-budget as not final this round`);
+  return null;
 }
 
 /**
@@ -3167,13 +3538,41 @@ function leaveHalt(multisig: string, f: FatalStop): void {
  * (a sent approval that fails its checks, an approval that cannot be found though its nonce is used,
  * a lost lock, or a record that cannot be written) ends it with exit code 4 and, with --send, leaves
  * release-watch-<multisig>.halt in STATE_DIR, next to the lock, whatever --state-dir is; no watcher
- * with --send starts while it is there.
+ * with --send starts while it is there. With several chains (--network), one process serves them: a
+ * round for one chain after the other, each chain with its own wait (one whose RPC fails backs off
+ * alone) and its own round count (WatchSchedule), the committee's lock, halt file and fast budget
+ * shared; --rounds n is n rounds of each, and the exit code the worst of each chain's last round's.
+ * A chain whose minter has a record here and that the watcher does not serve is named in a warning
+ * at the start (its burns wait); with --send it does not start (exit code 4, no halt file) while the
+ * record holds a release of such a chain that only a watcher serving it finishes (unservedRounds),
+ * and its dry run warns of one.
  */
 async function watchCommand(o: WatchOptions): Promise<number> {
   const keyed = o.memberKeys.map((k) => k.member).join(" and ");
-  log(`${new Date().toISOString()}: the auto-release watcher of ${V3.title}, a round every ${o.watch} s; members ${keyed} approve${o.send ? "" : " (dry run)"}`);
-  log(`     the return path is ${TRUST}`);
-  log(`     ${ruleText(o.rule, true)}`);
+  const several = o.networks.length > 1;
+  if (!several && o.networks[0] === "sepolia") {
+    // Sepolia alone: the lines as before.
+    log(`${new Date().toISOString()}: the auto-release watcher of ${V3.title}, a round every ${o.watch} s; members ${keyed} approve${o.send ? "" : " (dry run)"}`);
+    log(`     the return path is ${TRUST}`);
+    log(`     ${ruleText(o.rules.get("sepolia")!, true)}`);
+  } else {
+    const titles = o.networks.map((x) => WAYBACK[x].title);
+    log(`${new Date().toISOString()}: the auto-release watcher of ${V3.title} for the burns on ${titles.join(", ")}, a round every ${o.watch} s on each; members ${keyed} approve${o.send ? "" : " (dry run)"}`);
+    log(`     the return path is ${TRUST}`);
+    for (const x of o.networks) log(`     ${WAYBACK[x].title}: final is ${WAYBACK[x].finality}; ${ruleText(o.rules.get(x)!, true, WAYBACK[x], true)}`);
+    log("     one vault and one committee release for every chain: the committee's lock, its halt file and the fast budget are shared");
+  }
+  // The chains with a minter (their bridge record is here) that this watcher does not serve: their
+  // burns wait, and the one watcher of the committee is the one that would release them.
+  const idle = WAYBACK_NETWORKS.filter((x) => !o.networks.includes(x) && existsSync(at(WAYBACK[x].record)));
+  /** --network for the chains served and `more`, in sepolia.mjs's order. */
+  const networksWith = (more: NetworkName[]) => WAYBACK_NETWORKS.filter((x) => o.networks.includes(x) || more.includes(x)).join(",");
+  if (idle.length > 0) {
+    warn(
+      `this watcher does not serve ${idle.map((x) => WAYBACK[x].title).join(" or ")}, whose minter${idle.length === 1 ? "" : "s"} ${idle.map((x) => WAYBACK[x].record).join(" and ")} record${idle.length === 1 ? "s" : ""}: ` +
+        `the burns there wait until the committee's watcher runs with --network ${networksWith(idle)} (and so does the command line that starts it again, at logon or after a crash)`,
+    );
+  }
   const { Keyring } = await polkadot();
   const keyring = new Keyring({ type: "sr25519", ss58Format: V3.ss58 });
   const v = vaultFacts(readV3Record(), keyring);
@@ -3220,6 +3619,24 @@ async function watchCommand(o: WatchOptions): Promise<number> {
   }
   const keys: { pairs: Map<number, Pair> | null } = { pairs: null };
   try {
+    // A release of a chain this watcher does not serve that only a round of that chain finishes (one
+    // left half done, whose opener's deposit stays reserved, or one made in fast mode and not checked
+    // against its chain's final blocks yet): with --send the watcher does not start, so that a start
+    // with fewer chains (an older command line, at logon or after a crash) does not leave it unseen;
+    // exit code 4 and no halt file, as for a key that does not open. Its dry run warns. Read once
+    // the lock is held: no other run with --send changes the record meanwhile.
+    const unserved = unservedRounds(readV3Record().releases ?? [], o.networks.map((x) => WAYBACK[x].chainId));
+    if (unserved.length > 0) {
+      const chains = WAYBACK_NETWORKS.filter((x) => unserved.some((u) => u.chainId === WAYBACK[x].chainId));
+      const what =
+        `${V3_RECORD} holds ${unserved.map((u) => `burn ${burnLabel(u.chainId, u.burnNonce)}: ${u.why}`).join("; ")}, ` +
+        `which only a round of that chain runs or checks: the committee's watcher runs with --network ${networksWith(chains)}`;
+      if (o.send) {
+        check(false, `the watcher does not start: ${what} (nothing was signed, and no halt file is left)`);
+        return HALTED;
+      }
+      warn(`${what}; a watcher with --send does not start without it (this dry run goes on)`);
+    }
     if (o.send) {
       // The keys are opened before anything reaches a network. One that does not open (a wrong password,
       // another member's keystore) ends the watcher before it signs anything: exit code 4, which a
@@ -3236,50 +3653,79 @@ async function watchCommand(o: WatchOptions): Promise<number> {
       }
       keys.pairs = pairs;
     }
-    let wait = o.watch;
-    for (let round = 1; ; round++) {
-      failures = 0;
-      log(`\n=== round ${round}, ${new Date().toISOString()}${o.rule.confirmations === null ? "" : `: ${tradeOff(o.rule.confirmations)}`}`);
-      let code: number;
-      let trouble = false;
-      try {
-        const r = await watchOnce(o, keyring, keys, lock);
-        log(
-          `\nRound ${round}: ${r.released} released, ${r.waiting} waiting, ${r.refused} refused, ${r.held} left to the members` +
-            `${o.send ? "" : `, ${r.planned} approval${r.planned === 1 ? "" : "s"} dry-run; nothing was signed or sent`}${r.pending ? "; something sent is not final yet" : ""}`,
-        );
-        if (r.fatal) return halt(r.fatal);
-        if (r.halted) {
-          check(false, `the watcher stops: ${r.halted}`);
-          return HALTED;
+    // Each chain's rounds, its wait and when its next round is due (WatchSchedule): a chain whose RPC
+    // fails backs off alone, and --rounds n is n rounds of each chain.
+    const schedule = new WatchSchedule(o.networks, o.watch, o.rounds);
+    for (;;) {
+      let troubled = false;
+      for (const x of o.networks) {
+        if (!schedule.due(x, Date.now())) continue;
+        // The round's chain: the RPC, the records and the rule follow it until the next one's round.
+        useReleaseNetwork(x);
+        const round = schedule.start(x);
+        const rule = o.rules.get(x)!;
+        const on = several ? ` on ${NET.title}` : "";
+        failures = 0;
+        log(`\n=== round ${round}${on}, ${new Date().toISOString()}${rule.confirmations === null ? "" : `: ${tradeOff(rule.confirmations, NET.title)}`}`);
+        let code: number;
+        let trouble = false;
+        try {
+          const r = await watchOnce(o, keyring, keys, lock);
+          log(
+            `\nRound ${round}${on}: ${r.released} released, ${r.waiting} waiting, ${r.refused} refused, ${r.held} left to the members` +
+              `${o.send ? "" : `, ${r.planned} approval${r.planned === 1 ? "" : "s"} dry-run; nothing was signed or sent`}${r.pending ? "; something sent is not final yet" : ""}`,
+          );
+          if (r.fatal) return halt(r.fatal);
+          if (r.halted) {
+            check(false, `the watcher stops: ${r.halted}`);
+            return HALTED;
+          }
+          code = r.pending ? PENDING : r.refused + r.held > 0 ? FAILED : OK;
+        } catch (error) {
+          // The halt file another process left keeps its reason: it is not written again.
+          if (error instanceof Halted) {
+            check(false, `the watcher stops: ${errorText(error)}`);
+            return HALTED;
+          }
+          if (error instanceof LockLost || error instanceof Fatal || error instanceof RecordError || error instanceof DryRunViolation) {
+            return halt({ why: errorText(error), burn: null, extrinsicHash: null });
+          }
+          trouble = rpcTrouble(error);
+          if (error instanceof Unreachable) {
+            log(errorText(error));
+            code = UNREACHABLE;
+          } else {
+            check(false, `round ${round}${on}: ${errorText(error)}`);
+            code = FAILED;
+          }
         }
-        code = r.pending ? PENDING : r.refused + r.held > 0 ? FAILED : OK;
-      } catch (error) {
-        // The halt file another process left keeps its reason: it is not written again.
-        if (error instanceof Halted) {
-          check(false, `the watcher stops: ${errorText(error)}`);
-          return HALTED;
-        }
-        if (error instanceof LockLost || error instanceof Fatal || error instanceof RecordError || error instanceof DryRunViolation) {
-          return halt({ why: errorText(error), burn: null, extrinsicHash: null });
-        }
-        trouble = rpcTrouble(error);
-        if (error instanceof Unreachable) {
-          log(errorText(error));
-          code = UNREACHABLE;
-        } else {
-          check(false, `round ${round}: ${errorText(error)}`);
-          code = FAILED;
-        }
+        troubled ||= trouble;
+        schedule.end(x, code, trouble, Date.now());
       }
-      if (o.rounds !== null && round >= o.rounds) return code;
-      wait = nextWait(o.watch, wait, trouble);
-      log(`\nNext round in ${wait} s, at ${new Date(Date.now() + wait * 1000).toISOString()}${trouble ? " (the wait doubles while rounds fail, up to an hour)" : ""}.`);
-      await sleep(wait * 1000);
+      // --rounds n: over once every chain has run its n; the worst of each chain's last round's code.
+      if (schedule.finished()) return worstCode(schedule.lastCodes());
+      const upcoming = schedule.upcoming();
+      if (!several) {
+        const [only] = upcoming;
+        log(`\nNext round in ${only.wait} s, at ${new Date(only.due).toISOString()}${troubled ? " (the wait doubles while rounds fail, up to an hour)" : ""}.`);
+      } else {
+        const next = upcoming.map((x) => `${WAYBACK[x.network].title} in ${Math.max(0, Math.round((x.due - Date.now()) / 1000))} s`);
+        log(`\nNext rounds: ${next.join(", ")}${troubled ? " (a chain's wait doubles while its rounds fail, up to an hour)" : ""}.`);
+      }
+      // Until a chain is due: a timer may fire a millisecond early, and a pass that runs no round
+      // would print the line above again.
+      const wake = schedule.nextDue(Date.now());
+      while (Date.now() < wake) await sleep(wake - Date.now());
     }
   } finally {
     lock?.release();
   }
+}
+
+/** The exit code of rounds over several chains, from each chain's last round's: a failed check first, then a node that could not be reached, then something not final yet (automint.ts worstCode). */
+function worstCode(codes: number[]): number {
+  for (const code of [FAILED, UNREACHABLE, PENDING]) if (codes.includes(code)) return code;
+  return OK;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -3390,8 +3836,10 @@ async function fundCommand(o: FundOptions): Promise<number> {
 // ---------------------------------------------------------------------------------------
 // status
 
-async function statusCommand(o: Common): Promise<number> {
-  log(`${new Date().toISOString()}: the return path from Sepolia to ${V3.title} (${TRUST})`);
+async function statusCommand(o: Common & { network: NetworkName }): Promise<number> {
+  // The chain of the burns: its RPC, records and chain id from here on.
+  useReleaseNetwork(o.network);
+  log(`${new Date().toISOString()}: the return path from ${NET.title} to ${V3.title} (${TRUST})`);
   const b = readBridge();
   const record = readV3Record();
   const { Keyring } = await polkadot();
@@ -3405,16 +3853,16 @@ async function statusCommand(o: Common): Promise<number> {
   const L = Number(BigInt(latest.number));
   const F = Number(BigInt(finalized.number));
   const state = await sepoliaState(b, latest.number);
-  log(`Sepolia block ${fmt(L)} (finalized ${fmt(F)}): BridgeMinter ${checksumAddress(hexToBytes(b.minter))}, ${state.burnCount} burn${state.burnCount === 1n ? "" : "s"}; wtPOT total supply ${formatWtpot(state.totalSupply)}`);
+  log(`${NET.title} block ${fmt(L)} (finalized ${fmt(F)}): BridgeMinter ${checksumAddress(hexToBytes(b.minter))}, ${state.burnCount} burn${state.burnCount === 1n ? "" : "s"}; wtPOT total supply ${formatWtpot(state.totalSupply)}`);
   const found = await sepoliaLogs({ address: b.minter, topics: [BURN_REQUESTED_TOPIC] }, b.deployBlock, L);
   const burns: { burnNonce: bigint; burnId: Uint8Array; burn: BurnOnChain | null; source: string }[] = [];
   if ("refused" in found) {
-    log(`     the Sepolia RPC refuses eth_getLogs (${found.refused}): the burns from burnCount and burnIdOf, their amounts and recipients from ${BRIDGE_RECORD} where it has them`);
+    log(`     the ${NET.title} RPC refuses eth_getLogs (${found.refused}): the burns from burnCount and burnIdOf, their amounts and recipients from ${b.chain.record} where it has them`);
     for (let i = 0n; i < state.burnCount; i++) {
       const id = wordAt(await sepoliaView(b.minter, callData(MINTER.burnIdOf, uintWord(i)), latest.number), 0);
       const s = b.record.steps.find((x) => x.kind === "burn" && x.ok && x.burn?.burnNonce === i.toString() && x.burn.burnId === bytesToHex(id));
       const burn: BurnOnChain | null = s?.burn && s.txHash && s.block !== null ? { burnNonce: i, from: hexToBytes(s.sender), v3Recipient: hexToBytes(s.burn.v3Recipient), amount: BigInt(s.burn.amount), burnId: id, txHash: s.txHash, block: s.block, blockHash: null } : null;
-      burns.push({ burnNonce: i, burnId: id, burn, source: burn ? BRIDGE_RECORD : "burnIdOf" });
+      burns.push({ burnNonce: i, burnId: id, burn, source: burn ? b.chain.record : "burnIdOf" });
     }
   } else {
     for (const l of found.logs.filter((x) => x.address.toLowerCase() === b.minter)) {
@@ -3441,11 +3889,15 @@ async function statusCommand(o: Common): Promise<number> {
     let unreleased = 0n;
     let releasedSum = 0n;
     const known = new Set<Hex>();
+    // The burn ids the record has releases for on another chain (one vault serves every chain): not this chain's, and no fault.
+    const elsewhere = new Map<string, string>(
+      (record.releases ?? []).filter((r) => !burnOn(r.burn, b.chainId, b.minter)).map((r) => [r.burn.burnId.toLowerCase(), `burn ${roundLabel(r)}`] as const),
+    );
     log(`\n${burns.length} burn${burns.length === 1 ? "" : "s"}:`);
     for (const x of burns) {
       const id = bytesToHex(x.burnId);
       known.add(id);
-      const convention = equalBytes(x.burnId, burnId(SEPOLIA_CHAIN_ID, hexToBytes(b.minter), x.burnNonce));
+      const convention = equalBytes(x.burnId, burnId(b.chainId, hexToBytes(b.minter), x.burnNonce));
       const flag = await vaultWord(head, v.address, releasedSlot(x.burnId));
       const round = [...(record.releases ?? [])].reverse().find((r) => r.burn.burnId === id);
       const op = ops.find((y) => y.release && equalBytes(y.release.burnId, x.burnId));
@@ -3466,11 +3918,18 @@ async function statusCommand(o: Common): Promise<number> {
       }
       check(convention, `burn ${x.burnNonce}: ${what}; burn id ${shortHex(id)} (the vault's convention); ${releaseState}`);
     }
-    for (const [id, l] of logged) if (!known.has(id)) check(false, `a Released log at #${fmt(l.block)} for burn id ${shortHex(id)}, which no burn on Sepolia has: ${formatTpot(l.amountNative)} to ${checksumAddress(l.to)}`);
-    for (const op of ops.filter((x) => !x.release || !known.has(bytesToHex(x.release.burnId)))) {
-      log(`     open operation ${shortHex(op.hash)} at #${fmt(op.when.height)}: ${op.release ? `releases burn id ${shortHex(op.release.burnId)}, which no burn on Sepolia has` : "not a release of the vault"} (${op.source})`);
+    for (const [id, l] of logged) {
+      if (known.has(id)) continue;
+      const other = elsewhere.get(id.toLowerCase());
+      if (other) log(`     a Released log at #${fmt(l.block)} for burn id ${shortHex(id)}: ${other} (${V3_RECORD}), ${formatTpot(l.amountNative)} to ${checksumAddress(l.to)}`);
+      else check(false, `a Released log at #${fmt(l.block)} for burn id ${shortHex(id)}, which no burn on ${NET.title} has: ${formatTpot(l.amountNative)} to ${checksumAddress(l.to)}`);
     }
-    for (const r of (record.releases ?? []).filter((x) => x.status !== "released")) log(`     note: ${V3_RECORD} has the round of burn ${r.burn.burnNonce} (${shortHex(r.call.hash)}) as ${r.status}, approvals ${r.approvals.map((a) => `${a.action} by member ${a.member} ${a.status}`).join(", ") || "none"}`);
+    for (const op of ops.filter((x) => !x.release || !known.has(bytesToHex(x.release.burnId)))) {
+      const other = op.release ? elsewhere.get(bytesToHex(op.release.burnId)) : undefined;
+      const whose = other ? `, ${other} (${V3_RECORD})` : `, which no burn on ${NET.title} has`;
+      log(`     open operation ${shortHex(op.hash)} at #${fmt(op.when.height)}: ${op.release ? `releases burn id ${shortHex(op.release.burnId)}${whose}` : "not a release of the vault"} (${op.source})`);
+    }
+    for (const r of (record.releases ?? []).filter((x) => x.status !== "released")) log(`     note: ${V3_RECORD} has the round of burn ${roundLabel(r)} (${shortHex(r.call.hash)}) as ${r.status}, approvals ${r.approvals.map((a) => `${a.action} by member ${a.member} ${a.status}`).join(", ") || "none"}`);
 
     // The members and the multisig.
     const ed = api.consts.balances.existentialDeposit.toBigInt();
@@ -3483,7 +3942,8 @@ async function statusCommand(o: Common): Promise<number> {
     // The accounting: outstanding = locked - released, and every burn was minted first.
     const due = state.totalSupply + unreleased;
     check(outstanding >= due, `the vault's outstanding ${formatTpot(outstanding)} covers the wtPOT supply ${formatWtpot(state.totalSupply)} and the burns not released yet ${formatTpot(unreleased)}`);
-    log(`     ${formatTpot(releasedSum)} released in all; locks not minted yet account for the rest (${formatTpot(outstanding - due)})`);
+    if (NET.network === "sepolia") log(`     ${formatTpot(releasedSum)} released in all; locks not minted yet account for the rest (${formatTpot(outstanding - due)})`);
+    else log(`     ${formatTpot(releasedSum)} released for ${NET.title}'s burns; the rest (${formatTpot(outstanding - due)}) backs wtPOT and burns on the other chains and the locks not minted yet: one vault serves every chain`);
     return failures === 0 ? OK : FAILED;
   } finally {
     await api.disconnect();
