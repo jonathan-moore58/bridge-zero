@@ -4,23 +4,25 @@
 // wallet picker shows an Ethereum wallet's own icon. Ethereum wallets keep the icon they announce
 // (EIP-6963).
 //
-// Three marks are held back, because their owners' terms ask for written approval before anyone
-// uses them (NOTICE.md quotes each): Base's Square and Arbitrum's logomark, whose chips show the
-// chain's initial instead, and SubWallet's, shown with the generic wallet icon as before. Their files
-// stay in ./marks/ and are not imported, so the build does not ship them. To show one once its owner
-// approves, import its file here and add it to CHAIN or WALLET; Base's Square then sits on a white
-// ground at half the chip (its App Icons rule), Arbitrum's file is already its kit's all-white
-// logomark for dark grounds, and the wallet button's status dot must not cover either chain's mark.
+// Base's Square and Arbitrum's logomark name their networks, as every multichain page names a
+// chain: the owner chose to show them on Oct 28, though their owners' terms ask for written approval
+// (NOTICE.md quotes both). Each follows its brand's rules: Base's Square sits on a white ground at
+// half the chip (its App Icons rule), Arbitrum's is its kit's all-white logomark for dark grounds,
+// and the wallet button's status dot stays clear of both. SubWallet's mark is held back (its kit is
+// for partners only) and its file is not imported, so the build does not ship it; SubWallet shows the
+// generic wallet icon, as before.
 
 import type { MarkKey } from "./dests.ts";
+import arbitrum from "./marks/arbitrum.svg";
+import base from "./marks/base.svg";
 import ethereum from "./marks/ethereum.svg";
 import polkadotJs from "./marks/polkadot-js.svg";
 import portaldotWallet from "./marks/portaldot-wallet.png";
 import portaldot from "./marks/portaldot.png";
 import talisman from "./marks/talisman.svg";
 
-/** The chains' marks the page ships; a chain missing here is held back (see above). */
-const CHAIN: Partial<Record<MarkKey, string>> = { portaldot, ethereum };
+/** The chains' marks the page ships; a chain missing here shows its initial. */
+const CHAIN: Partial<Record<MarkKey, string>> = { portaldot, ethereum, base, arbitrum };
 
 /** The letter a chain's chip shows while its mark is held back. */
 const INITIAL: Record<MarkKey, string> = { portaldot: "P", ethereum: "E", base: "B", arbitrum: "A" };

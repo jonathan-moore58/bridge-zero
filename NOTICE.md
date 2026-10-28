@@ -71,15 +71,16 @@ Portaldot's wallet list also has an app icon for the V3 testnet itself
 (`patch/patch-chains-icon/portaldot_v3_test.png`, a white tile): the app shows Portaldot's mark
 instead, which reads on its dark surfaces.
 
-### Held back until their owners approve
+### Marks whose owners' terms ask for approval
 
 These three owners' terms ask for written approval before anyone uses their mark, and none has
-been asked yet. The app shows Base Sepolia and Arbitrum Sepolia by their initial in its own chip and
-SubWallet with its generic wallet icon, as before. The files stay in `site/src/app/marks/`, but
-`site/src/app/marks.tsx` does not import them, so the build does not ship them; once an owner
-approves, the mark is shown by importing its file there.
+been asked yet. On Oct 28 the project's owner chose to show Base's and Arbitrum's marks to name
+their networks, as multichain pages do, following each brand's rules (Base's Square on a white
+ground at half the chip; Arbitrum's all-white logomark on the dark chip; the wallet button's status
+dot outside both). SubWallet's stays held back: `site/src/app/marks.tsx` does not import its file,
+so the build does not ship it, and SubWallet shows the generic wallet icon.
 
-| File | Mark | Source | The terms that hold it back | SHA-256 |
+| File | Mark | Source | The terms | SHA-256 |
 |---|---|---|---|---|
 | `base.svg` | Base's Square (blue), for Base Sepolia | `logo/TheSquare/Digital/Base_square_blue.svg` in Base's brand kit, https://github.com/base/brand-kit at `eba9e730be34f8c9ae7f9a21f32cc6aafebe2ad1` (linked from https://brand.base.org/) | Base's Terms of Service (https://docs.base.org/terms-of-service, last updated Apr 8, 2026) govern the Base Testnet, which the app reads; under Acceptable Use the user agrees not to "Use any Coinbase brands, logos, or trademarks (or any brands, logos, or trademarks that are confusingly similar) without our express prior written approval, which we may withhold at our discretion for any reason", and the same terms count "the Base logo, the Base name" among Coinbase's marks. The brand kit has no licence file, and the brand guide grants no permission. Shown, the guide's App Icons rule (https://brand.base.org/core-identifiers) would apply: "place the blue Square on a white ground: no gradients, borders, or drop shadows", and "in a circular mask, reduce to fifty percent" | `b4f2b487011713f98481cc53c4ce095629b4876acbdbc2f0f3ad69a9688ba82e` |
 | `arbitrum.svg` | The Arbitrum logomark, secondary (all white), for Arbitrum Sepolia | `0923_Arbitrum_Logos_zip/Arbiturm-logomark_AllWhite_RGB/0923_Arbitrum_Logos_Logomark_RGB.svg` in `AllVersionsOfArbitrumLogos.zip`, attached to "Arbitrum brand guidelines" in the Arbitrum Foundation's brand kit, https://arbitrumfoundation.notion.site/Arbitrum-Brand-Kit-48751dc5e03240a5872496283f088f79 (linked from https://arbitrum.foundation/). The all-white version because the guidelines say: "Do ensure excellent readability by using the secondary version of the Arbitrum logo against a dark and clean background", and the primary's navy hexagon is 1.3:1 against the app's chip | The guidelines' "9. Legal": "Use of our brand assets must be expressly authorized in writing (including, in many cases, pursuant to the related product or service license agreement or similar arrangement)." No licence is stated; inquiries go to partnerships@arbitrum.io. Shown, the guidelines' other rules would apply: colours and proportions unchanged, no drop shadow, never below 12 px, and "Don't place your logo or anything within the clear space" | `939aa2f49ee22058c05c115de0a4f0c95ffd7a57e121df25de893cecca4036db` |

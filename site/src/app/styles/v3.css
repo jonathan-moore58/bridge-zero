@@ -837,6 +837,31 @@
   height: 60%;
 }
 
+/* Base's App Icons rule: the blue Square on a white ground, no border, at half a circular mask. */
+.mark--logo[data-mark="base"] {
+  background: #fff;
+  box-shadow: none;
+}
+
+.mark--logo[data-mark="base"] .mark__img {
+  width: 50%;
+  height: 50%;
+}
+
+/* Arbitrum's all-white logomark, with its clear space inside the chip. */
+.mark--logo[data-mark="arbitrum"] .mark__img {
+  width: 62%;
+  height: 62%;
+}
+
+/* Base's and Arbitrum's rules keep other graphics out of their clear space: the wallet button's
+   status dot sits outside their chip. */
+.wallet__net:has(.mark[data-mark="base"])::after,
+.wallet__net:has(.mark[data-mark="arbitrum"])::after {
+  right: -6px;
+  bottom: -5px;
+}
+
 /* A held-back mark's stand-in: the chain's initial, in the app's own type. */
 .mark__letter {
   display: block;
