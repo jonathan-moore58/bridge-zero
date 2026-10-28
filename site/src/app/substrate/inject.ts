@@ -62,10 +62,10 @@ const KNOWN: Record<string, { name: string; rank: number; note: string | null }>
 
 /** A Polkadot wallet the picker offers. */
 export interface PolkaWallet {
-  /** Its key in window.injectedWeb3. */
+  /** Its key in window.injectedWeb3; the picker draws the wallet's own mark by it (../marks.tsx). */
   key: string;
   name: string;
-  /** Portaldot's own wallet: the picker draws the Portaldot mark the app ships. */
+  /** Portaldot's own wallet, listed first. */
   portaldot: boolean;
   /** What the visitor has to know first, for the row's meta line. */
   note: string | null;

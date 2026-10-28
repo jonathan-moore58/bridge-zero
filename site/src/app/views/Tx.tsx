@@ -10,6 +10,7 @@ import { checksum } from "../../lib/display.ts";
 import type { Hex } from "../../lib/records-types.ts";
 import { AUTO_TIME, FAST_CAP, IMPORT_GAS, MINT_GAS, SEPOLIA_FINALITY, SPEED_NAME, TIME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
 import { AUTO_MINT, autoMints, handoffOf, handoffProgress } from "../handoff.ts";
+import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
 import type { Route } from "../router.ts";
 import { useBox } from "../store.ts";
@@ -47,7 +48,7 @@ import {
   type TransferAction,
 } from "../transfers.ts";
 import { gasText } from "../txmath.ts";
-import { Addr, Chip, Icon, Mark, Nb, announce, clock, dur, fmt, num, secs, short, toast } from "../ui.tsx";
+import { Addr, Chip, Icon, Nb, announce, clock, dur, fmt, num, secs, short, toast } from "../ui.tsx";
 
 type StepState = "pending" | "active" | "needs" | "done" | "failed" | "stuck";
 export type MemberState = "approved" | "waiting" | "idle";
@@ -1459,8 +1460,8 @@ function TxScreen({ h, s, onAct }: { h: Head; s: TxState; onAct: (a: TransferAct
       <section class="card card--lit txcard" aria-labelledby="tx-title">
         <div class="txcard__head">
           <span class="pairmark" aria-hidden="true">
-            <Mark id={from.markId} cls="mark--32" />
-            <Mark id={to.markId} cls="mark--32" />
+            <ChainMark mark={from.mark} cls="mark--32" />
+            <ChainMark mark={to.mark} cls="mark--32" />
           </span>
           <div class="txcard__titles">
             <p class="txcard__title">

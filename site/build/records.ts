@@ -29,6 +29,7 @@ import type {
   ReleaseRecord,
   ReturnPath,
   Roadmap,
+  RollupClientFacts,
   RunStep,
 } from "../src/lib/records-types.ts";
 
@@ -97,6 +98,11 @@ function optHex(v: unknown): Hex | null {
 /** A row of an evidence table: number, what it shows, transaction, block, result. */
 const ROW = /^\|\s*\**(\d+)\**\s*\|(.+)\|\s*$/;
 const ETHERSCAN_TX = /\(https:\/\/sepolia\.etherscan\.io\/tx\/(0x[0-9a-fA-F]{64})\)/;
+/** A rollup row links its transaction on the rollup's explorer (README, "More chains"). */
+const ROLLUP_TX: readonly (readonly [RegExp, "base-sepolia" | "arbitrum-sepolia"])[] = [
+  [/\(https:\/\/sepolia\.basescan\.org\/tx\/(0x[0-9a-fA-F]{64})\)/, "base-sepolia"],
+  [/\(https:\/\/sepolia\.arbiscan\.io\/tx\/(0x[0-9a-fA-F]{64})\)/, "arbitrum-sepolia"],
+];
 const SHORT_HASH = /`(0x[0-9a-fA-F]+)…([0-9a-fA-F]+)`/;
 
 /** Splits a table row's cells, keeping the pipes inside code spans and links. */
@@ -119,8 +125,9 @@ function cells(body: string): string[] {
 }
 
 /**
- * The evidence rows. A Sepolia row links its transaction on Etherscan; a V3 row prints a shortened
- * extrinsic hash, resolved here against `v3Hashes` (the full hashes deployments/ records).
+ * The evidence rows. A Sepolia row links its transaction on Etherscan, a Base Sepolia or Arbitrum
+ * Sepolia row on Basescan or Arbiscan; a V3 row prints a shortened extrinsic hash, resolved here
+ * against `v3Hashes` (the full hashes deployments/ records).
  */
 export function parseEvidence(readme: string, v3Hashes: string[] = []): EvidenceRow[] {
   const rows: EvidenceRow[] = [];
@@ -134,11 +141,13 @@ export function parseEvidence(readme: string, v3Hashes: string[] = []): Evidence
     if (parts.length !== 4) continue;
     const [what, txCell, blockCell, result] = parts as [string, string, string, string];
     const eth = ETHERSCAN_TX.exec(txCell);
+    const rollup = eth ? null : (ROLLUP_TX.map(([re, chain]) => ({ hit: re.exec(txCell), chain })).find((x) => x.hit) ?? null);
+    const linked = eth ?? rollup?.hit ?? null;
     const short = SHORT_HASH.exec(txCell);
-    const blockDigits = /(\d[\d,]*)/.exec(blockCell.replace(/\]\(.*?\)/g, "]").replace(/\b(V3|Sepolia)\b/g, ""));
-    if (!blockDigits?.[1] || (!eth && !short)) continue;
-    const isV3 = !eth && /\bV3\b/.test(blockCell);
-    let tx: Hex | null = eth?.[1] ? (eth[1].toLowerCase() as Hex) : null;
+    const blockDigits = /(\d[\d,]*)/.exec(blockCell.replace(/\]\(.*?\)/g, "]").replace(/\b(V3|Sepolia|Base|Arbitrum)\b/g, ""));
+    if (!blockDigits?.[1] || (!linked && !short)) continue;
+    const isV3 = !linked && /\bV3\b/.test(blockCell);
+    let tx: Hex | null = linked?.[1] ? (linked[1].toLowerCase() as Hex) : null;
     if (!tx && short) {
       const head = (short[1] ?? "").toLowerCase();
       const tail = (short[2] ?? "").toLowerCase();
@@ -149,9 +158,9 @@ export function parseEvidence(readme: string, v3Hashes: string[] = []): Evidence
     rows.push({
       n: Number(m[1]),
       what: stripBold(what),
-      chain: isV3 ? "v3" : "sepolia",
+      chain: rollup ? rollup.chain : isV3 ? "v3" : "sepolia",
       tx,
-      txText: (eth ? /`([^`]+)`/.exec(txCell)?.[1] : short?.[0]?.replace(/`/g, "")) ?? "",
+      txText: (linked ? /`([^`]+)`/.exec(txCell)?.[1] : short?.[0]?.replace(/`/g, "")) ?? "",
       block: Number(blockDigits[1].replace(/,/g, "")),
       blockUrl: link?.[1] ?? null,
       result: stripBold(result),
@@ -607,6 +616,54 @@ function latestImportOf(relay: RelayEntry | null, relayFile: string, mints: Json
     };
   }
   return best;
+}
+
+/** The rollups where the V3 light client was deployed (README, "More chains"), and their chain ids. */
+const ROLLUPS = { "base-sepolia": 84532, "arbitrum-sepolia": 421614 } as const;
+
+/**
+ * The V3 light client on a rollup, by the records: deployments/<network>.json for the addresses and
+ * the deploy block, and the relayer's histories relay-<network>-<sender>.jsonl (the rollup block in
+ * their `sepoliaBlock`, as the relayer names it on every network) for the imports. Null when
+ * deployments/ has no record for the network.
+ */
+function readRollup(root: string, dir: string, network: keyof typeof ROLLUPS): RollupClientFacts | null {
+  const file = `deployments/${network}.json`;
+  if (!existsSync(join(root, file))) return null;
+  const d = readJson(root, file);
+  if (d.network !== network) fail(file, `network is ${String(d.network)}, not ${network}`);
+  const chainId = num(d.chainId, file, "chainId");
+  if (chainId !== ROLLUPS[network]) fail(file, `chainId ${chainId}, not ${ROLLUPS[network]}`);
+  const contracts = obj(d.contracts, file, "contracts");
+  const lightClient = hex(contracts["GrandpaLightClient #2"], file, "contracts.GrandpaLightClient #2", 20);
+  const provenBalance = hex(contracts["ProvenBalance #2"], file, "contracts.ProvenBalance #2", 20);
+  const steps = arr(d.steps, file, "steps").map((s, i) => obj(s, file, `step ${i}`));
+  const deploy = steps.find((s) => s.kind === "deploy" && s.name === "GrandpaLightClient #2") ?? fail(file, "no deploy step for GrandpaLightClient #2");
+  const pattern = new RegExp(`^relay-${network}-(0x[0-9a-f]{40})\\.jsonl$`);
+  const names = existsSync(dir) ? readdirSync(dir).filter((f) => pattern.test(f)).sort() : [];
+  const imports: RollupClientFacts["imports"] = [];
+  const seen = new Set<string>();
+  for (const name of names) {
+    const rel = relative(root, join(dir, name)).split(sep).join("/");
+    const sender = (pattern.exec(name)?.[1] ?? fail(rel, "no sender in the file name")) as Hex;
+    for (const e of parseRelay(readFileSync(join(dir, name), "utf8"), rel, sender)) {
+      if (e.chain !== "v3" || e.client.toLowerCase() !== lightClient || e.ok !== true || e.status !== 1 || seen.has(e.txHash)) continue;
+      seen.add(e.txHash);
+      imports.push({ number: e.block.number, hash: e.block.hash, setBefore: e.setBefore, setAfter: e.setAfter, txHash: e.txHash, block: e.sepoliaBlock, settledAt: e.settledAt, from: rel });
+    }
+  }
+  imports.sort((a, b) => a.number - b.number);
+  const last = imports.at(-1);
+  return {
+    network,
+    chainId,
+    from: file,
+    lightClient,
+    provenBalance,
+    deployBlock: num(deploy.block, file, "GrandpaLightClient #2 block"),
+    imports,
+    latestImport: last ? { number: last.number, hash: last.hash, setId: last.setAfter, txHash: last.txHash, block: last.block, settledAt: last.settledAt, from: last.from } : null,
+  };
 }
 
 function signingSetKeys(fixture: Json, file: string): { setId: number; keys: Hex[] } {
@@ -1101,6 +1158,7 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"))
     bridge,
     attacks,
     lightClients,
+    rollups: { "base-sepolia": readRollup(root, relayDir, "base-sepolia"), "arbitrum-sepolia": readRollup(root, relayDir, "arbitrum-sepolia") },
     relay: { files: relay.files, entries: relayEntries },
     returnPath,
     totals,

@@ -68,11 +68,15 @@ from the block (`chain_getBlock`), Sepolia's from the mint receipt's logs.
 | V3 testnet | `https://test-evm-rpc-v3.portaldot.dev` | the vault: `outstanding`, `commitments(n)`, slot 1, the `Locked` logs (each in the one block the records put it in), `released(burnId)` |
 | V3 testnet | `https://test-node-v3.portaldot.dev`, then `wss://` | the finalized head, `Grandpa.CurrentSetId`, and lock 1's block |
 | Old mainnet | `wss://mainnet.portaldot.io` | the head and set, over WebSocket: the node serves no HTTP |
+| Base Sepolia | `https://base-sepolia-rpc.publicnode.com`, then `https://sepolia.base.org` | the bridge app's Network page: the V3 light client's set, latest header, threshold, pause flags and its set's keys, and its `HeaderImported` log for a block newer than the records, searched back from the head in 50,000-block calls on the public node (`sepolia.base.org` takes 200 blocks a call, so it is not asked for logs) |
+| Arbitrum Sepolia | `https://sepolia-rollup.arbitrum.io/rpc`, then `https://arbitrum-sepolia-rpc.publicnode.com` | the same, for the V3 light client on Arbitrum Sepolia; Arbitrum's own node searches the logs since the records in one call, the public node in 50,000-block calls |
 
 Each answered a JSON-RPC call from a browser page on `http://localhost:4173` (Oct 20, 2026), and
-the HTTP endpoints send `Access-Control-Allow-Origin` for any origin. A Content-Security-Policy in
-the built page allows connections to these endpoints only, and scripts, styles and fonts from the
-page itself.
+the HTTP endpoints send `Access-Control-Allow-Origin` for any origin. The rollups' four answered
+`eth_chainId` (84532 and 421614), a batch of eight `eth_call`s and a CORS preflight on Oct 28,
+2026; they are the ones `src/app/dests.ts` gives each destination. A Content-Security-Policy in
+each built page (`build/csp.ts`) allows connections to these endpoints only, the rollups' on the
+bridge app's page alone, and scripts, styles and fonts from the page itself.
 
 Calls made to one endpoint within a few milliseconds of each other go out as one JSON-RPC batch
 (up to 8 calls; 3 for drpc's free plan; none for the V3 node's HTTP endpoint, which refuses
@@ -111,7 +115,14 @@ logs on V3's EVM RPC, which serves none of a Substrate extrinsic. `AUTO_MINT.sub
 `src/app/handoff.ts` hands those locks to auto-mint once it reads `Revive.ContractEmitted` from
 `System.Events`.
 
-`src/assets/portaldot.png` is the Portaldot mark, 128 px.
+`src/assets/portaldot.png` is the Portaldot mark, 128 px. The bridge app shows each chain and each
+Polkadot wallet by its owner's own mark where the owner's terms allow it, the files in
+`src/app/marks/`, unmodified; `NOTICE.md` gives each one's source and terms, and why Base's,
+Arbitrum's and SubWallet's are held back until their owners approve (the app shows the chain's
+initial, or the generic wallet icon, instead). Its destinations are one config, `src/app/dests.ts`:
+Sepolia, where it bridges, and Base Sepolia and Arbitrum Sepolia, where the V3 light client is live
+and BridgeMinter and wtPOT are deployed, listed and not open in the app yet: a destination can be
+picked only once the app's lock, mint and burn run to it.
 
 ## Layout
 

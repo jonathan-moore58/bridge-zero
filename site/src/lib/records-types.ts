@@ -7,8 +7,8 @@ export type Hex = `0x${string}`;
 export interface EvidenceRow {
   n: number;
   what: string;
-  chain: "sepolia" | "v3";
-  /** The full transaction or extrinsic hash: from the Etherscan link, or matched in deployments/ for a V3 row. */
+  chain: "sepolia" | "v3" | "base-sepolia" | "arbitrum-sepolia";
+  /** The full transaction or extrinsic hash: from the explorer link (Etherscan, Basescan, Arbiscan), or matched in deployments/ for a V3 row. */
   tx: Hex | null;
   /** The hash as the README prints it. */
   txText: string;
@@ -285,6 +285,24 @@ export interface Roadmap {
   groups: { title: string; items: { lead: string | null; text: string }[] }[];
 }
 
+/** A rollup where the V3 light client is live, by the records: deployments/<network>.json and the relayer's relay-<network>-<sender>.jsonl. */
+export interface RollupClientFacts {
+  network: "base-sepolia" | "arbitrum-sepolia";
+  chainId: number;
+  /** deployments/<network>.json */
+  from: string;
+  /** GrandpaLightClient #2, which follows the V3 testnet. */
+  lightClient: Hex;
+  /** ProvenBalance #2, bound to it. */
+  provenBalance: Hex;
+  /** The rollup block of the client's creation. */
+  deployBlock: number;
+  /** Every import the relayer recorded into it, oldest first: the block it imported, the sets before and after, its transaction and rollup block. */
+  imports: { number: number; hash: Hex; setBefore: number; setAfter: number; txHash: Hex; block: number | null; settledAt: string | null; from: string }[];
+  /** The newest of them: the recorded fallback of latestFinalized() and currentSetId(). */
+  latestImport: { number: number; hash: Hex; setId: number; txHash: Hex; block: number | null; settledAt: string | null; from: string } | null;
+}
+
 export interface Records {
   build: { commit: string | null; builtAt: string };
   verify: VerifyBlock | null;
@@ -302,6 +320,8 @@ export interface Records {
   bridge: BridgeRun;
   attacks: Attack[];
   lightClients: { mainnet: LightClientFacts; v3: LightClientFacts };
+  /** The V3 light client on the rollups, each when deployments/ has its record. */
+  rollups: { "base-sepolia": RollupClientFacts | null; "arbitrum-sepolia": RollupClientFacts | null };
   /** Every sender's history in deployments/, merged: `files` are their paths, `entries` their transactions, each once. */
   relay: { files: string[]; entries: RelayEntry[] };
   returnPath: ReturnPath;

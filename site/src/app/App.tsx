@@ -3,10 +3,12 @@
 // overlays (the sheet, toasts, the announcer).
 
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
+import { destByChainId, type MarkKey } from "./dests.ts";
 import { CH, fromOf, type ChainInfo, type Dir } from "./facts.ts";
 import { useRoute, type Route } from "./router.ts";
 import { useBox } from "./store.ts";
 import { addWtpotToWallet, openNoWallet, openWalletPicker } from "./connect.tsx";
+import { ChainMark, walletMark } from "./marks.tsx";
 import { useNet, type NetState } from "./net.ts";
 import { disconnectPolka, polka, polkaList, type PolkaState } from "./polkadot.ts";
 import { shortSs58 } from "./substrate/account.ts";
@@ -35,16 +37,27 @@ function chainOf(id: bigint | null): ChainInfo | null {
   return id === CH.v3.chainId ? CH.v3 : id === CH.sepolia.chainId ? CH.sepolia : null;
 }
 
-function BalanceRow({ mark, token, where, value }: { mark: string; token: string; where: string; value: number | null | undefined }) {
+/** A chain a wallet can be on that the page names, the bridge's two and the rollups of ./dests.ts: its name and mark. */
+function namedChain(id: bigint | null): { full: string; mark: MarkKey } | null {
+  return chainOf(id) ?? destByChainId(id);
+}
+
+function BalanceRow({ mark, token, where, value }: { mark: MarkKey; token: string; where: string; value: number | null | undefined }) {
   return (
     <div class="menu__bal">
-      <Mark id={mark} cls="mark--20" />
+      <ChainMark mark={mark} cls="mark--20" />
       <dt>
         {token} <span>{where}</span>
       </dt>
       <dd class="mono">{value === undefined ? <span class="skel" /> : value === null ? "—" : fmt(value)}</dd>
     </div>
   );
+}
+
+/** A Polkadot wallet's own mark in the menu's badge, as an Ethereum wallet's icon is shown there; else the sprite's wallet. */
+function PolkaBadgeIcon({ walletKey }: { walletKey: string }) {
+  const src = walletMark(walletKey);
+  return src ? <img class="wallet-ico" src={src} alt="" /> : <Icon id="i-wallet" />;
 }
 
 /** The Polkadot account in the wallet menu: who (its address, its wallet in the badge, as the Ethereum part names its wallet, and its name under them) and its tPOT. */
@@ -58,7 +71,7 @@ function PolkaHead({ p }: { p: PolkaState }) {
           <span class="menu__addr mono">{shortSs58(a.address)}</span>
           {p.wallet ? (
             <span class="badge badge--sm badge--muted menu__via">
-              <Icon id="i-wallet" />
+              <PolkaBadgeIcon walletKey={p.wallet.key} />
               <span>{p.wallet.name}</span>
             </span>
           ) : null}
@@ -67,7 +80,7 @@ function PolkaHead({ p }: { p: PolkaState }) {
       </div>
       {a.name ? <p class="menu__acct">{a.name}</p> : null}
       <dl class="menu__bals">
-        <BalanceRow mark="m-pdot" token="tPOT" where="on V3" value={p.balance === null ? undefined : tokenNum(p.balance, 14)} />
+        <BalanceRow mark="portaldot" token="tPOT" where="on V3" value={p.balance === null ? undefined : tokenNum(p.balance, 14)} />
       </dl>
     </>
   );
@@ -209,9 +222,9 @@ function WalletMenu({ address, name, icon, balances, p, polkaFirst, onClose }: M
         <CopyButton value={address} label="your address" />
       </div>
       <dl class="menu__bals">
-        <BalanceRow mark="m-pdot" token="tPOT" where="on V3" value={b ? tokenNum(b.tpot, 14) : undefined} />
-        <BalanceRow mark="m-eth" token="wtPOT" where="on Sepolia" value={b ? tokenNum(b.wtpot, 14) : undefined} />
-        <BalanceRow mark="m-eth" token="ETH" where="on Sepolia, for gas" value={b ? tokenNum(b.eth, 18) : undefined} />
+        <BalanceRow mark="portaldot" token="tPOT" where="on V3" value={b ? tokenNum(b.tpot, 14) : undefined} />
+        <BalanceRow mark="ethereum" token="wtPOT" where="on Sepolia" value={b ? tokenNum(b.wtpot, 14) : undefined} />
+        <BalanceRow mark="ethereum" token="ETH" where="on Sepolia, for gas" value={b ? tokenNum(b.eth, 18) : undefined} />
       </dl>
       <div class="menu__sep" role="separator" />
       <button class="menu__item" role="menuitem" type="button" onClick={act(addV3, ["Portaldot V3 testnet added", "Chain 420420777, tPOT. Your wallet may call it an unrecognised network; that is expected."])}>
@@ -291,6 +304,8 @@ function WalletButton({ needs, polkaFirst, net }: { needs: ChainInfo | null; pol
   };
 
   const on = chainOf(w.chainId);
+  /** The chain the wallet is on, by name, the rollups included: the wrong-network button names it. */
+  const onNamed = namedChain(w.chainId);
   // A wallet whose chain is not known yet is shown on the chain the page needs.
   const shown = w.chainId === null ? needs : on;
   const wrong = w.chainId !== null && (needs ? w.chainId !== needs.chainId : on === null);
@@ -304,7 +319,7 @@ function WalletButton({ needs, polkaFirst, net }: { needs: ChainInfo | null; pol
     inner = (
       <>
         <span class="wallet__net">
-          <Mark id="m-pdot" />
+          <ChainMark mark="portaldot" />
         </span>
         <span class="wallet__addr">{shortSs58(p.account.address)}</span>
         <Icon id="i-chevron-down" cls="wallet__chev" />
@@ -341,10 +356,10 @@ function WalletButton({ needs, polkaFirst, net }: { needs: ChainInfo | null; pol
     );
   } else if (wrong) {
     cls += " wallet--wrong";
-    label = `${w.name ?? "Wallet"} ${short(w.address)} is on ${on ? on.full : `chain ${w.chainId}`}, the wrong network. Open wallet menu`;
+    label = `${w.name ?? "Wallet"} ${short(w.address)} is on ${onNamed ? onNamed.full : `chain ${w.chainId}`}, the wrong network. Open wallet menu`;
     inner = (
       <>
-        <span class="wallet__net">{on ? <Mark id={on.markId} /> : null}</span>
+        <span class="wallet__net">{onNamed ? <ChainMark mark={onNamed.mark} /> : null}</span>
         <span class="wallet__warn">
           <Icon id="i-alert" />
           <span class="wallet__text">Wrong network</span>
@@ -357,7 +372,7 @@ function WalletButton({ needs, polkaFirst, net }: { needs: ChainInfo | null; pol
     label = `${w.name ?? "Wallet"} ${short(w.address)}${shown ? ` on ${shown.full}` : ""}. ${net.label}. Open wallet menu`;
     inner = (
       <>
-        <span class="wallet__net">{shown ? <Mark id={shown.markId} /> : null}</span>
+        <span class="wallet__net">{shown ? <ChainMark mark={shown.mark} /> : null}</span>
         <span class="wallet__addr">{short(w.address)}</span>
         <Icon id="i-chevron-down" cls="wallet__chev" />
       </>

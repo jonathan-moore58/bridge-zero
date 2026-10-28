@@ -6,16 +6,20 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { decode, encodeCall } from "../../lib/abi.ts";
-import { DECIMALS, LC, MINTER, REPO, SEPOLIA_CHAIN_ID, SEPOLIA_LOGS, TOKEN, V3_EVM, VAULT, etherscanAddress, records } from "../../lib/chains.ts";
+import { DECIMALS, LC, MINTER, REPO, SEPOLIA_CHAIN_ID, SEPOLIA_LOGS, TOKEN, V3_EVM, VAULT, etherscanAddress, records, repoFile } from "../../lib/chains.ts";
 import { checksum } from "../../lib/display.ts";
 import { eventTopic, keccak256 } from "../../lib/hashes.ts";
 import { bytesToHex, type Hex } from "../../lib/hex.ts";
+import { lagMinutes, setsBehind, type ClientState } from "../../lib/lc-read.ts";
 import { registry, useField, type ChainHead, type Field, type LcState } from "../../lib/live.ts";
 import { burnId } from "../../lib/proofs.ts";
 import { request } from "../../lib/rpc.ts";
+import { ROLLUPS, destState, type Dest } from "../dests.ts";
 import { FAST_CAP, IMPORT_GAS, LATER_CHAINS, SPEED_NAME, V3_SCAN } from "../facts.ts";
+import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
-import { Addr, Chip, Icon, Mark, fmt, num, short } from "../ui.tsx";
+import { lookImport as lookRollupImport, recordedImport as recordedRollupImport, useRollup, watchRollups, type ImportLookup, type RollupKey } from "../rollups.ts";
+import { Addr, Chip, Icon, fmt, num, short } from "../ui.tsx";
 import { RUNS, clockUtc, dayTime, qty, sepoliaTime, tok, type RawLog, type Run } from "./Activity.tsx";
 
 type ClientKey = "v3" | "mainnet";
@@ -338,20 +342,20 @@ function usePhone(): boolean {
 // ---------------------------------------------------------------------------------------------
 // The light clients
 
-/** Minutes the client is behind its chain's finalized head, when both were read live. */
-function lagOf(key: ClientKey, lc: Field<LcState>, chain: Field<ChainHead>): number | null {
+/** Minutes the client is behind its chain's finalized head (`blockTimeSec` a block), when both were read live. */
+function lagOf(blockTimeSec: number, lc: Field<{ latestNumber: number }>, chain: Field<ChainHead>): number | null {
   const c = lc.value;
   const h = chain.value;
   if (lc.status !== "live" || chain.status !== "live" || !c || !h) return null;
-  return Math.max(0, Math.round(((h.number - c.latestNumber) * LC[key].blockTimeSec) / 60));
+  return lagMinutes(c.latestNumber, h.number, blockTimeSec);
 }
 
 /** Validator-set changes the chain made that the client has not imported, when both were read live. */
-function behindOf(lc: Field<LcState>, chain: Field<ChainHead>): number {
+function behindOf(lc: Field<{ setId: bigint }>, chain: Field<ChainHead>): number {
   const c = lc.value;
   const h = chain.value;
-  if (lc.status !== "live" || chain.status !== "live" || !c || !h || h.setId === null) return 0;
-  return h.setId > c.setId ? Number(h.setId - c.setId) : 0;
+  if (lc.status !== "live" || chain.status !== "live" || !c || !h) return 0;
+  return setsBehind(c.setId, h.setId);
 }
 
 function lcAsOf(key: ClientKey, lc: Field<LcState>, chain: Field<ChainHead>): string {
@@ -369,17 +373,22 @@ function lcAsOf(key: ClientKey, lc: Field<LcState>, chain: Field<ChainHead>): st
   return lc.status === "loading" ? "Reading Sepolia" : "Could not read";
 }
 
-/** The lag on a 70-min scale; its width is a runtime CSS variable, set through the CSSOM. */
-function Meter({ lag }: { lag: number | null }) {
+/**
+ * The lag on a 70-min scale; its width is a runtime CSS variable, set through the CSSOM. `ceiling`:
+ * the relayer's 70-min ceiling, named and turning the bar amber past it, where the relayer runs in
+ * watch mode (Sepolia's clients); null where nothing keeps the client within one (the rollups'), and
+ * the bar is neutral.
+ */
+function Meter({ lag, ceiling = LAG_CEILING }: { lag: number | null; ceiling?: number | null }) {
   const fill = useRef<HTMLSpanElement>(null);
   const pct = lag === null ? 0 : Math.min(100, Math.round((lag / LAG_CEILING) * 100));
   useLayoutEffect(() => {
     fill.current?.style.setProperty("--fill", `${pct}%`);
   }, [pct]);
   return (
-    <div class={`meter${lag !== null && lag > LAG_CEILING ? " is-over" : ""}`}>
+    <div class={`meter${ceiling === null ? " meter--plain" : lag !== null && lag > ceiling ? " is-over" : ""}`}>
       <span class="meter__fill" ref={fill} />
-      <span class="meter__cap">{LAG_CEILING} min</span>
+      {ceiling === null ? null : <span class="meter__cap">{ceiling} min</span>}
     </div>
   );
 }
@@ -395,7 +404,7 @@ function LcCard({ which, quiet = false }: { which: ClientKey; quiet?: boolean })
   const reading = lc.status === "loading";
   const c = reading ? undefined : lc.value;
   const h = chain.value;
-  const lag = lagOf(which, lc, chain);
+  const lag = lagOf(LC[which].blockTimeSec, lc, chain);
   const behind = behindOf(lc, chain);
   const inStep = lc.status === "live" && chain.status === "live" && !!c && !!h && h.setId === c.setId;
   // The set's keys likewise: the client's threshold is live before its set has been read.
@@ -434,7 +443,7 @@ function LcCard({ which, quiet = false }: { which: ClientKey; quiet?: boolean })
   return (
     <article class={`card ncard ncard--lc${quiet ? " ncard--quiet" : ""}`} aria-labelledby={id}>
       <header class="ncard__head">
-        <Mark id="m-pdot" cls="mark--32" />
+        <ChainMark mark="portaldot" cls="mark--32" />
         <div class="ncard__titles">
           <h2 class="ncard__title" id={id}>
             {facts.chain}
@@ -545,6 +554,259 @@ function LcCard({ which, quiet = false }: { which: ClientKey; quiet?: boolean })
 }
 
 // ---------------------------------------------------------------------------------------------
+// The V3 light client on the rollups (../dests.ts): the same reads as Sepolia's, from each rollup's RPCs
+
+/** A lag in minutes, or hours and minutes from two hours on: a client nobody relays to falls hours behind. */
+function LagFigure({ lag }: { lag: number }) {
+  if (lag < 120) {
+    return (
+      <>
+        {lag}
+        <span class="unit">min</span>
+      </>
+    );
+  }
+  const m = lag % 60;
+  return (
+    <>
+      {Math.floor(lag / 60)}
+      <span class="unit">h</span>
+      {m ? (
+        <>
+          {" "}
+          {m}
+          <span class="unit">min</span>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * When and how a rollup client's latest block was imported: from the relayer's records, or looked up
+ * on the rollup. A lookup that failed is made again with the client's next live read (every 30 s).
+ */
+function useRollupImport(key: RollupKey, lc: Field<ClientState>): ImportLookup | "reading" | null {
+  const v = lc.value;
+  const hash = v ? v.latestHash.toLowerCase() : "";
+  const rec = hash ? recordedRollupImport(key, hash) : null;
+  const need = !!v && !rec && lc.status === "live";
+  const [found, setFound] = useState<{ hash: string; r: ImportLookup } | null>(null);
+  const again = found && found.hash === hash && found.r === "failed" ? (lc.at ?? 0) : 0;
+  useEffect(() => {
+    if (!need || !v) return;
+    let alive = true;
+    void lookRollupImport(key, v).then((r) => {
+      if (alive) setFound({ hash, r });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [hash, need, again]);
+  if (rec) return rec;
+  if (!need) return null;
+  return found && found.hash === hash ? found.r : "reading";
+}
+
+function rollupAsOf(d: Dest & { key: RollupKey }, lc: Field<ClientState>, chain: Field<ChainHead>): string {
+  if (lc.status === "live") {
+    const at = chain.status === "live" ? Math.min(lc.at ?? Date.now(), chain.at ?? Date.now()) : (lc.at ?? Date.now());
+    if (chain.status === "error") return `Live · as of ${clockUtc(at)} · Portaldot V3 did not answer`;
+    if (chain.status === "loading") return `Live · as of ${clockUtc(at)} · reading Portaldot V3`;
+    return `Live · as of ${clockUtc(at)}`;
+  }
+  if (lc.status === "recorded") {
+    const rec = lc.value ? recordedRollupImport(d.key, lc.value.latestHash) : null;
+    return rec && Number.isFinite(rec.at) ? `Recorded · as of ${dayTime(rec.at)} UTC` : "Recorded";
+  }
+  return lc.status === "loading" ? `Reading ${d.full}` : "Could not read";
+}
+
+/** A rollup's V3 light client, by the rules of Sepolia's card: live, else recorded, each value saying which. */
+function RollupLcCard({ d }: { d: Dest & { key: RollupKey } }) {
+  const lc = useRollup(d.key);
+  const chain = useField("chain.v3");
+  const imp = useRollupImport(d.key, lc);
+  // As on Sepolia's card: while the client is being read, the cells wait instead of showing the recorded value unlabelled.
+  const reading = lc.status === "loading";
+  const c = reading ? undefined : lc.value;
+  const h = chain.value;
+  const lag = lagOf(LC.v3.blockTimeSec, lc, chain);
+  const behind = behindOf(lc, chain);
+  const inStep = lc.status === "live" && chain.status === "live" && !!c && !!h && h.setId === c.setId;
+  const wait = <span class="skel" />;
+  const id = `lc-${d.key}`;
+  const scan = (a: string) => `${d.explorer.url}/address/${checksum(a)}`;
+
+  // A card carries a badge only when its state is not fine.
+  let flag: ComponentChildren = null;
+  if (lc.status === "recorded") {
+    flag = (
+      <Chip kind="muted badge--sm" icon="i-server">
+        Recorded
+      </Chip>
+    );
+  } else if (lc.status === "error" || chain.status === "error") {
+    flag = (
+      <Chip kind="muted badge--sm" icon="i-server">
+        Could not read
+      </Chip>
+    );
+  } else if (behind > 0) {
+    flag = (
+      <Chip kind="trusted badge--sm" icon="i-refresh">
+        Relay due
+      </Chip>
+    );
+  } else if (c?.halted || c?.paused) {
+    flag = (
+      <Chip kind="revert badge--sm" icon="i-alert">
+        {c.halted ? "Halted" : "Paused"}
+      </Chip>
+    );
+  }
+
+  const state = destState(d);
+  return (
+    <article class="card ncard ncard--lc ncard--rollup" aria-labelledby={id}>
+      <header class="ncard__head">
+        <ChainMark mark={d.mark} cls="mark--32" />
+        <div class="ncard__titles">
+          <h2 class="ncard__title" id={id}>
+            {d.full}
+          </h2>
+          <p class="ncard__sub">
+            Light client on {d.short} ·{" "}
+            {state === "live" ? "used by its minter" : state === "ready" ? "minter deployed, not open in the app yet" : "no minter yet, bridging soon"}
+          </p>
+          <span class="ncard__asof">{rollupAsOf(d, lc, chain)}</span>
+        </div>
+        {flag}
+      </header>
+      <div class="lag">
+        <div class="lag__num">
+          <span class="lag__big">{lag === null ? reading || chain.status === "loading" ? wait : "—" : <LagFigure lag={lag} />}</span>
+          <span class="lag__label">behind Portaldot's finalized head</span>
+        </div>
+        {/* No relayer runs here on a schedule, so no ceiling applies: the bar is neutral, never a warning. */}
+        <Meter lag={lag} ceiling={null} />
+      </div>
+      <dl class="ncard__grid">
+        <div>
+          <dt>Client head</dt>
+          <dd class="mono">{c ? `#${num(c.latestNumber)}` : reading ? wait : "—"}</dd>
+        </div>
+        <div>
+          <dt>Portaldot finalized</dt>
+          <dd class="mono">{h ? `#${num(h.number)}` : chain.status === "loading" ? wait : "—"}</dd>
+        </div>
+        <div>
+          <dt>Validator set</dt>
+          <dd>
+            {!c ? (
+              reading ? (
+                wait
+              ) : (
+                "—"
+              )
+            ) : behind > 0 && h && h.setId !== null ? (
+              <>
+                <span class="mono">{String(c.setId)}</span> of <span class="mono">{String(h.setId)}</span> <span class="tag tag--trust">{behind} to import</span>
+              </>
+            ) : inStep ? (
+              <>
+                <span class="mono">{String(c.setId)}</span>{" "}
+                <span class="tag tag--verify">
+                  <Icon id="i-check" cls="i--12" />
+                  in step
+                </span>
+              </>
+            ) : (
+              <span class="mono">{String(c.setId)}</span>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>Signatures needed</dt>
+          <dd>{c ? (c.keys !== null ? `${c.threshold} of ${c.keys}` : String(c.threshold)) : reading ? wait : "—"}</dd>
+        </div>
+        <div>
+          <dt>Last import</dt>
+          <dd>
+            {reading || imp === "reading" ? (
+              wait
+            ) : imp === null ? (
+              "—"
+            ) : imp === "failed" ? (
+              "Could not read"
+            ) : "before" in imp ? (
+              // Searched back as far as a lookup goes (../../lib/lc-read.ts) without finding it.
+              imp.before !== null ? (
+                `Before ${stamp(imp.before)}`
+              ) : (
+                <>
+                  Before block <span class="mono">#{num(imp.block)}</span>
+                </>
+              )
+            ) : (
+              <>
+                {Number.isFinite(imp.at) ? stamp(imp.at) : "—"} <span class="dim">· {imp.what}</span>
+                {imp.tx ? (
+                  <>
+                    {" "}
+                    <a class="text-link" href={`${d.explorer.url}/tx/${imp.tx}`} target="_blank" rel="noopener" aria-label={`The import's transaction on ${d.explorer.name}`}>
+                      tx
+                    </a>
+                  </>
+                ) : null}
+              </>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>Paused</dt>
+          <dd>{c?.halted ? <span class="tag tag--revert">Halted</span> : c?.paused ? <span class="tag tag--revert">Yes · by its admin</span> : c?.paused === false ? "No" : reading ? wait : "—"}</dd>
+        </div>
+        <div>
+          <dt>V3 light client</dt>
+          <dd>
+            <Addr full={checksum(d.lightClient)} href={scan(d.lightClient)} label={`${d.full} V3 light client address`} />
+          </dd>
+        </div>
+        <div>
+          <dt>ProvenBalance</dt>
+          <dd>
+            <Addr full={checksum(d.provenBalance)} href={scan(d.provenBalance)} label={`${d.full} ProvenBalance address`} />
+          </dd>
+        </div>
+        {d.minter && d.token ? (
+          <>
+            <div>
+              <dt>BridgeMinter</dt>
+              <dd>
+                <Addr full={checksum(d.minter)} href={scan(d.minter)} label={`${d.full} BridgeMinter address`} />
+              </dd>
+            </div>
+            <div>
+              <dt>wtPOT</dt>
+              <dd>
+                <Addr full={checksum(d.token)} href={scan(d.token)} label={`${d.full} wtPOT address`} />
+              </dd>
+            </div>
+          </>
+        ) : null}
+      </dl>
+      <p class="ncard__note">
+        <span>
+          Imported on demand: no relayer runs to {d.short} on a schedule yet, so the client falls hours behind between imports. Its address is also the old
+          mainnet's client's on Sepolia: another chain, another contract.
+        </span>
+      </p>
+    </article>
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
 // The topology: how the parts connect, with each one's state
 
 function TopoNode({ icon, name, where, st, children }: { icon: ComponentChildren; name: ComponentChildren; where: string; st: Dot; children: ComponentChildren }) {
@@ -580,7 +842,7 @@ function Topo({ net }: { net: NetState }) {
   const lcSt: Dot = net.key === "relay" ? "trust" : net.key === "paused" ? "revert" : "verify";
   const c = lc.value;
   const h = chain.value;
-  const lag = lagOf("v3", lc, chain);
+  const lag = lagOf(LC.v3.blockTimeSec, lc, chain);
   const last = RELEASES[0]?.run ?? null;
   const committee = RP.committee;
   return (
@@ -589,7 +851,7 @@ function Topo({ net }: { net: NetState }) {
         How the parts connect
       </h2>
       <ol class="topo__row">
-        <TopoNode icon={<Mark id="m-pdot" cls="mark--28" />} name="Portaldot V3" where="testnet" st={dot(h ? "verify" : "muted")}>
+        <TopoNode icon={<ChainMark mark="portaldot" cls="mark--28" />} name="Portaldot V3" where="testnet" st={dot(h ? "verify" : "muted")}>
           {h ? (
             <>
               <span class="mono">#{num(h.number)}</span> at {hm(chain.at ?? Number.NaN)}
@@ -615,7 +877,7 @@ function Topo({ net }: { net: NetState }) {
         </TopoNode>
         <TopoLink label="imports" />
         <TopoNode
-          icon={<Mark id="m-eth" cls="mark--28" />}
+          icon={<ChainMark mark="ethereum" cls="mark--28" />}
           name={
             <>
               Grandpa
@@ -1088,7 +1350,7 @@ function VaultCard({ phone, waiting }: { phone: boolean; waiting: Waiting }) {
     >
       <div class="balance">
         <div class="balance__side">
-          <Mark id="m-pdot" cls="mark--28" />
+          <ChainMark mark="portaldot" cls="mark--28" />
           <span class="balance__num">
             {v ? fmt(tok(v.outstanding)) : vault.status === "loading" ? wait : "—"}
             <span class="unit">tPOT</span>
@@ -1099,7 +1361,7 @@ function VaultCard({ phone, waiting }: { phone: boolean; waiting: Waiting }) {
           =
         </span>
         <div class="balance__side">
-          <Mark id="m-eth" cls="mark--28" />
+          <ChainMark mark="ethereum" cls="mark--28" />
           <span class="balance__num">
             {t ? fmt(tok(t.totalSupply)) : token.status === "loading" ? wait : "—"}
             <span class="unit">wtPOT</span>
@@ -1137,9 +1399,17 @@ function VaultCard({ phone, waiting }: { phone: boolean; waiting: Waiting }) {
   );
 }
 
+/** The chains the README's evidence rows are on, in its order, as the note names them. */
+const EVIDENCE_CHAINS = [
+  ["sepolia", "Sepolia"],
+  ["v3", "V3"],
+  ["base-sepolia", "Base Sepolia"],
+  ["arbitrum-sepolia", "Arbitrum Sepolia"],
+] as const;
+
 function ContractsCard({ phone }: { phone: boolean }) {
   const rows = records.evidence;
-  const onV3 = rows.filter((r) => r.chain === "v3").length;
+  const counts = EVIDENCE_CHAINS.map(([chain, name]) => [rows.filter((r) => r.chain === chain).length, name] as const).filter(([n]) => n > 0);
   return (
     <Fold phone={phone} wide id="n-contracts" icon="i-doc" title="Contracts" sub="BridgeMinter and wtPOT are source-verified on Etherscan">
       <ul class="clist">
@@ -1147,7 +1417,7 @@ function ContractsCard({ phone }: { phone: boolean }) {
           const full = checksum(c.address);
           return (
             <li key={c.name} class="clist__row">
-              <Mark id={c.chain === "v3" ? "m-pdot" : "m-eth"} cls="mark--28" />
+              <ChainMark mark={c.chain === "v3" ? "portaldot" : "ethereum"} cls="mark--28" />
               <span class="clist__text">
                 <span class="clist__name">
                   {c.name} <span class="clist__where">{c.where}</span>
@@ -1168,10 +1438,19 @@ function ContractsCard({ phone }: { phone: boolean }) {
             <a class="text-link" href={`${REPO}#evidence`} target="_blank" rel="noopener">
               evidence table
             </a>{" "}
-            numbers {num(rows.length)} transactions: {num(rows.length - onV3)} on Sepolia and {num(onV3)} on V3.
+            numbers {num(rows.length)} transactions: {andList(counts.map(([n, name]) => `${num(n)} on ${name}`))}.
           </span>
         </p>
       ) : null}
+      <p class="ncard__note">
+        <span>
+          The chains' and wallets' marks are their owners'; the ETH diamond is ethereum.org's, under CC BY 4.0. Each one's source and terms:{" "}
+          <a class="text-link" href={repoFile("NOTICE.md")} target="_blank" rel="noopener">
+            NOTICE.md
+          </a>
+          .
+        </span>
+      </p>
     </Fold>
   );
 }
@@ -1245,13 +1524,16 @@ export function NetworkView({ net }: { net: NetState }) {
   const phone = usePhone();
   const waiting = useWaiting();
   const down = useDown(net);
+  // The rollups' clients are read while this page is open.
+  useEffect(() => watchRollups(), []);
+  const [base, arbitrum] = ROLLUPS;
   const eyebrow = down.sepolia
     ? "Read from records · RPC down"
     : down.v3
       ? "Read live · Portaldot V3 not answering"
       : net.key === "checking"
-        ? "Reading V3 and Sepolia"
-        : "Read live · V3 and Sepolia";
+        ? "Reading V3, Sepolia and two rollups"
+        : "Read live · V3, Sepolia and two rollups";
   return (
     <div class="page">
       <header class="page__head">
@@ -1259,7 +1541,7 @@ export function NetworkView({ net }: { net: NetState }) {
           <p class="eyebrow page__eyebrow">{eyebrow}</p>
           <h1 class="page__title">Network</h1>
           <p class="page__lead">
-            The light client every mint uses, the relayer that keeps it current, the committee that runs the way back, and the contracts. Each card says when its values were read.
+            The light client every mint uses and the relayer that keeps it current, the same client on two rollups, imported there on demand, the committee that runs the way back, and the contracts. Each card says when its values were read.
           </p>
         </div>
       </header>
@@ -1270,11 +1552,13 @@ export function NetworkView({ net }: { net: NetState }) {
         <div class="ncols">
           <div class="ncol">
             <LcCard which="v3" />
+            {base ? <RollupLcCard d={base} /> : null}
             <WatcherCard waiting={waiting} />
             <VaultCard phone={phone} waiting={waiting} />
           </div>
           <div class="ncol">
             <RelayerCard />
+            {arbitrum ? <RollupLcCard d={arbitrum} /> : null}
             <CommitteeCard phone={phone} />
             <LcCard which="mainnet" quiet />
           </div>

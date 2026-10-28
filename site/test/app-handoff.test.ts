@@ -20,16 +20,17 @@ test("auto-mint takes Ethereum wallets' locks of 0.001 tPOT and more: the live p
   assert.equal(AUTO_MINT.key, "0x57cc2ba3b883339a9f32726e6d0d3a9ee861a113");
 });
 
-test("auto-mint does not take a lock from a Polkadot wallet yet, whatever its amount: it finds locks by V3's EVM logs, which a Substrate extrinsic has none of", () => {
-  assert.equal(AUTO_MINT.substrate, false);
-  for (const amount of [MIN - 1n, MIN, parseAmount("0.5")!, parseAmount("100")!]) {
-    assert.equal(autoMints(amount, "substrate"), false);
-    // The visitor mints it, as below the minimum: no wait for auto-mint, no offer, nothing pending.
-    for (const now of [AT, AT + 4 * MIN_MS, AT + 60 * MIN_MS]) {
-      assert.deepEqual(handoffOf(amount, "substrate", AT, now, false), { kind: "self" });
-      assert.deepEqual(handoffOf(amount, "substrate", AT, now, true), { kind: "self" });
-    }
+test("auto-mint takes a Polkadot wallet's lock of 0.001 tPOT and more too: it reads the lock's event from System.Events (lock 3)", () => {
+  assert.equal(AUTO_MINT.substrate, true);
+  assert.equal(autoMints(MIN - 1n, "substrate"), false);
+  for (const amount of [MIN, parseAmount("0.5")!, parseAmount("100")!]) {
+    assert.equal(autoMints(amount, "substrate"), true);
+    // As an Ethereum wallet's lock: the page waits, and offers the visitor's own mint after 5 minutes.
+    assert.deepEqual(handoffOf(amount, "substrate", AT, AT, false), { kind: "waiting", offerAt: AT + 5 * MIN_MS });
+    assert.deepEqual(handoffOf(amount, "substrate", AT, AT + 5 * MIN_MS, false), { kind: "offer", since: AT + 5 * MIN_MS });
   }
+  // Below the minimum the visitor mints it.
+  assert.deepEqual(handoffOf(MIN - 1n, "substrate", AT, AT, false), { kind: "self" });
 });
 
 test("below the minimum the visitor mints it, as before: no wait, no offer", () => {

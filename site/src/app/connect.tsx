@@ -7,11 +7,12 @@ import { TOKEN, V3_EVM } from "../lib/chains.ts";
 import { checksum } from "../lib/display.ts";
 import { request } from "../lib/rpc.ts";
 import { MINT_GAS } from "./facts.ts";
+import { ChainMark, walletMark } from "./marks.tsx";
 import { connectPolka, normalize, pickAccount, polka, polkaList } from "./polkadot.ts";
 import { useBox } from "./store.ts";
 import { senderOf, shortSs58 } from "./substrate/account.ts";
 import { faultOf, faultText, PORTALDOT_WALLET_URL, type AccountRow, type PolkaWallet } from "./substrate/inject.ts";
-import { Chip, Icon, Mark, closeSheet, fmt, openSheet, short, toast } from "./ui.tsx";
+import { Chip, Icon, closeSheet, fmt, openSheet, short, toast } from "./ui.tsx";
 import { addWtpot, connect, wallet, walletCode, wallets } from "./wallet.ts";
 
 /** What an Ethereum wallet is wanted for, where only it can do it: the Sepolia address filled in, the mint, the burn, or any of these. */
@@ -57,7 +58,7 @@ export async function connectWallet(walletId: string, after?: () => void): Promi
   after?.();
 }
 
-/** A wallet's own icon (wallet.ts keeps only a data:image/ URI), else the sprite's wallet. */
+/** A wallet's own icon: the data:image/ URI an Ethereum wallet announced (wallet.ts keeps no other), or the mark the page ships for a Polkadot wallet; else the sprite's wallet. */
 export function WalletIcon({ icon }: { icon: string | null }) {
   return icon ? (
     <img class="wallet-ico" src={icon} alt="" />
@@ -68,15 +69,9 @@ export function WalletIcon({ icon }: { icon: string | null }) {
   );
 }
 
-/** A Polkadot wallet's icon: the Portaldot mark the app ships for Portaldot's own wallet, else the sprite's wallet (no third-party logos are shipped). */
-export function PolkaIcon({ portaldot }: { portaldot: boolean }) {
-  return portaldot ? (
-    <span class="wallet-ico wallet-ico--mark" aria-hidden="true">
-      <Mark id="m-pdot" cls="mark--28" />
-    </span>
-  ) : (
-    <WalletIcon icon={null} />
-  );
+/** A Polkadot wallet's own mark, by its key in window.injectedWeb3 (./marks.tsx: the Portaldot Wallet, polkadot{.js}, Talisman), else the sprite's wallet (SubWallet, whose mark is held back, and any other). */
+export function PolkaIcon({ walletKey }: { walletKey: string }) {
+  return <WalletIcon icon={walletMark(walletKey)} />;
 }
 
 function EvmList({ after }: { after: (() => void) | undefined }) {
@@ -150,7 +145,7 @@ function PolkaList({ after }: { after: (() => void) | undefined }) {
       <ul class="picker__list">
         <li>
           <a class="list-row" href={PORTALDOT_WALLET_URL} target="_blank" rel="noopener">
-            <PolkaIcon portaldot />
+            <PolkaIcon walletKey="portaldot extension" />
             <span class="list-row__text">
               <span class="list-row__title">Portaldot Wallet</span>
               <span class="list-row__meta">Portaldot's own wallet, for 5… accounts</span>
@@ -181,7 +176,7 @@ function PolkaList({ after }: { after: (() => void) | undefined }) {
                 void connectPolkaWallet(o, after);
               }}
             >
-              <PolkaIcon portaldot={o.portaldot} />
+              <PolkaIcon walletKey={o.key} />
               <span class="list-row__text">
                 <span class="list-row__title">{o.name}</span>
                 {o.note ? <span class="list-row__meta">{o.note}</span> : null}
@@ -335,7 +330,7 @@ function AccountList({ wallet: w, rows: first, after }: { wallet: PolkaWallet; r
                   after?.();
                 }}
               >
-                <PolkaIcon portaldot={w.portaldot} />
+                <PolkaIcon walletKey={w.key} />
                 <span class="list-row__text">
                   <span class="list-row__title">
                     {r.name ?? "Account"} <span class="mono list-row__addr">{shortSs58(normalize(r.address) ?? r.address)}</span>
@@ -379,7 +374,7 @@ export function openNoEthWallet(use: EthUse = "send"): void {
     body: (
       <div class="sheet-stack">
         <div class="empty-mark" aria-hidden="true">
-          <Mark id="m-eth" cls="mark--28" />
+          <ChainMark mark="ethereum" cls="mark--28" />
         </div>
         <p class="sheet-lead">
           {name} signs {use === "fill" || use === "mint" ? "the lock" : "locks"} on V3. {ETH_USE[use]} Install one, then reload this page.

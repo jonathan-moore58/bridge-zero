@@ -27,12 +27,13 @@ import { request, SubstrateClient, type Endpoint } from "../../lib/rpc.ts";
 import { decodeTimestampInherent } from "../../lib/scale.ts";
 import { SPEED_NAME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
 import { handoffOf } from "../handoff.ts";
+import { ChainMark } from "../marks.tsx";
 import { polka } from "../polkadot.ts";
 import type { Route } from "../router.ts";
 import { Box, useBox } from "../store.ts";
 import { shortSs58 } from "../substrate/account.ts";
 import { chainIdOf, isDone, transfers, type LiveTransfer } from "../transfers.ts";
-import { Chip, Icon, Mark, dur, fmt, num, secs, short } from "../ui.tsx";
+import { Chip, Icon, dur, fmt, num, secs, short } from "../ui.tsx";
 import { wallet } from "../wallet.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -631,8 +632,8 @@ function ActRow({ x, connected }: { x: Row; connected: boolean }) {
     <li>
       <a class={`arow${action ? " arow--action" : ""}${why && !action ? " arow--note" : ""}`} href={href}>
         <span class="pairmark pairmark--sm" aria-hidden="true">
-          <Mark id={from.markId} cls="mark--28" />
-          <Mark id={to.markId} cls="mark--28" />
+          <ChainMark mark={from.mark} cls="mark--28" />
+          <ChainMark mark={to.mark} cls="mark--28" />
         </span>
         <span class="arow__main">
           <span class="arow__title">

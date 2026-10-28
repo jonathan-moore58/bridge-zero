@@ -1,26 +1,32 @@
 // What the app states as fact: the two chains, and the times and costs measured on the recorded
-// runs (README rows 24 to 58). Each number names the run it comes from.
+// runs (README rows 24 to 58). Each number names the run it comes from. The destinations, Sepolia
+// and the rollups, are configured in ./dests.ts.
 
-import { SEPOLIA_CHAIN_ID, V3_CHAIN_ID } from "../lib/chains.ts";
+import { SEPOLIA_CHAIN_ID, V3_CHAIN_ID } from "../lib/endpoints.ts";
+import type { MarkKey } from "./dests.ts";
 import type { Dir, Speed } from "./model.ts";
 
 export type { Dir, Speed };
 export type ChainKey = "v3" | "sepolia";
 
-export interface ChainInfo {
-  key: ChainKey;
+/** How the card and the lists show a chain: the chain button's two lines, its names in text, its mark and token. */
+export interface ChainFace {
   name: string;
   sub: string;
   full: string;
   short: string;
-  markId: "m-pdot" | "m-eth";
+  mark: MarkKey;
   token: "tPOT" | "wtPOT";
+}
+
+export interface ChainInfo extends ChainFace {
+  key: ChainKey;
   chainId: bigint;
 }
 
 export const CH: Record<ChainKey, ChainInfo> = {
-  v3: { key: "v3", name: "Portaldot V3", sub: "testnet", full: "Portaldot V3 testnet", short: "V3", markId: "m-pdot", token: "tPOT", chainId: V3_CHAIN_ID },
-  sepolia: { key: "sepolia", name: "Ethereum", sub: "Sepolia", full: "Ethereum Sepolia", short: "Sepolia", markId: "m-eth", token: "wtPOT", chainId: SEPOLIA_CHAIN_ID },
+  v3: { key: "v3", name: "Portaldot V3", sub: "testnet", full: "Portaldot V3 testnet", short: "V3", mark: "portaldot", token: "tPOT", chainId: V3_CHAIN_ID },
+  sepolia: { key: "sepolia", name: "Ethereum", sub: "Sepolia", full: "Ethereum Sepolia", short: "Sepolia", mark: "ethereum", token: "wtPOT", chainId: SEPOLIA_CHAIN_ID },
 };
 
 export const fromOf = (dir: Dir): ChainInfo => (dir === "in" ? CH.v3 : CH.sepolia);
@@ -83,8 +89,12 @@ export const MINT_GAS_FULL = "2,391,069";
 export const BURN_GAS = "61";
 export const BURN_GAS_FULL = "61,434";
 
-/** Passed the whole deploy, import and proof sequence in a simulation on Oct 24 (README, Roadmap). */
-export const LATER_CHAINS = ["Base Sepolia", "OP Sepolia", "Arbitrum Sepolia", "Polygon Amoy", "BNB Smart Chain testnet", "Avalanche Fuji"];
+/**
+ * Passed the whole deploy, import and proof sequence in a simulation on Oct 24 (README, Roadmap),
+ * with nothing deployed on them yet. Base Sepolia and Arbitrum Sepolia, which passed it too, have the
+ * V3 light client live since Oct 27 and are destinations now (./dests.ts).
+ */
+export const LATER_CHAINS = ["OP Sepolia", "Polygon Amoy", "BNB Smart Chain testnet", "Avalanche Fuji"];
 
 export const V3_SCAN = "https://scanner-testnet-v3.portaldot.dev";
 export const V3_RPC = "https://test-evm-rpc-v3.portaldot.dev";

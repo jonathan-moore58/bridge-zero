@@ -27,7 +27,7 @@ import { encodeCall } from "../lib/abi.ts";
 import { SEPOLIA, SEPOLIA_HISTORY, TOKEN, V3_EVM } from "../lib/chains.ts";
 import type { Hex } from "../lib/hex.ts";
 import { request } from "../lib/rpc.ts";
-import { sepolia, transports, v3 } from "./chains.ts";
+import { arbitrumSepolia, baseSepolia, sepolia, transports, v3 } from "./chains.ts";
 import type { ChainKey } from "./facts.ts";
 import { Box } from "./store.ts";
 
@@ -120,7 +120,9 @@ function browserStorage() {
 }
 
 const config = createConfig({
-  chains: [v3, sepolia],
+  // V3 and Sepolia, which the bridge sends on; Base Sepolia and Arbitrum Sepolia, where the V3 light
+  // client is live (./dests.ts), so that a later stage can switch a wallet to them. Nothing here sends on them.
+  chains: [v3, sepolia, baseSepolia, arbitrumSepolia],
   // window.ethereum, for a wallet that does not announce itself; EIP-6963 adds a connector for each
   // wallet that does. WalletConnect, for a phone wallet without an in-app browser, would be one more
   // connector here (walletConnect from @wagmi/connectors), with the owner's Reown project id and its

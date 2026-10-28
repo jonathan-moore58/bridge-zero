@@ -13,6 +13,8 @@ export interface Endpoint {
   url: string;
   /** The most calls the endpoint takes in one batch; 1 or absent sends each call on its own. */
   batch?: number;
+  /** The widest eth_getLogs range, in blocks, the node serves in one call, where it caps it; absent: no cap known. */
+  logRange?: number;
 }
 
 /** The endpoint could not be reached or did not answer in time. */

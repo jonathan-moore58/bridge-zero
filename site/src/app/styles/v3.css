@@ -604,13 +604,6 @@
   padding: 0 12px;
 }
 
-.wallet-ico--mark {
-  display: grid;
-  place-items: center;
-  background: var(--brand-wash);
-  box-shadow: inset 0 0 0 1px var(--line-brand);
-}
-
 .list-row__addr {
   margin-left: 4px;
   font-size: var(--fs-caption);
@@ -810,4 +803,116 @@
   color: var(--text-3);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ 10. the chains' and wallets' own marks
+   Each chain's official logo (NOTICE.md), unmodified, in the app's round chip: the logo keeps its own
+   proportions and colours. A chain whose mark is held back (marks.tsx) shows its initial in the same
+   chip. A wallet's mark is shown as an Ethereum wallet's own icon is (.wallet-ico). */
+
+.mark--logo {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--ink-4);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
+
+.mark__img {
+  display: block;
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.mark--logo[data-mark="portaldot"] .mark__img {
+  width: 76%;
+  height: 76%;
+}
+
+.mark--logo[data-mark="ethereum"] .mark__img {
+  width: 60%;
+  height: 60%;
+}
+
+/* A held-back mark's stand-in: the chain's initial, in the app's own type. */
+.mark__letter {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.mark__letter text {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 600;
+  fill: var(--text-2);
+}
+
+/* The pair of chips on a transfer: the front one keeps its own edge inside the ring in the surface colour. */
+.pairmark .mark--logo:first-child {
+  box-shadow: inset 0 0 0 1px var(--line-2), 0 0 0 2px var(--ink-2);
+}
+
+/* The chain picker: a destination whose minter is not deployed is listed, not pickable. */
+.list-row--soon .list-row__title {
+  color: var(--text-2);
+}
+
+.list-row__soon {
+  color: var(--lilac-2);
+}
+
+/* ------------------------------------------------------------------ 11. Network: the rollups' clients
+   Every card answers the pointer, as the bridge card and its panels do. */
+
+.ncard {
+  transition: box-shadow 0.22s var(--ease-out);
+}
+
+.ncard:hover {
+  box-shadow: inset 0 0 0 1px rgb(177 151 255 / 0.2), var(--hi-strong), var(--shadow-3);
+}
+
+/* A rollup client's lag: no relayer holds it under a ceiling, so the bar is neutral and has no label under it. */
+.meter--plain {
+  margin-bottom: 12px;
+}
+
+.meter--plain .meter__fill {
+  background: var(--text-4);
+  box-shadow: none;
+}
+
+/* One column: V3's client on Sepolia, then on the two rollups, then the rest in the order they had. */
+@media (max-width: 960px) {
+  .ncol:first-child > :nth-child(1) { order: 1; }
+  .ncol:first-child > :nth-child(2) { order: 2; }
+  .ncol:last-child > :nth-child(2) { order: 3; }
+  .ncol:last-child > :nth-child(1) { order: 4; }
+  .ncol:first-child > :nth-child(3) { order: 5; }
+  .ncol:last-child > :nth-child(3) { order: 6; }
+  .ncol:first-child > :nth-child(4) { order: 7; }
+  .ncol:last-child > :nth-child(4) { order: 8; }
+  .ngrid > .ncard--wide:last-child { order: 9; }
+}
+
+/* The receipt's route: the two chains' marks before it, as a transfer shows them. */
+.rc__route {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.rc__route .mark {
+  width: 22px;
+  height: 22px;
+}
+
+.rc__route .pairmark--sm .mark + .mark {
+  margin-left: -5px;
 }

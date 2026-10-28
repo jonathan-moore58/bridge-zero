@@ -8,6 +8,7 @@ import { useField } from "../../lib/live.ts";
 import type { Hex } from "../../lib/records-types.ts";
 import { addWtpotToWallet } from "../connect.tsx";
 import { FAST_CAP, fromOf, toOf, type Speed } from "../facts.ts";
+import { ChainMark } from "../marks.tsx";
 import type { Route } from "../router.ts";
 import { useBox } from "../store.ts";
 import {
@@ -375,7 +376,13 @@ function InMain({ m, whose }: { m: InReceipt; whose: string }) {
       <dl class="rc__rows">
         <div class="kv">
           <dt class="kv__k">Route</dt>
-          <dd class="kv__v">Portaldot V3 → Sepolia</dd>
+          <dd class="kv__v rc__route">
+            <span class="pairmark pairmark--sm" aria-hidden="true">
+              <ChainMark mark="portaldot" cls="mark--20" />
+              <ChainMark mark="ethereum" cls="mark--20" />
+            </span>
+            Portaldot V3 → Sepolia
+          </dd>
         </div>
         <div class="kv">
           <dt class="kv__k">Recipient</dt>
@@ -524,7 +531,13 @@ function BackMain({ m, whose }: { m: BackReceipt; whose: string }) {
       <dl class="rc__rows">
         <div class="kv">
           <dt class="kv__k">Route</dt>
-          <dd class="kv__v">Sepolia → Portaldot V3</dd>
+          <dd class="kv__v rc__route">
+            <span class="pairmark pairmark--sm" aria-hidden="true">
+              <ChainMark mark="ethereum" cls="mark--20" />
+              <ChainMark mark="portaldot" cls="mark--20" />
+            </span>
+            Sepolia → Portaldot V3
+          </dd>
         </div>
         <div class="kv">
           <dt class="kv__k">Paid to</dt>

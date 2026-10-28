@@ -277,16 +277,18 @@ test("amounts and numbers are formatted without rounding", () => {
   assert.equal(formatDuration(486 * 6), "49 min");
 });
 
-test("evidence rows: Sepolia links and V3 rows with their extrinsics resolved", () => {
+test("evidence rows: Sepolia links, the rollups' Basescan and Arbiscan links, and V3 rows with their extrinsics resolved", () => {
   const md = [
     "### A table",
     "| # | What | Transaction | Block | Result |",
     "|---|---|---|---|---|",
     `| **47** | **Burn: \`a | b\`** | [\`0x42d70ae9…\`](https://sepolia.etherscan.io/tx/0x${"42".repeat(32)}) | Sepolia 11,955,414 | success |`,
     "| 48 | Funded | `0xe1c37a36…30209617` | V3 [#117,514](https://node-console.portaldot.dev/?rpc=x#/explorer/query/117514) | final |",
+    `| 61 | Base Sepolia: \`SCL_EIP6565\` created | [\`0x4ef76f6f…\`](https://sepolia.basescan.org/tx/0x${"4e".repeat(32)}) | Base 50,885,111 | success, 2,064,643 gas |`,
+    `| 81 | Arbitrum Sepolia: set change 59 → 60 | [\`0xe4d14094…\`](https://sepolia.arbiscan.io/tx/0x${"e4".repeat(32)}) | Arbitrum 323,331,271 | success |`,
   ].join("\n");
   const rows = parseEvidence(md, ["0xe1c37a368392d3d1bbbffba8d9cbab36e96303bc93e201746d69b2d930209617"]);
-  assert.equal(rows.length, 2);
+  assert.equal(rows.length, 4);
   assert.equal(rows[0]?.chain, "sepolia");
   assert.equal(rows[0]?.block, 11955414);
   assert.equal(rows[0]?.what, "Burn: `a | b`");
@@ -294,6 +296,13 @@ test("evidence rows: Sepolia links and V3 rows with their extrinsics resolved", 
   assert.equal(rows[1]?.block, 117514);
   assert.equal(rows[1]?.tx, "0xe1c37a368392d3d1bbbffba8d9cbab36e96303bc93e201746d69b2d930209617");
   assert.ok(rows[1]?.blockUrl?.endsWith("/117514"));
+  assert.deepEqual(
+    rows.slice(2).map((x) => [x.n, x.chain, x.tx, x.txText, x.block]),
+    [
+      [61, "base-sepolia", `0x${"4e".repeat(32)}`, "0x4ef76f6f…", 50885111],
+      [81, "arbitrum-sepolia", `0x${"e4".repeat(32)}`, "0xe4d14094…", 323331271],
+    ],
+  );
 });
 
 test("the README's verify block: descriptions, commands and recorded outputs", () => {

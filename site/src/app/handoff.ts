@@ -13,13 +13,12 @@ export const AUTO_MINT = {
   /** Its --min-amount on the live process, 0.001 tPOT, in native units: a smaller lock is left to its locker. */
   min: 100_000_000_000n,
   /**
-   * Whether auto-mint sees a lock signed from a Polkadot wallet. Not yet: it finds locks by their
-   * Locked log on V3's EVM RPC (eth_getLogs), and that RPC serves no log of a Substrate extrinsic
-   * (checked live, Oct 27: none at either release's block, while the three Ethereum locks are
-   * there). So such a lock's mint is its locker's, from an Ethereum wallet. True only once auto-mint
-   * reads Revive.ContractEmitted from System.Events and the live process runs that code.
+   * Whether auto-mint sees a lock signed from a Polkadot wallet. Yes since Oct 28: V3's EVM RPC
+   * serves no log of a Substrate extrinsic, so the live process also reads the lock's
+   * Revive.ContractEmitted event from System.Events (relayer/src/substrate-locks.ts). Lock 3, sent
+   * that way, was minted by it (README rows 86 and 87).
    */
-  substrate: false as boolean,
+  substrate: true as boolean,
   /** Lock 2, Oct 27: 144 s from its V3 block to the mint's block, 90 of them the grace (README rows 84 and 85). */
   usualSeconds: 144,
   /**

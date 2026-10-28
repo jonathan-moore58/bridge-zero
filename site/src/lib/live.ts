@@ -28,7 +28,8 @@ import {
 import { eventTopic } from "./hashes.ts";
 import { hexToBytes, leToBigInt, type Hex } from "./hex.ts";
 import type { Attack } from "./records-types.ts";
-import { AllFailed, NodeError, request, SubstrateClient, TransportError } from "./rpc.ts";
+import { failure, nextField, type Field, type FieldStatus, type Recorded } from "./field.ts";
+import { AllFailed, NodeError, request, SubstrateClient } from "./rpc.ts";
 import { decodeTimestampInherent, precommitPayload } from "./scale.ts";
 
 export const registry = new AbiRegistry(records.abi.errors, records.abi.events);
@@ -191,20 +192,7 @@ export interface Fields {
 
 export type FieldKey = keyof Fields;
 
-export type FieldStatus = "loading" | "live" | "recorded" | "error";
-
-export interface Field<T> {
-  status: FieldStatus;
-  value: T | undefined;
-  /** The endpoint that answered (live). */
-  endpoint?: string;
-  /** When the live value was read (ms). */
-  at?: number;
-  /** The record a recorded value comes from. */
-  from?: string;
-  /** Why the live read failed. */
-  error?: string;
-}
+export type { Field, FieldStatus };
 
 // ---------------------------------------------------------------------------------------------
 // Recorded values
@@ -441,27 +429,12 @@ export function useNow(ms = 5000): number {
   return now;
 }
 
-function message(error: unknown): string {
-  if (error instanceof AllFailed) return error.problems.join("; ") || error.message;
-  if (error instanceof TransportError || error instanceof NodeError) return `${error.endpoint.label}: ${error.message}`;
-  return error instanceof Error ? error.message : String(error);
-}
+const message = failure;
 
+/** Reads `key` and stores what came of it, by the rule in ./field.ts: live, else the last live answer, else recorded, else an error. */
 async function run<K extends FieldKey>(key: K, read: () => Promise<{ value: Fields[K]; endpoint: string }>): Promise<void> {
   const before = store.get(key);
-  try {
-    const { value, endpoint } = await read();
-    store.set(key, { status: "live", value, endpoint, at: Date.now() });
-  } catch (error) {
-    if (before.status === "live") {
-      // Keep the last live answer; say the refresh failed.
-      store.set(key, { ...before, error: message(error) });
-      return;
-    }
-    const rec = RECORDED[key];
-    if (rec) store.set(key, { status: "recorded", value: rec.value as Fields[K], from: rec.from, error: message(error) });
-    else store.set(key, { status: "error", value: undefined, error: message(error) });
-  }
+  store.set(key, await nextField(before, read, RECORDED[key] as Recorded<Fields[K]> | null | undefined));
 }
 
 // ---------------------------------------------------------------------------------------------

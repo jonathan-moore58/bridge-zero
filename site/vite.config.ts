@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { defineConfig, type Plugin } from "vite";
+import { cspPolicy } from "./build/csp.ts";
 import { buildRecords } from "./build/records.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -25,35 +26,14 @@ function records(): Plugin {
   };
 }
 
-/** Endpoints the page may reach: the RPC nodes and nothing else. */
-const CONNECT = [
-  "https://ethereum-sepolia-rpc.publicnode.com",
-  "https://sepolia.drpc.org",
-  "https://sepolia.gateway.tenderly.co",
-  "https://test-evm-rpc-v3.portaldot.dev",
-  "https://test-node-v3.portaldot.dev",
-  "wss://test-node-v3.portaldot.dev",
-  "wss://mainnet.portaldot.io",
-];
-
-/** A Content-Security-Policy for the built page (not the dev server, which needs its own socket). */
+/** A Content-Security-Policy for each built page (not the dev server, which needs its own socket): build/csp.ts. */
 function csp(): Plugin {
-  const policy = [
-    "default-src 'none'",
-    "script-src 'self'",
-    "style-src 'self'",
-    "img-src 'self' data:",
-    "font-src 'self'",
-    `connect-src ${CONNECT.join(" ")}`,
-    "base-uri 'none'",
-    "form-action 'none'",
-    "object-src 'none'",
-  ].join("; ");
   return {
     name: "bridge-zero-csp",
     apply: "build",
-    transformIndexHtml(html) {
-      return html.replace("<!--csp-->", `<meta http-equiv="Content-Security-Policy" content="${policy}" />`);
+    transformIndexHtml(html, ctx) {
+      const app = /[\\/]app[\\/]index\.html$/.test(ctx.filename);
+      return html.replace("<!--csp-->", `<meta http-equiv="Content-Security-Policy" content="${cspPolicy(app)}" />`);
     },
   };
 }

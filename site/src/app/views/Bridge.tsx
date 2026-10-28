@@ -10,6 +10,7 @@ import type { Hex } from "../../lib/hex.ts";
 import { CALLS_PER_TX } from "../../lib/proof/plan.ts";
 import { request } from "../../lib/rpc.ts";
 import { openWalletPicker } from "../connect.tsx";
+import { destOf, destState, pickRows, type DestKey, type PickRow } from "../dests.ts";
 import {
   AUTO_TIME,
   BURN_GAS,
@@ -30,11 +31,13 @@ import {
   V3_RPC,
   fromOf,
   toOf,
+  type ChainFace,
   type ChainInfo,
   type Dir,
   type Speed,
 } from "../facts.ts";
 import { AUTO_MINT, autoMints } from "../handoff.ts";
+import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
 import { loadChain, normalize, polka, polkaList, type PolkaState } from "../polkadot.ts";
 import type { Route } from "../router.ts";
@@ -43,7 +46,7 @@ import { Box, useBox } from "../store.ts";
 import { checkRecipient, recipientNote, senderOf, shortSs58, type RecipientCheck } from "../substrate/account.ts";
 import type { PreparedLock } from "../substrate/send.ts";
 import { DECIMALS, parseAmount } from "../txmath.ts";
-import { CopyChip, Icon, Mark, Mono, Nb, Tip, announce, closeSheet, fmt, openSheet, short, toast } from "../ui.tsx";
+import { CopyChip, Icon, Mono, Nb, Tip, announce, closeSheet, fmt, openSheet, short, toast } from "../ui.tsx";
 import { readBalances, switchTo, wallet, walletCode, type WalletState } from "../wallet.ts";
 
 interface Form {
@@ -54,10 +57,15 @@ interface Form {
   /** A lock from a Polkadot wallet: the Sepolia address it pays, as typed or filled in from the Ethereum wallet. */
   to: string;
   toFrom: "typed" | "wallet";
+  /**
+   * The chain on the other side of V3 (../dests.ts): one the app sends to, so Sepolia. The card's
+   * facts are Sepolia's; a rollup can be picked only once it is in SENDS, with those facts its own.
+   */
+  dest: DestKey;
 }
 
 /** Kept across pages, so the amount survives a visit to Activity. */
-const form = new Box<Form>({ amount: "1", details: false, addHelp: false, to: "", toFrom: "typed" });
+const form = new Box<Form>({ amount: "1", details: false, addHelp: false, to: "", toFrom: "typed", dest: "sepolia" });
 
 const setForm = (p: Partial<Form>) => form.set((f) => ({ ...f, ...p }));
 
@@ -305,56 +313,92 @@ function swapDir(dir: Dir): void {
 // ---------------------------------------------------------------------------------------------
 // Sheets
 
+/** A picker row's chain: Portaldot V3, or a destination of ../dests.ts. */
+function rowChain(key: PickRow["key"]): { full: string; mark: ChainFace["mark"]; meta: ComponentChildren } {
+  if (key === "v3") {
+    return {
+      full: CH.v3.full,
+      mark: CH.v3.mark,
+      meta: (
+        <>
+          tPOT · chain <span class="mono">{String(CH.v3.chainId)}</span>
+        </>
+      ),
+    };
+  }
+  const d = destOf(key);
+  const state = destState(d);
+  // A destination the app does not send to yet is listed with what is live on it, and cannot be picked.
+  const meta =
+    state === "live" ? (
+      <>
+        wtPOT · chain <span class="mono">{d.chainId}</span>
+      </>
+    ) : (
+      <span class="list-row__soon">{state === "ready" ? "Minter deployed, bridging soon" : "Light client live, bridging soon"}</span>
+    );
+  return { full: d.full, mark: d.mark, meta };
+}
+
+/**
+ * The chain picker: Portaldot V3 and every destination (../dests.ts). Picking the chain of the other
+ * side swaps the direction; picking another destination on its side changes the destination. A
+ * destination the app does not send to yet is listed, "Minter deployed, bridging soon" or "Light
+ * client live, bridging soon", and cannot be picked.
+ */
 function openPicker(side: "from" | "to", dir: Dir): void {
-  const cur = side === "from" ? fromOf(dir).key : toOf(dir).key;
-  const row = (c: ChainInfo, meta: ComponentChildren) => (
-    <li key={c.key}>
-      <button
-        class="list-row"
-        type="button"
-        aria-current={c.key === cur}
-        data-autofocus={c.key === cur ? "" : undefined}
-        onClick={() => {
-          closeSheet();
-          if (c.key !== cur) swapDir(dir);
-        }}
-      >
-        <Mark id={c.markId} cls="mark--36" />
+  const rows = pickRows(side, dir, form.get().dest);
+  const pick = (r: PickRow) => {
+    closeSheet();
+    if (!r.to) return;
+    if (r.to.dest !== form.get().dest) setForm({ dest: r.to.dest });
+    if (r.to.dir !== dir) swapDir(dir);
+    else announce(`${side === "from" ? "Send from" : "Receive on"}: ${destOf(r.to.dest).full}.`);
+  };
+  const row = (r: PickRow) => {
+    const c = rowChain(r.key);
+    const inner = (
+      <>
+        <ChainMark mark={c.mark} cls="mark--36" />
         <span class="list-row__text">
           <span class="list-row__title">{c.full}</span>
-          <span class="list-row__meta">{meta}</span>
+          <span class="list-row__meta">{c.meta}</span>
         </span>
         <span class="list-row__end">
-          <Icon id="i-check" cls="picker__tick" />
+          {r.state === "soon" ? (
+            <span class="badge badge--later badge--sm">Soon</span>
+          ) : (
+            <Icon id="i-check" cls="picker__tick" />
+          )}
         </span>
-      </button>
-    </li>
-  );
+      </>
+    );
+    return (
+      <li key={r.key}>
+        {r.state === "soon" ? (
+          <div class="list-row list-row--soon" aria-disabled="true">
+            {inner}
+          </div>
+        ) : (
+          <button class="list-row" type="button" aria-current={r.state === "current"} data-autofocus={r.state === "current" ? "" : undefined} onClick={() => pick(r)}>
+            {inner}
+          </button>
+        )}
+      </li>
+    );
+  };
   openSheet({
     title: side === "from" ? "Send from" : "Receive on",
     cls: "picker",
     body: (
       <>
-        <ul class="picker__list">
-          {row(
-            CH.v3,
-            <>
-              tPOT · chain <span class="mono">420420777</span>
-            </>,
-          )}
-          {row(
-            CH.sepolia,
-            <>
-              wtPOT · chain <span class="mono">11155111</span>
-            </>,
-          )}
-        </ul>
+        <ul class="picker__list">{rows.map(row)}</ul>
         <div class="picker__later" aria-disabled="true">
           <p class="picker__later-head">
             <span class="picker__later-title">More EVM chains</span>
             <span class="badge badge--later badge--sm">Later</span>
           </p>
-          <p class="picker__later-names">{LATER_CHAINS.join(" · ")}</p>
+          <p class="picker__later-names">{LATER_CHAINS.join("\u00a0· ")}</p>
           <p class="picker__later-note">Each passed a full simulated run on Oct 24: deploy, import, proof and a tampered proof.</p>
         </div>
       </>
@@ -378,7 +422,7 @@ function openGetEth(dir: Dir, address: string): void {
     body: (
       <div class="sheet-stack">
         <div class="empty-mark" aria-hidden="true">
-          <Mark id="m-eth" cls="mark--28" />
+          <ChainMark mark="ethereum" cls="mark--28" />
         </div>
         <p class="sheet-lead">
           {inDir
@@ -567,7 +611,7 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
   if (sub && exact !== null) checkLock(sub.address, exact, sub.recipient);
   const sumRow = (label: string, c: ChainInfo) => (
     <div class="sum__row">
-      <Mark id={c.markId} cls="mark--36" />
+      <ChainMark mark={c.mark} cls="mark--36" />
       <span class="sum__text">
         <span class="sum__label">{label}</span>
         <span class="sum__chain">{c.full}</span>
@@ -809,7 +853,7 @@ function ProofStrip({ dir, auto }: { dir: Dir; auto: boolean }) {
       </div>
       <div class="lanes">
         <div class="lanes__node">
-          <Mark id="m-pdot" cls="mark--36" />
+          <ChainMark mark="portaldot" cls="mark--36" />
           <span class="lanes__chain">Portaldot V3</span>
           <span class="lanes__net">testnet</span>
           <span class="lanes__short" aria-hidden="true">
@@ -837,7 +881,7 @@ function ProofStrip({ dir, auto }: { dir: Dir; auto: boolean }) {
           </div>
         </div>
         <div class="lanes__node">
-          <Mark id="m-eth" cls="mark--36" />
+          <ChainMark mark="ethereum" cls="mark--36" />
           <span class="lanes__chain">Ethereum</span>
           <span class="lanes__net">Sepolia</span>
           <span class="lanes__short" aria-hidden="true">
@@ -919,7 +963,7 @@ function ProofStrip({ dir, auto }: { dir: Dir; auto: boolean }) {
 }
 
 /** `who`: the Polkadot account the lock is sent from, under the chain's name. */
-function ChainButton({ side, c, dir, who = null }: { side: "from" | "to"; c: ChainInfo; dir: Dir; who?: { line: string; title: string } | null }) {
+function ChainButton({ side, c, dir, who = null }: { side: "from" | "to"; c: ChainFace; dir: Dir; who?: { line: string; title: string } | null }) {
   const name = side === "from" ? "From" : "To";
   return (
     <button
@@ -930,7 +974,7 @@ function ChainButton({ side, c, dir, who = null }: { side: "from" | "to"; c: Cha
       title={who?.title}
       onClick={() => openPicker(side, dir)}
     >
-      <Mark id={c.markId} />
+      <ChainMark mark={c.mark} />
       <span class="chain-btn__text">
         <span class="chain-btn__label">{name}</span>
         <span class="chain-btn__name">{c.name}</span>
@@ -1173,6 +1217,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
     if (Object.keys(patch).length) setForm(patch);
   }, [query]);
 
+  // The card is Sepolia's: f.dest is a destination the app sends to (../dests.ts, SENDS), and only Sepolia is.
   const k = work(dir, f, w, p);
   const { from, to } = k;
 
@@ -1218,8 +1263,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
         <p class="intro__eyebrow">
           <span class="intro__dot" aria-hidden="true" />
           <span>
-            {dir === "in" ? "Portaldot V3 testnet" : "Ethereum Sepolia"} <span aria-hidden="true">→</span>
-            <span class="visually-hidden">to</span> {dir === "in" ? "Ethereum Sepolia" : "Portaldot V3 testnet"}
+            {from.full} <span aria-hidden="true">→</span>
+            <span class="visually-hidden">to</span> {to.full}
           </span>
         </p>
         <h1 class="intro__title" id="intro-title">
@@ -1315,7 +1360,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
             </button>
             <span class="token">
               <span class="token__mark">
-                <Mark id={from.markId} />
+                <ChainMark mark={from.mark} />
               </span>
               <span>{from.token}</span>
             </span>
@@ -1405,7 +1450,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               <p class="route__sub route__sub--auto">
                 {k.auto ? (
                   <>
-                    <Nb>Auto-mint mints it for you {AUTO_TIME[0]} after your lock</Nb> · <Nb>nothing to sign on Sepolia</Nb> ·{" "}
+                    {/* Two unbreakable parts, so the line wraps inside the panel at phone width. */}
+                    <Nb>Auto-mint mints it for you</Nb> <Nb>{AUTO_TIME[0]} after your lock</Nb> · <Nb>nothing to sign on Sepolia</Nb> ·{" "}
                     <Nb>for locks of {tpot(AUTO_MINT.min, 3)} tPOT or more</Nb>
                   </>
                 ) : k.below ? (
@@ -1423,7 +1469,10 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               Sepolia checks 2 of 2 V3 validator signatures, a storage proof of your lock and its nonce. It still trusts V3's validator set (2 keys on the testnet),
               V3's sudo key and the light client's admin. Auto-mint is the operator's process: about 2½ minutes after your lock it sends the mint from its own key and
               pays the gas, at most {AUTO_MINT.dailyEth} ETH a day, on one machine. It can only mint what your lock commits to. Anyone can still send the mint: if
-              auto-mint has not minted it within 5 minutes, this page offers it to you. It does not see locks signed with a Polkadot wallet yet: you send their mint.
+              auto-mint has not minted it within 5 minutes, this page offers it to you.{" "}
+              {AUTO_MINT.substrate
+                ? "It mints locks signed with a Polkadot wallet too: it finds their event on V3, which V3's EVM logs do not show."
+                : "It does not see locks signed with a Polkadot wallet yet: you send their mint."}
             </Tip>
           </div>
 

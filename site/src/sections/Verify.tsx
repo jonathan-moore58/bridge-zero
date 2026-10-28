@@ -18,6 +18,9 @@ const LINKS = [
 /** The groups shown before "show all": the light clients, the thresholds, the state roots, the minter. */
 const FIRST_GROUPS = 4;
 
+/** The explorers the README links the rollups' evidence rows to. */
+const ROLLUP_SCAN = { "base-sepolia": "https://sepolia.basescan.org", "arbitrum-sepolia": "https://sepolia.arbiscan.io" } as const;
+
 /**
  * A command, wrapped only between its words: a flag such as --rpc-url or a variable stays whole on
  * its line, and only a hash too long for the line breaks inside. The text copied is the same.
@@ -146,8 +149,8 @@ export function Verify() {
                       <Md text={r.what} />
                     </span>
                     <span class="evrow__tx">
-                      {r.chain === "sepolia" && r.tx ? (
-                        <ExtLink href={etherscanTx(r.tx)} class="mono small">
+                      {r.chain !== "v3" && r.tx ? (
+                        <ExtLink href={r.chain === "sepolia" ? etherscanTx(r.tx) : `${ROLLUP_SCAN[r.chain]}/tx/${r.tx}`} class="mono small">
                           {shortHex(r.tx, 6, 4)}
                         </ExtLink>
                       ) : r.blockUrl ? (

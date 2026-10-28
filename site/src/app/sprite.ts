@@ -1,6 +1,7 @@
 /* Bridge Zero v2 icon sprite. Every icon is drawn here on a 24 px grid, 1.75 px round strokes.
-   Use: <svg class="i"><use href="#i-check"/></svg>. The marks (logo, Portaldot, Ethereum) are full-colour
-   symbols: <svg class="mark"><use href="#m-zero"/></svg>. Inserted once, at the top of <body>, before the app renders. */
+   Use: <svg class="i"><use href="#i-check"/></svg>. Bridge Zero's own mark is a full-colour symbol:
+   <svg class="mark"><use href="#m-zero"/></svg>. The chains' and wallets' marks are their owners' own
+   logos, shipped as files (marks.tsx). Inserted once, at the top of <body>, before the app renders. */
 export function insertSprite(): void {
   const s = function (id: string, body: string): string {
     return '<symbol id="' + id + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">' + body + "</symbol>";
@@ -65,30 +66,6 @@ export function insertSprite(): void {
     '<path d="M38 20 L26 44" stroke="url(#bzBeam)" stroke-width="8" stroke-linecap="round"/>' +
     "</symbol>";
 
-  /* Portaldot: a round chip with the violet-to-blue "p" ring, drawn for small sizes. */
-  const pdot =
-    '<symbol id="m-pdot" viewBox="0 0 64 64">' +
-    '<circle cx="32" cy="32" r="31" fill="#0b0a12"/>' +
-    '<circle cx="32" cy="32" r="30.5" fill="none" stroke="rgb(255 255 255 / .08)"/>' +
-    '<path d="M18.5 47.5 L22.6 36.4" stroke="url(#bzPdot)" stroke-width="7.5" stroke-linecap="round" fill="none"/>' +
-    '<circle cx="34" cy="29" r="12.5" fill="none" stroke="url(#bzPdot)" stroke-width="7.5"/>' +
-    '<circle cx="34" cy="29" r="3.6" fill="#9b7bff"/>' +
-    '<path d="M36.6 31.8 43 40" stroke="#5c5cf5" stroke-width="3.2" stroke-linecap="round"/>' +
-    "</symbol>";
-
-  /* Ethereum: the octahedron glyph in a round chip (from the site's marks.tsx). */
-  const eth =
-    '<symbol id="m-eth" viewBox="0 0 64 64">' +
-    '<circle cx="32" cy="32" r="31" fill="#1c1928" stroke="#2f2a42" stroke-width="2"/>' +
-    '<g transform="translate(20.5 13.3) scale(0.0898)">' +
-    '<path fill="#c9d1ff" d="M127.961 0l-2.795 9.5v275.668l2.795 2.79 127.962-75.638z"/>' +
-    '<path fill="#ffffff" d="M127.962 0L0 212.32l127.962 75.639V154.158z"/>' +
-    '<path fill="#aab6ff" d="M127.961 312.187l-1.575 1.92v98.199l1.575 4.6L256 236.587z"/>' +
-    '<path fill="#e6eaff" d="M127.962 416.905v-104.72L0 236.585z"/>' +
-    '<path fill="#8a99f0" d="M127.961 287.958l127.96-75.637-127.96-58.162z"/>' +
-    '<path fill="#bcc6ff" d="M0 212.32l127.96 75.638v-133.8z"/>' +
-    "</g></symbol>";
-
   const defs =
     "<defs>" +
     '<radialGradient id="bzGlowV" gradientUnits="userSpaceOnUse" cx="6" cy="4" r="48"><stop offset="0" stop-color="#6C27E2" stop-opacity=".42"/><stop offset="1" stop-color="#6C27E2" stop-opacity="0"/></radialGradient>' +
@@ -98,11 +75,10 @@ export function insertSprite(): void {
     '<linearGradient id="bzBlockB" gradientUnits="userSpaceOnUse" x1="22" y1="0" x2="52" y2="0"><stop offset="0" stop-color="#4A34F0"/><stop offset="1" stop-color="#2D68F4"/></linearGradient>' +
     '<linearGradient id="bzSheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF" stop-opacity=".42"/><stop offset=".55" stop-color="#FFFFFF" stop-opacity="0"/></linearGradient>' +
     '<linearGradient id="bzBeam" gradientUnits="userSpaceOnUse" x1="38" y1="20" x2="26" y2="44"><stop offset="0" stop-color="#D6C9FF"/><stop offset=".55" stop-color="#FFFFFF"/><stop offset="1" stop-color="#FFFFFF"/></linearGradient>' +
-    '<linearGradient id="bzPdot" gradientUnits="userSpaceOnUse" x1="14" y1="14" x2="50" y2="50"><stop offset="0" stop-color="#8a3dfa"/><stop offset=".55" stop-color="#5b3cf2"/><stop offset="1" stop-color="#2d68f4"/></linearGradient>' +
     '<filter id="bzSoft" filterUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><feGaussianBlur stdDeviation="2.4"/></filter>' +
     '<clipPath id="bzInTile"><rect x="2" y="2" width="60" height="60" rx="16"/></clipPath>' +
     "</defs>";
 
-  const sprite = '<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false" class="sprite">' + defs + icons.join("") + zero + pdot + eth + "</svg>";
+  const sprite = '<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false" class="sprite">' + defs + icons.join("") + zero + "</svg>";
   document.body.insertAdjacentHTML("afterbegin", sprite);
 }
