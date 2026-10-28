@@ -15,24 +15,26 @@ Development runs from Oct 14 to Nov 6, 2026; this repository starts on Oct 14.
 
 ## What it does
 
-`GrandpaLightClient` runs on Ethereum Sepolia and follows the finality of a Portaldot chain: it
-accepts a block header only with valid signatures from more than two thirds of the chain's GRANDPA
-validators, checked in Solidity, and then holds that block's state root, against which contracts
-check Substrate storage proofs. The bridge is built on it: tPOT locked in a vault on the Portaldot
-V3 testnet becomes wtPOT on Sepolia in one transaction that verifies V3's finality, proves the lock
-from the vault's storage, and mints. No trusted relayer: anyone can bring the proofs, and the
-contracts check them. What is trusted is the Portaldot validator set, each chain's sudo key and
-each light client's admin ([Trusted](#how-it-works)); the way back (burn wtPOT on Sepolia, release
-tPOT on V3) is trusted too, a 2-of-3 committee, and ran on Oct 20 after Sepolia's finality (rows 47
-to 51) and on Oct 24 in fast mode, 84 seconds from the burn's block to the release's (rows 56 to 58).
+`GrandpaLightClient` runs on Ethereum Sepolia, Base Sepolia and Arbitrum Sepolia and follows the
+finality of a Portaldot chain: it accepts a block header only with valid signatures from more than
+two thirds of the chain's GRANDPA validators, checked in Solidity, and then holds that block's state
+root, against which contracts check Substrate storage proofs. The bridge is built on it: tPOT locked
+in a vault on the Portaldot V3 testnet becomes wtPOT on the chain the lock names, Sepolia, Base
+Sepolia or Arbitrum Sepolia, in one transaction that verifies V3's finality, proves the lock from
+the vault's storage, and mints. No trusted relayer: anyone can bring the proofs, and the contracts
+check them. What is trusted is the Portaldot validator set, each chain's sudo key and each light
+client's admin ([Trusted](#how-it-works)); the way back (burn wtPOT, release tPOT on V3) is trusted
+too, a 2-of-3 committee, and ran on Oct 20 after Sepolia's finality (rows 47 to 51), on Oct 24 in
+fast mode, 84 seconds from the burn's block to the release's (rows 56 to 58), and on Oct 28 from
+Base Sepolia and Arbitrum Sepolia (rows 108 to 113).
 
-So Bridge Zero is an asset bridge and a data bridge. The asset bridge moves tPOT to Sepolia as
-wtPOT and back. The data bridge is the light client with the proof libraries: any EVM contract can
-use them to read proven Portaldot state, as ProvenBalance (an account's balance) and BridgeMinter
-(a lock in the vault's storage) do, and they are a building block for iBridge. Today the bridge
-connects the Portaldot V3 testnet and Ethereum Sepolia. The [roadmap](#roadmap) plans a liquidity
-engine for transfers that settle in seconds and the same contracts on more EVM chains that have the
-BLAKE2F precompile.
+So Bridge Zero is an asset bridge and a data bridge. The asset bridge moves tPOT to Sepolia, Base
+Sepolia and Arbitrum Sepolia as wtPOT and back. The data bridge is the light client with the proof
+libraries: any EVM contract can use them to read proven Portaldot state, as ProvenBalance (an
+account's balance) and BridgeMinter (a lock in the vault's storage) do, and they are a building
+block for iBridge. Today the bridge connects the Portaldot V3 testnet with Ethereum Sepolia and two
+rollups that settle on it, Base Sepolia and Arbitrum Sepolia: one vault on V3 serves all three. The [roadmap](#roadmap) plans a liquidity engine for transfers that settle in seconds and the
+same contracts on more EVM chains that have the BLAKE2F precompile.
 
 ## Live on testnets
 
@@ -44,14 +46,14 @@ BLAKE2F precompile.
 | **Auto-mint for a lock from a Portaldot account** (rows 86 and 87) | Sepolia transaction [`0xb6e2a07b…`](https://sepolia.etherscan.io/tx/0xb6e2a07b2a60cde09552b347c47674ab1979429963f7fdeb659bc4eaacf36f56); the lock in V3 block [#222,024](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/222024) | Lock 3, Oct 27: 0.001 tPOT locked by a `revive.call` signed by a `5…` account, the way the app's Portaldot Wallet path sends a lock. Its `Locked` event is only in V3's `System.Events`, not in `eth_getLogs`; auto-mint found it there and minted it on Sepolia from its own key. |
 | `BridgeMinter` | Sepolia [`0x8287…cB9E`](https://sepolia.etherscan.io/address/0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E) | The minter, source-verified, with no owner and no admin. Rows 32 to 38, 47 and 56 are sent to it: the mint, then five tampered copies, each reverted with the error that names what was changed, a replay, reverted with `NonceAlreadyUsed(0)`, and burns 0 and 1, the trusted way back. |
 | The V3 light client | Sepolia [`0x4471…dcb0`](https://sepolia.etherscan.io/address/0x447171c4885ad725ee4772e8e3c228adee50dcb0) (`GrandpaLightClient` #2) | Follows the V3 testnet's finality from a checkpoint at validator set 19: every set change from 19 to 48, imported in order, each with both validators' signatures (rows 5, 6, 18 to 23, 26 to 31, 44 to 46 and 52; the later runs are in [`deployments/relay-sepolia-0xd983….jsonl`](deployments/relay-sepolia-0xd9838a86cf83c28ee486544060d1ca4ca2971071.jsonl) and, since Oct 23, [`deployments/relay-sepolia-0xe94a….jsonl`](deployments/relay-sepolia-0xe94a82e2c7f38f777e8845a9d8c36b6be6a30257.jsonl)). It is as current as the relayer's last run (see Known limits). |
-| **The V3 light client and the bridge on Base Sepolia and Arbitrum Sepolia** (rows 59 to 82 and 88 to 107) | Base Sepolia [`0x3897…0ab6`](https://sepolia.basescan.org/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) and Arbitrum Sepolia [`0x3897…0ab6`](https://sepolia.arbiscan.io/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) (`GrandpaLightClient` #2 on each) | Oct 27: the same contracts, from the same build as on Sepolia, on two rollups that settle on Sepolia. On each, the client verified V3 block #214,510 with both V3 validators' signatures and proved an account balance from its state root (rows 68 and 76), then the relayer imported V3's validator-set change 59 → 60 and a newer head (rows 79 to 82). Later the same day the relayer brought both clients to V3's set 62, and `BridgeMinter` and wtPOT were deployed on both, at `0xdc31…2348` and `0xE113…A95e`, bound to the same V3 vault (rows 88 to 97); on Oct 28 one auto-mint process minted lock 4 on Base Sepolia and lock 5 on Arbitrum Sepolia, each first mint binding the vault (rows 98 to 107, [the way in](#more-chains-the-way-in-to-base-sepolia-and-arbitrum-sepolia)): one V3 vault now backs wtPOT on three chains. The same day the release tool and its watcher took the rollups' burns too, and 0.001 wtPOT was burned on each (rows 108 and 109, [the way back](#more-chains-the-way-back-from-base-sepolia-and-arbitrum-sepolia)); their releases on V3 come with the watcher. On Sepolia, `0x3897…0ab6` is the old-mainnet client. |
+| **The V3 light client and the bridge on Base Sepolia and Arbitrum Sepolia** (rows 59 to 82 and 88 to 113) | Base Sepolia [`0x3897…0ab6`](https://sepolia.basescan.org/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) and Arbitrum Sepolia [`0x3897…0ab6`](https://sepolia.arbiscan.io/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) (`GrandpaLightClient` #2 on each) | Oct 27: the same contracts, from the same build as on Sepolia, on two rollups that settle on Sepolia. On each, the client verified V3 block #214,510 with both V3 validators' signatures and proved an account balance from its state root (rows 68 and 76), then the relayer imported V3's validator-set change 59 → 60 and a newer head (rows 79 to 82). Later the same day the relayer brought both clients to V3's set 62, and `BridgeMinter` and wtPOT were deployed on both, at `0xdc31…2348` and `0xE113…A95e`, bound to the same V3 vault (rows 88 to 97); on Oct 28 one auto-mint process minted lock 4 on Base Sepolia and lock 5 on Arbitrum Sepolia, each first mint binding the vault (rows 98 to 107, [the way in](#more-chains-the-way-in-to-base-sepolia-and-arbitrum-sepolia)): one V3 vault now backs wtPOT on three chains. The same day the release tool and its watcher took the rollups' burns too: 0.001 wtPOT was burned on each (rows 108 and 109), and the watcher released both on V3, each burn final on its rollup (rows 110 to 113, [the way back](#more-chains-the-way-back-from-base-sepolia-and-arbitrum-sepolia)). On Sepolia, `0x3897…0ab6` is the old-mainnet client. |
 | The vault and lock 0 | V3 testnet: vault `0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd`, lock transaction `0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051` (block #101,009) | 1 tPOT locked for Sepolia; the vault stores the commitment `0x9eba08c9…41e23435` that the mint proved. The official V3 testnet explorer shows the [deployment](https://scanner-testnet-v3.portaldot.dev/#/extrinsics/100955-1) and [lock 0's event](https://scanner-testnet-v3.portaldot.dev/#/events/101009-4); the Portaldot Node Console shows the [deployment block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/100955) and the [lock's block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/101009), and [cast](#verify-it-yourself) reads the vault. |
 | **The way back** (rows 47 to 51, trusted) | Sepolia burn [`0x42d70ae9…`](https://sepolia.etherscan.io/tx/0x42d70ae96cd010ed114a62178b88bf2cfcfe85933448aa6010c4f0d1b22dc1d7); the release in V3 block [#117,701](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117701) | 0.5 wtPOT burned on Sepolia for `0xD983…1071` on V3; 2 of the 3 committee members approved the release through pallet-multisig, and the vault paid that address 0.5 tPOT once, for that burn id. No contract checks the release against the burn: the committee is trusted, and on the testnet one operator holds all three of its keys. |
 | **The way back in 84 seconds** (rows 56 to 58, trusted, fast mode) | Sepolia burn [`0x4e5f4c6e…`](https://sepolia.etherscan.io/tx/0x4e5f4c6e6f8fe2e85cf3bf146aaffa6d12d5eccb5d032db8d0989d66b886c262); the release in V3 block [#173,062](https://scanner-testnet-v3.portaldot.dev/#/extrinsics/173062-1) | Burn 1, Oct 24: 0.1 wtPOT burned on Sepolia for `0xD983…1071` on V3, and released to it by the auto-release watcher with 3 confirmations instead of Sepolia's finality; the release's block 84 seconds after the burn's by the block timestamps. The same trusted committee, for burns of up to 1 tPOT; a reorg deeper than 3 blocks could undo a burn after its release. |
 | **Old mainnet, 7 of 10** (row 3) | Sepolia transaction [`0x8ddd807e…`](https://sepolia.etherscan.io/tx/0x8ddd807e2880b51b397cfac898b857740f7bfd081cddd32dcc71d405ea980696) | The same light client code verified old-mainnet block #2,726,202 with 7 of its 10 validators' signatures and proved an account balance from that block's state root (Logs: `HeaderImported` with `signatures` 7, then `BalanceProven`). The old mainnet's explorer shows the same block hash and state root: [#2,726,202](https://portalscan.portaldot.io/#/blocks/2726202). |
 
-The [evidence tables](#evidence) number 109 transactions: 56 on Sepolia, 11 on V3 (locks 1 to 5
-and the trusted return path's 6), 21 on Base Sepolia and 21 on Arbitrum Sepolia.
+The [evidence tables](#evidence) number 113 transactions: 56 on Sepolia, 15 on V3 (locks 1 to 5
+and the trusted return path's 10), 21 on Base Sepolia and 21 on Arbitrum Sepolia.
 
 ## How it works
 
@@ -77,7 +79,7 @@ flowchart TB
         SP["Linked library:<br/>StorageProofs"]
     end
 
-    subgraph RET["Trusted return path, run once (rows 47 to 51)"]
+    subgraph RET["Trusted return path (rows 47 to 51 and 56 to 58)"]
         BURN["Burn on Sepolia<br/>BridgeMinter.burn emits BurnRequested"]
         COMM["2-of-3 committee<br/>pallet-multisig account on V3"]
         REL["Release on V3<br/>PortaldotVault.release pays tPOT"]
@@ -232,7 +234,7 @@ cast logs --from-block 101009 --to-block 101009 --address 0xa02EE16EB03d2cf1aeF1
 
 # The way back (trusted, rows 47 to 51 and 56 to 58): burns 0 and 1 on Sepolia and their burn ids,
 # then on V3 the vault's released flag for each id, and what it still holds for wtPOT on the three
-# chains (2.013 tPOT locked, 0.6 released)
+# chains (2.013 tPOT locked, 0.602 released)
 cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "burnCount()(uint256)" --rpc-url $SEPOLIA
 # 2
 cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "burnIdOf(uint256)(bytes32)" 0 --rpc-url $SEPOLIA
@@ -244,7 +246,7 @@ cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "released(bytes32)(bool)" 0
 cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "released(bytes32)(bool)" 0x1573ff21c0f6cae223a42566b061f39bc0a982dafe451b86b29a8bf5f9219c0e --rpc-url $V3
 # true
 cast call 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd "outstanding()(uint256)" --rpc-url $V3
-# 141300000000000 [1.413e14]
+# 141100000000000 [1.411e14]
 ```
 
 The `Locked` event's data is the destination chain (`0xaa36a7`, 11155111), the minter, the amount
@@ -317,8 +319,8 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
 - Storage proofs against a verified state root: an account balance on each chain, trie V0 and trie
   V1 (rows 3 and 7), and a pallet-revive contract slot in the vault's child trie (row 32).
 - The relayer (`npm run relay`) imports every validator-set change in order, then the finalized
-  head, after a dry run of the whole plan on a Sepolia node (rows 9 to 23, 26 to 31, 39 to 46, 52
-  and 53).
+  head, after a dry run of the whole plan on a Sepolia node (a rollup's node with `--network`; rows
+  9 to 23, 26 to 31, 39 to 46, 52 and 53).
 - The relayer in watch mode since Oct 23 (UTC), `--watch 600`: a new run 10 minutes after each
   one ends, one process per chain, each with a key of its own (V3:
   [`0xE94a…0257`](https://sepolia.etherscan.io/address/0xE94a82e2c7f38f777E8845A9d8c36B6be6a30257),
@@ -327,14 +329,14 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   A run imports every set change it finds, and the head once it is `--head-every` blocks past the
   client's latest header: 600 on V3 and 60 on the old mainnet (the defaults), about an hour of
   each chain's blocks. While it runs and Sepolia's base fee is below its gates (0.05 gwei for a
-  head, 1.5 gwei for a set change), each light client is at most about 70 minutes behind its
-  chain's finalized head, the V3 client is at V3's current validator set within minutes of a
-  change, and a mint needs only V3's finality and one Sepolia transaction. Its transactions are in
+  head, 1.5 gwei for a set change), each of Sepolia's light clients is at most about 70 minutes
+  behind its chain's finalized head, Sepolia's V3 client is at V3's current validator set within
+  minutes of a change, and a mint on Sepolia needs only V3's finality and one transaction. Its transactions are in
   [`deployments/relay-sepolia-0xe94a….jsonl`](deployments/relay-sepolia-0xe94a82e2c7f38f777e8845a9d8c36b6be6a30257.jsonl)
   and
   [`deployments/relay-sepolia-0x9926….jsonl`](deployments/relay-sepolia-0x99268e630f7f24b0f9b000cea7b0350b3098c7f8.jsonl),
   outside the numbered rows.
-- The V3 light client on two rollups, proof only, since Oct 27 (UTC): on Base Sepolia and Arbitrum
+- The V3 light client on two rollups, since Oct 27 (UTC): on Base Sepolia and Arbitrum
   Sepolia, the same build verified V3 block #214,510 with both validators' signatures and proved an
   account balance from its state root (rows 68 and 76), and the relayer, with `--network
   base-sepolia` or `arbitrum-sepolia`, imported V3's set change 59 → 60 into each (rows 79 and 81;
@@ -346,10 +348,11 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   error that names it, and a replay with `NonceAlreadyUsed(0)` (rows 33 to 38).
 - Lock to mint in 48 seconds, measured: lock 1, sent on V3 and minted on Sepolia, the mint's block
   36 seconds after the lock's by the block timestamps (rows 54 and 55).
-- Auto-mint since Oct 27 (UTC), `npm run automint -- --send --watch 15`, from a key of its own
-  that holds only gas: once V3 has finalized a new lock, and after a 90-second grace, it sends the
-  lock's mint on Sepolia for the lock's recipient, so a user signs only the lock and needs no
-  Sepolia ETH on the way in. Lock 2 was minted this way, the mint's block 144 seconds after the
+- Auto-mint since Oct 27 (UTC), `npm run automint -- --send --watch 15` (since Oct 28 one process
+  for the three chains, with `--network sepolia,base-sepolia,arbitrum-sepolia`), from a key of its
+  own that holds only gas: once V3 has finalized a new lock, and after a 90-second grace, it sends the
+  lock's mint on the chain the lock names, for the lock's recipient, so a user signs only the lock
+  and needs no ETH there on the way in. Lock 2 was minted this way, the mint's block 144 seconds after the
   lock's (rows 83 to 85). It can send only what a lock commits to: the minter checks the proofs
   and mints only to the committed recipient
   ([auto-mint](#auto-mint-lock-2-minted-for-its-recipient)). Lock 3, sent from a Substrate (`5…`)
@@ -362,7 +365,9 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   multisig before anything is sent, and checks the payout
   ([docs/BRIDGE.md](docs/BRIDGE.md#the-release-tool)).
 - The auto-release watcher and fast mode, since about 09:50 UTC on Oct 24: `release --watch 15
-  --confirmations 3 --send`, with members 1 and 2's keys, on the same machine as the relayer. Every
+  --confirmations 3 --send` (since 05:28 UTC on Oct 28 with `--network
+  sepolia,base-sepolia,arbitrum-sepolia` and each chain's confirmations, Sepolia's still 3), with
+  members 1 and 2's keys, on the same machine as the relayer. Every
   15 seconds it looks for new burns, gives each every check of the release tool, and sends both
   approvals. In fast mode it reads a burn at the block 3 below Sepolia's latest instead of waiting
   for Sepolia's finality, for a burn of at most 1 tPOT (its cap), with the fast releases whose burn
@@ -371,15 +376,22 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   timestamps (rows 56 to 58). Fast mode is as trusted as the standard way back (the committee), and
   a reorg deeper than 3 blocks could undo a burn after its release
   ([docs/BRIDGE.md](docs/BRIDGE.md#fast-mode-and-the-auto-release-watcher)).
+- The way in to Base Sepolia and Arbitrum Sepolia: BridgeMinter and wtPOT on each rollup since
+  Oct 27 (UTC), for the same V3 vault, each with its rollup's own V3 light client (rows 94 to 97).
+  Since Oct 28 `npm run mint` (`bundle`, `plan`, `mint` and `status`) and auto-mint take
+  `--network`, and auto-mint minted lock 4 on Base
+  Sepolia and lock 5 on Arbitrum Sepolia, each first mint binding that rollup's minter to the vault
+  (rows 98, 99, 106 and 107,
+  [the way in](#more-chains-the-way-in-to-base-sepolia-and-arbitrum-sepolia)).
 - The way back from Base Sepolia and Arbitrum Sepolia, since Oct 28 (UTC), trusted like Sepolia's:
   `npm run release` and its watcher take `--network`, each rollup with its own records, its own
   finality (its `finalized` block tag, which follows Sepolia's finality of the batch, about 20
   minutes after a burn) and fast mode (36 seconds of its blocks, 180 on Base Sepolia and 144 on
   Arbitrum Sepolia), and one fast budget across the three chains: one vault, one committee, one
-  watcher. 0.001 wtPOT was burned on each rollup (rows 108 and 109) and the dry runs of both
-  releases from the committee's multisig passed; the watcher releases them once it runs with
-  `--network sepolia,base-sepolia,arbitrum-sepolia`
-  ([the way back](#more-chains-the-way-back-from-base-sepolia-and-arbitrum-sepolia)).
+  watcher. 0.001 wtPOT was burned on each rollup (rows 108 and 109), and the watcher, running with
+  `--network sepolia,base-sepolia,arbitrum-sepolia` since 05:28 UTC, released both on V3, each burn
+  final on its rollup: 0.001 tPOT each to the address the burn named (rows 110 to 113,
+  [the way back](#more-chains-the-way-back-from-base-sepolia-and-arbitrum-sepolia)).
 - The live page, [jonathan-moore58.github.io/bridge-zero](https://jonathan-moore58.github.io/bridge-zero/) (`site/`), built and deployed
   by `.github/workflows/pages.yml` on every change to the records: both light clients, the vault
   and the bridge read live, the recorded runs as the fallback when an RPC is down, and the six
@@ -430,7 +442,8 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   3 blocks could undo a burn after its release. The way in needs only V3's finality: 48 seconds
   for lock 1. With auto-mint it took 144 seconds for lock 2, since auto-mint waits a 90-second
   grace after finality so that a user minting from the page is not raced; auto-mint skips locks
-  below 0.001 tPOT and keeps to 0.02 ETH of gas a day. LP fast-fill is planned for the way back.
+  below 0.001 tPOT and keeps to 0.02 ETH of gas a day on Sepolia and 0.002 on each rollup. LP
+  fast-fill is planned for the way back.
   From a rollup the standard way back waits for that chain's finality, about 20 minutes (Sepolia
   finalizes the rollup's batch), and fast mode for 36 seconds of its blocks; until its batch is on
   Sepolia a rollup's sequencer alone orders its latest blocks, and a restart or a failover that
@@ -474,7 +487,7 @@ event are in [docs/BUSINESS.md](docs/BUSINESS.md).
   `BridgeMinter` and wtPOT followed on both the same day, bound to the same V3 vault (rows 88 to
   97). On Oct 28 one auto-mint process minted the first lock on each, binding the vault there (rows 98 to
   107, [the way in](#more-chains-the-way-in-to-base-sepolia-and-arbitrum-sepolia)), and the way back
-  from the rollups followed the same day (rows 108 and 109,
+  from the rollups followed the same day (rows 108 to 113,
   [the way back](#more-chains-the-way-back-from-base-sepolia-and-arbitrum-sepolia)); the other four
   chains are still to come. Linea Sepolia is not on the
   list: its node answers the precompile, but its sequencer refuses every transaction that calls it,
@@ -1057,13 +1070,17 @@ per burn id, and nothing on V3 checks the burn.
 |---|---|---|---|---|
 | 108 | Base Sepolia: burn 0, 0.001 wtPOT burned for `0xD983…1071` on V3, burn id `0x6ae40d53…bedb6d8d` (`Transfer` to the zero address, then `BurnRequested`), from the deployer (nonce 12) | [`0xaffaf9e0…70eefd2e`](https://sepolia.basescan.org/tx/0xaffaf9e0f464552686c3478cb4ffb3b822accb98b656cbd2053579de70eefd2e) | Base 51,177,673 | success, 52,822 gas |
 | 109 | Arbitrum Sepolia: burn 0, 0.001 wtPOT burned for `0xD983…1071` on V3, burn id `0x9890de41…cfe80522` (`Transfer` to the zero address, then `BurnRequested`), from the deployer (nonce 12) | [`0xc2ec4b93…81f48cb8`](https://sepolia.arbiscan.io/tx/0xc2ec4b933efeeabb01414348c0b430d084fc3ddec40ee2fe765adeb381f48cb8) | Arbitrum 323,549,062 | success, 52,822 gas |
+| 110 | Base Sepolia's burn 0, by the auto-release watcher: member 1 opens the release with the burn final on Base Sepolia: `multisig.asMulti` without a timepoint, with the call in full (`NewMultisig`; 9.27 tPOT reserved until it runs) | `0x0e99ca5b…b42a22eb` | V3 [#227,761](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/227761) | final, fee 0.033 tPOT |
+| **111** | **Member 2 runs it: `asMulti` at timepoint #227,761 → `MultisigExecuted` Ok, the vault's `Released`, 0.001 tPOT to `0xD983…1071`; `released[burnId]` true, `outstanding` 1.413 → 1.412 tPOT** | `0x0bfe3286…5b59b52f` | V3 [#227,765](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/227765) | **final, fee 0.034 tPOT** |
+| 112 | Arbitrum Sepolia's burn 0, by the auto-release watcher: member 1 opens the release with the burn final on Arbitrum Sepolia: `multisig.asMulti` without a timepoint, with the call in full (`NewMultisig`; 9.27 tPOT reserved until it runs) | `0x48221e33…a5b20197` | V3 [#227,772](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/227772) | final, fee 0.033 tPOT |
+| **113** | **Member 2 runs it: `asMulti` at timepoint #227,772 → `MultisigExecuted` Ok, the vault's `Released`, 0.001 tPOT to `0xD983…1071`; `released[burnId]` true, `outstanding` 1.412 → 1.411 tPOT** | `0x9ed92cde…97910c9f` | V3 [#227,777](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/227777) | **final, fee 0.034 tPOT** |
 
 - Sent with `npm run release -- burn --network base-sepolia|arbitrum-sepolia --amount 0.001
   --v3-recipient 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 --send --account bz-deployer
   --password-file <path>`, each hash recorded in
   `deployments/<network>-bridge.json` before it was published. Each burned the deployer's whole
-  0.001 wtPOT there: the wtPOT supply is 0 on both rollups, and the vault's `outstanding`, 1.413
-  tPOT, covers Sepolia's 1.411 wtPOT and these two burns until they are released. Base Sepolia's
+  0.001 wtPOT there: the wtPOT supply is 0 on both rollups, and until the releases the vault's
+  `outstanding`, 1.413 tPOT, covered Sepolia's 1.411 wtPOT and these two burns. Base Sepolia's
   burn paid an L1 data fee of 666,738 wei besides its gas; Arbitrum Sepolia's L1 gas was 0.
 - The dry runs, nothing signed: `npm run release -- release --burn-nonce 0 --network
   base-sepolia|arbitrum-sepolia`, in fast mode (`--confirmations 180` and `144`) a minute after the
@@ -1078,10 +1095,19 @@ per burn id, and nothing on V3 checks the burn.
   hashes `0xe2ce3541…fe0f25f1` and `0xf3c92150…77a13855`), then member 1's opening `asMulti`. One
   watcher round on Base Sepolia waited instead: a backend of its public RPC still answered an older
   finalized block, and the next round found the burn final.
-- The releases come with the auto-release watcher once it runs this code with `--network
-  sepolia,base-sepolia,arbitrum-sepolia`, and so does the command that starts it again at logon
-  ([docs/BRIDGE.md](docs/BRIDGE.md#several-chains)); until then they wait, as any burn waits while
-  the watcher is off.
+- The releases, rows 110 to 113: the auto-release watcher, started at 05:28 UTC with this code (the
+  record names git `9fa74ae`) as `release --watch 15 --network sepolia,base-sepolia,arbitrum-sepolia
+  --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144 --send`, with members 1 and 2's
+  keys, found each burn final on its rollup (`"by": "finality"` in the record, not fast mode), ran
+  every check of the release tool and sent both approvals, Base Sepolia's release signed at 05:29
+  UTC and Arbitrum Sepolia's at 05:30, by the record. The burns were sent at 03:16 and 03:17 and
+  waited for this watcher, so that gap is not a burn-to-release time. The command that starts the
+  watcher again at logon has to run the same line ([docs/BRIDGE.md](docs/BRIDGE.md#several-chains)).
+- The multisig paid each release's storage deposit, 3.8415 tPOT for `released[burnId]`; member 1's
+  9.27 tPOT deposit came back when each release ran. After row 113, the vault's `outstanding` (1.411
+  tPOT) equals the wtPOT supply on the three chains (1.411 wtPOT, all of it on Sepolia), with no burn
+  waiting for a release: 0.602 tPOT released on V3 in all, 0.5 and 0.1 for Sepolia's burns and 0.001
+  for each rollup's.
 
 ## Layout
 

@@ -158,6 +158,8 @@ export interface BurnRecord {
 
 export interface ReleaseRecord {
   status: string;
+  /** The burn's chain id as the record names it ("11155111" for Sepolia, "84532" for Base Sepolia); null when a record names none, which counts as Sepolia's, as the relayer reads it (chainIdOf in relayer/src/wayback.ts). */
+  chainId: string | null;
   burnTx: Hex | null;
   burnNonce: string | null;
   burnId: Hex | null;

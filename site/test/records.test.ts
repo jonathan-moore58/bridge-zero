@@ -293,6 +293,38 @@ test("the way back's duration comes from the records' timestamps", () => {
   assert.equal(formatDuration(t.seconds), "20 min");
 });
 
+test("each release names its burn's chain: the return path counts Sepolia's releases, not the rollups'", () => {
+  // The section shows Sepolia's burns and counts a release as theirs when its record names Sepolia's
+  // chain id, or none, which the relayer reads as Sepolia's: exactly the releases whose burn id
+  // Sepolia's minter gives.
+  const sepolia = String(11155111n);
+  const released = r.returnPath.releases.filter((x) => x.status === "released");
+  for (const x of released) {
+    const counted = (x.chainId ?? sepolia) === sepolia;
+    const sepoliaBurn = x.burnNonce !== null && x.burnId === burnId(11155111n, r.sepolia.minter, BigInt(x.burnNonce));
+    assert.equal(counted, sepoliaBurn, `the release of burn ${x.burnNonce} on chain ${x.chainId}`);
+  }
+  // Burns 0 and 1 on Sepolia (rows 47 to 51 and 56 to 58), then burn 0 on Base Sepolia and on
+  // Arbitrum Sepolia (rows 110 to 113): run 2 times from Sepolia, not 4.
+  assert.deepEqual(
+    released.slice(0, 2).map((x) => [x.chainId, x.burnNonce, x.by]),
+    [
+      [sepolia, "0", null],
+      [sepolia, "1", "fast"],
+    ],
+  );
+  if (released.length === 4) {
+    assert.deepEqual(
+      released.slice(2).map((x) => [x.chainId, x.burnNonce, x.by]),
+      [
+        ["84532", "0", "finality"],
+        ["421614", "0", "finality"],
+      ],
+    );
+    assert.equal(released.filter((x) => (x.chainId ?? sepolia) === sepolia).length, 2);
+  }
+});
+
 test("the roadmap is the README's, with plans and no promises", () => {
   const rm = r.roadmap;
   assert.ok(rm);
@@ -387,16 +419,19 @@ test("amounts and numbers are formatted without rounding", () => {
   assert.equal(formatDuration(486 * 6), "49 min");
 });
 
-test("evidence rows: Sepolia links and V3 rows with their extrinsics resolved", () => {
+test("evidence rows: Sepolia links and V3 rows with their extrinsics resolved, a rollup row's hash as printed", () => {
+  const base = "0xaffaf9e0f464552686c3478cb4ffb3b822accb98b656cbd2053579de70eefd2e";
   const md = [
     "### A table",
     "| # | What | Transaction | Block | Result |",
     "|---|---|---|---|---|",
     `| **47** | **Burn: \`a | b\`** | [\`0x42d70ae9…\`](https://sepolia.etherscan.io/tx/0x${"42".repeat(32)}) | Sepolia 11,955,414 | success |`,
     "| 48 | Funded | `0xe1c37a36…30209617` | V3 [#117,514](https://node-console.portaldot.dev/?rpc=x#/explorer/query/117514) | final |",
+    `| 108 | Base Sepolia: burn 0 | [\`0xaffaf9e0…70eefd2e\`](https://sepolia.basescan.org/tx/${base}) | Base 51,177,673 | success |`,
   ].join("\n");
-  const rows = parseEvidence(md, ["0xe1c37a368392d3d1bbbffba8d9cbab36e96303bc93e201746d69b2d930209617"]);
-  assert.equal(rows.length, 2);
+  // The V3 record holds the rollup burn's hash too, in the release that names the burn.
+  const rows = parseEvidence(md, ["0xe1c37a368392d3d1bbbffba8d9cbab36e96303bc93e201746d69b2d930209617", base]);
+  assert.equal(rows.length, 3);
   assert.equal(rows[0]?.chain, "sepolia");
   assert.equal(rows[0]?.block, 11955414);
   assert.equal(rows[0]?.what, "Burn: `a | b`");
@@ -404,6 +439,16 @@ test("evidence rows: Sepolia links and V3 rows with their extrinsics resolved", 
   assert.equal(rows[1]?.block, 117514);
   assert.equal(rows[1]?.tx, "0xe1c37a368392d3d1bbbffba8d9cbab36e96303bc93e201746d69b2d930209617");
   assert.ok(rows[1]?.blockUrl?.endsWith("/117514"));
+  // Only a V3 row's short hash is resolved: the page links a non-V3 row's tx on Sepolia's
+  // Etherscan, where a rollup's transaction is not.
+  assert.equal(rows[2]?.n, 108);
+  assert.equal(rows[2]?.tx, null);
+  assert.equal(rows[2]?.txText, "0xaffaf9e0…70eefd2e");
+  // The repository's README: every row the page links on Sepolia's Etherscan links it there too.
+  const readme = readFileSync(join(repo, "README.md"), "utf8").toLowerCase();
+  for (const e of r.evidence.filter((x) => x.chain === "sepolia" && x.tx)) {
+    assert.ok(readme.includes(`(https://sepolia.etherscan.io/tx/${e.tx})`), `row ${e.n}: ${e.tx} is not linked on Sepolia's Etherscan in the README`);
+  }
 });
 
 test("the README's verify block: descriptions, commands and recorded outputs", () => {

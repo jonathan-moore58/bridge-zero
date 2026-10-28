@@ -375,7 +375,8 @@ Stack node (Base) derives it from the batches in Sepolia's finalized blocks, an 
 block finalized once its batch is in a finalized Sepolia block. On Oct 28 that came about 20 minutes
 after a block (5,800 to 6,700 of Base Sepolia's 0.2 s blocks, 3,800 to 4,500 of Arbitrum Sepolia's
 0.25 s blocks). The payee check reads the burn's chain where it reads Sepolia above. The first burns,
-0.001 wtPOT on each rollup, are the README's rows 108 and 109.
+0.001 wtPOT on each rollup, are the README's rows 108 and 109, and their releases on V3, by the
+auto-release watcher with each burn final on its rollup, rows 110 to 113.
 
 ### The release tool
 

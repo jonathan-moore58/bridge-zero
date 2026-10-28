@@ -139,7 +139,7 @@ export function parseEvidence(readme: string, v3Hashes: string[] = []): Evidence
     if (!blockDigits?.[1] || (!eth && !short)) continue;
     const isV3 = !eth && /\bV3\b/.test(blockCell);
     let tx: Hex | null = eth?.[1] ? (eth[1].toLowerCase() as Hex) : null;
-    if (!tx && short) {
+    if (!tx && short && isV3) {
       const head = (short[1] ?? "").toLowerCase();
       const tail = (short[2] ?? "").toLowerCase();
       const found = [...new Set(v3Hashes.map((h) => h.toLowerCase()))].filter((h) => h.startsWith(head) && h.endsWith(tail));
@@ -1070,6 +1070,7 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
     const releasedBlock = released && typeof released.block === "object" && released.block !== null ? (released.block as Json) : null;
     return {
       status: str(rel.status, V3F, `release ${i}.status`),
+      chainId: optStr(burn.chainId),
       burnTx: optHex(burn.txHash),
       burnNonce: optStr(burn.burnNonce),
       burnId: optHex(burn.burnId),
