@@ -131,6 +131,25 @@ details):
 | `mint --tamper signature\|header\|proof\|amount\|recipient` or `mint --replay`, with the options of `mint`, or `--sandbox` | The demo's two reverts, as transactions. A tamper is the lock's `importAndMint` with one part changed, which has to revert with the error that names that part, before the mint or after it; the replay, once the lock is minted, is the same `importAndMint` again, which has to revert `NonceAlreadyUsed`. The dry run requires exactly that revert; `--send` records the transaction, then checks status 0 in its receipt and the revert, replayed on its block. `--sandbox` runs them on `plan --sandbox`'s path: a tamper before the mint and again after it, the replay after it. |
 | `status` | The minter (bound or not, trie id, burns), the token (total supply, balances) and the vault's locks on V3, each with its commitment checked, marked minted or not, whether each burn has been released on V3, and the demo's reverts in the record. It reads the logs in windows of at most 10,000 blocks from each contract's deploy block; when an RPC refuses old logs (the public Sepolia RPC answers "pruned history unavailable" after about a week), it falls back to the views: `burnCount` and `burnIdOf` on Sepolia, `nextNonce` and the stored commitments, checked against the record's lock fields, on V3. |
 
+**On Base Sepolia and Arbitrum Sepolia**, `--network base-sepolia` or `--network arbitrum-sepolia`
+(with `bundle --nonce`, `plan`, `mint` and `status`, as with `deploy`) works on that rollup's minter:
+the lock has to name that chain and its minter, `CREATE(deployer, 9)`, `0xdc31…2348` on both; the
+light client, the minter and the token are that network's records (`deployments/<network>.json` and
+`deployments/<network>-bridge.json`, where a mint is recorded too) and the RPC its own (contracts/
+script/lib/sepolia.mjs `NETWORKS`). There `plan` and `mint` take `--bundle` or `--nonce`, `bundle`
+writes to `fixtures/v3-testnet-mint-<network>` unless `--out`, and the sandbox and the demo's reverts
+stay Sepolia's. Neither minter is bound to the vault before its first mint, which binds it:
+`importAndMint` carries the vault's account proof while the minter is not bound, as lock 0's did on
+Sepolia. The L1 part of a transaction ([relayer/src/l1.ts](../relayer/src/l1.ts)): on Arbitrum,
+NodeInterface's `gasEstimateL1Component` gives its L1 gas, in L2 gas units at the L2 gas price,
+which the tool prints and adds to the gas limit it sends with (the simulated gas + 10% + the L1
+gas); on Base, GasPriceOracle's `getL1FeeUpperBound` bounds the L1 data fee charged besides the gas,
+which counts in the balance the sender needs. A plan's first pass runs at the 16,777,216 cap and the
+max fee (ten times the base fee): on Arbitrum Sepolia, at 0.2 gwei, that needs about 0.0034 ETH in
+the sender's balance, so a dry run from a key with less fails on funds; `--from` an address that
+holds it, or a lower `--max-fee`, runs it. Lock 4 (Base Sepolia) and lock 5 (Arbitrum Sepolia) were
+planned this way on Oct 28: `importAndMint` with `bindVault`, 2,639,946 and 2,612,827 gas.
+
 `plan` and `mint` take the bundle file given, a bundle read on the spot for `--nonce`, or else
 `fixtures/v3-testnet-mint/mint-bundle.json`. Without `--send` nothing is signed: a dry run refuses
 `--account` and `--password-file`. A plan with a creation refuses a Sepolia build that was not

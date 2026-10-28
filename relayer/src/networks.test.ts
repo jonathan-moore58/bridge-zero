@@ -1,8 +1,8 @@
 // Unit tests of --network, offline: Sepolia stays the default, with its RPC, chain id, cap and the
 // sender's file names as before, and useNetwork moves all of them to Base Sepolia or Arbitrum
-// Sepolia (contracts/script/lib/sepolia.mjs NETWORKS). The mint tool's deploy --network: Sepolia's
-// records and nonces as before, each rollup's pair at the deployer's next two nonces there, bound to
-// that rollup's V3 light client, and the options it refuses. Nothing is read from a chain.
+// Sepolia (contracts/script/lib/sepolia.mjs NETWORKS). The mint tool's --network: Sepolia's records
+// and nonces as before, each rollup's pair at the deployer's next two nonces there, bound to that
+// rollup's V3 light client, and the options it refuses. Nothing is read from a chain.
 //
 //   npm test
 
@@ -126,11 +126,16 @@ describe("npm run mint -- deploy --network", () => {
     });
   }
 
-  it("refuses what a deploy on a rollup does not take, before it reads anything", () => {
+  it("refuses what the mint tool on a rollup does not take, before it reads anything", () => {
     const run = (...args: string[]) => spawnSync(process.execPath, ["--import", "tsx", "src/mint.ts", ...args], { cwd: relayer, encoding: "utf8", windowsHide: true, timeout: 60_000 });
     for (const [args, message] of [
       [["deploy", "--network", "base-sepolia", "--nonce", "0"], /a deploy on base-sepolia reads no lock: --bundle and --nonce are for Sepolia's/],
-      [["mint", "--network", "arbitrum-sepolia"], /--network arbitrum-sepolia is for deploy: plan and mint are Sepolia's/],
+      // A mint there takes that rollup's lock: the default bundle is Sepolia's lock 0.
+      [["mint", "--network", "arbitrum-sepolia"], /mint on arbitrum-sepolia takes --bundle <file> or --nonce <n>: fixtures\/v3-testnet-mint\/mint-bundle.json is Sepolia's lock 0/],
+      [["plan", "--network", "base-sepolia", "--nonce", "4", "--sandbox"], /--sandbox, --tamper and --replay are Sepolia's: the demo ran there/],
+      [["mint", "--network", "base-sepolia", "--nonce", "4", "--tamper", "signature"], /--sandbox, --tamper and --replay are Sepolia's/],
+      [["bundle", "--check", "no-such-file.json", "--network", "base-sepolia"], /--check is offline: --out, --force, --rpc, --evm and --network are for a capture/],
+      [["status", "--network", "linea-sepolia"], /--network takes one of sepolia, base-sepolia, arbitrum-sepolia/],
       [["deploy", "--network", "linea-sepolia"], /--network takes one of sepolia, base-sepolia, arbitrum-sepolia/],
     ] as const) {
       const r = run(...args);
