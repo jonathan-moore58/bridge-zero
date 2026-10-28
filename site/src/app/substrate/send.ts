@@ -39,9 +39,15 @@ export interface SignedLock {
   ext: ExtrinsicRef;
 }
 
+/** The chain a lock pays out on: its chain id and its BridgeMinter, which the lock's calldata names and its commitment carries. */
+export interface LockTo {
+  chainId: bigint;
+  minter: Hex;
+}
+
 /** What a lock needs of V3. */
 export interface LockChain {
-  prepareLock(origin: string, amount: bigint, recipient: Hex): Promise<LockPrep>;
+  prepareLock(origin: string, amount: bigint, recipient: Hex, to: LockTo): Promise<LockPrep>;
   /** Builds the extrinsic and asks the wallet to sign it; `onAsk` runs right before the wallet's prompt, with the nonce and the era it signs. */
   signLock(prep: PreparedLock, origin: string, signer: InjectedSigner, onAsk: (ext: ExtrinsicRef) => void): Promise<SignedLock>;
   /** V3's best block number: the next block is the first one an extrinsic broadcast now can be in. */
@@ -92,16 +98,22 @@ export const TALISMAN_HELP =
 const inFlight = new Set<string>();
 
 /**
- * One lock for transfer `key`, from `origin` to `recipient` on Sepolia: checked, signed once, checked
- * by V3, broadcast once. A second call for the same transfer while one runs asks nothing ("busy"),
- * so one click never sends two locks.
+ * One lock for transfer `key`, from `origin` to `recipient` on the destination `to` (Sepolia, or a
+ * rollup): checked, signed once, checked by V3, broadcast once. A second call for the same transfer
+ * while one runs asks nothing ("busy"), so one click never sends two locks.
  */
-export async function sendLockOnce(key: string, chain: LockChain, signer: InjectedSigner, input: { origin: string; amount: bigint; recipient: Hex }, hooks: SendHooks): Promise<SendResult> {
+export async function sendLockOnce(
+  key: string,
+  chain: LockChain,
+  signer: InjectedSigner,
+  input: { origin: string; amount: bigint; recipient: Hex; to: LockTo },
+  hooks: SendHooks,
+): Promise<SendResult> {
   if (inFlight.has(key)) return { kind: "busy" };
   inFlight.add(key);
   try {
     hooks.checking();
-    const prep = await chain.prepareLock(input.origin, input.amount, input.recipient);
+    const prep = await chain.prepareLock(input.origin, input.amount, input.recipient, input.to);
     if ("problem" in prep) return { kind: "problem", ...prep.problem };
     if (!hooks.still()) return { kind: "refused", title: "Lock not sent", text: "Your Polkadot wallet changed account after the checks. Nothing was sent: review the lock again." };
     let signed: SignedLock;

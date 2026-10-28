@@ -1,12 +1,14 @@
-// A finished transfer: what was sent, what was checked or trusted, the transactions. The recorded
-// runs come from the build's records; a transfer this tab followed, from what it read on the way;
-// any other lock or burn, from what the chains say of it now.
+// A finished transfer: what was sent, what was checked or trusted, the transactions, on its
+// destination (Sepolia, Base Sepolia or Arbitrum Sepolia). The recorded runs come from the build's
+// records (Sepolia's locks and burns, and the rollups' burns); a transfer this tab followed, from
+// what it read on the way; any other lock or burn, from what the chains say of it now.
 
-import { etherscanTx, nodeConsoleBlock } from "../../lib/chains.ts";
+import { nodeConsoleBlock } from "../../lib/chains.ts";
 import { checksum } from "../../lib/display.ts";
 import { useField } from "../../lib/live.ts";
 import type { Hex } from "../../lib/records-types.ts";
 import { addWtpotToWallet } from "../connect.tsx";
+import { deployed, destOf, explorerAddress, explorerTx, type Dest, type DestKey } from "../dests.ts";
 import { FAST_CAP, fromOf, toOf, type Speed } from "../facts.ts";
 import { ChainMark } from "../marks.tsx";
 import type { Route } from "../router.ts";
@@ -30,7 +32,7 @@ import {
   type LiveTransfer,
   type LockRun,
 } from "../transfers.ts";
-import { Addr, Chip, Icon, dur, fmt, num, secs, short } from "../ui.tsx";
+import { Addr, Chip, Icon, Nb, dur, fmt, num, secs, short } from "../ui.tsx";
 import { wallet } from "../wallet.ts";
 import { ALL_PASSED, ChainWait, ChecksPanel, CssSpan, NotFound, Redirect, TrustPanel, day, factsOf, hhmm, liveFacts, liveLabel, when, type CheckFacts } from "./Tx.tsx";
 
@@ -38,13 +40,15 @@ import { ALL_PASSED, ChainWait, ChecksPanel, CssSpan, NotFound, Redirect, TrustP
 type Source = "recorded" | "tab" | "chain";
 
 interface Common {
+  /** The chain on the other side of V3. */
+  dest: DestKey;
   label: string;
   when: string;
   amount: number;
   /** The address paid on the other chain. */
   to: Hex;
   source: Source;
-  /** A lock from a Polkadot wallet: it paid the Sepolia address the visitor gave, which may not be theirs. */
+  /** A lock from a Polkadot wallet: it paid the address the visitor gave on the destination, which may not be theirs. */
   given?: boolean;
 }
 
@@ -54,6 +58,8 @@ interface InReceipt extends Common {
   lockBlock: number;
   /** null when used(nonce) says minted but the mint's log could not be read yet; `gas` null when its receipt could not. */
   mint: { tx: Hex; block: number; gas: number | null } | null;
+  /** used(nonce) says minted, and the mint's log is older than the destination's nodes search: it is not looked for again. */
+  beyond: boolean;
   /** The mint was mint(p) at a block the light client held already (true), importAndMint (false), or not known (null). */
   held: boolean | null;
   /** A self-relay's transactions before the mint, which imported V3's set changes the light client lacked (block 0: not read). */
@@ -78,7 +84,7 @@ interface BackReceipt extends Common {
   run: { tx: Hex; block: number } | null;
   /** Seconds from sending to the burn's block, from that block to the release, and from sending to the release. */
   fast: { mined: number; fromBlock: number; fromSend: number; measure: string } | null;
-  /** Seconds from sending to the release, and the split between Sepolia's finality and the committee, when known. */
+  /** Seconds from sending to the release, and the split between its chain's finality and the committee, when known. */
   std: { total: number; split: readonly [string, string] | null; grow: readonly [number, number] | null; measure: string } | null;
 }
 
@@ -91,6 +97,7 @@ function lockReceipt(r: LockRun, label: string): InReceipt {
   const s = r.steps;
   return {
     dir: "in",
+    dest: "sepolia",
     label,
     when: when(r.lockAt),
     amount: toTokens(r.amount),
@@ -99,6 +106,7 @@ function lockReceipt(r: LockRun, label: string): InReceipt {
     lockTx: r.lockTx,
     lockBlock: r.lockBlock,
     mint: { tx: r.mintTx, block: r.mintBlock, gas: r.mintGas },
+    beyond: false,
     held: false,
     relayed: [],
     facts: factsOf(r),
@@ -111,10 +119,17 @@ function lockReceipt(r: LockRun, label: string): InReceipt {
   };
 }
 
+/**
+ * A recorded burn's receipt. Sepolia's are timed: burn 1's measured Fast run, burn 0's records. A
+ * rollup's burn 0 waited for the watcher to serve the rollups (README rows 108 to 113), so its hours
+ * from the burn to the release are no measure of the way back: it carries no time block.
+ */
 function burnReceipt(b: BurnRun, label: string): BackReceipt {
   const runAt = b.run.at;
+  const sep = b.dest === "sepolia";
   return {
     dir: "back",
+    dest: b.dest,
     label,
     when: when(b.burnAt),
     amount: toTokens(b.amount),
@@ -129,7 +144,7 @@ function burnReceipt(b: BurnRun, label: string): BackReceipt {
     run: { tx: b.run.tx, block: b.run.block },
     // Burn 1's times are the README's, by the block timestamps (rows 56 to 58).
     fast:
-      b.fast && b.n === FAST_RUN.burn
+      sep && b.fast && b.n === FAST_RUN.burn
         ? {
             mined: FAST_RUN.mined,
             fromBlock: FAST_RUN.ran - FAST_RUN.mined,
@@ -139,7 +154,7 @@ function burnReceipt(b: BurnRun, label: string): BackReceipt {
         : null,
     // The whole from the records' times; the split is burn 0's, from the README.
     std:
-      !b.fast && runAt
+      sep && !b.fast && runAt
         ? {
             total: (Date.parse(runAt) - Date.parse(b.burnAt)) / 1000,
             split: b.n === STD_RUN.burn ? [STD_RUN.finLabel, STD_RUN.relLabel] : null,
@@ -162,7 +177,9 @@ function recordedReceipt(id: string, speedQ: string | null): Receipt | null {
   }
   const rec = recordedOf(id);
   if (!rec) return null;
-  return rec.dir === "in" ? lockReceipt(rec.run, `Lock ${rec.run.nonce}`) : burnReceipt(rec.run, `Burn ${rec.run.n}`);
+  if (rec.dir === "in") return lockReceipt(rec.run, `Lock ${rec.run.nonce}`);
+  const b = rec.run;
+  return burnReceipt(b, b.dest === "sepolia" ? `Burn ${b.n}` : `Burn ${b.n} on ${destOf(b.dest).short}`);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -170,13 +187,17 @@ function recordedReceipt(id: string, speedQ: string | null): Receipt | null {
 
 function liveReceipt(x: LiveTransfer): Receipt | null {
   if (x.dir === "in") {
-    const { lock, mint, finality: fin } = x;
-    if (lock.stage !== "mined" || mint?.stage !== "mined") return null;
-    const end = x.doneAt ?? mint.minedAt;
+    const { lock, finality: fin } = x;
+    const mint = x.mint?.stage === "mined" ? x.mint : null;
+    // Minted by a transaction older than the destination's nodes search: its receipt names none, and is not timed.
+    const beyond = !mint && x.mintBeyond !== undefined;
+    if (lock.stage !== "mined" || (!mint && !beyond)) return null;
+    const end = x.doneAt ?? mint?.minedAt ?? lock.minedAt;
     const built = x.proof.builtAt;
     const sec = (from: number, to: number) => Math.max(0, (to - from) / 1000);
     return {
       dir: "in",
+      dest: x.dest,
       label: liveLabel(x),
       when: when(x.startedAt),
       amount: toTokens(x.amount),
@@ -185,20 +206,21 @@ function liveReceipt(x: LiveTransfer): Receipt | null {
       given: x.sender.kind === "substrate",
       lockTx: lock.hash,
       lockBlock: lock.block,
-      mint: { tx: mint.hash, block: mint.block, gas: mint.gasUsed },
+      mint: mint ? { tx: mint.hash, block: mint.block, gas: mint.gasUsed } : null,
+      beyond,
       // The block it proved the lock at carries the signatures an import counted, or none: mint(p) imports nothing.
-      held: mint.gasUsed === null || !fin ? null : fin.signatures === null,
+      held: !mint || mint.gasUsed === null || !fin ? null : fin.signatures === null,
       relayed: x.relayed.map((r) => ({ tx: r.hash, block: r.block })),
       facts: liveFacts(x),
       // Finish mint: the lock came before this page followed it, so the transfer is not timed.
       timing:
-        fin && built !== null && !x.resumed
+        mint && fin && built !== null && !x.resumed
           ? {
               parts: [sec(lock.sentAt, lock.minedAt), sec(lock.minedAt, fin.at), sec(fin.at, built), sec(built, end)],
               total: sec(lock.sentAt, end),
             }
           : null,
-      note: x.resumed ? `Lock ${x.nonce ?? ""} was made on ${day(lock.minedAt)}, before this page followed it, and minted on ${day(mint.minedAt)}. A lock does not expire.` : null,
+      note: x.resumed && mint ? `Lock ${x.nonce ?? ""} was made on ${day(lock.minedAt)}, before this page followed it, and minted on ${day(mint.minedAt)}. A lock does not expire.` : null,
     };
   }
   const { burn, release, depth } = x;
@@ -209,6 +231,7 @@ function liveReceipt(x: LiveTransfer): Receipt | null {
   const q = depth.qualifiedAt;
   return {
     dir: "back",
+    dest: x.dest,
     label: liveLabel(x),
     when: when(x.startedAt),
     amount: toTokens(x.amount),
@@ -250,6 +273,7 @@ function chainLockReceipt(x: ChainLock, authorities: number | null): InReceipt {
   const f = x.mint?.final ?? null;
   return {
     dir: "in",
+    dest: x.dest,
     label: `Lock ${x.nonce}`,
     when: `${x.at !== null ? when(x.at) : `V3 #${num(x.block)}`} · read live`,
     amount: toTokens(x.amount),
@@ -258,6 +282,7 @@ function chainLockReceipt(x: ChainLock, authorities: number | null): InReceipt {
     lockTx: x.tx,
     lockBlock: x.block,
     mint: x.mint ? { tx: x.mint.tx, block: x.mint.block, gas: x.mint.gasUsed } : null,
+    beyond: x.mintBeyond,
     // The mint's receipt read: a HeaderImported of its block in it is importAndMint's; none, mint(p)'s.
     held: x.mint && x.mint.gasUsed !== null ? x.mint.final.block === null : null,
     relayed: [],
@@ -276,10 +301,12 @@ function chainLockReceipt(x: ChainLock, authorities: number | null): InReceipt {
 }
 
 function chainBurnReceipt(x: ChainBurn): BackReceipt {
+  const d = destOf(x.dest);
   return {
     dir: "back",
-    label: `Burn ${x.n}`,
-    when: `${x.at !== null ? when(x.at) : `Sepolia #${num(x.block)}`} · read live`,
+    dest: x.dest,
+    label: d.key === "sepolia" ? `Burn ${x.n}` : `Burn ${x.n} on ${d.short}`,
+    when: `${x.at !== null ? when(x.at) : `${d.short} #${num(x.block)}`} · read live`,
     amount: toTokens(x.amount),
     to: x.payee,
     source: "chain",
@@ -327,8 +354,23 @@ function Big({ s }: { s: number }) {
   );
 }
 
+/**
+ * A row's chain and where on it ("#323,534,868"). On small phones a rollup is named by its chain
+ * button's first word, as the route is: "Arbitrum Sepolia #…" beside a transaction does not fit.
+ */
+function ChainAt({ d, at }: { d: Dest; at: string }) {
+  if (d.key === "sepolia") return <>{`${d.short} ${at}`}</>;
+  return (
+    <>
+      <span class="rc__wide">{`${d.short} ${at}`}</span>
+      <span class="rc__tight">{`${d.name} ${at}`}</span>
+    </>
+  );
+}
+
 function InMain({ m, whose }: { m: InReceipt; whose: string }) {
   const t = m.timing;
+  const d = destOf(m.dest);
   // A transfer this tab followed draws its bar from its own times; the recorded run's are the stylesheet's.
   const grow = (i: number) => (m.source === "tab" && t ? String(t.parts[i] ?? 0) : null);
   return (
@@ -336,7 +378,7 @@ function InMain({ m, whose }: { m: InReceipt; whose: string }) {
       <div class="rc__hero">
         <Tick />
         <h1 class="rc__title" id="rc-title">
-          {fmt(m.amount)} wtPOT <span class="rc__soft">arrived on Sepolia</span>
+          {fmt(m.amount)} wtPOT <span class="rc__soft">arrived on {d.short}</span>
         </h1>
         <p class="rc__sub">
           <span>
@@ -379,9 +421,16 @@ function InMain({ m, whose }: { m: InReceipt; whose: string }) {
           <dd class="kv__v rc__route">
             <span class="pairmark pairmark--sm" aria-hidden="true">
               <ChainMark mark="portaldot" cls="mark--20" />
-              <ChainMark mark="ethereum" cls="mark--20" />
+              <ChainMark mark={d.mark} cls="mark--20" />
             </span>
-            Portaldot V3 → Sepolia
+            {d.key === "sepolia" ? (
+              `Portaldot V3 → ${d.short}`
+            ) : (
+              <>
+                <span class="rc__wide">Portaldot V3 → {d.short}</span>
+                <span class="rc__tight">V3 → {d.name}</span>
+              </>
+            )}
           </dd>
         </div>
         <div class="kv">
@@ -402,10 +451,10 @@ function InMain({ m, whose }: { m: InReceipt; whose: string }) {
           <div class="kv" key={r.tx}>
             <dt class="kv__k kv__stack">
               Set changes{m.relayed.length > 1 ? ` ${i + 1}` : ""}
-              <span class="kv__small">{r.block ? `Sepolia #${num(r.block)}` : "Sepolia"}</span>
+              <span class="kv__small">{r.block ? <ChainAt d={d} at={`#${num(r.block)}`} /> : d.short}</span>
             </dt>
             <dd class="kv__v">
-              <Addr full={r.tx} href={etherscanTx(r.tx)} label="set changes imported" cls="addr--tx" />
+              <Addr full={r.tx} href={explorerTx(d, r.tx)} label="set changes imported" cls="addr--tx" />
             </dd>
           </div>
         ))}
@@ -413,10 +462,12 @@ function InMain({ m, whose }: { m: InReceipt; whose: string }) {
           <>
             <div class="kv">
               <dt class="kv__k kv__stack">
-                Mint<span class="kv__small">Sepolia #{num(m.mint.block)}</span>
+                Mint<span class="kv__small">
+                  <ChainAt d={d} at={`#${num(m.mint.block)}`} />
+                </span>
               </dt>
               <dd class="kv__v">
-                <Addr full={m.mint.tx} href={etherscanTx(m.mint.tx)} label="mint transaction" cls="addr--tx" />
+                <Addr full={m.mint.tx} href={explorerTx(d, m.mint.tx)} label="mint transaction" cls="addr--tx" />
               </dd>
             </div>
             <div class="kv">
@@ -427,11 +478,21 @@ function InMain({ m, whose }: { m: InReceipt; whose: string }) {
               </dd>
             </div>
           </>
+        ) : m.beyond ? (
+          <div class="kv">
+            <dt class="kv__k">Mint</dt>
+            <dd class="kv__v">
+              <span class="mono">used({m.facts.nonce ?? ""})</span> <span class="kv__note">· true on {d.short}; its transaction is older than the nodes here search ·</span>{" "}
+              <a class="text-link" href={`${explorerAddress(d, deployed(d).minter)}#events`} target="_blank" rel="noopener">
+                {d.explorer.name}
+              </a>
+            </dd>
+          </div>
         ) : (
           <div class="kv">
             <dt class="kv__k">Mint</dt>
             <dd class="kv__v">
-              <span class="mono">used({m.facts.nonce ?? ""})</span> <span class="kv__note">· true on Sepolia; its transaction could not be read yet</span>
+              <span class="mono">used({m.facts.nonce ?? ""})</span> <span class="kv__note">· true on {d.short}; its transaction could not be read yet</span>
             </dd>
           </div>
         )}
@@ -444,6 +505,7 @@ function BackMain({ m, whose }: { m: BackReceipt; whose: string }) {
   const f = m.fast;
   const s = m.std;
   const tab = m.source === "tab";
+  const d = destOf(m.dest);
   return (
     <>
       <div class="rc__hero rc__hero--trust">
@@ -468,7 +530,7 @@ function BackMain({ m, whose }: { m: BackReceipt; whose: string }) {
               {Math.round(f.fromBlock)}
               <span class="unit">s</span>
             </span>
-            <span class="rc__timetext">from the burn's Sepolia block to the release · Fast</span>
+            <span class="rc__timetext">from the burn's {d.short} block to the release · Fast</span>
           </div>
           <div class="segbar segbar--trust segbar--fast" aria-hidden="true">
             <CssSpan cls="segbar__s segbar__s--1" prop="flex-grow" value={tab ? String(f.mined) : null} />
@@ -512,7 +574,7 @@ function BackMain({ m, whose }: { m: BackReceipt; whose: string }) {
                   <dd>mined</dd>
                 </div>
                 <div>
-                  <dt>Sepolia finality</dt>
+                  <dt>{d.short} finality</dt>
                   <dd>{s.split[0]}</dd>
                 </div>
                 <div>
@@ -533,10 +595,17 @@ function BackMain({ m, whose }: { m: BackReceipt; whose: string }) {
           <dt class="kv__k">Route</dt>
           <dd class="kv__v rc__route">
             <span class="pairmark pairmark--sm" aria-hidden="true">
-              <ChainMark mark="ethereum" cls="mark--20" />
+              <ChainMark mark={d.mark} cls="mark--20" />
               <ChainMark mark="portaldot" cls="mark--20" />
             </span>
-            Sepolia → Portaldot V3
+            {d.key === "sepolia" ? (
+              `${d.short} → Portaldot V3`
+            ) : (
+              <>
+                <span class="rc__wide">{d.short} → Portaldot V3</span>
+                <span class="rc__tight">{d.name} → V3</span>
+              </>
+            )}
           </dd>
         </div>
         <div class="kv">
@@ -547,10 +616,12 @@ function BackMain({ m, whose }: { m: BackReceipt; whose: string }) {
         </div>
         <div class="kv">
           <dt class="kv__k kv__stack">
-            Burn<span class="kv__small">Sepolia #{num(m.burnBlock)}</span>
+            Burn<span class="kv__small">
+              <ChainAt d={d} at={`#${num(m.burnBlock)}`} />
+            </span>
           </dt>
           <dd class="kv__v">
-            <Addr full={m.burnTx} href={etherscanTx(m.burnTx)} label="burn transaction" cls="addr--tx" />
+            <Addr full={m.burnTx} href={explorerTx(d, m.burnTx)} label="burn transaction" cls="addr--tx" />
           </dd>
         </div>
         {m.burnId ? (
@@ -594,8 +665,9 @@ function BackMain({ m, whose }: { m: BackReceipt; whose: string }) {
 }
 
 function ReceiptScreen({ m, me }: { m: Receipt; me: string | null }) {
-  const from = fromOf(m.dir);
-  const to = toOf(m.dir);
+  const d = destOf(m.dest);
+  const from = fromOf(m.dir, m.dest);
+  const to = toOf(m.dir, m.dest);
   // "You" only for a transfer this tab sent, or when the address paid is the connected wallet's. A
   // recorded run paid the project's test address; a lock or a burn read from the chains, its own recipient.
   const mine = me !== null && me.toLowerCase() === m.to.toLowerCase();
@@ -617,25 +689,33 @@ function ReceiptScreen({ m, me }: { m: Receipt; me: string | null }) {
         </a>
         <p class="intro__eyebrow">
           <span class="intro__dot" aria-hidden="true" />
-          {m.label} · {m.when}
+          {/* On a phone the time wraps onto its own line, the dot ending the first. */}
+          <span>
+            <Nb>{m.label} ·</Nb> <Nb>{m.when}</Nb>
+          </span>
         </p>
         <p class="intro__title intro__title--tx">
           {fmt(m.amount)} {from.token} <span class="intro__arrow" aria-hidden="true">→</span>
           <span class="visually-hidden"> to </span> {to.short}
         </p>
         <div class="side">
-          {m.dir === "in" ? <ChecksPanel states={ALL_PASSED} receipt facts={m.facts} held={m.held} /> : <TrustPanel speed={m.speed} fallback={m.fallback} members={null} />}
+          {m.dir === "in" ? (
+            <ChecksPanel states={ALL_PASSED} receipt facts={m.facts} held={m.held} chain={d.short} />
+          ) : (
+            <TrustPanel speed={m.speed} fallback={m.fallback} members={null} d={d} />
+          )}
         </div>
       </section>
       <section class="card card--lit rccard" aria-labelledby="rc-title">
         {m.dir === "in" ? <InMain m={m} whose={whose} /> : <BackMain m={m} whose={whose} />}
         <div class="rc__actions">
-          <a class="btn btn--primary btn--lg btn--block" href={`#/bridge/${m.dir}`}>
+          <a class="btn btn--primary btn--lg btn--block" href={`#/bridge/${m.dir}${m.dest === "sepolia" ? "" : `?dest=${m.dest}`}`}>
             New transfer
           </a>
           <div class="rc__secondary">
             {m.dir === "in" ? (
-              <button class="btn btn--secondary" type="button" onClick={() => void addWtpotToWallet()}>
+              // The route above names the chain; a longer label would not fit its half of the row.
+              <button class="btn btn--secondary" type="button" title={`Add wtPOT on ${d.short} to your wallet`} onClick={() => void addWtpotToWallet(m.dest)}>
                 <Icon id="i-plus" />
                 Add wtPOT to wallet
               </button>
@@ -656,9 +736,13 @@ function ReceiptScreen({ m, me }: { m: Receipt; me: string | null }) {
   );
 }
 
-/** Settled for a receipt: the mint read with its receipt, or the release read either way. Not minted: the page is then the transfer. */
+/**
+ * Settled for a receipt: the mint read with its receipt, or minted by a transaction older than the
+ * nodes search (not looked for again), or the release read either way. Not minted: the page is then
+ * the transfer.
+ */
 const receiptSettled = (x: ChainTransfer): boolean =>
-  x.dir === "in" ? x.minted === false || (x.mint !== null && x.mint.gasUsed !== null) : x.released !== null;
+  x.dir === "in" ? x.minted === false || (x.mint !== null && x.mint.gasUsed !== null) || x.mintBeyond : x.released !== null;
 
 /** The receipt of a lock or a burn read from the chains: read again every 15 s until what it shows has settled. */
 function ChainReceipt({ id, me }: { id: string; me: string | null }) {

@@ -1,7 +1,7 @@
 // Substrate (5…) accounts on Portaldot V3, without a library: an SS58 address read back to its
 // 32-byte account id, the H160 pallet-revive gives that account (what the vault records as the
-// sender of a lock it signs), and the checks of the Sepolia address such a lock pays. Kept apart
-// from the build's records so that node --test runs it.
+// sender of a lock it signs), and the checks of the address such a lock pays on its destination
+// (Sepolia, or a rollup). Kept apart from the build's records so that node --test runs it.
 
 import { checksum } from "../../lib/display.ts";
 import { blake2b512, keccak256 } from "../../lib/hashes.ts";
@@ -67,17 +67,21 @@ export function senderOf(address: string): Hex | null {
 export const shortSs58 = (address: string): string => (address.length > 12 ? `${address.slice(0, 4)}…${address.slice(-4)}` : address);
 
 // ---------------------------------------------------------------------------------------------
-// The Sepolia address a lock from a 5… account pays
+// The address a lock from a 5… account pays on its destination
 
-/** The addresses wtPOT must never be minted to, by what they are: the contracts and the visitor's own V3 addresses. */
+/**
+ * The addresses wtPOT must never be minted to, by what they are: the contracts and the visitor's own
+ * V3 addresses. `chain`: the destination's name, "Sepolia" unless given; `minter` and `token` are its.
+ */
 export interface RecipientContext {
   /** The connected account's address on V3 (reviveAddress): no Ethereum key holds it. */
   mapped: Hex | null;
-  /** The V3 addresses of the other accounts the Polkadot wallet shares, keyless on Sepolia too, with how the page names each. */
+  /** The V3 addresses of the other accounts the Polkadot wallet shares, keyless on the destination too, with how the page names each. */
   others?: readonly { h160: Hex; label: string }[];
   minter: Hex;
   token: Hex;
   vault: Hex;
+  chain?: string;
 }
 
 export type RecipientCheck =
@@ -88,25 +92,26 @@ const ZERO = `0x${"0".repeat(40)}`;
 const same = (a: string, b: string | null): boolean => !!b && a.toLowerCase() === b.toLowerCase();
 
 /**
- * The Sepolia address typed for a lock's recipient: 0x and 40 hex digits, its EIP-55 checksum
+ * The destination's address typed for a lock's recipient: 0x and 40 hex digits, its EIP-55 checksum
  * checked when it mixes cases. Refused: the zero address; an address that ends in twelve 0xEE
- * bytes (V3's form of an Ethereum account, no Sepolia key's); the visitor's own address on V3, or
+ * bytes (V3's form of an Ethereum account, no key's there); the visitor's own address on V3, or
  * another account's of the same wallet, which no Ethereum key holds, so wtPOT minted there would be
  * stuck; BridgeMinter, wtPOT and the vault. Any other Substrate account's address on V3 is refused
  * by the review's check on V3 (chain.ts, revive.originalAccount). A lock's recipient cannot be
  * changed once it is on V3.
  */
 export function checkRecipient(text: string, ctx: RecipientContext): RecipientCheck {
+  const chain = ctx.chain ?? "Sepolia";
   const t = text.trim();
-  if (!t) return { ok: false, kind: "empty", text: "Enter the Sepolia address that receives the wtPOT." };
-  if (!/^0x[0-9a-fA-F]{40}$/.test(t)) return { ok: false, kind: "invalid", text: "A Sepolia address is 0x and 40 hex digits." };
+  if (!t) return { ok: false, kind: "empty", text: `Enter the ${chain} address that receives the wtPOT.` };
+  if (!/^0x[0-9a-fA-F]{40}$/.test(t)) return { ok: false, kind: "invalid", text: `A ${chain} address is 0x and 40 hex digits.` };
   const body = t.slice(2);
   if (/[a-f]/.test(body) && /[A-F]/.test(body) && checksum(t) !== t) {
     return { ok: false, kind: "invalid", text: "Its capital letters do not match its checksum (EIP-55): a typo, most likely. Copy it again from your wallet." };
   }
   const a = t.toLowerCase() as Hex;
   if (a === ZERO) return { ok: false, kind: "refused", text: "The zero address: wtPOT minted there could never move." };
-  if (a.endsWith("ee".repeat(12))) return { ok: false, kind: "refused", text: "An address that ends in twelve 0xEE bytes is V3's form of an account, not a Sepolia key's." };
+  if (a.endsWith("ee".repeat(12))) return { ok: false, kind: "refused", text: `An address that ends in twelve 0xEE bytes is V3's form of an account, not a ${chain} key's.` };
   if (same(a, ctx.mapped)) {
     return {
       ok: false,
@@ -124,18 +129,18 @@ export function checkRecipient(text: string, ctx: RecipientContext): RecipientCh
   }
   if (same(a, ctx.minter)) return { ok: false, kind: "refused", text: "That is BridgeMinter, the contract that mints: it cannot use wtPOT." };
   if (same(a, ctx.token)) return { ok: false, kind: "refused", text: "That is the wtPOT token's own address: it cannot use wtPOT." };
-  if (same(a, ctx.vault)) return { ok: false, kind: "refused", text: "That is the vault's address on V3, not a Sepolia account." };
+  if (same(a, ctx.vault)) return { ok: false, kind: "refused", text: `That is the vault's address on V3, not a ${chain} account.` };
   return { ok: true, address: a, shown: checksum(a) };
 }
 
 /**
- * What Sepolia says of a recipient, as a caution, not a refusal: a contract (it has to be able to
- * hold wtPOT, and to burn it to come back), or an address with no transaction and no ETH yet (the
- * visitor should be sure they hold its key). An EIP-7702 delegation is a key's account.
+ * What the destination says of a recipient, as a caution, not a refusal: a contract (it has to be
+ * able to hold wtPOT, and to burn it to come back), or an address with no transaction and no ETH yet
+ * (the visitor should be sure they hold its key). An EIP-7702 delegation is a key's account.
  */
-export function recipientNote(code: string, txCount: bigint, balance: bigint): string | null {
+export function recipientNote(code: string, txCount: bigint, balance: bigint, chain = "Sepolia"): string | null {
   const c = code.toLowerCase();
-  if (c !== "0x" && !/^0xef0100[0-9a-f]{40}$/.test(c)) return "A contract on Sepolia: make sure it can hold wtPOT, and burn it to bring it back.";
-  if (txCount === 0n && balance === 0n) return "No transactions and no ETH on Sepolia yet: make sure you hold this address's key.";
+  if (c !== "0x" && !/^0xef0100[0-9a-f]{40}$/.test(c)) return `A contract on ${chain}: make sure it can hold wtPOT, and burn it to bring it back.`;
+  if (txCount === 0n && balance === 0n) return `No transactions and no ETH on ${chain} yet: make sure you hold this address's key.`;
   return null;
 }

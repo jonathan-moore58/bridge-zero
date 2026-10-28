@@ -305,6 +305,40 @@ export interface RollupClientFacts {
   latestImport: { number: number; hash: Hex; setId: number; txHash: Hex; block: number | null; settledAt: string | null; from: string } | null;
 }
 
+/** A lock auto-mint minted on a rollup, by its history (deployments/automint-<network>-<sender>.jsonl). */
+export interface RollupMint {
+  /** The lock's vault nonce. */
+  nonce: number;
+  /** What the mint pays, from the history's attempt line; null when it lacks one. */
+  amountNative: string | null;
+  recipient: Hex | null;
+  txHash: Hex;
+  /** The rollup block it was mined in. */
+  block: number;
+  gasUsed: number | null;
+  /** When auto-mint wrote its result (ISO, UTC), about when it was mined. */
+  at: string | null;
+  /** The V3 block its proofs were read at, as the attempt line names it. */
+  v3Block: { number: number; hash: Hex } | null;
+  /** How it minted, as the attempt line names it: "head" (importAndMint at V3's head) or "held" (mint(p) at a block the client held). */
+  path: string | null;
+  /** Auto-mint's key: the history's sender. */
+  sender: Hex;
+  from: string;
+}
+
+/** The bridge on a rollup, by the records: deployments/<network>-bridge.json and auto-mint's automint-<network>-<sender>.jsonl. */
+export interface RollupRuns {
+  network: "base-sepolia" | "arbitrum-sepolia";
+  /** deployments/<network>-bridge.json */
+  from: string;
+  minter: Hex;
+  /** Its BridgeMinter's burns, read as Sepolia's are (ReturnPath.burns); their releases are among ReturnPath.releases, by burn id. */
+  burns: BurnRecord[];
+  /** The locks auto-mint minted there, by nonce. */
+  mints: RollupMint[];
+}
+
 export interface Records {
   build: { commit: string | null; builtAt: string };
   verify: VerifyBlock | null;
@@ -324,6 +358,8 @@ export interface Records {
   lightClients: { mainnet: LightClientFacts; v3: LightClientFacts };
   /** The V3 light client on the rollups, each when deployments/ has its record. */
   rollups: { "base-sepolia": RollupClientFacts | null; "arbitrum-sepolia": RollupClientFacts | null };
+  /** The bridge's runs on the rollups, each when deployments/ has its bridge record: what the app serves without searching a rollup's logs. */
+  rollupRuns: { "base-sepolia": RollupRuns | null; "arbitrum-sepolia": RollupRuns | null };
   /** Every sender's history in deployments/, merged: `files` are their paths, `entries` their transactions, each once. */
   relay: { files: string[]; entries: RelayEntry[] };
   returnPath: ReturnPath;

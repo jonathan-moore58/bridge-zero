@@ -1,25 +1,33 @@
 // What the page checks before it asks the wallet for a lock or a burn: a dry run from the sender
-// (the contracts' own refusals, dust and all), eth_estimateGas with the margin, the fees, and what
-// the wallet checks up front against the balance. The deployed contracts and the endpoints come in
-// as arguments (sends.ts passes the build's), so that a node script runs these read-only against
-// the live chains, and node --test against fake ones.
+// (the contracts' own refusals, dust and all), eth_estimateGas with the margin, the fees, the L1
+// part of a rollup's transaction (../lib/l1.ts), and what the wallet checks up front against the
+// balance. The destination's contracts and endpoints come in as arguments (sends.ts passes the
+// transfer's: Sepolia's, Base Sepolia's or Arbitrum Sepolia's), so that a node script runs these
+// read-only against the live chains, and node --test against fake ones.
 
 import { decode, encodeCall, type AbiRegistry } from "../lib/abi.ts";
 import { formatUnits } from "../lib/format.ts";
 import type { Hex } from "../lib/hex.ts";
+import { feeBesides, limitWithL1, NO_L1, readL1, type L1Cost, type L1Kind } from "../lib/l1.ts";
 import { unreachable as reachedNoNode } from "../lib/proof/plan.ts";
 import { revertOf, type Revert } from "../lib/proof/sepolia.ts";
 import { AllFailed, NodeError, request, type Endpoint } from "../lib/rpc.ts";
 import { evmValue, keyControlled, sepoliaFees, upFront, v3Fees, withMargin, type Fees } from "./txmath.ts";
 
-/** The deployed contracts, the page's endpoints, and the contracts' errors, which name a revert. */
+/**
+ * A transfer's destination as the checks take it: its endpoints, its chain id and its name in the
+ * page's words, how it charges for L1, its BridgeMinter and wtPOT; the vault and V3's EVM endpoints;
+ * and the contracts' errors, which name a revert.
+ */
 export interface SendEnv {
-  sepolia: Endpoint[];
+  evm: Endpoint[];
+  chainId: bigint;
+  chain: string;
+  l1: L1Kind;
   v3Evm: Endpoint[];
   vault: Hex;
   minter: Hex;
   token: Hex;
-  sepoliaChainId: bigint;
   registry: AbiRegistry;
 }
 
@@ -76,14 +84,14 @@ export async function dry(endpoints: Endpoint[], method: "eth_call" | "eth_estim
   throw new AllFailed(method, problems);
 }
 
-/** Sepolia's fees now: the latest block's base fee and the node's priority fee (txmath.ts, sepoliaFees). */
-export async function sepoliaFeesNow(endpoints: Endpoint[]): Promise<Fees & { base: bigint }> {
+/** A destination's fees now: its latest block's base fee and the node's priority fee, by Sepolia's rule (txmath.ts, sepoliaFees). */
+export async function feesNow(endpoints: Endpoint[], chain = "Sepolia"): Promise<Fees & { base: bigint }> {
   const [block, tip] = await Promise.all([
     request<{ baseFeePerGas?: Hex } | null>(endpoints, "eth_getBlockByNumber", ["latest", false], { accept: (r) => r !== null }),
     request<Hex>(endpoints, "eth_maxPriorityFeePerGas", []),
   ]);
   const base = block.result?.baseFeePerGas;
-  if (!base) throw new Error("Sepolia's latest block carries no base fee");
+  if (!base) throw new Error(`${chain}'s latest block carries no base fee`);
   return { ...sepoliaFees(BigInt(base), BigInt(tip.result)), base: BigInt(base) };
 }
 
@@ -112,18 +120,23 @@ export interface Prepared {
   data: Hex;
   /** msg.value: on V3, the amount in 18 decimals. */
   value: bigint;
-  /** The gas limit the wallet is given: the estimate plus 10%. */
+  /** The gas limit the wallet is given: the estimate plus 10%, and on Arbitrum its L1 gas once more. */
   gas: bigint;
   fees: Fees;
   /** eth_estimateGas's answer. */
   estimate: bigint;
   /** What the dry run returned: the nonce the lock would take, or the burn's. Another send can take it first: the receipt's log decides. */
   returns: bigint;
-  /** What the wallet checks up front (the value, and the gas limit at the max fee), and the balance it checks it against. */
+  /**
+   * What the wallet checks up front (the value, and the gas limit at the max fee; and Base's L1 data fee,
+   * which the chain charges besides), and the balance it checks it against.
+   */
   need: bigint;
   balance: bigint;
-  /** The estimate at the price now: on V3 the whole cost, its storage deposit included. */
+  /** The estimate at the price now: on V3 the whole cost, its storage deposit included; on Base its L1 data fee too. */
   cost: bigint;
+  /** The L1 part of a burn on a rollup (../lib/l1.ts); none for a lock, and on Sepolia. */
+  l1: L1Cost;
   /**
    * The chain's latest block as the checks read it: the lock or the burn the wallet sends after them
    * is in a later block, which is where the sends look for its log. And the sender's next nonce
@@ -139,14 +152,15 @@ const problem = (title: string, text: string): Prep => ({ problem: { title, text
 const tokens = (wei: bigint, decimals: number): string => formatUnits(wei, decimals, 6);
 
 /**
- * The lock, checked before the wallet is asked: `lock(11155111, BridgeMinter, the sender)`, whose
- * chain, minter and recipient never come from what the visitor types. A dry run from the sender (the
- * vault's own refusals: dust, a zero amount), eth_estimateGas, which on V3 includes the storage
- * deposit, the fees (txmath.ts, v3Fees), and what the wallet checks up front against the balance.
+ * The lock, checked before the wallet is asked: `lock(the destination's chain id, its BridgeMinter,
+ * the sender)` (11155111 and 0x8287…cb9e for Sepolia), whose chain, minter and recipient never come
+ * from what the visitor types. A dry run from the sender (the vault's own refusals: dust, a zero
+ * amount), eth_estimateGas, which on V3 includes the storage deposit, the fees (txmath.ts, v3Fees),
+ * and what the wallet checks up front against the balance.
  */
 export async function prepareLock(env: SendEnv, from: Hex, amount: bigint): Promise<Prep> {
   const value = evmValue(amount);
-  const data = encodeCall("lock(uint256,address,address)", [env.sepoliaChainId, env.minter, from]);
+  const data = encodeCall("lock(uint256,address,address)", [env.chainId, env.minter, from]);
   const tx: DryTx = { from, to: env.vault, data, value };
   // A node that will not run a lock the sender cannot pay for says so in words, not as a revert:
   // "insufficient funds for gas * price + value" on V3.
@@ -178,45 +192,53 @@ export async function prepareLock(env: SendEnv, from: Hex, amount: bigint): Prom
       `Your wallet checks ${tokens(need, 18)} tPOT up front: the amount, and the gas limit at the max fee. On V3 the gas includes the storage deposit; about ${tokens(cost, 18)} tPOT of it is charged at today's price. You have ${tokens(balance, 18)}. Nothing was sent.`,
     );
   }
-  return { data, value, gas, fees, estimate, returns: word(call.result), need, balance, cost, head, nonce };
+  return { data, value, gas, fees, estimate, returns: word(call.result), need, balance, cost, l1: NO_L1, head, nonce };
 }
 
 /**
- * The burn, checked before the wallet is asked: `burn(amount, the sender)`, so the V3 recipient is
- * the sender's own 20-byte address. The sender has to be an address a key controls (the committee
- * pays a burn's sender on V3 only then), hold the wtPOT, the vault's outstanding tPOT has to cover
- * the release, the dry run has to pass, and the sender has to have the ETH for its gas.
+ * The burn, checked before the wallet is asked: `burn(amount, the sender)` on the destination's
+ * BridgeMinter, so the V3 recipient is the sender's own 20-byte address. The sender has to be an
+ * address a key controls (the committee pays a burn's sender on V3 only then), hold the wtPOT there,
+ * the vault's outstanding tPOT has to cover the release (one vault backs wtPOT on every chain), the
+ * dry run has to pass, and the sender has to have the ETH for its gas there, and on a rollup for its
+ * L1 part: Arbitrum's L1 gas goes into the gas limit once more, Base's L1 data fee into what the
+ * balance has to cover, as the relayer's burn sends them (README, "A burn on a rollup").
  */
 export async function prepareBurn(env: SendEnv, from: Hex, amount: bigint): Promise<Prep> {
   const data = encodeCall("burn(uint256,address)", [amount, from]);
   const tx: DryTx = { from, to: env.minter, data };
-  const [code, held, call, est, fees, eth, outstanding, head, nonce] = await Promise.all([
-    request<Hex>(env.sepolia, "eth_getCode", [from, "latest"]).then((a) => a.result),
-    request<Hex>(env.sepolia, "eth_call", [{ to: env.token, data: encodeCall("balanceOf(address)", [from]) }, "latest"]).then((a) => word(a.result)),
-    dry(env.sepolia, "eth_call", tx, env.registry),
-    dry(env.sepolia, "eth_estimateGas", tx, env.registry),
-    sepoliaFeesNow(env.sepolia),
-    balanceOn(env.sepolia, from),
+  const [code, held, call, est, fees, eth, outstanding, l1, head, nonce] = await Promise.all([
+    request<Hex>(env.evm, "eth_getCode", [from, "latest"]).then((a) => a.result),
+    request<Hex>(env.evm, "eth_call", [{ to: env.token, data: encodeCall("balanceOf(address)", [from]) }, "latest"]).then((a) => word(a.result)),
+    dry(env.evm, "eth_call", tx, env.registry),
+    dry(env.evm, "eth_estimateGas", tx, env.registry),
+    feesNow(env.evm, env.chain),
+    balanceOn(env.evm, from),
     request<Hex>(env.v3Evm, "eth_call", [{ to: env.vault, data: encodeCall("outstanding()") }, "latest"]).then((a) => word(a.result)),
-    headOf(env.sepolia),
-    nextNonce(env.sepolia, from),
+    readL1(env.evm, env.l1, env.minter, data),
+    headOf(env.evm),
+    nextNonce(env.evm, from),
   ]);
   if (!keyControlled(code)) {
     return problem(
-      "Not burned: your address is a contract on Sepolia",
+      `Not burned: your address is a contract on ${env.chain}`,
       "The committee pays a burn's sender on V3 only when a key controls that address there, and a smart wallet's address is no key's. Burn from an address a key controls (an EIP-7702 delegation is fine). Nothing was burned.",
     );
   }
-  if (held < amount) return problem("Not enough wtPOT", `You hold ${tokens(held, 14)} wtPOT on Sepolia. Nothing was burned.`);
+  if (held < amount) return problem("Not enough wtPOT", `You hold ${tokens(held, 14)} wtPOT on ${env.chain}. Nothing was burned.`);
   if (outstanding < amount) {
     return problem("The vault cannot release that much", `The vault on V3 holds ${tokens(outstanding, 14)} tPOT for wtPOT, less than this burn: the committee could not release it. Nothing was burned.`);
   }
-  if ("revert" in call) return problem("BridgeMinter would refuse this burn", `Its dry run on Sepolia reverted: ${call.revert.text}. Nothing was burned.`);
-  if ("revert" in est) return problem("BridgeMinter would refuse this burn", `Sepolia's gas estimate reverted: ${est.revert.text}. Nothing was burned.`);
+  if ("revert" in call) return problem("BridgeMinter would refuse this burn", `Its dry run on ${env.chain} reverted: ${call.revert.text}. Nothing was burned.`);
+  if ("revert" in est) return problem("BridgeMinter would refuse this burn", `${env.chain}'s gas estimate reverted: ${est.revert.text}. Nothing was burned.`);
   const estimate = BigInt(est.result);
-  const gas = withMargin(estimate);
-  const need = upFront(0n, gas, fees);
-  if (eth < need) return problem("Not enough Sepolia ETH", `The burn's gas needs up to ${tokens(need, 18)} ETH; you have ${tokens(eth, 18)}. Nothing was burned.`);
+  const gas = limitWithL1(withMargin(estimate), l1);
+  const besides = feeBesides(l1);
+  const need = upFront(0n, gas, fees) + besides;
+  if (eth < need) {
+    const what = besides > 0n ? "gas and its L1 data fee need" : "gas needs";
+    return problem(`Not enough ${env.chain} ETH`, `The burn's ${what} up to ${tokens(need, 18)} ETH; you have ${tokens(eth, 18)}. Nothing was burned.`);
+  }
   const { maxFeePerGas, maxPriorityFeePerGas } = fees;
-  return { data, value: 0n, gas, fees: { maxFeePerGas, maxPriorityFeePerGas }, estimate, returns: word(call.result), need, balance: eth, cost: estimate * (fees.base + maxPriorityFeePerGas), head, nonce };
+  return { data, value: 0n, gas, fees: { maxFeePerGas, maxPriorityFeePerGas }, estimate, returns: word(call.result), need, balance: eth, cost: estimate * (fees.base + maxPriorityFeePerGas) + besides, l1, head, nonce };
 }

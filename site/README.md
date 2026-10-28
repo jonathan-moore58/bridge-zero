@@ -35,6 +35,7 @@ as a check that passed. `build/records.ts` reads, at build time,
 |---|---|
 | `deployments/sepolia.json`, `sepolia-bridge.json`, `v3-testnet.json` | addresses, the mints (the newest one is the hero's card), the six reverted copies and their revert data, the locks, the vault, the burns, the committee's releases and funding |
 | `deployments/relay-sepolia-*.jsonl` | every sender's history, merged: each client's latest run (one sender's) and newest import (with the mints' bundle blocks), the fallback for its state |
+| `deployments/base-sepolia-bridge.json`, `arbitrum-sepolia-bridge.json`, `automint-<rollup>-*.jsonl` | each rollup's burns and the locks auto-mint minted there: the bridge app serves them (lock 4's and lock 5's mints, burn 0 on each rollup and its release) without searching the rollup's logs, and the Network page's recorded wtPOT supply there |
 | `deployments/automint-sepolia-*.jsonl` | auto-mint's history: the locks it minted, counted in the totals with the amount and recipient the V3 record holds |
 | `fixtures/v3-testnet-hero/`, `fixtures/v3-testnet-lock1/` | the bundles lock 0 and lock 1 were minted with: header, precommits, signers hint, proofs |
 | `fixtures/mainnet/finality-proof-head.json`, `fixtures/probe/*.json` | the old mainnet's 10 keys (fallback for `authorities(setId)`), block times, sudo keys |
@@ -68,8 +69,8 @@ from the block (`chain_getBlock`), Sepolia's from the mint receipt's logs.
 | V3 testnet | `https://test-evm-rpc-v3.portaldot.dev` | the vault: `outstanding`, `commitments(n)`, slot 1, the `Locked` logs (each in the one block the records put it in), `released(burnId)` |
 | V3 testnet | `https://test-node-v3.portaldot.dev`, then `wss://` | the finalized head, `Grandpa.CurrentSetId`, and lock 1's block |
 | Old mainnet | `wss://mainnet.portaldot.io` | the head and set, over WebSocket: the node serves no HTTP |
-| Base Sepolia | `https://base-sepolia-rpc.publicnode.com`, then `https://sepolia.base.org` | the bridge app's Network page: the V3 light client's set, latest header, threshold, pause flags and its set's keys, and its `HeaderImported` log for a block newer than the records, searched back from the head in 50,000-block calls on the public node (`sepolia.base.org` takes 200 blocks a call, so it is not asked for logs) |
-| Arbitrum Sepolia | `https://sepolia-rollup.arbitrum.io/rpc`, then `https://arbitrum-sepolia-rpc.publicnode.com` | the same, for the V3 light client on Arbitrum Sepolia; Arbitrum's own node searches the logs since the records in one call, the public node in 50,000-block calls |
+| Base Sepolia | `https://base-sepolia-rpc.publicnode.com`, then `https://sepolia.base.org` | the bridge app's Network page and its card's status: the V3 light client's set, latest header, threshold, pause flags and its set's keys, and its `HeaderImported` log for a block newer than the records, searched back from the head in 50,000-block calls on the public node (`sepolia.base.org` takes 200 blocks a call, so it is not asked for logs); wtPOT's `totalSupply` and BridgeMinter's `burnCount` for the vault card; and the bridge to and from Base Sepolia: wtPOT and ETH balances, the mint's plan and dry runs, the burn's checks, `GasPriceOracle`'s bound of the L1 data fee, receipts, `used(nonce)`, and BridgeMinter's `Minted` and `BurnRequested` logs, in the same calls, back from the head or on from the block a log follows (a lock's mint, a burn the wallet sent), at most 24 a search: a log older than they reach is said to be, with its explorer's link, and the records' runs are served without a search |
+| Arbitrum Sepolia | `https://sepolia-rollup.arbitrum.io/rpc`, then `https://arbitrum-sepolia-rpc.publicnode.com` | the same, for the V3 light client on Arbitrum Sepolia and the bridge to and from it, with `NodeInterface`'s L1 gas in place of Base's L1 fee; Arbitrum's own node searches the logs since the records in one call, the public node in 50,000-block calls |
 
 Each answered a JSON-RPC call from a browser page on `http://localhost:4173` (Oct 20, 2026), and
 the HTTP endpoints send `Access-Control-Allow-Origin` for any origin. The rollups' four answered
@@ -120,9 +121,13 @@ Polkadot wallet by its owner's own mark where the owner's terms allow it, the fi
 `src/app/marks/`, unmodified; `NOTICE.md` gives each one's source and terms, and why Base's,
 Arbitrum's and SubWallet's are held back until their owners approve (the app shows the chain's
 initial, or the generic wallet icon, instead). Its destinations are one config, `src/app/dests.ts`:
-Sepolia, where it bridges, and Base Sepolia and Arbitrum Sepolia, where the V3 light client is live
-and BridgeMinter and wtPOT are deployed, listed and not open in the app yet: a destination can be
-picked only once the app's lock, mint and burn run to it.
+Sepolia, Base Sepolia and Arbitrum Sepolia, each with its V3 light client, BridgeMinter and wtPOT,
+RPCs, block time, L1 rule, fast confirmations, finality and recorded costs. The app's lock, mint and
+burn run to all three since Oct 28, as auto-mint and the release watcher serve them; a destination
+can be picked only once they do (`SENDS`). Each transfer keeps its destination in the browser's
+journal, and one stored without it reads as Sepolia's. A lock its destination says is minted
+(`used(nonce)`) by a transaction older than the rollup's nodes search is done, its transaction
+unnamed (`mintBeyond`), rather than looked for again.
 
 ## Layout
 

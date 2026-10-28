@@ -1,10 +1,11 @@
 // The visitor's Polkadot wallet, beside the Ethereum one (wallet.ts): the wallets this browser has
 // in window.injectedWeb3, the one the visitor enabled, its accounts, the account picked, its address
 // on V3 (what the vault records as a lock's sender) and its tPOT. Either wallet, or both, can be
-// connected: the Polkadot one signs the lock, the Ethereum one can fill the Sepolia address and send
-// a mint. The library that builds and sends the lock (./substrate/chain.ts) is loaded on first use.
+// connected: the Polkadot one signs the lock, the Ethereum one can fill the destination's address
+// and send a mint. The library that builds and sends the lock (./substrate/chain.ts) is loaded on
+// first use.
 
-import { MINTER, SEPOLIA_CHAIN_ID, V3_EVM, V3_SUBSTRATE_WS, VAULT } from "../lib/chains.ts";
+import { V3_EVM, V3_SUBSTRATE_WS, VAULT } from "../lib/chains.ts";
 import type { Hex } from "../lib/hex.ts";
 import { registry } from "../lib/live.ts";
 import { revertOf } from "../lib/proof/sepolia.ts";
@@ -194,8 +195,6 @@ export async function loadChain(): Promise<V3Chain> {
   return m.v3Chain({
     node: V3_SUBSTRATE_WS.url,
     vault: VAULT,
-    minter: MINTER,
-    sepoliaChainId: SEPOLIA_CHAIN_ID,
     evmChainId,
     revertText: (data) => revertOf(data, "reverted", registry).text,
   });

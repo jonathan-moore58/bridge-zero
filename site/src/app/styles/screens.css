@@ -3054,6 +3054,13 @@ a.status:active {
   }
 }
 
+/* Small phones: the wrong-network button keeps its alert and the chain's mark beside the testnet badge; its label says the rest. */
+@media (max-width: 400px) {
+  .wallet--wrong .wallet__text {
+    display: none;
+  }
+}
+
 /* ---------------------------------------------------------------- review sheet */
 
 .review .modal__foot .check {
@@ -4216,6 +4223,37 @@ body.has-sheet .dev {
 @media (max-width: 480px) {
   .txcard__long {
     display: none;
+  }
+}
+
+/* A rollup's transfer is titled "Arbitrum Sepolia → V3", and on small phones by its chain button's first word, "Arbitrum → V3", beside the status chip. */
+.txcard__tight {
+  display: none;
+}
+
+@media (max-width: 400px) {
+  .txcard__wide {
+    display: none;
+  }
+
+  .txcard__tight {
+    display: inline;
+  }
+}
+
+/* A rollup receipt's route and its rows' chain names the same way: "Arbitrum Sepolia → Portaldot V3" and
+   "Arbitrum Sepolia #…", on small phones "Arbitrum → V3" and "Arbitrum #…". */
+.rc__tight {
+  display: none;
+}
+
+@media (max-width: 400px) {
+  .rc__wide {
+    display: none;
+  }
+
+  .rc__tight {
+    display: inline;
   }
 }
 

@@ -1,34 +1,41 @@
-// The app's sends, and the following of what they start. The way in: the lock on V3 (a dry run, the
-// gas and fees worked out here, then the wallet), its receipt and Locked log checked, V3's finality
-// of its block, the mint planned and checked in this browser by the proof core (../lib/proof), then
-// the mint on Sepolia, followed by used(nonce) and the Minted log, so that a mint anyone sends (the
-// relayer's operator, another tab, the wallet's own speed-up) completes the transfer. When the light
-// client is behind V3's validator set, the plan imports the changes itself (a self-relay): nobody
-// waits for the relayer. The way back: the burn on Sepolia, its BurnRequested log checked, then its
-// confirmations, Sepolia's finality, the committee's approvals and released(burnId) on V3.
+// The app's sends, and the following of what they start, to and from each destination of ./dests.ts
+// (Sepolia, Base Sepolia, Arbitrum Sepolia). The way in: the lock on V3 (a dry run, the gas and fees
+// worked out here, then the wallet), naming the destination's chain id and minter, its receipt and
+// Locked log checked, V3's finality of its block, the mint planned and checked in this browser by
+// the proof core (../lib/proof) against the destination's light client and minter, then the mint
+// there, followed by used(nonce) and the Minted log, so that a mint anyone sends (auto-mint, another
+// tab, the wallet's own speed-up) completes the transfer. When the light client is behind V3's
+// validator set, the plan imports the changes itself (a self-relay): nobody waits for the relayer.
+// The way back: the burn on the destination, its BurnRequested log checked, then its confirmations,
+// its chain's finality, the committee's approvals and released(burnId) on V3. On a rollup each
+// transaction carries its L1 part (../lib/l1.ts), counted before the wallet is asked.
 //
 // Every transfer is kept in this browser's journal (journal.ts) and read again from the chains when
 // the page loads: the journal says what to look for, the chains say what happened. One tab follows
 // each transfer (tabs.ts): another tab shows it as the journal has it, and takes it over when that
 // tab closes. A transfer this tab starts asks the wallet for each next step as soon as it can; one
 // read back after a reload waits for the visitor's click. The checks before each prompt are
-// preflight.ts's and the proof core's dry runs. The wallet signs; nothing here holds a key.
+// preflight.ts's and the proof core's dry runs. The wallet signs, on the chain each send is for
+// (facts.ts, sendChain); nothing here holds a key.
 
 import { decode, encodeCall } from "../lib/abi.ts";
-import { MINTER, SEPOLIA, SEPOLIA_CHAIN_ID, SEPOLIA_LOGS, TOKEN, V3_CHAIN_ID, V3_EVM, VAULT } from "../lib/chains.ts";
+import { SEPOLIA, SEPOLIA_LOGS, V3_CHAIN_ID, V3_EVM, VAULT } from "../lib/chains.ts";
 import { blake2b256, eventTopic } from "../lib/hashes.ts";
 import { bytesToHex, hexToBytes, type Hex } from "../lib/hex.ts";
+import { feeBesides } from "../lib/l1.ts";
 import { registry } from "../lib/live.ts";
 import { proofEnv } from "../lib/proof/env.ts";
-import { PlanError, planMint, type Check, type LockRef, type MintPlan } from "../lib/proof/plan.ts";
+import { PlanError, planMint, type Check, type LockRef, type MintPlan, type ProofEnv } from "../lib/proof/plan.ts";
 import { V3Reader } from "../lib/proof/v3.ts";
 import { request, type Endpoint } from "../lib/rpc.ts";
 import { decodeTimestampInherent } from "../lib/scale.ts";
 import { connectThen } from "./connect.tsx";
+import { deployed, destOf, type Dest, type DestKey } from "./dests.ts";
+import { sendChain, type ChainKey } from "./facts.ts";
 import { AUTO_MINT, autoMints } from "./handoff.ts";
 import { decodeJournal, encodeJournal, JOURNAL_KEY, mergeJournal } from "./journal.ts";
 import { loadChain, polka, polkaSigner, readPolkaBalance } from "./polkadot.ts";
-import { balanceOn, errorText, nextNonce, prepareBurn, prepareLock, sepoliaFeesNow, unreachable, type SendEnv } from "./preflight.ts";
+import { balanceOn, errorText, feesNow, nextNonce, prepareBurn, prepareLock, unreachable, type SendEnv } from "./preflight.ts";
 import { senderOf as reviveSenderOf, shortSs58 } from "./substrate/account.ts";
 import type { Found, V3Chain } from "./substrate/chain.ts";
 import type { SendResult } from "./substrate/send.ts";
@@ -39,10 +46,11 @@ import {
   findLock,
   findMint,
   followerOf,
+  headsOn,
   isDone,
+  logsOn,
   nonceOf,
   putTransfer,
-  sepoliaHeads,
   transferActions,
   transfers,
   updateTransfer,
@@ -65,10 +73,10 @@ import { blockTimeOn, problemOf, readBalances, receiptOn, sendOn, switchTo, wall
 const LOCKED = eventTopic("Locked(uint256,address,address,uint256,address,uint256,bytes32)");
 const BURN_REQUESTED = eventTopic("BurnRequested(uint256,address,address,uint256,bytes32)");
 
-/** V3 makes a block every 6 s, Sepolia every 12 s: receipts and heads are read about twice a block. */
+/** V3 makes a block every 6 s, Sepolia every 12 s: receipts and heads are read about twice a block (a rollup's as often as Sepolia's). */
 const V3_POLL = 3_000;
 const SEPOLIA_POLL = 4_000;
-/** released(burnId) is read once a V3 block, Sepolia's heads once a Sepolia block. */
+/** released(burnId) is read once a V3 block, the destination's heads once a Sepolia block. */
 const RELEASE_POLL = 6_000;
 const HEADS_POLL = 12_000;
 /** A plan this fresh is sent as it is when no wallet prompt came in between. */
@@ -87,11 +95,40 @@ const sameAddress = (a: string | null | undefined, b: string): boolean => !!a &&
 const tokens = (units: bigint, decimals: number): string => fmt(Number(units) / 10 ** decimals, 6);
 const flag = (data: Hex): boolean => decode("bool", data)[0] === true;
 
-let sendEnvCache: SendEnv | null = null;
+/** A destination's endpoints for state reads: Sepolia's, as the page always read it, or a rollup's RPCs. */
+const evmOf = (d: Dest): Endpoint[] => (d.key === "sepolia" ? SEPOLIA : [...d.rpcs]);
 
-/** BridgeMinter, the vault and wtPOT, and the page's endpoints, for preflight.ts. */
-const sendEnv = (): SendEnv =>
-  (sendEnvCache ??= { sepolia: SEPOLIA, v3Evm: V3_EVM, vault: VAULT, minter: MINTER, token: TOKEN, sepoliaChainId: SEPOLIA_CHAIN_ID, registry });
+const sendEnvs = new Map<DestKey, SendEnv>();
+
+/** A destination's BridgeMinter and wtPOT, its endpoints and L1 rule, and the vault, for preflight.ts. */
+function sendEnv(key: DestKey): SendEnv {
+  let e = sendEnvs.get(key);
+  if (!e) {
+    const d = destOf(key);
+    const { minter, token } = deployed(d);
+    e = { evm: evmOf(d), chainId: BigInt(d.chainId), chain: d.short, l1: d.l1, v3Evm: V3_EVM, vault: VAULT, minter, token, registry };
+    sendEnvs.set(key, e);
+  }
+  return e;
+}
+
+const planEnvs = new Map<DestKey, ProofEnv>();
+
+/**
+ * The proof core's contracts and endpoints for a destination: Sepolia's from the build's records
+ * (../lib/proof/env.ts), as before; a rollup's its own RPCs, V3 light client, minter, chain id and
+ * L1 rule, with the same vault, V3 node and Multicall3.
+ */
+function planEnv(key: DestKey): ProofEnv {
+  if (key === "sepolia") return proofEnv();
+  let e = planEnvs.get(key);
+  if (!e) {
+    const d = destOf(key);
+    e = { ...proofEnv(), sepolia: [...d.rpcs], lightClient: d.lightClient, minter: deployed(d).minter, sepoliaChainId: BigInt(d.chainId), l1: d.l1, chain: d.short };
+    planEnvs.set(key, e);
+  }
+  return e;
+}
 
 /** The connected address, lower case, or null. */
 function me(): Hex | null {
@@ -183,12 +220,15 @@ async function patiently<T>(job: Job, id: string, chain: string, read: () => Pro
   return null;
 }
 
-const usedOnSepolia = async (nonce: number): Promise<boolean> =>
-  flag((await request<Hex>(SEPOLIA, "eth_call", [{ to: MINTER, data: encodeCall("used(uint256)", [BigInt(nonce)]) }, "latest"])).result);
+/** used(nonce) on the destination's BridgeMinter: the lock is minted there, by whoever sent it. */
+const usedOn = async (key: DestKey, nonce: number): Promise<boolean> => {
+  const d = destOf(key);
+  return flag((await request<Hex>(evmOf(d), "eth_call", [{ to: deployed(d).minter, data: encodeCall("used(uint256)", [BigInt(nonce)]) }, "latest"])).result);
+};
 
-/** A wallet that did not send: declined, or another reason in its own words. Nothing was sent either way. */
-function walletRefused(id: string, e: unknown, what: "Lock" | "Burn"): false {
-  const p = problemOf(e);
+/** A wallet that did not send on `chain`: declined, or another reason in its own words. Nothing was sent either way. */
+function walletRefused(id: string, e: unknown, what: "Lock" | "Burn", chain: ChainKey): false {
+  const p = problemOf(e, chain);
   if (p.kind === "rejected") fail(id, "rejected", null, null);
   else fail(id, "refused", `${what} not sent`, p.text);
   return false;
@@ -325,24 +365,25 @@ function reviewedElse(reviewed: string, now: Hex, what: string): boolean {
   return true;
 }
 
-/** The review's Confirm on the way in: a new transfer, its screen, and the lock asked for, for `reviewed`, the address the review showed. */
-export function startLock(amountText: string, reviewed: string): void {
+/** The review's Confirm on the way in: a new transfer to `dest`, its screen, and the lock asked for, for `reviewed`, the address the review showed. */
+export function startLock(amountText: string, reviewed: string, dest: DestKey): void {
   const amount = parseAmount(amountText);
   if (amount === null) return toast("revert", "Not an amount the vault takes", "Up to 14 decimals, more than 0.");
   const from = me();
-  if (!from) return connectThen(() => startLock(amountText, reviewed));
+  if (!from) return connectThen(() => startLock(amountText, reviewed, dest), "send", dest);
   if (reviewedElse(reviewed, from, "lock")) return;
   const id = newId("in");
   own(id);
-  putTransfer(newLock(id, amount, { kind: "evm", address: from }, from));
+  putTransfer(newLock(id, dest, amount, { kind: "evm", address: from }, from));
   go(`#/tx/${id}`);
   runFor(id, (job) => lockFlow(job, id, true));
 }
 
-/** A lock about to be asked for: nothing on chain yet. */
-function newLock(id: string, amount: bigint, sender: LockTransfer["sender"], recipient: Hex): LockTransfer {
+/** A lock to `dest` about to be asked for: nothing on chain yet. */
+function newLock(id: string, dest: DestKey, amount: bigint, sender: LockTransfer["sender"], recipient: Hex): LockTransfer {
   return {
     id,
+    dest,
     dir: "in",
     amount,
     recipient,
@@ -368,9 +409,9 @@ function newLock(id: string, amount: bigint, sender: LockTransfer["sender"], rec
 
 /**
  * The review's Confirm for a lock from a Polkadot wallet: a new transfer, its screen, and the lock
- * asked for from `reviewed`, the account the review showed, for `recipient` on Sepolia.
+ * asked for from `reviewed`, the account the review showed, for `recipient` on `dest`.
  */
-export function startSubstrateLock(amountText: string, reviewed: string, recipient: Hex): void {
+export function startSubstrateLock(amountText: string, reviewed: string, recipient: Hex, dest: DestKey): void {
   const amount = parseAmount(amountText);
   if (amount === null) return toast("revert", "Not an amount the vault takes", "Up to 14 decimals, more than 0.");
   const p = polka.get();
@@ -383,7 +424,7 @@ export function startSubstrateLock(amountText: string, reviewed: string, recipie
   if (!h160) return toast("revert", "Not an account V3 knows", `${shortSs58(account.address)} does not read as a Substrate account.`);
   const id = newId("in");
   own(id);
-  putTransfer(newLock(id, amount, { kind: "substrate", ss58: account.address, h160, wallet: p.wallet.key, walletName: p.wallet.name }, recipient.toLowerCase() as Hex));
+  putTransfer(newLock(id, dest, amount, { kind: "substrate", ss58: account.address, h160, wallet: p.wallet.key, walletName: p.wallet.name }, recipient.toLowerCase() as Hex));
   go(`#/tx/${id}`);
   runFor(id, (job) => lockFlow(job, id, true));
 }
@@ -404,7 +445,7 @@ async function lockFlow(job: Job, id: string, auto: boolean): Promise<void> {
   if (!t || job.stop || t.lock.stage !== "mined" || t.nonce === null || isDone(t)) return;
   if (t.mint?.stage === "sent") return followMint(job, id, auto);
   if (!t.finality && !(await waitFinality(job, id))) return;
-  // A lock auto-mint does not take (below its minimum, or from a Polkadot wallet: handoff.ts) is the visitor's to mint, as soon as its plan is ready.
+  // A lock auto-mint does not take (below its minimum: handoff.ts) is the visitor's to mint, as soon as its plan is ready.
   if (autoMints(t.amount, t.sender.kind) && !selfMint.has(id)) {
     // Auto-mint sends this mint: the plan runs once, as a check this browser makes (no wallet), unless
     // it passed before a reload; then the page waits for the mint, and offers the visitor's own late.
@@ -421,9 +462,9 @@ async function lockFlow(job: Job, id: string, auto: boolean): Promise<void> {
 }
 
 /**
- * Auto-mint's mint awaited: used(nonce) on Sepolia every 10 s (a mint anyone sends completes the
- * transfer, findMint names who), and every 30 s whether auto-mint's key has a transaction Sepolia
- * has not mined (the visitor's own mint is then offered later: handoff.ts). True when the visitor
+ * Auto-mint's mint awaited: used(nonce) on the destination every 10 s (a mint anyone sends completes
+ * the transfer, findMint names who), and every 30 s whether auto-mint's key has a transaction there
+ * not mined yet (the visitor's own mint is then offered later: handoff.ts). True when the visitor
  * asked to mint it themselves.
  */
 async function awaitAutoMint(job: Job, id: string): Promise<boolean> {
@@ -433,7 +474,8 @@ async function awaitAutoMint(job: Job, id: string): Promise<boolean> {
     if (!t || t.nonce === null || isDone(t) || t.failure) return false;
     if (selfMint.has(id)) return true;
     const nonce = t.nonce;
-    const used = await patiently(job, id, "Sepolia", () => usedOnSepolia(nonce));
+    const d = destOf(t.dest);
+    const used = await patiently(job, id, d.short, () => usedOn(d.key, nonce));
     if (!used) return false;
     if (used.value) {
       await completeMinted(job, id);
@@ -441,7 +483,7 @@ async function awaitAutoMint(job: Job, id: string): Promise<boolean> {
     }
     if (Date.now() - pendingAt >= 30_000) {
       pendingAt = Date.now();
-      const pending = await pendingFrom(SEPOLIA, AUTO_MINT.key);
+      const pending = await pendingFrom(evmOf(d), AUTO_MINT.key);
       if (lockT(id)?.autoPending !== pending) patchIn(id, { autoPending: pending });
     }
     // In short steps, so that a click on "Mint it yourself" is taken at once.
@@ -458,16 +500,17 @@ async function sendLock(job: Job, id: string): Promise<boolean> {
     fail(id, "refused", "Lock not sent", `Connect ${short(from)}, the address this lock is for, then try again.`);
     return false;
   }
-  if (!walletOn("v3")) {
+  const chain = sendChain("lock", t.dest);
+  if (!walletOn(chain)) {
     say(id, { text: "Switch your wallet to Portaldot V3 testnet", wallet: true });
     try {
-      await switchTo("v3");
+      await switchTo(chain);
     } catch (e) {
-      return walletRefused(id, e, "Lock");
+      return walletRefused(id, e, "Lock", chain);
     }
   }
   say(id, { text: "Checking the lock: a dry run on V3, and its gas", wallet: false });
-  const got = await patiently(job, id, "Portaldot V3", () => prepareLock(sendEnv(), from, t.amount));
+  const got = await patiently(job, id, "Portaldot V3", () => prepareLock(sendEnv(t.dest), from, t.amount));
   if (!got || job.stop) return false;
   const prep = got.value;
   if ("problem" in prep) {
@@ -479,13 +522,24 @@ async function sendLock(job: Job, id: string): Promise<boolean> {
   patchIn(id, (x) => ({ note: null, fromBlock: prep.head === null ? x.fromBlock : prep.head + 1 }));
   let hash: Hex;
   try {
-    hash = await sendOn("v3", { from, to: VAULT, data: prep.data, value: prep.value, gas: prep.gas, ...prep.fees });
+    hash = await sendOn(chain, { from, to: VAULT, data: prep.data, value: prep.value, gas: prep.gas, ...prep.fees });
   } catch (e) {
-    return walletRefused(id, e, "Lock");
+    return walletRefused(id, e, "Lock", chain);
   }
   patchIn(id, { lock: { stage: "sent", hash, sentAt: Date.now(), ...(prep.nonce === null ? {} : { by: { from, nonce: prep.nonce } }) } });
   return true;
 }
+
+/** What a lock of `t` has to show on V3: its destination's chain id and minter, its sender, its recipient and its amount (txmath.ts, lockedOf). */
+const lockExpect = (t: LockTransfer, sender: Hex) => ({
+  vault: VAULT,
+  v3ChainId: V3_CHAIN_ID,
+  dstChainId: BigInt(destOf(t.dest).chainId),
+  minter: deployed(destOf(t.dest)).minter,
+  sender,
+  recipient: t.recipient,
+  amount: t.amount,
+});
 
 /**
  * The lock's receipt, then its Locked log checked and its commitment recomputed: the nonce comes from
@@ -534,7 +588,7 @@ async function followLock(job: Job, id: string): Promise<boolean> {
       fail(id, "reverted", "The lock reverted on V3", "Your tPOT was not taken: only the fee was paid. Try again, or change the amount.");
       return false;
     }
-    const check = lockedOf(r.logs, registry, { vault: VAULT, v3ChainId: V3_CHAIN_ID, sepoliaChainId: SEPOLIA_CHAIN_ID, minter: MINTER, sender: t.recipient, recipient: t.recipient, amount: t.amount });
+    const check = lockedOf(r.logs, registry, lockExpect(t, t.recipient));
     if (!check.ok) {
       fail(id, "stopped", "The lock's receipt did not check out", `In V3 block #${r.block}, ${check.why}. Look at the transaction before anything else is sent.`);
       return false;
@@ -566,12 +620,13 @@ async function sendSubstrateLock(job: Job, id: string): Promise<boolean> {
     return false;
   }
   say(id, { text: "Checking the lock: a dry run on V3, its storage deposit and its fee", wallet: false });
+  const d = destOf(t.dest);
   let result: SendResult;
   try {
     // The library and the send are the page's lazy chunk: fetched once a Polkadot wallet is connected.
     const [chain, { sendLockOnce }] = await Promise.all([loadChain(), import("./substrate/send.ts")]);
     if (job.stop) return false;
-    result = await sendLockOnce(id, chain, signer, { origin: s.ss58, amount: t.amount, recipient: t.recipient }, {
+    result = await sendLockOnce(id, chain, signer, { origin: s.ss58, amount: t.amount, recipient: t.recipient, to: { chainId: BigInt(d.chainId), minter: deployed(d).minter } }, {
       checking: () => undefined,
       asking: (ext) => patchIn(id, { ext, fromBlock: ext.from, note: { text: `Confirm the lock in ${s.walletName}`, wallet: true } }),
       signed: (x) => patchIn(id, { ext: x.ext, lock: { stage: "sent", hash: x.hash, sentAt: Date.now() }, note: null }),
@@ -704,7 +759,7 @@ async function settleSubstrateLock(job: Job, id: string, chain: V3Chain, found: 
     fail(id, "reverted", "The lock failed on V3", `V3 ran it in block #${found.block} and it failed: ${out.value.error}. Your tPOT was not locked; only the fee was paid. Try again, or change the amount.`);
     return false;
   }
-  const check = lockedOf(out.value.logs, registry, { vault: VAULT, v3ChainId: V3_CHAIN_ID, sepoliaChainId: SEPOLIA_CHAIN_ID, minter: MINTER, sender: t.sender.h160, recipient: t.recipient, amount: t.amount });
+  const check = lockedOf(out.value.logs, registry, lockExpect(t, t.sender.h160));
   if (!check.ok) {
     fail(id, "stopped", "The lock's events did not check out", `In V3 block #${found.block}, ${check.why}. Look at the extrinsic before anything else is sent.`);
     return false;
@@ -783,14 +838,14 @@ function applyPlan(id: string, p: MintPlan): void {
   });
 }
 
-/** One plan of the mint, with the sender's address for its dry run; asked again while a chain does not answer. */
+/** One plan of the mint on the lock's destination, with the sender's address for its dry run; asked again while a chain does not answer. */
 async function planFor(job: Job, id: string): Promise<MintPlan | null> {
   const t = lockT(id);
   const lock = t?.lock;
   if (!t || t.nonce === null || t.commitment === null || lock?.stage !== "mined") return null;
   const ref: LockRef = { nonce: BigInt(t.nonce), block: lock.block, amount: t.amount, recipient: t.recipient, commitment: t.commitment };
   const from = me() ?? undefined;
-  const got = await patiently(job, id, "Sepolia or Portaldot V3", () => planMint(ref, proofEnv(), { ...(from ? { from } : {}), onCheck: (c) => setCheck(id, c) }));
+  const got = await patiently(job, id, `${destOf(t.dest).short} or Portaldot V3`, () => planMint(ref, planEnv(t.dest), { ...(from ? { from } : {}), onCheck: (c) => setCheck(id, c) }));
   return got?.value ?? null;
 }
 
@@ -818,7 +873,7 @@ async function readyPlan(job: Job, id: string): Promise<MintPlan | null> {
         return null;
       case "failed":
         patchIn(id, { proof: { checks: checksOf(plan.checks), builtAt: null } });
-        fail(id, "proof", null, `${plan.why} Nothing was sent to Sepolia. Your tPOT stays locked for you; the lock does not expire.`);
+        fail(id, "proof", null, `${plan.why} Nothing was sent to ${destOf(t.dest).short}. Your tPOT stays locked for you; the lock does not expire.`);
         return null;
       case "moved":
         if (++moved > 6) {
@@ -838,29 +893,32 @@ async function readyPlan(job: Job, id: string): Promise<MintPlan | null> {
 }
 
 /**
- * The mint asked for in the wallet: on Sepolia, from the plan made right before the prompt (the
- * one in hand when it is that fresh and no other prompt came in between), with its gas limit and
- * Sepolia's fees, then followed. Any address can send it: it pays the lock's recipient.
+ * The mint asked for in the wallet: on the lock's destination, from the plan made right before the
+ * prompt (the one in hand when it is that fresh and no other prompt came in between), with its gas
+ * limit (Arbitrum's L1 gas in it) and the chain's fees, then followed. Any address can send it: it
+ * pays the lock's recipient. The balance it needs counts Base's L1 data fee too.
  */
 async function signMint(job: Job, id: string, fresh: MintPlan | null): Promise<void> {
+  const d = destOf(lockT(id)?.dest ?? "sepolia");
   if (!me()) {
     patchIn(id, { mint: null, note: null });
     toast("info", "Connect an Ethereum wallet to mint", "Any address can send the mint: it pays the lock's recipient, whoever sends it.");
-    connectThen(() => sign(id), "mint");
+    connectThen(() => sign(id), "mint", d.key);
     return;
   }
   let plan = fresh;
-  if (!walletOn("sepolia")) {
-    say(id, { text: "Switch your wallet to Ethereum Sepolia", wallet: true });
+  const chain = sendChain("mint", d.key);
+  if (!walletOn(chain)) {
+    say(id, { text: `Switch your wallet to ${d.full}`, wallet: true });
     try {
-      await switchTo("sepolia");
+      await switchTo(chain);
     } catch (e) {
-      return mintNotSent(id, e);
+      return mintNotSent(id, e, chain);
     }
     plan = null;
   }
   if (!plan || Date.now() - plan.builtAt > FRESH_PLAN) {
-    say(id, { text: "Checking the mint again: the proof, and a dry run on Sepolia", wallet: false });
+    say(id, { text: `Checking the mint again: the proof, and a dry run on ${d.short}`, wallet: false });
     plan = await readyPlan(job, id);
     if (!plan) return;
   }
@@ -868,14 +926,17 @@ async function signMint(job: Job, id: string, fresh: MintPlan | null): Promise<v
   const from = me();
   if (!tx || tx.gasLimit === null || !from) return say(id, null);
   const gas = tx.gasLimit;
-  const got = await patiently(job, id, "Sepolia", () => Promise.all([sepoliaFeesNow(SEPOLIA), balanceOn(SEPOLIA, from), nextNonce(SEPOLIA, from)]));
+  const evm = evmOf(d);
+  const got = await patiently(job, id, d.short, () => Promise.all([feesNow(evm, d.short), balanceOn(evm, from), nextNonce(evm, from)]));
   if (!got) return;
   const [{ maxFeePerGas, maxPriorityFeePerGas }, eth, next] = got.value;
   const fees = { maxFeePerGas, maxPriorityFeePerGas };
-  const need = upFront(0n, gas, fees);
+  const besides = feeBesides(tx.l1);
+  const need = upFront(0n, gas, fees) + besides;
   if (eth < need) {
     patchIn(id, { mint: null });
-    fail(id, "refused", "Not enough Sepolia ETH", `This transaction's gas needs up to ${tokens(need, 18)} ETH, and ${short(from)} has ${tokens(eth, 18)}. Your tPOT stays locked for you; the lock does not expire.`);
+    const of = besides > 0n ? "gas and its L1 data fee need" : "gas needs";
+    fail(id, "refused", `Not enough ${d.short} ETH`, `This transaction's ${of} up to ${tokens(need, 18)} ETH, and ${short(from)} has ${tokens(eth, 18)}. Your tPOT stays locked for you; the lock does not expire.`);
     return;
   }
   const twin = mintElsewhere(id);
@@ -888,9 +949,9 @@ async function signMint(job: Job, id: string, fresh: MintPlan | null): Promise<v
   patchIn(id, { mint: { stage: "asking" }, note: null });
   let hash: Hex;
   try {
-    hash = await sendOn("sepolia", { from, to: tx.to, data: tx.data, gas, ...fees });
+    hash = await sendOn(chain, { from, to: tx.to, data: tx.data, gas, ...fees });
   } catch (e) {
-    return mintNotSent(id, e);
+    return mintNotSent(id, e, chain);
   }
   patchIn(id, { mint: { stage: "sent", hash, sentAt: Date.now(), ...(next === null ? {} : { by: { from, nonce: next } }) } });
   await followMint(job, id, true);
@@ -911,8 +972,8 @@ function mintElsewhere(id: string): "asking" | "sent" | null {
   return null;
 }
 
-function mintNotSent(id: string, e: unknown): void {
-  const p = problemOf(e);
+function mintNotSent(id: string, e: unknown, chain: ChainKey): void {
+  const p = problemOf(e, chain);
   patchIn(id, { mint: null, note: null });
   if (p.kind === "rejected") toast("info", "Mint not sent", "You declined it in your wallet. Your tPOT stays locked for you: sign the mint when you like.");
   else toast("revert", "Mint not sent", p.text);
@@ -931,14 +992,16 @@ async function followMint(job: Job, id: string, auto: boolean): Promise<void> {
     if (!t || t.mint?.stage !== "sent" || t.nonce === null) return;
     const { hash, sentAt, by } = t.mint;
     const nonce = t.nonce;
-    const got = await patiently(job, id, "Sepolia", () => receiptOn("sepolia", hash, round === 1 || round % REPLACED_EVERY === 0));
+    const d = destOf(t.dest);
+    const evm = evmOf(d);
+    const got = await patiently(job, id, d.short, () => receiptOn(d.key, hash, round === 1 || round % REPLACED_EVERY === 0));
     if (!got) return;
     const r = got.value;
-    if (!r && !seen.tx) seen.tx = await seenTx(SEPOLIA, hash);
+    if (!r && !seen.tx) seen.tx = await seenTx(evm, hash);
     if (r?.ok) {
-      const minted = mintedIn(r.logs, registry, MINTER, BigInt(nonce));
+      const minted = mintedIn(r.logs, registry, deployed(d).minter, BigInt(nonce));
       if (minted) {
-        const minedAt = await blockTimeOn("sepolia", r.block).catch(() => Date.now());
+        const minedAt = await blockTimeOn(d.key, r.block).catch(() => Date.now());
         patchIn(id, { mintBy: by?.from ?? seen.tx?.from ?? me() });
         return finish(id, { stage: "mined", hash, sentAt, block: r.block, minedAt, gasUsed: r.gasUsed });
       }
@@ -949,19 +1012,19 @@ async function followMint(job: Job, id: string, auto: boolean): Promise<void> {
       return;
     }
     if (r || round % 3 === 0) {
-      const used = await patiently(job, id, "Sepolia", () => usedOnSepolia(nonce));
+      const used = await patiently(job, id, d.short, () => usedOn(d.key, nonce));
       if (!used) return;
       if (used.value) return completeMinted(job, id);
       if (r) {
         patchIn(id, { mint: null });
-        toast("revert", "The transaction reverted on Sepolia", "Only its gas was paid: the chains moved between the dry run and the block. The mint is planned again; sign it once more.");
+        toast("revert", `The transaction reverted on ${d.short}`, "Only its gas was paid: the chains moved between the dry run and the block. The mint is planned again; sign it once more.");
         await readyPlan(job, id);
         return;
       }
     }
     let fate: Fate = "pending";
     if (!r && round % REPLACED_EVERY === 0) {
-      fate = await fateOf(SEPOLIA, hash, seen, by);
+      fate = await fateOf(evm, hash, seen, by);
       // Twice, a check apart, as for the lock and the burn: once could be a copy no node serves yet.
       strikes = fate === "replaced" ? strikes + 1 : 0;
       if (fate === "replaced" && strikes < 2) fate = "pending";
@@ -969,7 +1032,7 @@ async function followMint(job: Job, id: string, auto: boolean): Promise<void> {
     if (fate !== "pending") {
       // A speed-up that minted completes the transfer. Mined with a receipt no endpoint serves, it
       // was a self-relay's import; replaced (a cancel, or a sped-up import), the plan says what is left.
-      const used = await patiently(job, id, "Sepolia", () => usedOnSepolia(nonce));
+      const used = await patiently(job, id, d.short, () => usedOn(d.key, nonce));
       if (!used) return;
       if (used.value) return completeMinted(job, id);
       if (fate === "mined") {
@@ -987,18 +1050,26 @@ async function followMint(job: Job, id: string, auto: boolean): Promise<void> {
   }
 }
 
-/** A lock minted by a transaction this page did not follow (another tab, someone else, a speed-up): its Minted log, its block and the V3 block it proved. */
+/**
+ * A lock minted by a transaction this page did not follow (auto-mint, another tab, someone else, a
+ * speed-up): its Minted log, its block and the V3 block it proved. One whose log is older than the
+ * destination's nodes search is done all the same: used(nonce) says it is minted, and the page says
+ * it cannot name the transaction (finishBeyond).
+ */
 async function completeMinted(job: Job, id: string): Promise<void> {
   for (let tries = 0; !job.stop; tries++) {
     const t = lockT(id);
     if (!t || t.nonce === null || isDone(t)) return;
-    say(id, { text: "Minted: finding the mint's transaction on Sepolia", wallet: false });
+    const d = destOf(t.dest);
+    say(id, { text: `Minted: finding the mint's transaction on ${d.short}`, wallet: false });
     const nonce = t.nonce;
-    const got = await patiently(job, id, "Sepolia", () => findMint(nonce));
+    const lockedAt = t.lock.stage === "mined" ? t.lock.minedAt : null;
+    const got = await patiently(job, id, d.short, () => findMint(d.key, nonce, lockedAt));
     if (!got) return;
     const m = got.value;
+    if (m === "beyond") return finishBeyond(id);
     if (m) {
-      const minedAt = await blockTimeOn("sepolia", m.block).catch(() => Date.now());
+      const minedAt = await blockTimeOn(d.key, m.block).catch(() => Date.now());
       let finality = t.finality;
       if (!finality || finality.hash !== m.final.hash) {
         const block = m.final.block ?? (await new V3Reader(proofEnv().v3).header(m.final.hash).then((h) => h.number).catch(() => null));
@@ -1009,7 +1080,7 @@ async function completeMinted(job: Job, id: string): Promise<void> {
       return finish(id, { stage: "mined", hash: m.tx, sentAt, block: m.block, minedAt, gasUsed: m.gasUsed });
     }
     if (tries === 9) {
-      fail(id, "stopped", "Minted, its transaction not found yet", `used(${nonce}) is true on Sepolia, but no RPC served its Minted log yet. Follow it again in a minute.`);
+      fail(id, "stopped", "Minted, its transaction not found yet", `used(${nonce}) is true on ${d.short}, but no RPC served its Minted log yet. Follow it again in a minute.`);
       return;
     }
     await sleep(6_000);
@@ -1021,14 +1092,30 @@ function finish(id: string, mint: LockTransfer["mint"]): void {
   selfMint.delete(id);
   const t = lockT(id);
   const by = t?.mintBy && sameAddress(t.mintBy, AUTO_MINT.key) ? ", sent by auto-mint" : "";
-  if (t) toast("verify", "Minted on Sepolia", `${fmt(Number(t.amount) / 1e14)} wtPOT to ${short(t.recipient)}${by}, proven from lock ${t.nonce ?? ""} in the vault's storage.`);
+  if (t) toast("verify", `Minted on ${destOf(t.dest).short}`, `${fmt(Number(t.amount) / 1e14)} wtPOT to ${short(t.recipient)}${by}, proven from lock ${t.nonce ?? ""} in the vault's storage.`);
+  void readBalances();
+}
+
+/**
+ * Minted (used(nonce) is true), by a transaction whose Minted log is older than the destination's
+ * nodes search: done, its transaction unnamed. Not looked for again (watchIdle skips a done lock).
+ */
+function finishBeyond(id: string): void {
+  const now = Date.now();
+  patchIn(id, { mintBeyond: now, doneAt: now, note: null, failure: null });
+  selfMint.delete(id);
+  const t = lockT(id);
+  if (t) {
+    const d = destOf(t.dest);
+    toast("verify", `Minted on ${d.short}`, `used(${t.nonce ?? ""}) is true on ${d.short}: ${fmt(Number(t.amount) / 1e14)} wtPOT to ${short(t.recipient)}. Its transaction is older than the nodes here search; ${d.explorer.name} lists it.`);
+  }
   void readBalances();
 }
 
 /**
  * Finish mint for a lock this browser does not follow (Activity's "Locked, not minted", a lock read
- * by its nonce): the lock as the chains have it, its mint planned and asked for. Its clock starts
- * now; the lock's own steps are not timed.
+ * by its nonce): the lock as the chains have it, on the destination it names, its mint planned and
+ * asked for. Its clock starts now; the lock's own steps are not timed.
  */
 async function adopt(n: number): Promise<void> {
   const chainId = `lock-${n}`;
@@ -1058,7 +1145,7 @@ async function adopt(n: number): Promise<void> {
   // The visitor asked to mint it: Finish mint does not wait for auto-mint.
   selfMint.add(id);
   putTransfer({
-    ...newLock(id, x.amount, { kind: "evm", address: recipient }, recipient),
+    ...newLock(id, x.dest, x.amount, { kind: "evm", address: recipient }, recipient),
     lock: { stage: "mined", hash: x.tx, sentAt: at, block: x.block, minedAt: at, gasUsed: null },
     nonce: n,
     commitment: x.commitment,
@@ -1071,17 +1158,18 @@ async function adopt(n: number): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 // The way back: the burn
 
-/** The review's Confirm on the way back: a new transfer, its screen, and the burn asked for, from `reviewed`, the address the review showed. */
-export function startBurn(amountText: string, reviewed: string): void {
+/** The review's Confirm on the way back: a new transfer from `dest`, its screen, and the burn asked for, from `reviewed`, the address the review showed. */
+export function startBurn(amountText: string, reviewed: string, dest: DestKey): void {
   const amount = parseAmount(amountText);
   if (amount === null) return toast("revert", "Not an amount BridgeMinter takes", "Up to 14 decimals, more than 0.");
   const from = me();
-  if (!from) return connectThen(() => startBurn(amountText, reviewed), "burn");
+  if (!from) return connectThen(() => startBurn(amountText, reviewed, dest), "burn", dest);
   if (reviewedElse(reviewed, from, "burn")) return;
   const id = newId("back");
   own(id);
   putTransfer({
     id,
+    dest,
     dir: "back",
     amount,
     recipient: from,
@@ -1115,16 +1203,18 @@ async function sendBurn(job: Job, id: string): Promise<boolean> {
     fail(id, "refused", "Burn not sent", `Connect ${short(from)}, the address this burn is from and pays on V3, then try again.`);
     return false;
   }
-  if (!walletOn("sepolia")) {
-    say(id, { text: "Switch your wallet to Ethereum Sepolia", wallet: true });
+  const d = destOf(t.dest);
+  const chain = sendChain("burn", d.key);
+  if (!walletOn(chain)) {
+    say(id, { text: `Switch your wallet to ${d.full}`, wallet: true });
     try {
-      await switchTo("sepolia");
+      await switchTo(chain);
     } catch (e) {
-      return walletRefused(id, e, "Burn");
+      return walletRefused(id, e, "Burn", chain);
     }
   }
-  say(id, { text: "Checking the burn: your address, your wtPOT, the vault, and a dry run on Sepolia", wallet: false });
-  const got = await patiently(job, id, "Sepolia or Portaldot V3", () => prepareBurn(sendEnv(), from, t.amount));
+  say(id, { text: `Checking the burn: your address, your wtPOT, the vault, and a dry run on ${d.short}`, wallet: false });
+  const got = await patiently(job, id, `${d.short} or Portaldot V3`, () => prepareBurn(sendEnv(d.key), from, t.amount));
   if (!got || job.stop) return false;
   const prep = got.value;
   if ("problem" in prep) {
@@ -1136,9 +1226,9 @@ async function sendBurn(job: Job, id: string): Promise<boolean> {
   patchBack(id, (x) => ({ note: null, fromBlock: prep.head === null ? x.fromBlock : prep.head + 1 }));
   let hash: Hex;
   try {
-    hash = await sendOn("sepolia", { from, to: MINTER, data: prep.data, gas: prep.gas, ...prep.fees });
+    hash = await sendOn(chain, { from, to: deployed(d).minter, data: prep.data, gas: prep.gas, ...prep.fees });
   } catch (e) {
-    return walletRefused(id, e, "Burn");
+    return walletRefused(id, e, "Burn", chain);
   }
   patchBack(id, { burn: { stage: "sent", hash, sentAt: Date.now(), ...(prep.nonce === null ? {} : { by: { from, nonce: prep.nonce } }) } });
   return true;
@@ -1157,14 +1247,16 @@ async function followBurn(job: Job, id: string): Promise<boolean> {
     const t = burnT(id);
     if (!t || t.burn.stage !== "sent") return false;
     const { hash, sentAt, by } = t.burn;
+    const d = destOf(t.dest);
+    const evm = evmOf(d);
     const look = round % REPLACED_EVERY === 0;
-    const got = await patiently(job, id, "Sepolia", () => receiptOn("sepolia", hash, round === 1 || look));
+    const got = await patiently(job, id, d.short, () => receiptOn(d.key, hash, round === 1 || look));
     if (!got) return false;
     let r: Landed | null = got.value;
     // Seen in a pool from the first round: a Cancel can take its place within seconds.
-    if (!r && !seen.tx) seen.tx = await seenTx(SEPOLIA, hash);
+    if (!r && !seen.tx) seen.tx = await seenTx(evm, hash);
     if (!r && look) {
-      const fate = await fateOf(SEPOLIA, hash, seen, by);
+      const fate = await fateOf(evm, hash, seen, by);
       const logs = await burnsSince(t).catch((): ChainLog[] => []);
       const mine = logs.find((l) => l.transactionHash.toLowerCase() === hash);
       const other = logs.find((l) => l.transactionHash.toLowerCase() !== hash);
@@ -1187,15 +1279,15 @@ async function followBurn(job: Job, id: string): Promise<boolean> {
       continue;
     }
     if (!r.ok) {
-      fail(id, "reverted", "The burn reverted on Sepolia", "Nothing was burned: only the fee was paid. Try again, or change the amount.");
+      fail(id, "reverted", `The burn reverted on ${d.short}`, "Nothing was burned: only the fee was paid. Try again, or change the amount.");
       return false;
     }
-    const check = burnedOf(r.logs, registry, { minter: MINTER, sepoliaChainId: SEPOLIA_CHAIN_ID, sender: t.recipient, amount: t.amount });
+    const check = burnedOf(r.logs, registry, { minter: deployed(d).minter, chainId: BigInt(d.chainId), sender: t.recipient, amount: t.amount });
     if (!check.ok) {
-      fail(id, "stopped", "The burn's receipt did not check out", `In Sepolia block #${r.block}, ${check.why}.`);
+      fail(id, "stopped", "The burn's receipt did not check out", `In ${d.short} block #${r.block}, ${check.why}.`);
       return false;
     }
-    const minedAt = await blockTimeOn("sepolia", r.block).catch(() => Date.now());
+    const minedAt = await blockTimeOn(d.key, r.block).catch(() => Date.now());
     patchBack(id, { burn: { stage: "mined", hash, sentAt, block: r.block, minedAt, gasUsed: r.gasUsed }, burnNonce: Number(check.burnNonce), burnId: check.burnId, note: null });
     void readBalances();
     return true;
@@ -1204,10 +1296,10 @@ async function followBurn(job: Job, id: string): Promise<boolean> {
 }
 
 /**
- * After the burn: Sepolia's heads until its block is final (the confirmations Fast waits for, and
- * the finality Standard waits for), the committee's open operation once it qualifies, and
- * released(burnId) on V3 once a V3 block, read at a block this page names so that the release's own
- * block can be found when it turns true.
+ * After the burn: its chain's heads until its block is final (the confirmations Fast waits for, 3 on
+ * Sepolia and the 36 s of a rollup's blocks, and the finality Standard waits for), the committee's
+ * open operation once it qualifies, and released(burnId) on V3 once a V3 block, read at a block this
+ * page names so that the release's own block can be found when it turns true.
  */
 async function followRelease(job: Job, id: string): Promise<void> {
   let lastFalse: number | null = null;
@@ -1218,14 +1310,15 @@ async function followRelease(job: Job, id: string): Promise<void> {
     if (!t || t.burn.stage !== "mined" || !t.burnId || isDone(t)) return;
     const burnId = t.burnId;
     const block = t.burn.block;
+    const d = destOf(t.dest);
     if (!t.depth.final && Date.now() - headsAt >= HEADS_POLL) {
-      const h = await patiently(job, id, "Sepolia", () => sepoliaHeads());
+      const h = await patiently(job, id, d.short, () => headsOn(d.key));
       if (!h) return;
       headsAt = Date.now();
       const confirmations = Math.max(0, h.value.latest - block);
       const final = h.value.finalized >= block;
       patchBack(id, (x) => {
-        const qualifies = final || (x.speed === "fast" && confirmations >= 3);
+        const qualifies = final || (x.speed === "fast" && confirmations >= d.fastConfirmations);
         return { depth: { confirmations, final, qualifiedAt: x.depth.qualifiedAt ?? (qualifies ? Date.now() : null) } };
       });
     }
@@ -1324,41 +1417,63 @@ async function settleRelease(id: string, burnId: Hex, lastFalse: number | null, 
 /**
  * Where a transfer's lock or burn can be: from the block after the one the checks before the wallet's
  * prompt read (fromBlock), so a lock or a burn the address made before cannot be taken for it. A
- * transfer from before the page kept that block: about ten minutes before it started.
+ * transfer from before the page kept that block: about ten minutes of the chain's blocks before it
+ * started.
  */
-async function searchFrom(t: LiveTransfer, endpoints: Endpoint[], blockSeconds: number, slack: number): Promise<number> {
+async function searchFrom(t: LiveTransfer, endpoints: Endpoint[], blockSeconds: number): Promise<number> {
   if (t.fromBlock !== undefined) return t.fromBlock;
   const head = Number(BigInt((await request<Hex>(endpoints, "eth_blockNumber", [])).result));
+  const slack = Math.ceil(600 / blockSeconds);
   return Math.max(0, head - Math.ceil((Date.now() - t.startedAt) / (blockSeconds * 1000)) - slack);
 }
 
-/** The vault's Locked logs from this transfer's sender for its amount, since searchFrom, but those of locks other transfers of this browser follow. Oldest first. */
+/**
+ * The vault's Locked logs from this transfer's sender for its amount and its destination (the chain
+ * id and minter it names), since searchFrom, but those of locks other transfers of this browser
+ * follow. Oldest first.
+ */
 async function locksSince(t: LockTransfer): Promise<ChainLog[]> {
-  const from = await searchFrom(t, V3_EVM, 6, 100);
+  const from = await searchFrom(t, V3_EVM, 6);
   const logs = (await request<ChainLog[]>(V3_EVM, "eth_getLogs", [{ address: VAULT, topics: [LOCKED, null, topicOf(t.recipient)], fromBlock: qty(from), toBlock: "latest" }])).result;
   const others = [...transfers.get().values()].filter((x): x is LockTransfer => x.dir === "in" && x.id !== t.id);
   const nonces = new Set(others.map((x) => x.nonce));
   const hashes = new Set(others.map((x) => (x.lock.stage === "asking" ? null : x.lock.hash)));
+  const dest = destOf(t.dest);
+  const minter = deployed(dest).minter;
   return (logs ?? []).filter((log) => {
     const d = registry.decodeLog(log);
-    const nonce = d?.args.find((a) => a.name === "nonce")?.value;
-    const amount = d?.args.find((a) => a.name === "amountNative")?.value;
-    return d?.name === "Locked" && amount === t.amount && typeof nonce === "bigint" && !nonces.has(Number(nonce)) && !hashes.has(log.transactionHash.toLowerCase() as Hex);
+    const arg = (name: string) => d?.args.find((a) => a.name === name)?.value;
+    const nonce = arg("nonce");
+    const chain = arg("dstChainId");
+    const to = arg("dstMinter");
+    // A lock of the same sender and amount to another chain is another transfer's, whichever device sent it.
+    const here = chain === BigInt(dest.chainId) && typeof to === "string" && sameAddress(to, minter);
+    return d?.name === "Locked" && here && arg("amountNative") === t.amount && typeof nonce === "bigint" && !nonces.has(Number(nonce)) && !hashes.has(log.transactionHash.toLowerCase() as Hex);
   });
 }
 
-/** BridgeMinter's BurnRequested logs from this transfer's sender for its amount, since searchFrom, but those of burns other transfers of this browser follow. Oldest first. */
+/**
+ * The destination's BurnRequested logs from this transfer's sender for its amount, since
+ * searchFrom, but those of burns other transfers of this browser follow there (each minter counts
+ * its own burns). Oldest first: on a rollup, on from searchFrom, where a burn the wallet sent is,
+ * however long ago that was.
+ */
 async function burnsSince(t: BurnTransfer): Promise<ChainLog[]> {
-  const from = await searchFrom(t, SEPOLIA, 12, 50);
-  const logs = (await request<ChainLog[]>(SEPOLIA_LOGS, "eth_getLogs", [{ address: MINTER, topics: [BURN_REQUESTED, null, topicOf(t.recipient)], fromBlock: qty(from), toBlock: "latest" }])).result;
-  const others = [...transfers.get().values()].filter((x): x is BurnTransfer => x.dir === "back" && x.id !== t.id);
+  const d = destOf(t.dest);
+  const from = await searchFrom(t, evmOf(d), d.blockSeconds);
+  const filter = { address: deployed(d).minter, topics: [BURN_REQUESTED, null, topicOf(t.recipient)] };
+  const logs =
+    d.key === "sepolia"
+      ? (await request<ChainLog[]>(SEPOLIA_LOGS, "eth_getLogs", [{ ...filter, fromBlock: qty(from), toBlock: "latest" }])).result
+      : (await logsOn(d.key, filter, from, { order: "oldest" })).logs;
+  const others = [...transfers.get().values()].filter((x): x is BurnTransfer => x.dir === "back" && x.id !== t.id && x.dest === t.dest);
   const nonces = new Set(others.map((x) => x.burnNonce));
   const hashes = new Set(others.map((x) => (x.burn.stage === "asking" ? null : x.burn.hash)));
   return (logs ?? []).filter((log) => {
-    const d = registry.decodeLog(log);
-    const n = d?.args.find((a) => a.name === "burnNonce")?.value;
-    const amount = d?.args.find((a) => a.name === "amount")?.value;
-    return d?.name === "BurnRequested" && amount === t.amount && typeof n === "bigint" && !nonces.has(Number(n)) && !hashes.has(log.transactionHash.toLowerCase() as Hex);
+    const dl = registry.decodeLog(log);
+    const n = dl?.args.find((a) => a.name === "burnNonce")?.value;
+    const amount = dl?.args.find((a) => a.name === "amount")?.value;
+    return dl?.name === "BurnRequested" && amount === t.amount && typeof n === "bigint" && !nonces.has(Number(n)) && !hashes.has(log.transactionHash.toLowerCase() as Hex);
   });
 }
 
@@ -1366,9 +1481,12 @@ async function burnsSince(t: BurnTransfer): Promise<ChainLog[]> {
 const RECOVER_FOR = 3 * 60_000;
 const RECOVER_PENDING_FOR = 15 * 60_000;
 
+/** The chain a transfer's lock or burn is looked for on, by name: V3 for a lock, its destination for a burn. */
+const sentOn = (t: LiveTransfer): string => (t.dir === "in" ? "V3" : destOf(t.dest).short);
+
 /** The transfer's lock or burn on chain, looked for once: its log since the wallet was asked. */
 async function onChain(job: Job, id: string, t: LiveTransfer): Promise<{ found: ChainLog | null } | null> {
-  const got = await patiently(job, id, t.dir === "in" ? "Portaldot V3" : "Sepolia", () => (t.dir === "in" ? locksSince(t) : burnsSince(t)));
+  const got = await patiently(job, id, t.dir === "in" ? "Portaldot V3" : destOf(t.dest).short, () => (t.dir === "in" ? locksSince(t) : burnsSince(t)));
   return got ? { found: got.value[0] ?? null } : null;
 }
 
@@ -1406,7 +1524,7 @@ async function recover(job: Job, id: string): Promise<void> {
     return;
   }
   const what = t.dir === "in" ? "lock" : "burn";
-  const chain = t.dir === "in" ? "V3" : "Sepolia";
+  const chain = sentOn(t);
   const asked = t.fromBlock !== undefined;
   const began = Date.now();
   say(id, { text: asked ? `Looking for the ${what} on ${chain}: the page that asked your wallet closed first. If the wallet still asks, answer it there.` : `Looking for the ${what} on ${chain}`, wallet: false });
@@ -1416,7 +1534,7 @@ async function recover(job: Job, id: string): Promise<void> {
     if (read.found) return followFound(job, id, t, read.found);
     if (!asked) break;
     const waited = Date.now() - began;
-    if (waited >= RECOVER_FOR && (waited >= RECOVER_PENDING_FOR || !(await pendingFrom(t.dir === "in" ? V3_EVM : SEPOLIA, t.recipient)))) break;
+    if (waited >= RECOVER_FOR && (waited >= RECOVER_PENDING_FOR || !(await pendingFrom(t.dir === "in" ? V3_EVM : evmOf(destOf(t.dest)), t.recipient)))) break;
     await sleep(t.dir === "in" ? 2 * V3_POLL : 3 * SEPOLIA_POLL);
     if (job.stop) return;
   }
@@ -1440,12 +1558,17 @@ function sign(id: string): void {
     if (k.dir === "in") void adopt(k.n);
     return;
   }
-  if (!lockT(id) || elsewhere(id, () => sign(id))) return;
-  connectThen(() => {
-    // A lock that waits for auto-mint: the wait ends and the wallet is asked (awaitAutoMint).
-    selfMint.add(id);
-    runFor(id, (job) => lockFlow(job, id, true));
-  }, "mint");
+  const t = lockT(id);
+  if (!t || elsewhere(id, () => sign(id))) return;
+  connectThen(
+    () => {
+      // A lock that waits for auto-mint: the wait ends and the wallet is asked (awaitAutoMint).
+      selfMint.add(id);
+      runFor(id, (job) => lockFlow(job, id, true));
+    },
+    "mint",
+    t.dest,
+  );
 }
 
 /**
@@ -1458,7 +1581,10 @@ function retry(id: string): void {
   if (!t || jobs.has(id) || elsewhere(id, () => retry(id))) return;
   // A Polkadot wallet's lock not on V3 is signed in that wallet again: no Ethereum wallet is asked
   // for before its mint. Anything else on from here is the Ethereum wallet's (a lock, a mint, a burn).
-  const then = t.dir === "in" && t.sender.kind === "substrate" && t.nonce === null ? (go: () => void) => go() : (go: () => void) => connectThen(go, t.dir === "in" ? "mint" : "burn");
+  const then =
+    t.dir === "in" && t.sender.kind === "substrate" && t.nonce === null
+      ? (go: () => void) => go()
+      : (go: () => void) => connectThen(go, t.dir === "in" ? "mint" : "burn", t.dest);
   then(() =>
     runFor(id, async (job) => {
       const x = transfers.get().get(id);
@@ -1475,7 +1601,7 @@ function retry(id: string): void {
       // broadcast was never sent, and one it followed to the end of its era was never included.
       const substrate = x.dir === "in" && x.sender.kind === "substrate";
       const asked = x.fromBlock !== undefined && x.failure?.reason !== "reverted" && !substrate;
-      updateTransfer(id, (y) => ({ ...y, failure: null, note: fresh && asked ? { text: `Looking on ${x.dir === "in" ? "V3" : "Sepolia"} for the ${x.dir === "in" ? "lock" : "burn"} your wallet was asked for before`, wallet: false } : null }));
+      updateTransfer(id, (y) => ({ ...y, failure: null, note: fresh && asked ? { text: `Looking on ${sentOn(x)} for the ${x.dir === "in" ? "lock" : "burn"} your wallet was asked for before`, wallet: false } : null }));
       if (fresh && asked) {
         const read = await onChain(job, id, x);
         if (!read || job.stop) return;
@@ -1510,14 +1636,14 @@ function speedUp(id: string): void {
 
 /**
  * The locks on chain that no run follows (waiting for the visitor's click, or stopped): one that
- * anyone else minted meanwhile (another tab, the relayer's operator) completes here too.
+ * anyone else minted meanwhile on its destination (auto-mint, another tab) completes here too.
  */
 function watchIdle(): void {
   if (document.hidden) return;
   for (const t of transfers.get().values()) {
     if (t.dir !== "in" || t.nonce === null || isDone(t) || jobs.has(t.id) || !follows(t.id)) continue;
-    const { id, nonce } = t;
-    void usedOnSepolia(nonce).then(
+    const { id, nonce, dest } = t;
+    void usedOn(dest, nonce).then(
       (used) => {
         if (!used || jobs.has(id)) return;
         patchIn(id, { failure: null });

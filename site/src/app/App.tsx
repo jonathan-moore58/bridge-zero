@@ -3,18 +3,20 @@
 // overlays (the sheet, toasts, the announcer).
 
 import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
-import { destByChainId, type MarkKey } from "./dests.ts";
-import { CH, fromOf, type ChainInfo, type Dir } from "./facts.ts";
+import { destOf, refOf, type DestKey, type MarkKey } from "./dests.ts";
+import { chainById, fromOf, type ChainInfo, type Dir } from "./facts.ts";
 import { useRoute, type Route } from "./router.ts";
 import { useBox } from "./store.ts";
 import { addWtpotToWallet, openNoWallet, openWalletPicker } from "./connect.tsx";
 import { ChainMark, walletMark } from "./marks.tsx";
 import { useNet, type NetState } from "./net.ts";
 import { disconnectPolka, polka, polkaList, type PolkaState } from "./polkadot.ts";
+import { watchRollups } from "./rollups.ts";
 import { shortSs58 } from "./substrate/account.ts";
+import { chainReads, followerOf, transfers, type ChainRead, type LiveTransfer } from "./transfers.ts";
 import { Announcer, CopyButton, Icon, Mark, SheetHost, Toasts, closeSheet, fmt, short, toast } from "./ui.tsx";
 import { ActivityView } from "./views/Activity.tsx";
-import { BridgeView } from "./views/Bridge.tsx";
+import { BridgeView, useCardDest } from "./views/Bridge.tsx";
 import { LabView } from "./views/Lab.tsx";
 import { NetworkView } from "./views/Network.tsx";
 import { ReceiptView } from "./views/Receipt.tsx";
@@ -33,14 +35,8 @@ function dirOf(route: Route): Dir {
 
 const tokenNum = (v: bigint | null | undefined, decimals: number): number | null => (v == null ? null : Number(v) / 10 ** decimals);
 
-function chainOf(id: bigint | null): ChainInfo | null {
-  return id === CH.v3.chainId ? CH.v3 : id === CH.sepolia.chainId ? CH.sepolia : null;
-}
-
-/** A chain a wallet can be on that the page names, the bridge's two and the rollups of ./dests.ts: its name and mark. */
-function namedChain(id: bigint | null): { full: string; mark: MarkKey } | null {
-  return chainOf(id) ?? destByChainId(id);
-}
+/** A chain the bridge sends on, V3 or a destination of ./dests.ts, by the chain id a wallet is on: the wallet button names it and shows its mark. */
+const chainOf = (id: bigint | null): ChainInfo | null => chainById(id);
 
 function BalanceRow({ mark, token, where, value }: { mark: MarkKey; token: string; where: string; value: number | null | undefined }) {
   return (
@@ -200,6 +196,8 @@ function WalletMenu({ address, name, icon, balances, p, polkaFirst, onClose }: M
     );
   };
   const b = balances;
+  // wtPOT and ETH as read on the bridge card's destination (wallet.ts, balancesOn).
+  const on = destOf(b?.dest ?? "sepolia");
   const polkaTop = polkaFirst && p.status === "on" && p.account !== null;
   return (
     <div class="menu" id="wallet-menu" role="menu" aria-labelledby="wallet" ref={ref} onKeyDown={onKeyDown}>
@@ -223,8 +221,8 @@ function WalletMenu({ address, name, icon, balances, p, polkaFirst, onClose }: M
       </div>
       <dl class="menu__bals">
         <BalanceRow mark="portaldot" token="tPOT" where="on V3" value={b ? tokenNum(b.tpot, 14) : undefined} />
-        <BalanceRow mark="ethereum" token="wtPOT" where="on Sepolia" value={b ? tokenNum(b.wtpot, 14) : undefined} />
-        <BalanceRow mark="ethereum" token="ETH" where="on Sepolia, for gas" value={b ? tokenNum(b.eth, 18) : undefined} />
+        <BalanceRow mark={on.mark} token="wtPOT" where={`on ${on.short}`} value={b ? tokenNum(b.wtpot, 14) : undefined} />
+        <BalanceRow mark={on.mark} token="ETH" where={`on ${on.short}, for gas`} value={b ? tokenNum(b.eth, 18) : undefined} />
       </dl>
       <div class="menu__sep" role="separator" />
       <button class="menu__item" role="menuitem" type="button" onClick={act(addV3, ["Portaldot V3 testnet added", "Chain 420420777, tPOT. Your wallet may call it an unrecognised network; that is expected."])}>
@@ -237,11 +235,11 @@ function WalletMenu({ address, name, icon, balances, p, polkaFirst, onClose }: M
         type="button"
         onClick={() => {
           onClose(false);
-          void addWtpotToWallet();
+          void addWtpotToWallet(on.key);
         }}
       >
         <Icon id="i-plus" />
-        Add wtPOT to wallet
+        Add wtPOT on {on.short} to wallet
       </button>
       <a class="menu__item" role="menuitem" href="#/activity" onClick={() => onClose(false)}>
         <Icon id="i-activity" />
@@ -305,7 +303,7 @@ function WalletButton({ needs, polkaFirst, net }: { needs: ChainInfo | null; pol
 
   const on = chainOf(w.chainId);
   /** The chain the wallet is on, by name, the rollups included: the wrong-network button names it. */
-  const onNamed = namedChain(w.chainId);
+  const onNamed = on;
   // A wallet whose chain is not known yet is shown on the chain the page needs.
   const shown = w.chainId === null ? needs : on;
   const wrong = w.chainId !== null && (needs ? w.chainId !== needs.chainId : on === null);
@@ -420,6 +418,24 @@ const NAV = [
   ["lab", "Attack lab", "i-flask"],
 ] as const;
 
+/**
+ * The destination a page is about, whose light client the top bar's status and the wallet button's
+ * dot show: the bridge card's; on a transfer's screen or its receipt, that transfer's (this
+ * browser's, a burn's by its id, a lock's once its Locked log is read); else none, and the status
+ * is Sepolia's, as on Activity and Network.
+ */
+function routeDest(route: Route, card: DestKey, live: ReadonlyMap<string, LiveTransfer>, reads: ReadonlyMap<string, ChainRead>): DestKey | null {
+  if (route.name === "bridge") return card;
+  if (route.name !== "tx" && route.name !== "receipt") return null;
+  const id = route.parts[1] ?? "";
+  const t = live.get(id) ?? followerOf(id);
+  if (t) return t.dest;
+  const k = refOf(id);
+  if (k?.dir === "back") return k.dest;
+  const r = reads.get(id);
+  return r?.state === "live" ? r.value.dest : null;
+}
+
 /** The background's light follows the main card; pages without one get a quiet field. */
 function placeBg(): void {
   const bg = document.getElementById("bz-bg");
@@ -445,9 +461,16 @@ function placeBg(): void {
 export function App() {
   const route = useRoute();
   const w = useBox(wallet);
-  const net = useNet();
+  // The bridge card's destination, or the transfer's on its screen and receipt: the status and the wallet button are its chain's.
+  const dest = useCardDest();
+  const shown = routeDest(route, dest, useBox(transfers), useBox(chainReads));
+  const sepoliaNet = useNet();
+  const net = useNet(shown ?? "sepolia");
   const dir = dirOf(route);
   const path = route.parts.join("/");
+
+  // A rollup's light client is read while a page is about that rollup (the Network page reads both itself).
+  useEffect(() => (shown && shown !== "sepolia" ? watchRollups() : undefined), [shown]);
 
   // A new page closes the sheet and starts at the top; flipping the bridge's direction keeps both.
   useEffect(() => {
@@ -478,7 +501,7 @@ export function App() {
     tx: () => <TxView route={route} net={net} />,
     receipt: () => <ReceiptView route={route} />,
     activity: () => <ActivityView route={route} />,
-    network: () => <NetworkView net={net} />,
+    network: () => <NetworkView net={sepoliaNet} />,
     lab: () => <LabView route={route} />,
   }[route.name]();
 
@@ -516,8 +539,8 @@ export function App() {
               <span class="status__dot" aria-hidden="true" />
               <span class="status__label">{net.label}</span>
             </a>
-            {/* On the way in from a Polkadot account the lock is that account's: the Ethereum wallet only fills the address and sends a mint, switched to Sepolia when it does, so no chain is wrong for it there. */}
-            <WalletButton needs={route.name === "bridge" && !polkaIn ? fromOf(dir) : null} polkaFirst={polkaIn} net={net} />
+            {/* On the way in from a Polkadot account the lock is that account's: the Ethereum wallet only fills the address and sends a mint, switched to the destination when it does, so no chain is wrong for it there. */}
+            <WalletButton needs={route.name === "bridge" && !polkaIn ? fromOf(dir, dest) : null} polkaFirst={polkaIn} net={net} />
           </div>
         </div>
       </header>

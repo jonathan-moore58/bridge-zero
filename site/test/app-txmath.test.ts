@@ -42,7 +42,7 @@ const burns = steps.filter((s) => s.kind === "burn");
 const burn1 = burns.find((s) => s.burn?.burnNonce === "1");
 const mint1 = steps.find((s) => s.kind === "mint" && s.lock?.nonce === 1);
 
-const expectLock1: LockExpect = { vault: VAULT, v3ChainId: V3_ID, sepoliaChainId: SEPOLIA_ID, minter: MINTER, sender: lock1.from, recipient: lock1.recipient, amount: BigInt(lock1.amountNative) };
+const expectLock1: LockExpect = { vault: VAULT, v3ChainId: V3_ID, dstChainId: SEPOLIA_ID, minter: MINTER, sender: lock1.from, recipient: lock1.recipient, amount: BigInt(lock1.amountNative) };
 
 /** Lock 1's Locked log, as the vault emitted it, with any field changed. */
 function lockedLog(over: { address?: string; nonce?: bigint; sender?: string; recipient?: string; dstChainId?: bigint; dstMinter?: string; amount?: bigint; commitment?: Hex } = {}): ReceiptLog {
@@ -148,7 +148,7 @@ test("burns 0 and 1's BurnRequested logs check out, each burn id the convention 
       topics: [BURN_REQUESTED, topic(b.burnNonce), topic(s.sender), topic(b.v3Recipient)],
       data: enc("uint256,bytes32", [BigInt(b.amount), b.burnId]),
     };
-    const r = burnedOf([log], registry, { minter: MINTER, sepoliaChainId: SEPOLIA_ID, sender: s.sender, amount: BigInt(b.amount) });
+    const r = burnedOf([log], registry, { minter: MINTER, chainId: SEPOLIA_ID, sender: s.sender, amount: BigInt(b.amount) });
     assert.ok(r.ok, r.ok ? "" : r.why);
     assert.equal(r.burnNonce, BigInt(b.burnNonce));
     assert.equal(r.burnId, b.burnId);
@@ -160,7 +160,7 @@ test("burns 0 and 1's BurnRequested logs check out, each burn id the convention 
     topics: [BURN_REQUESTED, topic(b.burnNonce), topic(burn1!.sender), topic(recipient)],
     data: enc("uint256,bytes32", [BigInt(b.amount), id]),
   });
-  const expect = { minter: MINTER, sepoliaChainId: SEPOLIA_ID, sender: burn1!.sender, amount: BigInt(b.amount) };
+  const expect = { minter: MINTER, chainId: SEPOLIA_ID, sender: burn1!.sender, amount: BigInt(b.amount) };
   const r1 = burnedOf([log(burns[0]!.burn!.burnId)], registry, expect);
   assert.ok(!r1.ok && /burn id is/.test(r1.why));
   const r2 = burnedOf([log(b.burnId, VAULT)], registry, expect);

@@ -3,6 +3,7 @@
 // (transfers.ts and facts.ts read them) so that node --test and its typecheck run what uses them.
 
 import type { Hex } from "../lib/hex.ts";
+import type { DestKey } from "./dests.ts";
 
 export type Dir = "in" | "back";
 export type Speed = "fast" | "std";
@@ -63,14 +64,20 @@ export interface MintRoute {
 interface Common {
   /** The page's #/tx/<id>: letters, digits and dashes, and never a lock's or a burn's (lock-1, burn-0…). */
   id: string;
+  /**
+   * The chain on the other side of V3 (./dests.ts): the lock names its chain id and minter and the
+   * mint is sent there, or the burn is sent there. Sepolia for a transfer from before the page sent
+   * to the rollups (journal.ts).
+   */
+  dest: DestKey;
   /** Base units, 14 decimals: tPOT and wtPOT alike. */
   amount: bigint;
-  /** The address paid on the other chain: the sender's own, but for a lock from a Substrate account, which pays the Sepolia address given. */
+  /** The address paid on the other chain: the sender's own, but for a lock from a Substrate account, which pays the address given on the destination. */
   recipient: Hex;
   /** When the visitor confirmed the review (or Finish mint): the transfer's clock starts here. */
   startedAt: number;
   /**
-   * The first block the lock's or the burn's log can be in, on its chain (V3, Sepolia): the one after
+   * The first block the lock's or the burn's log can be in, on its chain (V3, the destination): the one after
    * the latest block when the checks before the wallet's prompt ran. Where the page looks for a lock
    * or a burn whose hash it does not have. Absent until the wallet is asked.
    */
@@ -83,9 +90,9 @@ interface Common {
 
 /**
  * Who locks: an Ethereum wallet, through V3's EVM side (the address is the lock's sender and its
- * recipient on Sepolia), or a Substrate (5…) account of a Polkadot wallet, through revive.call: the
+ * recipient on the destination), or a Substrate (5…) account of a Polkadot wallet, through revive.call: the
  * vault records `h160`, pallet-revive's address of the account, as the sender, and the recipient is
- * the Sepolia address the visitor gave. `wallet`: the wallet's key in window.injectedWeb3, `walletName`
+ * the destination's address the visitor gave. `wallet`: the wallet's key in window.injectedWeb3, `walletName`
  * how the page names it.
  */
 export type LockSender = { kind: "evm"; address: Hex } | { kind: "substrate"; ss58: string; h160: Hex; wallet: string; walletName: string };
@@ -101,7 +108,7 @@ export interface ExtrinsicRef {
   to: number;
 }
 
-/** V3 to Sepolia: the lock, V3's finality of its block, the proof built and checked here, the mint. */
+/** V3 to the destination: the lock, V3's finality of its block, the proof built and checked here, the mint there. */
 export interface LockTransfer extends Common {
   dir: "in";
   sender: LockSender;
@@ -124,18 +131,24 @@ export interface LockTransfer extends Common {
   relayed: { hash: Hex; block: number }[];
   /** null until the visitor is asked to sign the mint, or until a mint anyone sent is found. */
   mint: SentTx | null;
+  /**
+   * Minted (used(nonce) is true on the destination) by a transaction whose Minted log is older than
+   * the destination's nodes search (../lib/logs.ts), so the page cannot name it: when the page found
+   * it so. Done, as a mined mint is; absent otherwise.
+   */
+  mintBeyond?: number;
   /** Who sent the mint, once it is found: auto-mint's key, the visitor, anyone. */
   mintBy: Hex | null;
-  /** Auto-mint's key had a transaction Sepolia had not mined, at the last read: the visitor's own mint waits longer (handoff.ts). */
+  /** Auto-mint's key had a transaction the destination had not mined, at the last read: the visitor's own mint waits longer (handoff.ts). */
   autoPending: boolean;
   /** Finish mint: the lock was made before this page followed it, so its steps before the mint are not timed. */
   resumed: boolean;
 }
 
-/** Sepolia to V3: the burn, its confirmations or Sepolia's finality, then the committee's release. */
+/** The destination to V3: the burn, its confirmations or its chain's finality, then the committee's release. */
 export interface BurnTransfer extends Common {
   dir: "back";
-  /** How the watcher releases it: after 3 confirmations (fast) or after Sepolia's finality (standard). */
+  /** How the watcher releases it: after its chain's fast confirmations, 3 on Sepolia (fast), or after its finality (standard). */
   speed: Speed;
   /** Fast was asked for, but the fast budget was in use: released the standard way. */
   fallback: boolean;
@@ -143,7 +156,7 @@ export interface BurnTransfer extends Common {
   /** From BurnRequested. */
   burnNonce: number | null;
   burnId: Hex | null;
-  /** Sepolia blocks on top of the burn's, whether its block is final, and when the burn qualified for the release. */
+  /** Its chain's blocks on top of the burn's, whether its block is final, and when the burn qualified for the release. */
   depth: { confirmations: number; final: boolean; qualifiedAt: number | null };
   /**
    * The committee's approvals on V3, 2 of 3 to release, read from its multisig's open operation;

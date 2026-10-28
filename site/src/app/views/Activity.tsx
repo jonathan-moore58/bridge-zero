@@ -1,38 +1,28 @@
 // Activity: the recorded runs of the project's test address, always listed; the transfers this
 // browser started, from its journal, each linked to its live screen; and with a wallet connected,
-// that address's own locks and burns, read live and read-only: the vault's Locked events on V3 and
-// BridgeMinter's BurnRequested events on Sepolia, each with its status (used(nonce) on Sepolia,
-// released(burnId) on V3).
+// that address's own locks and burns, read live and read-only: the vault's Locked events on V3, for
+// any destination of ../dests.ts, and each destination's BridgeMinter's BurnRequested events, each
+// with its status (used(nonce) on the lock's destination, released(burnId) on V3). A rollup's burns
+// go back as far as its nodes search, and the records stand in for older ones they hold.
 
 import { useEffect, useState } from "preact/hooks";
 import { decode, encodeCall, type AbiValue, type DecodedLog } from "../../lib/abi.ts";
-import {
-  DECIMALS,
-  MINTER,
-  SEPOLIA,
-  SEPOLIA_CHAIN_ID,
-  SEPOLIA_HISTORY,
-  SEPOLIA_LOGS,
-  V3_EVM,
-  V3_SUBSTRATE_HTTP,
-  V3_SUBSTRATE_WS,
-  VAULT,
-  records,
-} from "../../lib/chains.ts";
+import { DECIMALS, SEPOLIA, SEPOLIA_HISTORY, SEPOLIA_LOGS, V3_EVM, V3_SUBSTRATE_HTTP, V3_SUBSTRATE_WS, VAULT, records } from "../../lib/chains.ts";
 import { checksum } from "../../lib/display.ts";
 import { eventTopic } from "../../lib/hashes.ts";
 import type { Hex } from "../../lib/hex.ts";
 import { registry } from "../../lib/live.ts";
 import { request, SubstrateClient, type Endpoint } from "../../lib/rpc.ts";
 import { decodeTimestampInherent } from "../../lib/scale.ts";
+import { DESTS, burnKey, deployed, destOf, destOfLock, explorerAddress, lockKey, selectable, type DestKey } from "../dests.ts";
 import { SPEED_NAME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
-import { handoffOf } from "../handoff.ts";
+import { handoffOf, relayWait } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import { polka } from "../polkadot.ts";
 import type { Route } from "../router.ts";
 import { Box, useBox } from "../store.ts";
 import { shortSs58 } from "../substrate/account.ts";
-import { chainIdOf, isDone, transfers, type LiveTransfer } from "../transfers.ts";
+import { chainIdOf, isDone, logsOn, recordedBurns, timeOn, transfers, type LiveTransfer } from "../transfers.ts";
 import { Chip, Icon, dur, fmt, num, secs, short } from "../ui.tsx";
 import { wallet } from "../wallet.ts";
 
@@ -64,12 +54,15 @@ export const tok = (units: bigint | string): number => Number(BigInt(units)) / 1
 export const qty = (n: number | bigint): string => `0x${n.toString(16)}`;
 
 // ---------------------------------------------------------------------------------------------
-// The recorded runs: lock 0, lock 1, burn 0 and burn 1, from the build's records
+// The recorded runs: lock 0, lock 1, burn 0 and burn 1 on Sepolia, and burn 0 on each rollup, from
+// the build's records
 
 export interface Run {
-  /** Its receipt: lock-<nonce> or burn-<burn nonce>. */
+  /** Its receipt: lock-<nonce>, burn-<burn nonce> on Sepolia, burn-<rollup>-<burn nonce>. */
   id: string;
   dir: Dir;
+  /** The chain on the other side of V3: Sepolia's runs, and the rollups' burns. */
+  dest: DestKey;
   /** The lock's nonce, or the burn's. */
   n: string;
   amount: number;
@@ -100,6 +93,7 @@ function recordedRuns(): Run[] {
   runs.push({
     id: "lock-0",
     dir: "in",
+    dest: "sepolia",
     n: "0",
     amount: tok(b.lock.amountNative),
     at: timeOf(b.lock.signedAt),
@@ -116,6 +110,7 @@ function recordedRuns(): Run[] {
     runs.push({
       id: `lock-${r.lock.nonce}`,
       dir: "in",
+      dest: "sepolia",
       n: String(r.lock.nonce),
       amount: tok(r.lock.amountNative),
       at: timeOf(r.lock.signedAt),
@@ -137,6 +132,7 @@ function recordedRuns(): Run[] {
     runs.push({
       id: `burn-${burn.burnNonce}`,
       dir: "back",
+      dest: "sepolia",
       n: burn.burnNonce,
       amount: tok(burn.amount),
       at: timeOf(burn.signedAt),
@@ -147,8 +143,29 @@ function recordedRuns(): Run[] {
       release: rel?.releasedAt ? { block: rel.releasedAt.number, at: timeOf(ran?.signedAt) } : null,
     });
   }
+  // A rollup's recorded burns, each released by the watcher at its finality: their hours from the
+  // burn to the release were the wait for the watcher to serve the rollups, no measure of the way back.
+  for (const b of recordedBurns()) {
+    if (b.dest === "sepolia") continue;
+    runs.push({
+      id: burnKey(b.dest, b.n),
+      dir: "back",
+      dest: b.dest,
+      n: String(b.n),
+      amount: tok(b.amount),
+      at: timeOf(b.burnAt),
+      done: true,
+      took: "",
+      tookTitle: null,
+      speed: b.fast ? "fast" : "std",
+      release: { block: b.run.block, at: timeOf(b.run.at) },
+    });
+  }
   return runs.sort((x, y) => y.at - x.at);
 }
+
+/** A run's name: a lock by its nonce, Sepolia's burn by its number, a rollup's with its chain. */
+export const runTitle = (r: Run): string => (r.dir === "in" ? `Lock ${r.n}` : burnTitle(r.dest, Number(r.n)));
 
 export const RUNS: Run[] = recordedRuns();
 
@@ -170,15 +187,19 @@ export interface RawLog {
 }
 
 interface FoundLock {
+  /** The destination its Locked log names. */
+  dest: DestKey;
   nonce: bigint;
   amount: bigint;
   block: number;
   at: number | null;
-  /** used(nonce) on BridgeMinter; null when it could not be read. */
+  /** used(nonce) on the destination's BridgeMinter; null when it could not be read. */
   minted: boolean | null;
 }
 
 interface FoundBurn {
+  /** The chain it was burned on. */
+  dest: DestKey;
   nonce: bigint;
   amount: bigint;
   block: number;
@@ -193,6 +214,10 @@ interface Part<T> {
   /** When the live answer was read (ms). */
   at?: number;
   error?: string;
+  /** Read per chain: the chains that did not answer, whose items are missing (the others' are listed). */
+  failed?: DestKey[];
+  /** A rollup whose burns were searched back only to `oldest`, as far as its nodes' windows reach. */
+  short?: { dest: DestKey; oldest: number }[];
 }
 
 interface Found {
@@ -211,8 +236,8 @@ const BURN_REQUESTED = eventTopic("BurnRequested(uint256,address,address,uint256
 
 /** Where the vault's logs start: its deployment block on V3, from the records. */
 const VAULT_FROM = records.bridge.vault.deployBlock.number;
-/** BridgeMinter's deployment block on Sepolia (deployments/sepolia-bridge.json, "deploy BridgeMinter"; README row 24). */
-const MINTER_FROM = 11_950_851;
+/** BridgeMinter's deployment block on Sepolia (deployments/sepolia-bridge.json, "deploy BridgeMinter"; README row 24); a rollup's in ../dests.ts. */
+const MINTER_FROM = destOf("sepolia").minterFrom;
 /** Blocks per eth_getLogs window when no endpoint takes the whole range: drpc's cap, as the relayer reads. */
 const LOG_WINDOW = 10_000;
 /** Past this many windows the read stops rather than send hundreds of requests. */
@@ -239,7 +264,8 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-const stampOf = (log: RawLog): number | null => (log.blockTimestamp ? Number(BigInt(log.blockTimestamp)) * 1000 : null);
+// Arbitrum's own node gives every log a blockTimestamp of 0: then the block's own time is read.
+const stampOf = (log: RawLog): number | null => (log.blockTimestamp && BigInt(log.blockTimestamp) > 0n ? Number(BigInt(log.blockTimestamp)) * 1000 : null);
 
 /** A V3 block's time: its first extrinsic, Timestamp.set, from the Substrate node (the EVM RPC serves only recent blocks). */
 async function v3Time(block: number): Promise<number> {
@@ -284,63 +310,113 @@ async function sepoliaLogs(filter: { address: string; topics: string[] }, from: 
   return out;
 }
 
-/** The address's locks (sent by it, or to it), with used(nonce) and each block's time. */
+/** A destination's endpoints for state reads: Sepolia's, or a rollup's RPCs. */
+const readsOf = (key: DestKey): Endpoint[] => (key === "sepolia" ? SEPOLIA : [...destOf(key).rpcs]);
+
+/** The address's locks (sent by it, or to it), to any destination, with used(nonce) there and each block's time. */
 async function readLocks(address: string): Promise<FoundLock[]> {
   const a = await request<RawLog[]>(V3_EVM, "eth_getLogs", [{ address: VAULT, topics: [LOCKED], fromBlock: qty(VAULT_FROM), toBlock: "latest" }], { timeoutMs: 15000 });
-  const mine = new Map<bigint, { nonce: bigint; amount: bigint; block: number; stamp: number | null }>();
+  const mine = new Map<bigint, { dest: DestKey; nonce: bigint; amount: bigint; block: number; stamp: number | null }>();
   for (const log of Array.isArray(a.result) ? a.result : []) {
     const d = registry.decodeLog(log);
     if (!d || d.name !== "Locked") continue;
     const nonce = argOf(d, "nonce");
     const amount = argOf(d, "amountNative");
-    // Only this bridge's locks: a lock for another chain or minter is not BridgeMinter's to mint.
-    if (argOf(d, "dstChainId") !== SEPOLIA_CHAIN_ID || argOf(d, "dstMinter") !== MINTER) continue;
+    // Only this bridge's locks: one that names a destination of ../dests.ts and its minter. A lock for another chain or minter is no BridgeMinter's of ours to mint.
+    const chain = argOf(d, "dstChainId");
+    const minter = argOf(d, "dstMinter");
+    const dest = typeof chain === "bigint" && typeof minter === "string" ? destOfLock(chain, minter) : null;
+    if (!dest) continue;
     if (typeof nonce !== "bigint" || typeof amount !== "bigint") continue;
     if (argOf(d, "sender") !== address && argOf(d, "recipient") !== address) continue;
-    mine.set(nonce, { nonce, amount, block: Number(BigInt(log.blockNumber)), stamp: stampOf(log) });
+    mine.set(nonce, { dest: dest.key, nonce, amount, block: Number(BigInt(log.blockNumber)), stamp: stampOf(log) });
   }
   const list = [...mine.values()].sort((x, y) => (y.nonce > x.nonce ? 1 : -1));
   const [used, times] = await Promise.all([
-    Promise.allSettled(list.map((l) => ethCall(SEPOLIA, MINTER, encodeCall("used(uint256)", [l.nonce])))),
+    Promise.allSettled(list.map((l) => ethCall(readsOf(l.dest), deployed(destOf(l.dest)).minter, encodeCall("used(uint256)", [l.nonce])))),
     Promise.allSettled(list.map((l, i) => (l.stamp !== null ? Promise.resolve(l.stamp) : i < MAX_TIMES ? v3Time(l.block) : Promise.reject(new Error("not read"))))),
   ]);
   return list.map((l, i) => {
     const u = used[i];
     const t = times[i];
-    return { nonce: l.nonce, amount: l.amount, block: l.block, at: t?.status === "fulfilled" ? t.value : null, minted: u?.status === "fulfilled" ? boolOf(u.value.result) : null };
+    return { dest: l.dest, nonce: l.nonce, amount: l.amount, block: l.block, at: t?.status === "fulfilled" ? t.value : null, minted: u?.status === "fulfilled" ? boolOf(u.value.result) : null };
   });
 }
 
-/** The address's burns (sent by it, or released to it), with released(burnId) and each block's time. */
-async function readBurns(address: string): Promise<FoundBurn[]> {
-  const logs = await sepoliaLogs({ address: MINTER, topics: [BURN_REQUESTED] }, MINTER_FROM);
+/**
+ * The address's burns on one destination (sent by it, or released to it), with released(burnId)
+ * and each block's time: Sepolia's from BridgeMinter's deployment; a rollup's as far back as its
+ * nodes' log windows reach (transfers.ts, logsOn), and older ones the records hold that paid it on
+ * V3 (the records keep no burn's sender). `oldest`: where a rollup's search stopped short of its
+ * minter's deployment, else null.
+ */
+async function readBurnsOn(key: DestKey, address: string): Promise<{ items: FoundBurn[]; oldest: number | null }> {
+  const d = destOf(key);
+  const filter = { address: deployed(d).minter, topics: [BURN_REQUESTED] };
+  const found = key === "sepolia" ? { logs: await sepoliaLogs(filter, MINTER_FROM), partial: null } : await logsOn(key, filter, d.minterFrom);
   const mine = new Map<bigint, { nonce: bigint; amount: bigint; burnId: string; block: number; stamp: number | null }>();
-  for (const log of logs) {
-    const d = registry.decodeLog(log);
-    if (!d || d.name !== "BurnRequested") continue;
-    const nonce = argOf(d, "burnNonce");
-    const amount = argOf(d, "amount");
-    const burnId = argOf(d, "burnId");
+  for (const log of found.logs) {
+    const dl = registry.decodeLog(log);
+    if (!dl || dl.name !== "BurnRequested") continue;
+    const nonce = argOf(dl, "burnNonce");
+    const amount = argOf(dl, "amount");
+    const burnId = argOf(dl, "burnId");
     if (typeof nonce !== "bigint" || typeof amount !== "bigint" || typeof burnId !== "string") continue;
-    if (argOf(d, "from") !== address && argOf(d, "v3Recipient") !== address) continue;
+    if (argOf(dl, "from") !== address && argOf(dl, "v3Recipient") !== address) continue;
     mine.set(nonce, { nonce, amount, burnId, block: Number(BigInt(log.blockNumber)), stamp: stampOf(log) });
+  }
+  const oldest = found.partial?.oldest ?? null;
+  if (oldest !== null) {
+    for (const b of records.rollupRuns[key as Exclude<DestKey, "sepolia">]?.burns ?? []) {
+      if (b.ok !== true || b.block === null || b.block >= oldest || b.burnNonce === null || !b.burnId || b.v3Recipient !== address) continue;
+      const nonce = BigInt(b.burnNonce);
+      if (!mine.has(nonce)) mine.set(nonce, { nonce, amount: BigInt(b.amount), burnId: b.burnId, block: b.block, stamp: null });
+    }
   }
   const list = [...mine.values()].sort((x, y) => (y.nonce > x.nonce ? 1 : -1));
   const [released, times] = await Promise.all([
     Promise.allSettled(list.map((b) => ethCall(V3_EVM, VAULT, encodeCall("released(bytes32)", [b.burnId])))),
-    Promise.allSettled(list.map((b, i) => (b.stamp !== null ? Promise.resolve(b.stamp) : i < MAX_TIMES ? sepoliaTime(b.block) : Promise.reject(new Error("not read"))))),
+    Promise.allSettled(
+      list.map((b, i) =>
+        b.stamp !== null ? Promise.resolve(b.stamp) : i < MAX_TIMES ? (key === "sepolia" ? sepoliaTime(b.block) : timeOn(d, b.block)) : Promise.reject(new Error("not read")),
+      ),
+    ),
   ]);
-  return list.map((b, i) => {
+  const items = list.map((b, i): FoundBurn => {
     const r = released[i];
     const t = times[i];
-    return { nonce: b.nonce, amount: b.amount, block: b.block, at: t?.status === "fulfilled" ? t.value : null, released: r?.status === "fulfilled" ? boolOf(r.value.result) : null };
+    return { dest: key, nonce: b.nonce, amount: b.amount, block: b.block, at: t?.status === "fulfilled" ? t.value : null, released: r?.status === "fulfilled" ? boolOf(r.value.result) : null };
   });
+  return { items, oldest };
+}
+
+/**
+ * The address's burns on every destination the app sends to, each chain read apart: one that does
+ * not answer is named (`failed`), its burns as the last live read had them, and the others' are
+ * listed. Every chain failing fails the read, as Sepolia's alone did.
+ */
+async function readBurns(address: string, prev: Part<FoundBurn> | undefined): Promise<Part<FoundBurn>> {
+  const dests = DESTS.filter((d) => selectable(d));
+  const each = await Promise.allSettled(dests.map((d) => readBurnsOn(d.key, address)));
+  const failed = dests.filter((_, i) => each[i]?.status === "rejected").map((d) => d.key);
+  if (failed.length === dests.length) throw (each[0] as PromiseRejectedResult).reason;
+  const items: FoundBurn[] = [];
+  const short: { dest: DestKey; oldest: number }[] = [];
+  dests.forEach((d, i) => {
+    const r = each[i];
+    if (r?.status === "fulfilled") {
+      items.push(...r.value.items);
+      if (r.value.oldest !== null) short.push({ dest: d.key, oldest: r.value.oldest });
+    } else if (prev?.state === "live") items.push(...prev.items.filter((b) => b.dest === d.key));
+  });
+  return { state: "live", items, at: Date.now(), failed, short };
 }
 
 /** A read's outcome; a failed refresh keeps the last live answer. */
-async function settle<T>(read: Promise<T[]>, prev: Part<T> | undefined): Promise<Part<T>> {
+async function settle<T>(read: Promise<T[] | Part<T>>, prev: Part<T> | undefined): Promise<Part<T>> {
   try {
-    return { state: "live", items: await read, at: Date.now() };
+    const v = await read;
+    return Array.isArray(v) ? { state: "live", items: v, at: Date.now() } : v;
   } catch (e) {
     return prev?.state === "live" ? { ...prev, error: message(e) } : { state: "error", items: [], error: message(e) };
   }
@@ -361,7 +437,7 @@ function refresh(address: string): void {
   reading.add(address);
   void Promise.all([
     settle(readLocks(address), same?.locks).then((locks) => patchFound(address, { locks })),
-    settle(readBurns(address), same?.burns).then((burns) => patchFound(address, { burns })),
+    settle(readBurns(address, same?.burns), same?.burns).then((burns) => patchFound(address, { burns })),
   ]).finally(() => reading.delete(address));
 }
 
@@ -380,6 +456,8 @@ type Group = "action" | "progress" | "done";
 interface Row {
   id: string;
   dir: Dir;
+  /** The chain on the other side of V3. */
+  dest: DestKey;
   title: string;
   /** The lock's nonce, or the burn's: on each chain they run in time order. */
   nonce: number;
@@ -429,12 +507,16 @@ const GROUPS: readonly (readonly [Group, string])[] = [
   ["done", "Done"],
 ];
 
+/** A burn's name: Sepolia's by its number, a rollup's with its chain, as each minter counts its own from 0. */
+const burnTitle = (dest: DestKey, n: number): string => (dest === "sepolia" ? `Burn ${n}` : `Burn ${n} on ${destOf(dest).short}`);
+
 function runRow(r: Run): Row {
   const lock = r.dir === "in";
   return {
     id: r.id,
     dir: r.dir,
-    title: `${lock ? "Lock" : "Burn"} ${r.n}`,
+    dest: r.dest,
+    title: runTitle(r),
     nonce: Number(r.n),
     amount: r.amount,
     status: r.done ? (lock ? "minted" : "released") : lock ? "locked" : "progress",
@@ -462,7 +544,7 @@ function journalRow(t: LiveTransfer, now: number): Row {
   // A lock auto-mint mints (handoff.ts) waits for it, not for the visitor, until the transfer's page
   // offers the visitor's own mint (its proof checked, nothing sent yet); one it does not take waits
   // for the visitor once its plan is ready.
-  const h = lock && n !== null && !done && t.lock.stage === "mined" ? handoffOf(t.amount, t.sender.kind, t.lock.minedAt, now, t.autoPending) : null;
+  const h = lock && n !== null && !done && t.lock.stage === "mined" ? handoffOf(t.amount, t.sender.kind, t.lock.minedAt, now, t.autoPending, relayWait(t.dest, t.lock.minedAt)) : null;
   const own = lock && t.mint === null && t.note === null && t.proof.builtAt !== null;
   const offered = h?.kind === "offer" && own;
   const waitsForYou = lock && n !== null && !done && (t.failure !== null || offered || (h?.kind === "self" && own));
@@ -477,7 +559,8 @@ function journalRow(t: LiveTransfer, now: number): Row {
   return {
     id: chainId ?? t.id,
     dir: t.dir,
-    title: n !== null ? `${lock ? "Lock" : "Burn"} ${n}` : `New ${lock ? "lock" : "burn"}`,
+    dest: t.dest,
+    title: n !== null ? (lock ? `Lock ${n}` : burnTitle(t.dest, n)) : `New ${lock ? "lock" : "burn"}`,
     nonce: n ?? Number.MAX_SAFE_INTEGER,
     amount: tok(t.amount),
     status,
@@ -495,12 +578,13 @@ function journalRow(t: LiveTransfer, now: number): Row {
 function liveRows(f: Found, now: number): Row[] {
   const locks = f.locks.items.map((l): Row => {
     // Read from V3's EVM logs: an Ethereum wallet's lock. Auto-mint's, until the page offers its mint (handoff.ts); one whose block time was not read is taken as offered.
-    const h = l.minted === false && l.at !== null ? handoffOf(l.amount, "evm", l.at, now, false) : null;
+    const h = l.minted === false && l.at !== null ? handoffOf(l.amount, "evm", l.at, now, false, relayWait(l.dest, l.at)) : null;
     const waiting = h?.kind === "waiting" || h?.kind === "pending";
     const status: Status = l.minted === true ? "minted" : l.minted === false ? (waiting ? "progress" : "locked") : "unread";
     return {
-      id: `lock-${l.nonce}`,
+      id: lockKey(Number(l.nonce)),
       dir: "in",
+      dest: l.dest,
       title: `Lock ${l.nonce}`,
       nonce: Number(l.nonce),
       amount: tok(l.amount),
@@ -519,13 +603,14 @@ function liveRows(f: Found, now: number): Row[] {
     const status: Status = b.released === true ? "released" : b.released === false ? "progress" : "unread";
     // Whether the watcher released it Fast or Standard is the watcher's record, not the chain's.
     return {
-      id: `burn-${b.nonce}`,
+      id: burnKey(b.dest, Number(b.nonce)),
       dir: "back",
-      title: `Burn ${b.nonce}`,
+      dest: b.dest,
+      title: burnTitle(b.dest, Number(b.nonce)),
       nonce: Number(b.nonce),
       amount: tok(b.amount),
       status,
-      when: b.at === null ? `Sepolia #${num(b.block)}` : dayTime(b.at),
+      when: b.at === null ? `${destOf(b.dest).short} #${num(b.block)}` : dayTime(b.at),
       at: b.at,
       took: "",
       tookTitle: null,
@@ -540,27 +625,31 @@ function liveRows(f: Found, now: number): Row[] {
 
 const byNonce = (x: Row, y: Row): number => y.nonce - x.nonce || 0;
 
+/** The rows whose nonces are one count: the vault's locks, to any destination; each destination's burns. */
+const countOf = (r: Row): string => (r.dir === "in" ? "in" : `back:${r.dest}`);
+
 /**
  * Newest first. A row whose block time was not read (past the newest MAX_TIMES of its chain, or the
- * read failed) keeps its place among its own chain's rows, whose nonces run in time order: it sorts
- * just after the newer row before it, and first only when no newer row of its chain has a time.
+ * read failed) keeps its place among the rows of its own count (the vault's locks, or one chain's
+ * burns), whose nonces run in time order: it sorts just after the newer row before it, and first
+ * only when no newer row of its count has a time.
  */
 function newestFirst(rows: Row[]): Row[] {
   const key = new Map<Row, number>();
-  for (const dir of ["in", "back"] as const) {
+  for (const count of new Set(rows.map(countOf))) {
     let newer = Number.POSITIVE_INFINITY;
-    for (const r of rows.filter((x) => x.dir === dir).sort(byNonce)) {
+    for (const r of rows.filter((x) => countOf(x) === count).sort(byNonce)) {
       if (r.at !== null && Number.isFinite(r.at)) newer = r.at;
       key.set(r, newer);
     }
   }
   const k = (r: Row): number => key.get(r) ?? Number.NEGATIVE_INFINITY;
-  // Ties go by chain, then nonce: one total order, so a chain's own rows never come out of nonce order.
+  // Ties go by count, then nonce: one total order, so a count's own rows never come out of nonce order.
   return [...rows].sort((x, y) => {
     const a = k(x);
     const b = k(y);
     if (a !== b) return b > a ? 1 : -1;
-    if (x.dir !== y.dir) return x.dir === "in" ? -1 : 1;
+    if (countOf(x) !== countOf(y)) return countOf(x) < countOf(y) ? 1 : -1;
     return byNonce(x, y);
   });
 }
@@ -592,8 +681,8 @@ function allRows(mine: Found | null, journal: Row[], now: number): { rows: Row[]
 // The view
 
 function ActRow({ x, connected }: { x: Row; connected: boolean }) {
-  const from = fromOf(x.dir);
-  const to = toOf(x.dir);
+  const from = fromOf(x.dir, x.dest);
+  const to = toOf(x.dir, x.dest);
   const s = STATUS[x.status];
   const action = x.status === "locked";
   const done = x.dir === "in" ? "locked" : "burned";
@@ -691,7 +780,7 @@ function EmptyState({ filtered, who }: { filtered: boolean; who: string }) {
           "No transfers match this filter."
         ) : (
           <>
-            Nothing found for <span class="mono">{who}</span> on either chain. Locks made with the command-line tools appear here too, read from the vault's logs.
+            Nothing found for <span class="mono">{who}</span> on any chain. Locks made with the command-line tools appear here too, read from the vault's logs.
           </>
         )}
       </p>
@@ -708,18 +797,32 @@ function EmptyState({ filtered, who }: { filtered: boolean; who: string }) {
   );
 }
 
+/** "Base Sepolia and Arbitrum Sepolia": chains by name. */
+const namesOf = (keys: readonly DestKey[]): string => {
+  const names = keys.map((k) => destOf(k).short);
+  return names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1) ?? ""}`;
+};
+
 /** What the live read is doing when it is not simply done: reading, or a chain that did not answer. */
 function ReadNotice({ mine }: { mine: Found }) {
   const { locks, burns } = mine;
+  const failed = burns.state === "live" ? (burns.failed ?? []) : [];
   let n: readonly [string, string, string] | null = null;
   if (locks.state === "error" && burns.state === "error") {
-    n = ["i-server", "Could not read your transfers", "Neither Portaldot V3 nor Sepolia answered. The recorded runs are below; this page asks again every 2 min."];
+    n = ["i-server", "Could not read your transfers", "Neither Portaldot V3 nor the chains it bridges to answered. The recorded runs are below; this page asks again every 2 min."];
   } else if (locks.state === "loading" || burns.state === "loading") {
-    n = ["i-refresh", "Reading your transfers", "Locks from the vault's logs on V3, burns from BridgeMinter's logs on Sepolia."];
+    n = ["i-refresh", "Reading your transfers", "Locks from the vault's logs on V3, burns from BridgeMinter's logs on Sepolia, Base Sepolia and Arbitrum Sepolia."];
   } else if (locks.state === "error") {
-    n = ["i-server", "Could not read your locks", "Portaldot V3 did not answer. Your burns are read from Sepolia; this page asks again every 2 min."];
+    n = ["i-server", "Could not read your locks", "Portaldot V3 did not answer. Your burns are read from the chains they were made on; this page asks again every 2 min."];
   } else if (burns.state === "error") {
-    n = ["i-server", "Could not read your burns", "Sepolia's RPCs did not answer. Your locks are read from V3; this page asks again every 2 min."];
+    n = ["i-server", "Could not read your burns", "Neither Sepolia nor the rollups answered for your burns. Your locks are read from V3; this page asks again every 2 min."];
+  } else if (failed.length) {
+    const one = failed.length === 1;
+    n = [
+      "i-server",
+      `Could not read your burns on ${namesOf(failed)}`,
+      `${one ? "Its RPCs" : "Their RPCs"} did not answer: burns there are listed only as the records or an earlier read hold them. Your locks and your burns on the other chains are read live; this page asks again every 2 min.`,
+    ];
   }
   if (!n) return null;
   return (
@@ -728,6 +831,35 @@ function ReadNotice({ mine }: { mine: Found }) {
       <div>
         <p class="notice__title">{n[1]}</p>
         <p>{n[2]}</p>
+      </div>
+    </div>
+  );
+}
+
+/** A rollup whose burns were searched back only part of the way to its minter's deployment: how far, and where the rest is. */
+function ReachNotice({ mine }: { mine: Found }) {
+  const short = mine.burns.state === "live" ? (mine.burns.short ?? []) : [];
+  if (!short.length) return null;
+  return (
+    <div class="notice notice--muted page__notice" role="note">
+      <Icon id="i-info" />
+      <div>
+        <p class="notice__title">Older burns on {namesOf(short.map((s) => s.dest))}</p>
+        <p>
+          {short.map((s, i) => {
+            const d = destOf(s.dest);
+            return (
+              <span key={s.dest}>
+                {i ? " " : ""}
+                {d.short}'s nodes search its logs back to block <span class="mono">#{num(s.oldest)}</span>: older burns the records hold are listed, the rest are on{" "}
+                <a class="text-link" href={`${explorerAddress(d, deployed(d).minter)}#events`} target="_blank" rel="noopener">
+                  {d.explorer.name}
+                </a>
+                .
+              </span>
+            );
+          })}
+        </p>
       </div>
     </div>
   );
@@ -800,7 +932,7 @@ export function ActivityView({ route }: { route: Route }) {
     <div class="page page--narrow">
       <header class="page__head">
         <div>
-          <p class="eyebrow page__eyebrow">{address ? "Your address, on both chains" : polkaOnly ? "Your Polkadot account, in this browser" : "Recorded · the project's test address"}</p>
+          <p class="eyebrow page__eyebrow">{address ? "Your address, on every chain" : polkaOnly ? "Your Polkadot account, in this browser" : "Recorded · the project's test address"}</p>
           <h1 class="page__title">Activity</h1>
           {polkaOnly && ss58 ? (
             <p class="page__lead">
@@ -809,7 +941,8 @@ export function ActivityView({ route }: { route: Route }) {
             </p>
           ) : (
             <p class="page__lead">
-              Locks, mints, burns and releases for <span class="mono">{who}</span>, read from V3 and Sepolia. Locks made with the command-line tools appear here too.
+              Locks, mints, burns and releases for <span class="mono">{who}</span>, read from V3, Sepolia, Base Sepolia and Arbitrum Sepolia. Locks made with the command-line tools
+              appear here too.
               {other ? (
                 <>
                   {" "}
@@ -821,6 +954,7 @@ export function ActivityView({ route }: { route: Route }) {
         </div>
       </header>
       {mine ? <ReadNotice mine={mine} /> : null}
+      {mine ? <ReachNotice mine={mine} /> : null}
       {ss58 ? (
         <div class="notice notice--muted page__notice" role="note">
           <Icon id="i-info" />

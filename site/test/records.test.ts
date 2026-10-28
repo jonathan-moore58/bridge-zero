@@ -325,6 +325,38 @@ test("each release names its burn's chain: the return path counts Sepolia's rele
   }
 });
 
+test("the rollups' runs, which the app serves without searching their logs: auto-mint's mints of locks 4 and 5, and burn 0 on each with its release", () => {
+  const base = r.rollupRuns["base-sepolia"];
+  const arbitrum = r.rollupRuns["arbitrum-sepolia"];
+  assert.ok(base && arbitrum);
+  for (const [runs, chainId, lock, tx, block, gas, v3] of [
+    [base, 84532n, 4, "0x0f300c8e34173d8d789605b3596cc7b3e9c869c3e2a7498114937bcf8769122e", 51_159_736, 2_637_646, 225_845],
+    [arbitrum, 421614n, 5, "0x4443486b03deaff4f8b232bce4bdd091a8f4accaa46b0d14a5f060b39f2aea7d", 323_534_868, 2_605_555, 225_852],
+  ] as const) {
+    assert.equal(runs.from, `deployments/${runs.network}-bridge.json`);
+    assert.equal(runs.minter, "0xdc31a3bc1354545eeb985aad7b2aa662e9272348");
+    // Rows 106 and 107: importAndMint at V3's head, sent and paid by auto-mint's key.
+    const mint = runs.mints.find((m) => m.nonce === lock);
+    assert.ok(mint, `${runs.network}: lock ${lock}`);
+    assert.deepEqual([mint.txHash, mint.block, mint.gasUsed, mint.v3Block?.number, mint.path, mint.sender], [tx, block, gas, v3, "head", "0x57cc2ba3b883339a9f32726e6d0d3a9ee861a113"]);
+    assert.equal(mint.amountNative, "100000000000");
+    assert.equal(mint.recipient, "0xd9838a86cf83c28ee486544060d1ca4ca2971071");
+    assert.equal(mint.from, `deployments/automint-${runs.network}-0x57cc2ba3b883339a9f32726e6d0d3a9ee861a113.jsonl`);
+    assert.ok(r.evidence.some((e) => e.tx === tx && e.chain === runs.network));
+    // Rows 108 and 109: burn 0, its id with the chain's id in it, and its release on V3 (rows 110 to 113).
+    const burn = runs.burns.find((b) => b.burnNonce === "0");
+    assert.ok(burn?.burnId && burn.ok === true);
+    assert.equal(burn.burnId, burnId(chainId, runs.minter, 0n));
+    const release = r.returnPath.releases.find((x) => x.burnId === burn.burnId);
+    assert.deepEqual([release?.status, release?.chainId, release?.by], ["released", String(chainId), "finality"]);
+    // Each nonce once, in order: the app finds a lock's mint by it.
+    assert.deepEqual(
+      runs.mints.map((m) => m.nonce),
+      [...new Set(runs.mints.map((m) => m.nonce))].sort((x, y) => x - y),
+    );
+  }
+});
+
 test("the roadmap is the README's, with plans and no promises", () => {
   const rm = r.roadmap;
   assert.ok(rm);

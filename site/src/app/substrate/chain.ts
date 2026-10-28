@@ -23,15 +23,16 @@ import type { ReceiptLog } from "../txmath.ts";
 import { shortSs58 } from "./account.ts";
 import { ERA_PERIOD, V3_CHAIN, V3_GENESIS, eraWindow, limitsOf, lockData, payloadProblem, readDryRun, reviveCall, type DryRun, type PayloadJson } from "./call.ts";
 import type { InjectedSigner, SignerResult } from "./inject.ts";
-import { NodeRefused, PayloadRefused, type LockChain, type LockPrep, type PreparedLock, type SignedLock } from "./send.ts";
+import { NodeRefused, PayloadRefused, type LockChain, type LockPrep, type LockTo, type PreparedLock, type SignedLock } from "./send.ts";
 import type { ExtrinsicRef } from "../model.ts";
 
-/** What the chunk is given by the page: the node, the contracts, the EVM RPC's chain id and how the contracts name a revert. */
+/**
+ * What the chunk is given by the page: the node, the vault, the EVM RPC's chain id and how the
+ * contracts name a revert. The destination, its chain id and minter, comes with each lock.
+ */
 export interface ChainEnv {
   node: string;
   vault: Hex;
-  minter: Hex;
-  sepoliaChainId: bigint;
   evmChainId: () => Promise<bigint>;
   revertText: (data: Hex) => string;
 }
@@ -198,8 +199,8 @@ export class V3Chain implements LockChain {
     return o.isSome === true && typeof o.unwrap === "function" ? o.unwrap().toString() : null;
   }
 
-  async prepareLock(origin: string, amount: bigint, recipient: Hex): Promise<LockPrep> {
-    const data = lockData(this.env.sepoliaChainId, this.env.minter, recipient);
+  async prepareLock(origin: string, amount: bigint, recipient: Hex, to: LockTo): Promise<LockPrep> {
+    const data = lockData(to.chainId, to.minter, recipient);
     const [owner, dry, account, header] = await Promise.all([this.originalAccount(recipient), this.dryRun(origin, amount, data), this.account(origin), this.api.rpc.chain.getHeader()]);
     if (owner) {
       // Any Substrate account's address on V3 is a hash no Ethereum key matches: wtPOT minted there could never move.

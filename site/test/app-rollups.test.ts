@@ -3,7 +3,8 @@
 // first RPC that answers; the rule every card follows when none does (src/lib/field.ts): the last
 // live answer stays, else the records' latest import shows as Recorded, else the card says it could
 // not read; how far the client is behind V3; and when its latest block was imported, from its
-// HeaderImported log, searched back from the rollup's head in windows each node serves. fetch is
+// HeaderImported log, searched back from the rollup's head in windows each node serves; and the
+// rollups' BridgeMinter logs the sends and Activity search the same way (src/lib/logs.ts). fetch is
 // replaced: nothing leaves the machine. The records' values are read from the records, which grow
 // with every relayer run.
 
@@ -19,6 +20,7 @@ import { nextField, type Field } from "../src/lib/field.ts";
 import { selector } from "../src/lib/hashes.ts";
 import type { Hex } from "../src/lib/hex.ts";
 import { HEADER_IMPORTED, MAX_LOG_CALLS, MIN_LOG_RANGE, lagMinutes, readClient, recordedClient, searchImport, setsBehind, thresholdOf, type ClientState } from "../src/lib/lc-read.ts";
+import { MAX_LOG_WINDOWS, searchLogs } from "../src/lib/logs.ts";
 import { AllFailed, resetBatching, type Endpoint } from "../src/lib/rpc.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -310,4 +312,144 @@ test("past the most calls a search makes, or back at its start, the import is ol
   resetBatching();
   rangeNodes({ [PUBLICNODE_BASE]: 50_000 }, null);
   assert.deepEqual(await searchImport(BASE_SEPOLIA, LC, IMPORTED, head - 80_000, head), { before: { block: head - 80_000, at: (1_700_000_000 + head - 80_000) * 1000 } });
+});
+
+// ---------------------------------------------------------------------------------------------
+// A rollup's BridgeMinter logs for the sends and Activity (src/lib/logs.ts): a burn or a mint by its
+// nonce, the burns of an address, in the windows each node serves
+
+const MINTER_ROLLUP: Hex = "0xdc31a3bc1354545eeb985aad7b2aa662e9272348";
+const BURN_TOPIC: Hex = `0x${"b0".repeat(32)}`;
+
+/** Nodes holding a log at each of `at`, capped per URL as `cap` says (no cap: any range), and `down` URLs answering HTTP 503. */
+function minterNodes(cap: Record<string, number>, at: number[], down: string[] = []) {
+  const searched: { url: string; from: number; to: number }[] = [];
+  fakeNodes((url, c) => {
+    if (c.method !== "eth_getLogs") return { error: { code: -32601, message: `no ${c.method} here` } };
+    const f = (c.params as [{ address: string; topics: (string | null)[]; fromBlock: Hex; toBlock: Hex }])[0];
+    assert.deepEqual([f.address, f.topics], [MINTER_ROLLUP, [BURN_TOPIC, null]]);
+    const from = Number(BigInt(f.fromBlock));
+    const to = Number(BigInt(f.toBlock));
+    searched.push({ url, from, to });
+    const max = cap[url] ?? Number.POSITIVE_INFINITY;
+    if (to - from + 1 > max) return { error: { code: -32000, message: `exceed maximum block range: ${max}` } };
+    const log = (n: number) => ({ address: MINTER_ROLLUP, topics: [BURN_TOPIC], data: "0x", blockNumber: hex(n), transactionHash: `0x${n.toString(16).padStart(64, "0")}` });
+    return { result: at.filter((n) => n >= from && n <= to).map(log) };
+  }, down);
+  return searched;
+}
+
+const MINTER_FILTER = { address: MINTER_ROLLUP, topics: [BURN_TOPIC, null] };
+
+test("a rollup's minter logs are searched back from its head in 50,000-block windows, never through sepolia.base.org, oldest first in the answer", async () => {
+  // Base Sepolia's minter was deployed at 51,063,602 (README row 94); a burn at 51,177,673 (row 108) and another later.
+  const head = 51_200_000;
+  const searched = minterNodes({ [PUBLICNODE_BASE]: 50_000, [BASE_OFFICIAL]: 200 }, [51_177_673, 51_190_000]);
+  const r = await searchLogs(BASE_SEPOLIA, MINTER_FILTER, 51_063_602, head);
+  assert.deepEqual(
+    r.logs.map((l) => Number(BigInt(l.blockNumber))),
+    [51_177_673, 51_190_000],
+  );
+  assert.equal(r.oldest, 51_063_602);
+  assert.deepEqual(
+    searched.map((s) => [s.url, s.from, s.to]),
+    [
+      [PUBLICNODE_BASE, 51_150_001, 51_200_000],
+      [PUBLICNODE_BASE, 51_100_001, 51_150_000],
+      [PUBLICNODE_BASE, 51_063_602, 51_100_000],
+    ],
+  );
+});
+
+test("a lookup by nonce stops at the newest window that holds the log; past the most windows a search says where it stopped", async () => {
+  const head = 51_300_000;
+  const searched = minterNodes({ [PUBLICNODE_BASE]: 50_000 }, [51_177_673]);
+  const r = await searchLogs(BASE_SEPOLIA, MINTER_FILTER, 51_063_602, head, { first: true });
+  assert.deepEqual(r.logs.map((l) => l.transactionHash), [`0x${(51_177_673).toString(16).padStart(64, "0")}`]);
+  assert.equal(searched.length, 3);
+  assert.equal(r.oldest, head - 150_000 + 1);
+  // Nothing within reach: the search stops after its most windows, and names the oldest block it searched.
+  resetBatching();
+  minterNodes({ [PUBLICNODE_BASE]: 50_000 }, []);
+  const none = await searchLogs(BASE_SEPOLIA, MINTER_FILTER, 0, head, { maxCalls: MAX_LOG_WINDOWS });
+  assert.deepEqual(none, { logs: [], oldest: head - 50_000 * MAX_LOG_WINDOWS + 1, newest: head });
+});
+
+test("a log that follows a known block (a lock's mint, a burn after the wallet was asked) is searched on from that block, oldest first: found in its first window however long ago", async () => {
+  // Lock 4's mint at Base 51,159,736 (README row 106), looked for three weeks of Base Sepolia later: newest first, 24 windows reach 1.2 M blocks, short of it.
+  const mint = 51_159_736;
+  const head = mint + 3 * 7 * 24 * 60 * 60 * 5;
+  minterNodes({ [PUBLICNODE_BASE]: 50_000 }, [mint]);
+  const back = await searchLogs(BASE_SEPOLIA, MINTER_FILTER, mint - 3_000, head, { first: true });
+  assert.deepEqual(back.logs, []);
+  assert.equal(back.oldest, head - 50_000 * MAX_LOG_WINDOWS + 1);
+  assert.ok(back.oldest > mint - 3_000, "the newest-first search stops short of the lock");
+  // From the lock on, oldest first: one call.
+  resetBatching();
+  const searched = minterNodes({ [PUBLICNODE_BASE]: 50_000 }, [mint]);
+  const on = await searchLogs(BASE_SEPOLIA, MINTER_FILTER, mint - 3_000, head, { first: true, order: "oldest" });
+  assert.deepEqual(
+    on.logs.map((l) => Number(BigInt(l.blockNumber))),
+    [mint],
+  );
+  assert.deepEqual(
+    searched.map((s) => [s.url, s.from, s.to]),
+    [[PUBLICNODE_BASE, mint - 3_000, mint - 3_000 + 49_999]],
+  );
+  assert.deepEqual([on.oldest, on.newest], [mint - 3_000, mint - 3_000 + 49_999]);
+  // Without `first`, every window from the start, oldest first, as far as the calls reach: the blocks searched say how far.
+  resetBatching();
+  minterNodes({ [PUBLICNODE_BASE]: 50_000 }, [mint, mint + 120_000]);
+  const all = await searchLogs(BASE_SEPOLIA, MINTER_FILTER, mint - 3_000, head, { order: "oldest", maxCalls: 3 });
+  assert.deepEqual(
+    all.logs.map((l) => Number(BigInt(l.blockNumber))),
+    [mint, mint + 120_000],
+  );
+  assert.deepEqual([all.oldest, all.newest], [mint - 3_000, mint - 3_000 + 150_000 - 1]);
+  // A window that fails on the public node: sepolia.base.org takes too few blocks to search with, so nothing answers.
+  resetBatching();
+  minterNodes({ [PUBLICNODE_BASE]: 50_000 }, [mint], [PUBLICNODE_BASE]);
+  await assert.rejects(searchLogs(BASE_SEPOLIA, MINTER_FILTER, mint - 3_000, head, { order: "oldest" }), AllFailed);
+});
+
+test("on Arbitrum Sepolia an oldest-first search is one call on its own node, and goes on in the public node's windows from where it failed", async () => {
+  const head = 323_700_000;
+  const one = minterNodes({ [PUBLICNODE_ARB]: 50_000 }, [323_534_868]);
+  const r = await searchLogs(ARBITRUM_SEPOLIA, MINTER_FILTER, 323_530_000, head, { first: true, order: "oldest" });
+  assert.equal(r.logs.length, 1);
+  assert.deepEqual(one.map((s) => [s.url, s.from, s.to]), [[ARB_OFFICIAL, 323_530_000, head]]);
+  resetBatching();
+  const failed = minterNodes({ [PUBLICNODE_ARB]: 50_000 }, [323_534_868], [ARB_OFFICIAL]);
+  const again = await searchLogs(ARBITRUM_SEPOLIA, MINTER_FILTER, 323_530_000, head, { first: true, order: "oldest" });
+  assert.equal(again.logs.length, 1);
+  assert.deepEqual(
+    failed.filter((s) => s.url === PUBLICNODE_ARB).map((s) => [s.from, s.to]),
+    [[323_530_000, 323_579_999]],
+  );
+});
+
+test("on Arbitrum Sepolia its own node takes the whole range in one call; when it fails, the public node goes on in windows", async () => {
+  const head = 323_600_000;
+  const one = minterNodes({ [PUBLICNODE_ARB]: 50_000 }, [323_549_062]);
+  const r = await searchLogs(ARBITRUM_SEPOLIA, MINTER_FILTER, 323_463_305, head);
+  assert.equal(r.logs.length, 1);
+  assert.deepEqual(
+    one.map((s) => [s.url, s.from, s.to]),
+    [[ARB_OFFICIAL, 323_463_305, head]],
+  );
+  resetBatching();
+  const failed = minterNodes({ [PUBLICNODE_ARB]: 50_000 }, [323_549_062], [ARB_OFFICIAL]);
+  const again = await searchLogs(ARBITRUM_SEPOLIA, MINTER_FILTER, 323_463_305, head, { first: true });
+  assert.equal(again.logs.length, 1);
+  assert.deepEqual(
+    failed.filter((s) => s.url === PUBLICNODE_ARB).map((s) => [s.from, s.to]),
+    [
+      [head - 49_999, head],
+      [323_500_001, 323_550_000],
+    ],
+  );
+  // No node that searches: said so.
+  resetBatching();
+  minterNodes({}, [], [PUBLICNODE_BASE]);
+  await assert.rejects(searchLogs(BASE_SEPOLIA, MINTER_FILTER, 0, head), AllFailed);
 });

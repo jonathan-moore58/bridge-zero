@@ -1,13 +1,19 @@
-// The V3 light client on the rollups of ./dests.ts, read live for the Network page: its set, its
-// latest header, its threshold and pause flags (../lib/lc-read.ts), every 30 s while the page is open
-// and the tab visible. A failed read follows the rule of every other card (../lib/field.ts): the last
-// live answer stays, else the records' latest import shows as Recorded, else "Could not read".
+// The V3 light client on the rollups of ./dests.ts, read live for the Network page and for the
+// status of a page about a rollup (net.ts, App.tsx): its set, its latest header, its threshold and
+// pause flags (../lib/lc-read.ts), every 30 s while the page is open and the tab visible. And the
+// bridge there, for the Network page's vault card: wtPOT's supply on each rollup, its minter's
+// burns and those the vault has not released. A failed read follows the rule of every other card
+// (../lib/field.ts): the last live answer stays, else the records' value shows as Recorded, else
+// "Could not read".
 
-import { records } from "../lib/chains.ts";
-import { nextField, type Field } from "../lib/field.ts";
+import { decode, encodeCall } from "../lib/abi.ts";
+import { V3_EVM, VAULT, records } from "../lib/chains.ts";
+import { nextField, type Field, type Recorded } from "../lib/field.ts";
+import type { Hex } from "../lib/hex.ts";
 import { readClient, recordedClient, searchImport, type ClientState } from "../lib/lc-read.ts";
+import { burnId } from "../lib/proofs.ts";
 import { request } from "../lib/rpc.ts";
-import { ROLLUPS, destOf, type Dest } from "./dests.ts";
+import { ROLLUPS, deployed, destOf, type Dest } from "./dests.ts";
 import { Box, useBox } from "./store.ts";
 
 export type RollupKey = "base-sepolia" | "arbitrum-sepolia";
@@ -115,3 +121,77 @@ export function lookImport(key: RollupKey, c: ClientState): Promise<ImportLookup
   lookups.set(id, p);
   return p;
 }
+
+// ---------------------------------------------------------------------------------------------
+// wtPOT and the burns on each rollup: one vault backs wtPOT on every chain, so the Network page
+// sets its outstanding against the supply on all three, and counts the burns waiting on each
+
+/** wtPOT's totalSupply() on a rollup, its BridgeMinter's burnCount(), and how many of those the vault has not released (null when that could not be read). */
+export interface RollupSupply {
+  supply: bigint;
+  burns: number;
+  waiting: number | null;
+}
+
+/** The burn ids released(burnId) answered true for: each is read until it is released, then not again. */
+const releasedIds = new Set<string>(records.returnPath.releases.filter((r) => r.status === "released" && r.burnId).map((r) => r.burnId as string));
+
+/** The records' supply on a rollup: auto-mint's mints there less its recorded burns, and those of the burns no release names. */
+function recordedSupply(key: RollupKey): Recorded<RollupSupply> | null {
+  const r = records.rollupRuns[key];
+  if (!r) return null;
+  const minted = r.mints.reduce((n, m) => n + BigInt(m.amountNative ?? "0"), 0n);
+  const burns = r.burns.filter((b) => b.ok === true && b.status === 1);
+  const burned = burns.reduce((n, b) => n + BigInt(b.amount), 0n);
+  const from = [r.from, ...new Set(r.mints.map((m) => m.from))].join(" and ");
+  return { value: { supply: minted - burned, burns: burns.length, waiting: burns.filter((b) => !b.burnId || !releasedIds.has(b.burnId)).length }, from };
+}
+
+async function readSupply(d: Dest): Promise<{ value: RollupSupply; endpoint: string }> {
+  const { minter, token } = deployed(d);
+  const call = (to: Hex, data: Hex) => request<Hex>([...d.rpcs], "eth_call", [{ to, data }, "latest"]);
+  const [supply, count] = await Promise.all([call(token, encodeCall("totalSupply()")), call(minter, encodeCall("burnCount()"))]);
+  const burns = Number(decode("uint256", count.result)[0] as bigint);
+  // burnIdOf(n) as BridgeMinter derives it, with this chain's id, recomputed here rather than asked for.
+  const open = Array.from({ length: burns }, (_, n) => burnId(BigInt(d.chainId), minter, BigInt(n))).filter((id) => !releasedIds.has(id));
+  let waiting: number | null = 0;
+  try {
+    const answers = await Promise.all(open.map((id) => request<Hex>(V3_EVM, "eth_call", [{ to: VAULT, data: encodeCall("released(bytes32)", [id]) }, "latest"])));
+    answers.forEach((a, i) => {
+      if (decode("bool", a.result)[0] === true) releasedIds.add(open[i] ?? "");
+    });
+    waiting = open.filter((id) => !releasedIds.has(id)).length;
+  } catch {
+    waiting = null;
+  }
+  return { value: { supply: decode("uint256", supply.result)[0] as bigint, burns, waiting }, endpoint: supply.endpoint.label };
+}
+
+const supplies = new Map<RollupKey, Box<Field<RollupSupply>>>();
+
+function supplyOf(key: RollupKey): Box<Field<RollupSupply>> {
+  let b = supplies.get(key);
+  if (!b) {
+    const rec = recordedSupply(key);
+    b = new Box<Field<RollupSupply>>({ status: "loading", value: rec?.value, from: rec?.from });
+    supplies.set(key, b);
+  }
+  return b;
+}
+
+async function readSupplyOf(d: Dest, key: RollupKey): Promise<void> {
+  const b = supplyOf(key);
+  b.set(await nextField(b.get(), () => readSupply(d), recordedSupply(key)));
+}
+
+/** Reads each rollup's wtPOT and burns now, then every minute while the tab is visible: the Network page's, while it is open. */
+export function watchSupplies(): () => void {
+  const all = () => Promise.allSettled(ROLLUPS.map((d) => readSupplyOf(d, d.key)));
+  void all();
+  const t = setInterval(() => {
+    if (!document.hidden) void all();
+  }, 60_000);
+  return () => clearInterval(t);
+}
+
+export const useRollupSupply = (key: RollupKey): Field<RollupSupply> => useBox(supplyOf(key));

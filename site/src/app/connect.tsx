@@ -3,10 +3,10 @@
 // sheet for a browser that has none, and adding wtPOT to the wallet.
 
 import { useEffect, useState } from "preact/hooks";
-import { TOKEN, V3_EVM } from "../lib/chains.ts";
+import { V3_EVM } from "../lib/chains.ts";
 import { checksum } from "../lib/display.ts";
 import { request } from "../lib/rpc.ts";
-import { MINT_GAS } from "./facts.ts";
+import { deployed, destOf, type DestKey } from "./dests.ts";
 import { ChainMark, walletMark } from "./marks.tsx";
 import { connectPolka, normalize, pickAccount, polka, polkaList } from "./polkadot.ts";
 import { useBox } from "./store.ts";
@@ -15,30 +15,31 @@ import { faultOf, faultText, PORTALDOT_WALLET_URL, type AccountRow, type PolkaWa
 import { Chip, Icon, closeSheet, fmt, openSheet, short, toast } from "./ui.tsx";
 import { addWtpot, connect, wallet, walletCode, wallets } from "./wallet.ts";
 
-/** What an Ethereum wallet is wanted for, where only it can do it: the Sepolia address filled in, the mint, the burn, or any of these. */
+/** What an Ethereum wallet is wanted for, where only it can do it: the destination's address filled in, the mint, the burn, or any of these. */
 export type EthUse = "fill" | "mint" | "burn" | "send";
 
 /** A Polkadot wallet is in this browser, or connected. */
 const polkaHere = (): boolean => polkaList.get().length > 0 || polka.get().status === "on";
 
-/** No Ethereum wallet in this browser: the sheet that says so, for `use`; with no Polkadot wallet either, the sheet for a browser with none. */
-function noEthWallet(use: EthUse): void {
-  if (polkaHere()) openNoEthWallet(use);
+/** No Ethereum wallet in this browser: the sheet that says so, for `use` on `dest`; with no Polkadot wallet either, the sheet for a browser with none. */
+function noEthWallet(use: EthUse, dest: DestKey): void {
+  if (polkaHere()) openNoEthWallet(use, dest);
   else openNoWallet();
 }
 
-/** Adds wtPOT to the wallet, and says what the wallet answered. A wallet not connected yet is connected first. */
-export async function addWtpotToWallet(): Promise<void> {
+/** Adds wtPOT on `dest` to the wallet, and says what the wallet answered. A wallet not connected yet is connected first. */
+export async function addWtpotToWallet(dest: DestKey = "sepolia"): Promise<void> {
+  const d = destOf(dest);
   const status = wallet.get().status;
-  if (status === "none") return noEthWallet("send");
-  if (status === "off") return openWalletPicker(() => void addWtpotToWallet(), "evm");
+  if (status === "none") return noEthWallet("send", dest);
+  if (status === "off") return openWalletPicker(() => void addWtpotToWallet(dest), "evm", "send", dest);
   if (status === "connecting") return toast("info", "Check your wallet", "It already has a connection request open.");
-  const token = `${short(checksum(TOKEN))} on Sepolia, 14 decimals.`;
+  const token = `${short(checksum(deployed(d).token))} on ${d.short}, 14 decimals.`;
   try {
-    if (await addWtpot()) toast("verify", "wtPOT added to your wallet", token);
+    if (await addWtpot(dest)) toast("verify", "wtPOT added to your wallet", token);
     else toast("info", "wtPOT not added", `Your wallet did not add it. The token is ${token}`);
   } catch (e) {
-    if (walletCode(e) !== 4001) toast("revert", "Your wallet refused", (e as Error).message || "Switch it to Sepolia, then add wtPOT.");
+    if (walletCode(e) !== 4001) toast("revert", "Your wallet refused", (e as Error).message || `Switch it to ${d.short}, then add wtPOT.`);
   }
 }
 
@@ -222,19 +223,22 @@ function Picker({ after, only }: { after: (() => void) | undefined; only: "evm" 
   );
 }
 
-/** Connects an Ethereum wallet first when none is, then runs `after`: what only an Ethereum wallet sends (a burn, a mint, `use`), so the picker shows those. */
-export function connectThen(after: () => void, use: EthUse = "send"): void {
+/**
+ * Connects an Ethereum wallet first when none is, then runs `after`: what only an Ethereum wallet
+ * sends (a burn, a mint, `use`) on the destination `dest`, so the picker shows those.
+ */
+export function connectThen(after: () => void, use: EthUse = "send", dest: DestKey = "sepolia"): void {
   const status = wallet.get().status;
   if (status === "on") return after();
-  if (status === "none") return noEthWallet(use);
+  if (status === "none") return noEthWallet(use, dest);
   if (status === "connecting") return toast("info", "Check your wallet", "It already has a connection request open.");
-  openWalletPicker(after, "evm", use);
+  openWalletPicker(after, "evm", use, dest);
 }
 
-/** The wallets this browser has, to connect one; `after` runs once it is connected. `only` "evm": Ethereum wallets alone, wanted for `use`. */
-export function openWalletPicker(after?: () => void, only: "evm" | null = null, use: EthUse = "send"): void {
+/** The wallets this browser has, to connect one; `after` runs once it is connected. `only` "evm": Ethereum wallets alone, wanted for `use` on `dest`. */
+export function openWalletPicker(after?: () => void, only: "evm" | null = null, use: EthUse = "send", dest: DestKey = "sepolia"): void {
   const none = !wallets.get().length;
-  if (none && only === "evm") return noEthWallet(use);
+  if (none && only === "evm") return noEthWallet(use, dest);
   if (none && !polkaHere()) return openNoWallet();
   openSheet({ title: only === "evm" ? "Connect an Ethereum wallet" : "Connect a wallet", cls: "picker", body: <Picker after={after} only={only} /> });
 }
@@ -358,32 +362,42 @@ function AccountList({ wallet: w, rows: first, after }: { wallet: PolkaWallet; r
   );
 }
 
-/** What an Ethereum wallet does for a visitor with a Polkadot wallet, by `use`. */
-const ETH_USE: Record<EthUse, string> = {
-  fill: "Its mint is sent on Sepolia from an Ethereum wallet such as MetaMask, with Sepolia ETH for gas, and that wallet's address can fill in the recipient.",
-  mint: `The mint is a Sepolia transaction: you send it from an Ethereum wallet such as MetaMask, with Sepolia ETH for its gas, about ${MINT_GAS} M gas.`,
-  burn: "The way back's burn is a Sepolia transaction: you send it from an Ethereum wallet such as MetaMask, with Sepolia ETH for its gas.",
-  send: "The mint you send yourself and the way back's burn are Sepolia transactions, sent from an Ethereum wallet such as MetaMask, with Sepolia ETH for gas.",
-};
+/** What an Ethereum wallet does for a visitor with a Polkadot wallet, by `use`, on `dest` (Sepolia, or a rollup). */
+function ethUse(use: EthUse, dest: DestKey): string {
+  const d = destOf(dest);
+  switch (use) {
+    case "fill":
+      return `Its mint is sent on ${d.short} from an Ethereum wallet such as MetaMask, with ${d.short} ETH for gas, and that wallet's address can fill in the recipient.`;
+    case "mint":
+      return `The mint is a ${d.short} transaction: you send it from an Ethereum wallet such as MetaMask, with ${d.short} ETH for its gas, about ${d.mintGas.gas} M gas.`;
+    case "burn":
+      return `The way back's burn is a ${d.short} transaction: you send it from an Ethereum wallet such as MetaMask, with ${d.short} ETH for its gas.`;
+    case "send":
+      return `The mint you send yourself and the way back's burn are ${d.short} transactions, sent from an Ethereum wallet such as MetaMask, with ${d.short} ETH for gas.`;
+  }
+}
 
-/** A Polkadot wallet here and no Ethereum wallet: what an Ethereum wallet is wanted for (`use`), and where to get one. */
-export function openNoEthWallet(use: EthUse = "send"): void {
+/** A Polkadot wallet here and no Ethereum wallet: what an Ethereum wallet is wanted for (`use`, on `dest`), and where to get one. */
+export function openNoEthWallet(use: EthUse = "send", dest: DestKey = "sepolia"): void {
   const name = polka.get().wallet?.name ?? polkaList.get()[0]?.name ?? "Your Polkadot wallet";
   openSheet({
     title: "No Ethereum wallet in this browser",
     body: (
       <div class="sheet-stack">
         <div class="empty-mark" aria-hidden="true">
-          <ChainMark mark="ethereum" cls="mark--28" />
+          <ChainMark mark={destOf(dest).mark} cls="mark--28" />
         </div>
         <p class="sheet-lead">
-          {name} signs {use === "fill" || use === "mint" ? "the lock" : "locks"} on V3. {ETH_USE[use]} Install one, then reload this page.
+          {name} signs {use === "fill" || use === "mint" ? "the lock" : "locks"} on V3. {ethUse(use, dest)} Install one, then reload this page.
         </p>
         <a class="btn btn--primary btn--lg btn--block" href="https://metamask.io/download/" target="_blank" rel="noopener" data-autofocus>
           Get MetaMask
           <Icon id="i-external" />
         </a>
-        <p class="sheet-foot">Any public Sepolia faucet gives Sepolia ETH. On a phone, open this page in the MetaMask app's browser.</p>
+        <p class="sheet-foot">
+          {dest === "sepolia" ? "Any public Sepolia faucet gives Sepolia ETH." : `${destOf(dest).short}'s own bridge takes Sepolia ETH there, and its public faucets give some.`} On a phone,
+          open this page in the MetaMask app's browser.
+        </p>
       </div>
     ),
   });

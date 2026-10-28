@@ -30,6 +30,8 @@ import type {
   ReturnPath,
   Roadmap,
   RollupClientFacts,
+  RollupMint,
+  RollupRuns,
   RunStep,
 } from "../src/lib/records-types.ts";
 
@@ -467,34 +469,45 @@ export function readAutoMints(dir: string): Map<number, AutoMint> {
   const minted = new Map<number, AutoMint>();
   const names = existsSync(dir) ? readdirSync(dir).filter((f) => AUTOMINT_FILE.test(f)).sort() : [];
   for (const name of names) {
-    const attempts = new Map<string, Json>();
-    const results: Json[] = [];
-    for (const line of readFileSync(join(dir, name), "utf8").split("\n")) {
-      if (!line.trim()) continue;
-      let e: Json;
-      try {
-        e = JSON.parse(line) as Json;
-      } catch {
-        continue;
-      }
-      if (e.kind === "attempt" && typeof e.id === "string" && !attempts.has(e.id)) attempts.set(e.id, e);
-      if (e.kind === "result" && e.outcome === "minted") results.push(e);
-    }
-    for (const e of results) {
-      // The lock's nonce is written as a decimal string (a bigint), or as a number.
-      const lock = typeof e.lock === "number" ? e.lock : typeof e.lock === "string" && /^\d+$/.test(e.lock) ? Number(e.lock) : null;
-      if (lock === null || minted.has(lock)) continue;
-      const a = typeof e.id === "string" ? attempts.get(e.id) : undefined;
-      const same = a !== undefined && String(a.lock) === String(e.lock);
+    for (const { lock, result: e, attempt: a } of mintedLines(join(dir, name))) {
+      if (minted.has(lock)) continue;
       minted.set(lock, {
-        amountNative: same && typeof a.amount === "string" && /^\d+$/.test(a.amount) ? a.amount : null,
-        recipient: same ? optHex(a.recipient) : null,
+        amountNative: a && typeof a.amount === "string" && /^\d+$/.test(a.amount) ? a.amount : null,
+        recipient: a ? optHex(a.recipient) : null,
         txHash: optHex(e.txHash),
         file: name,
       });
     }
   }
   return minted;
+}
+
+/**
+ * An auto-mint history's mints, in its order: each "result" line with the outcome "minted", its
+ * lock's nonce, and the "attempt" line of the same id and lock when the history has it. A line cut
+ * short by a crash is skipped, as the tool itself skips it.
+ */
+function mintedLines(path: string): { lock: number; result: Json; attempt: Json | null }[] {
+  const attempts = new Map<string, Json>();
+  const results: Json[] = [];
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    let e: Json;
+    try {
+      e = JSON.parse(line) as Json;
+    } catch {
+      continue;
+    }
+    if (e.kind === "attempt" && typeof e.id === "string" && !attempts.has(e.id)) attempts.set(e.id, e);
+    if (e.kind === "result" && e.outcome === "minted") results.push(e);
+  }
+  return results.flatMap((e) => {
+    // The lock's nonce is written as a decimal string (a bigint), or as a number.
+    const lock = typeof e.lock === "number" ? e.lock : typeof e.lock === "string" && /^\d+$/.test(e.lock) ? Number(e.lock) : null;
+    if (lock === null) return [];
+    const a = typeof e.id === "string" ? attempts.get(e.id) : undefined;
+    return [{ lock, result: e, attempt: a !== undefined && String(a.lock) === String(e.lock) ? a : null }];
+  });
 }
 
 /** A lock, by its vault nonce: its amount in native base units, its recipient, and the record that names it. */
@@ -757,6 +770,71 @@ function readRollup(root: string, dir: string, network: keyof typeof ROLLUPS): R
     imports,
     latestImport: last ? { number: last.number, hash: last.hash, setId: last.setAfter, txHash: last.txHash, block: last.block, settledAt: last.settledAt, from: last.from } : null,
   };
+}
+
+/** A burn step of a bridge record (deployments/<network>-bridge.json): its transaction and what it burned, for whom on V3. */
+function burnRecordOf(s: Json, file: string): BurnRecord {
+  const b = obj(s.burn, file, "burn step .burn");
+  return {
+    txHash: optHex(s.txHash),
+    block: optNum(s.block),
+    ok: typeof s.ok === "boolean" ? s.ok : null,
+    status: optNum(s.status),
+    signedAt: optStr(s.signedAt),
+    amount: str(b.amount, file, "burn.amount"),
+    v3Recipient: hex(b.v3Recipient, file, "burn.v3Recipient", 20),
+    burnNonce: optStr(b.burnNonce),
+    burnId: optHex(b.burnId),
+  };
+}
+
+/**
+ * The bridge on a rollup, by the records: its burns, deployments/<network>-bridge.json's burn steps
+ * read as Sepolia's are, and the locks auto-mint minted there, from its histories
+ * automint-<network>-<sender>.jsonl in `dir`: the mint's transaction, its rollup block (the result
+ * line's `sepoliaBlock`, as auto-mint names the destination's block on every network), its gas and
+ * time, and from the attempt line what the mint pays and the V3 block it proved. Null when
+ * deployments/ has no bridge record for the network.
+ */
+function readRollupRuns(root: string, dir: string, network: keyof typeof ROLLUPS): RollupRuns | null {
+  const file = `deployments/${network}-bridge.json`;
+  if (!existsSync(join(root, file))) return null;
+  const b = readJson(root, file);
+  if (b.network !== network) fail(file, `network is ${String(b.network)}, not ${network}`);
+  const chainId = num(b.chainId, file, "chainId");
+  if (chainId !== ROLLUPS[network]) fail(file, `chainId ${chainId}, not ${ROLLUPS[network]}`);
+  const minter = hex(obj(b.contracts, file, "contracts").BridgeMinter, file, "contracts.BridgeMinter", 20);
+  const steps = arr(b.steps, file, "steps").map((s, i) => obj(s, file, `step ${i}`));
+  const pattern = new RegExp(`^automint-${network}-(0x[0-9a-f]{40})\\.jsonl$`);
+  const names = existsSync(dir) ? readdirSync(dir).filter((f) => pattern.test(f)).sort() : [];
+  const mints: RollupMint[] = [];
+  for (const name of names) {
+    const rel = relative(root, join(dir, name)).split(sep).join("/");
+    const sender = (pattern.exec(name)?.[1] ?? fail(rel, "no sender in the file name")) as Hex;
+    for (const { lock, result: e, attempt: a } of mintedLines(join(dir, name))) {
+      const txHash = optHex(e.txHash);
+      const block = optNum(e.sepoliaBlock);
+      if (!txHash || block === null || mints.some((m) => m.nonce === lock)) continue;
+      const v3 = a && typeof a.block === "object" && a.block !== null ? (a.block as Json) : null;
+      const v3Number = v3 ? optNum(v3.number) : null;
+      const v3Hash = v3 ? optHex(v3.hash) : null;
+      mints.push({
+        nonce: lock,
+        amountNative: a && typeof a.amount === "string" && /^\d+$/.test(a.amount) ? a.amount : null,
+        recipient: a ? optHex(a.recipient) : null,
+        txHash,
+        block,
+        gasUsed: optNum(e.gasUsed),
+        at: optStr(e.at),
+        v3Block: v3Number !== null && v3Hash?.length === 66 ? { number: v3Number, hash: v3Hash } : null,
+        path: a ? optStr(a.path) : null,
+        sender,
+        from: rel,
+      });
+    }
+  }
+  mints.sort((x, y) => x.nonce - y.nonce);
+  return { network, from: file, minter, burns: steps.filter((s) => s.kind === "burn").map((s) => burnRecordOf(s, file)), mints };
 }
 
 function signingSetKeys(fixture: Json, file: string): { setId: number; keys: Hex[] } {
@@ -1104,22 +1182,7 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
   if (lightClients.v3.genesis !== String(v3.genesisHash).toLowerCase()) fail(V3F, "genesis differs from the V3 probe's");
 
   // The return path, if the records hold any of it
-  const burns: BurnRecord[] = steps
-    .filter((s) => s.kind === "burn")
-    .map((s) => {
-      const b = obj(s.burn, BR, "burn step .burn");
-      return {
-        txHash: optHex(s.txHash),
-        block: optNum(s.block),
-        ok: typeof s.ok === "boolean" ? s.ok : null,
-        status: optNum(s.status),
-        signedAt: optStr(s.signedAt),
-        amount: str(b.amount, BR, "burn.amount"),
-        v3Recipient: hex(b.v3Recipient, BR, "burn.v3Recipient", 20),
-        burnNonce: optStr(b.burnNonce),
-        burnId: optHex(b.burnId),
-      };
-    });
+  const burns: BurnRecord[] = steps.filter((s) => s.kind === "burn").map((s) => burnRecordOf(s, BR));
   const releases: ReleaseRecord[] = (Array.isArray(v3.releases) ? v3.releases : []).map((r, i) => {
     const rel = obj(r, V3F, `release ${i}`);
     const burn = typeof rel.burn === "object" && rel.burn !== null ? (rel.burn as Json) : {};
@@ -1291,6 +1354,7 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
     attacks,
     lightClients,
     rollups: { "base-sepolia": readRollup(root, relayDir, "base-sepolia"), "arbitrum-sepolia": readRollup(root, relayDir, "arbitrum-sepolia") },
+    rollupRuns: { "base-sepolia": readRollupRuns(root, automintDir, "base-sepolia"), "arbitrum-sepolia": readRollupRuns(root, automintDir, "arbitrum-sepolia") },
     relay: { files: relay.files, entries: relayEntries },
     returnPath,
     totals,

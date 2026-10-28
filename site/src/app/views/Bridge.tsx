@@ -1,20 +1,19 @@
 // The bridge: the card (direction, amount, what each way trusts, speed, cost, the action), the strip
 // below it with each way's recorded numbers, and the card's sheets (pick a chain, review, get ETH).
+// Each for the destination the card shows (../dests.ts): Sepolia, Base Sepolia or Arbitrum Sepolia,
+// its balance read, its recipient, its token mark, its costs and its facts.
 
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { MINTER, SEPOLIA, TOKEN, VAULT } from "../../lib/chains.ts";
+import { VAULT } from "../../lib/chains.ts";
 import { checksum } from "../../lib/display.ts";
 import { formatUnits } from "../../lib/format.ts";
 import type { Hex } from "../../lib/hex.ts";
 import { CALLS_PER_TX } from "../../lib/proof/plan.ts";
 import { request } from "../../lib/rpc.ts";
 import { openWalletPicker } from "../connect.tsx";
-import { destOf, destState, pickRows, type DestKey, type PickRow } from "../dests.ts";
+import { SENDS, burnKey, deployed, destOf, destState, lockKey, pickRows, type Dest, type DestKey, type PickRow } from "../dests.ts";
 import {
-  AUTO_TIME,
-  BURN_GAS,
-  BURN_GAS_FULL,
   CH,
   FAST_CAP,
   IMPORT_GAS,
@@ -22,21 +21,20 @@ import {
   LOCK_CEILING,
   LOCK_COST,
   LOCK_DEPOSIT,
-  MINT_GAS,
-  MINT_GAS_FULL,
   README,
   SPEED_NAME,
   SUBSTRATE_ROOM,
-  TIME,
   V3_RPC,
+  chainById,
   fromOf,
+  timeOf,
   toOf,
   type ChainFace,
   type ChainInfo,
   type Dir,
   type Speed,
 } from "../facts.ts";
-import { AUTO_MINT, autoMints } from "../handoff.ts";
+import { AUTO_MINT, RELAY_AFTER_CHANGE_MS, SET_CHANGES_TEXT, autoMints, mintDueAt, relayWait, utcClock } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
 import { loadChain, normalize, polka, polkaList, type PolkaState } from "../polkadot.ts";
@@ -47,19 +45,19 @@ import { checkRecipient, recipientNote, senderOf, shortSs58, type RecipientCheck
 import type { PreparedLock } from "../substrate/send.ts";
 import { DECIMALS, parseAmount } from "../txmath.ts";
 import { CopyChip, Icon, Mono, Nb, Tip, announce, closeSheet, fmt, openSheet, short, toast } from "../ui.tsx";
-import { readBalances, switchTo, wallet, walletCode, type WalletState } from "../wallet.ts";
+import { balancesOn, problemOf, readBalances, switchTo, wallet, walletCode, type WalletState } from "../wallet.ts";
 
 interface Form {
   amount: string;
   details: boolean;
   /** The wallet refused to add V3: show the network's parameters to add by hand. */
   addHelp: boolean;
-  /** A lock from a Polkadot wallet: the Sepolia address it pays, as typed or filled in from the Ethereum wallet. */
+  /** A lock from a Polkadot wallet: the address it pays on the destination, as typed or filled in from the Ethereum wallet. */
   to: string;
   toFrom: "typed" | "wallet";
   /**
-   * The chain on the other side of V3 (../dests.ts): one the app sends to, so Sepolia. The card's
-   * facts are Sepolia's; a rollup can be picked only once it is in SENDS, with those facts its own.
+   * The chain on the other side of V3 (../dests.ts): one the app sends to (SENDS), Sepolia unless
+   * the visitor picks a rollup. The card's balance, recipient, token, costs and strip are its.
    */
   dest: DestKey;
 }
@@ -67,7 +65,34 @@ interface Form {
 /** Kept across pages, so the amount survives a visit to Activity. */
 const form = new Box<Form>({ amount: "1", details: false, addHelp: false, to: "", toFrom: "typed", dest: "sepolia" });
 
-const setForm = (p: Partial<Form>) => form.set((f) => ({ ...f, ...p }));
+/** The destination the card shows, kept apart from the rest of the form: the top bar's status and the wallet button follow it, not each keystroke. */
+const cardDest = new Box<DestKey>(form.get().dest);
+
+const setForm = (p: Partial<Form>) => {
+  form.set((f) => ({ ...f, ...p }));
+  cardDest.set(form.get().dest);
+};
+
+export const useCardDest = (): DestKey => useBox(cardDest);
+
+/** "≈ 84 s" as the card's big figures set it: the number, and its unit apart. */
+function timeParts(t: string): [string, string] {
+  const i = t.lastIndexOf(" ");
+  return i < 0 ? [t, ""] : [t.slice(0, i), t.slice(i + 1)];
+}
+
+/**
+ * Fast and Standard in a destination's words: the confirmations Fast waits for (3 on Sepolia, the
+ * 36 s of a rollup's blocks), the finality Standard waits for, and what could undo a fast burn.
+ */
+function backWords(d: Dest): { confs: string; final: string; reorg: string } {
+  if (d.key === "sepolia") return { confs: "3 Sepolia confirmations", final: "Sepolia finality", reorg: "A reorg deeper than 3 blocks could undo the burn" };
+  return {
+    confs: `${d.fastConfirmations} ${d.short} blocks (36 s)`,
+    final: `${d.short}'s finality (its batch final on Sepolia)`,
+    reorg: `Until its batch is on Sepolia, ${d.short}'s sequencer alone orders its latest blocks: a restart or a failover that drops them could undo the burn`,
+  };
+}
 
 function amountValue(s: string): number {
   const v = parseFloat(s.replace(/,/g, ""));
@@ -91,9 +116,21 @@ function cleanAmount(raw: string): string {
   return v;
 }
 
+/**
+ * The way in's time for a lock to `dest` made at `now` whose auto-mint would wait for the relayer's
+ * run after a V3 set change (handoff.ts, relayWait): until auto-mint usually mints it after that
+ * run, by the clock. Null when it would not wait.
+ */
+function relayTime(dest: DestKey, now: number): readonly [string, string] | null {
+  const w = relayWait(dest, now);
+  return w ? [`≈ ${Math.max(1, Math.round((mintDueAt(dest, now) - now) / 60_000))} min`, `after the relayer's run at about ${utcClock(w.relay)}`] : null;
+}
+
 /** What the card needs to know, worked out once per render. */
 interface Facts {
   dir: Dir;
+  /** The destination the card shows: V3's other side. */
+  d: Dest;
   from: ChainInfo;
   to: ChainInfo;
   value: number;
@@ -107,50 +144,57 @@ interface Facts {
   wrong: boolean;
   fastOK: boolean;
   speed: Speed;
+  /** How long it usually takes, and where that comes from: on a rollup, the wait for the relayer's run when a lock made now would meet it (relayTime). */
   time: readonly [string, string];
   max: string;
-  /** The way in from a Polkadot wallet's account: it signs the lock, and the recipient is the Sepolia address given. */
+  /** The way in from a Polkadot wallet's account: it signs the lock, and the recipient is the address given on the destination. */
   sub: boolean;
   /** The way in below auto-mint's minimum. */
   below: boolean;
-  /** The way in, minted by auto-mint: an Ethereum wallet's lock of its minimum or more (handoff.ts). Otherwise the visitor mints it, with Sepolia ETH. */
+  /** The way in, minted by auto-mint: a lock of its minimum or more (handoff.ts). Otherwise the visitor mints it, with the destination's ETH. */
   auto: boolean;
-  /** The visitor's own Sepolia transaction is part of this transfer: the burn, or a mint auto-mint does not send. */
+  /** The visitor's own transaction on the destination is part of this transfer: the burn, or a mint auto-mint does not send. */
   ethNeeded: boolean;
-  /** A lock from a Polkadot wallet: the Sepolia address typed, checked. */
+  /** A lock from a Polkadot wallet: the destination's address typed, checked. */
   rc: RecipientCheck | null;
 }
 
 function work(dir: Dir, f: Form, w: WalletState, p: PolkaState): Facts {
-  const from = fromOf(dir);
-  const to = toOf(dir);
+  const d = destOf(f.dest);
+  const from = fromOf(dir, f.dest);
+  const to = toOf(dir, f.dest);
   const value = amountValue(f.amount);
   const sub = dir === "in" && p.status === "on" && p.account !== null;
   const evmOn = w.status === "on" && !!w.address;
   const conn = sub || evmOn;
-  const loading = sub ? p.balance === null : w.status === "connecting" || (conn && !w.balances);
+  // wtPOT and ETH as read on this card's destination: none until the read for it answers (wallet.ts, balancesOn).
+  const bals = w.balances?.dest === f.dest ? w.balances : null;
+  const loading = sub ? p.balance === null : w.status === "connecting" || (conn && !bals);
   const ready = conn && !loading;
-  const raw = sub ? p.balance : dir === "in" ? w.balances?.tpot : w.balances?.wtpot;
+  const raw = sub ? p.balance : dir === "in" ? bals?.tpot : bals?.wtpot;
   const bal = raw == null ? null : Number(raw) / 1e14;
-  const eth = evmOn && w.balances?.eth != null ? Number(w.balances.eth) / 1e18 : null;
+  const eth = evmOn && bals?.eth != null ? Number(bals.eth) / 1e18 : null;
   const room = dir === "in" ? (sub ? SUBSTRATE_ROOM : LOCK_CEILING) : 0;
   const exact = parseAmount(f.amount);
   const kind = sub ? "substrate" : "evm";
   const below = dir === "in" && exact !== null && exact < AUTO_MINT.min;
-  // Auto-mint mints an Ethereum wallet's lock of 0.001 tPOT or more, and no Polkadot wallet's yet
-  // (handoff.ts): the burn, and any other lock, need the visitor's Sepolia ETH. With no amount in,
-  // whether it takes this sender's locks at all.
+  // Auto-mint mints a lock of 0.001 tPOT or more, on every destination (handoff.ts): the burn, and
+  // any other lock, need the visitor's ETH on the destination. With no amount in, whether it takes
+  // this sender's locks at all.
   const auto = dir === "in" && autoMints(exact ?? AUTO_MINT.min, kind);
   const ethNeeded = dir === "back" || !auto;
   // The burn carries no speed: the watcher releases a burn of up to 1 tPOT fast (while no other fast
-  // release waits for finality), and a larger one after Sepolia's finality. So the card shows the
+  // release waits for finality), and a larger one after its chain's finality. So the card shows the
   // speed the amount gets; it offers no choice the watcher would not honour.
   const speed: Speed = value > FAST_CAP ? "std" : "fast";
   let max = "0";
   if (raw != null) max = dir === "back" ? units(raw, 14) : String(Math.max(0, Math.floor(((bal ?? 0) - room) * 100) / 100));
-  const rc = sub && p.account ? checkRecipient(f.to, { mapped: p.account.h160, others: othersOf(p), minter: MINTER, token: TOKEN, vault: VAULT }) : null;
+  const { minter, token } = deployed(d);
+  const rc = sub && p.account ? checkRecipient(f.to, { mapped: p.account.h160, others: othersOf(p), minter, token, vault: VAULT, chain: d.short }) : null;
+  const relay = auto ? relayTime(f.dest, Date.now()) : null;
   return {
     dir,
+    d,
     from,
     to,
     value,
@@ -164,7 +208,7 @@ function work(dir: Dir, f: Form, w: WalletState, p: PolkaState): Facts {
     wrong: !sub && ready && w.chainId !== null && w.chainId !== from.chainId,
     fastOK: value <= FAST_CAP,
     speed,
-    time: auto ? AUTO_TIME : TIME[dir === "in" ? "in" : speed],
+    time: relay ?? timeOf(f.dest, auto ? "auto" : dir === "in" ? "in" : speed),
     max,
     sub,
     below,
@@ -177,7 +221,7 @@ function work(dir: Dir, f: Form, w: WalletState, p: PolkaState): Facts {
 /** Each wallet account's address on V3, worked out once. */
 const h160s = new Map<string, Hex | null>();
 
-/** The V3 addresses of the other accounts the Polkadot wallet shares, and how to name each: keyless on Sepolia, like the connected one's. */
+/** The V3 addresses of the other accounts the Polkadot wallet shares, and how to name each: keyless on the destination, like the connected one's. */
 function othersOf(p: PolkaState): { h160: Hex; label: string }[] {
   const out: { h160: Hex; label: string }[] = [];
   for (const r of p.accounts) {
@@ -195,24 +239,26 @@ function othersOf(p: PolkaState): { h160: Hex; label: string }[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The Sepolia address a lock from a Polkadot wallet pays
+// The address a lock from a Polkadot wallet pays on the destination
 
 const notes = new Map<string, string | null>();
 
-/** What Sepolia says of a recipient the checks passed: a contract, or an address with no history (account.ts, recipientNote). Read once per address. */
-function useRecipientNote(address: Hex | null): string | null | undefined {
+/** What the destination says of a recipient the checks passed: a contract, or an address with no history (account.ts, recipientNote). Read once per address and chain. */
+function useRecipientNote(address: Hex | null, d: Dest): string | null | undefined {
   const [, bump] = useState(0);
+  const key = address ? `${d.key}:${address}` : null;
   useEffect(() => {
-    if (!address || notes.has(address)) return;
+    if (!address || !key || notes.has(key)) return;
     let live = true;
+    const evm = [...d.rpcs];
     const t = setTimeout(() => {
       void Promise.all([
-        request<string>(SEPOLIA, "eth_getCode", [address, "latest"]),
-        request<string>(SEPOLIA, "eth_getTransactionCount", [address, "latest"]),
-        request<string>(SEPOLIA, "eth_getBalance", [address, "latest"]),
+        request<string>(evm, "eth_getCode", [address, "latest"]),
+        request<string>(evm, "eth_getTransactionCount", [address, "latest"]),
+        request<string>(evm, "eth_getBalance", [address, "latest"]),
       ]).then(
         ([code, count, balance]) => {
-          notes.set(address, recipientNote(code.result, BigInt(count.result), BigInt(balance.result)));
+          notes.set(key, recipientNote(code.result, BigInt(count.result), BigInt(balance.result), d.short));
           if (live) bump((n) => n + 1);
         },
         () => undefined,
@@ -222,8 +268,8 @@ function useRecipientNote(address: Hex | null): string | null | undefined {
       live = false;
       clearTimeout(t);
     };
-  }, [address]);
-  return address ? notes.get(address) : null;
+  }, [key]);
+  return key ? notes.get(key) : null;
 }
 
 /** The connected Ethereum wallet's address in the To field: what "Connect an Ethereum wallet to fill it" does once the wallet is connected. */
@@ -232,17 +278,17 @@ function fillFromWallet(): void {
   if (a) setForm({ to: checksum(a), toFrom: "wallet" });
 }
 
-/** The To line of a lock from a Polkadot wallet: the Sepolia address, its check, and the Ethereum wallet's address to fill it with. */
+/** The To line of a lock from a Polkadot wallet: the destination's address, its check, and the Ethereum wallet's address to fill it with. */
 function RecipientField({ k, f, w }: { k: Facts; f: Form; w: WalletState }) {
   const rc = k.rc;
-  const note = useRecipientNote(rc?.ok ? rc.address : null);
+  const note = useRecipientNote(rc?.ok ? rc.address : null, k.d);
   const mine = w.status === "on" && w.address ? w.address : null;
   const filled = !!mine && rc?.ok === true && rc.address === mine.toLowerCase();
   const bad = rc && !rc.ok && rc.kind !== "empty";
   return (
     <div class="amount__line amount__line--to">
       <dt>
-        <label for="to">To, on Sepolia</label>
+        <label for="to">To, on {k.d.short}</label>
       </dt>
       <dd class="recip">
       <input
@@ -252,7 +298,7 @@ function RecipientField({ k, f, w }: { k: Facts; f: Form; w: WalletState }) {
         inputMode="text"
         autoComplete="off"
         spellcheck={false}
-        placeholder="Sepolia address (0x…)"
+        placeholder={`${k.d.short} address (0x…)`}
         aria-invalid={bad ? "true" : undefined}
         aria-describedby="to-note"
         value={f.to}
@@ -290,7 +336,7 @@ function RecipientField({ k, f, w }: { k: Facts; f: Form; w: WalletState }) {
             </button>
           )
         ) : (
-          <button class="text-link recip__connect" type="button" onClick={() => openWalletPicker(fillFromWallet, "evm", "fill")}>
+          <button class="text-link recip__connect" type="button" onClick={() => openWalletPicker(fillFromWallet, "evm", "fill", k.d.key)}>
             Connect an Ethereum wallet to fill it
           </button>
         )}
@@ -300,13 +346,14 @@ function RecipientField({ k, f, w }: { k: Facts; f: Form; w: WalletState }) {
   );
 }
 
-function swapDir(dir: Dir): void {
+function swapDir(dir: Dir, dest: DestKey): void {
   const next = dir === "in" ? "back" : "in";
+  const d = destOf(dest);
   location.hash = `#/bridge/${next}`;
   announce(
     next === "in"
-      ? "Direction: Portaldot V3 testnet to Ethereum Sepolia. Verified by the light client."
-      : "Direction: Ethereum Sepolia to Portaldot V3 testnet. Trusted: a 2-of-3 committee releases your tPOT.",
+      ? `Direction: Portaldot V3 testnet to ${d.full}. Verified by the light client.`
+      : `Direction: ${d.full} to Portaldot V3 testnet. Trusted: a 2-of-3 committee releases your tPOT.`,
   );
 }
 
@@ -352,7 +399,7 @@ function openPicker(side: "from" | "to", dir: Dir): void {
     closeSheet();
     if (!r.to) return;
     if (r.to.dest !== form.get().dest) setForm({ dest: r.to.dest });
-    if (r.to.dir !== dir) swapDir(dir);
+    if (r.to.dir !== dir) swapDir(dir, r.to.dest);
     else announce(`${side === "from" ? "Send from" : "Receive on"}: ${destOf(r.to.dest).full}.`);
   };
   const row = (r: PickRow) => {
@@ -406,29 +453,32 @@ function openPicker(side: "from" | "to", dir: Dir): void {
   });
 }
 
-function openGetEth(dir: Dir, address: string): void {
+function openGetEth(dir: Dir, address: string, d: Dest): void {
   const inDir = dir === "in";
   const check = () => {
     void readBalances().then(() => {
-      const e = wallet.get().balances?.eth;
+      const b = wallet.get().balances;
+      const e = b?.dest === d.key ? b.eth : null;
       if (e && e > 0n) {
         closeSheet(true);
-        toast("verify", "Sepolia ETH found", `${fmt(Number(e) / 1e18)} ETH on Sepolia. You can bridge now.`);
-      } else toast("info", "No Sepolia ETH yet", "A faucet can take a minute. This page also checks on its own every 30 s.");
+        toast("verify", `${d.short} ETH found`, `${fmt(Number(e) / 1e18)} ETH on ${d.short}. You can bridge now.`);
+      } else toast("info", `No ${d.short} ETH yet`, "A faucet can take a minute. This page also checks on its own every 30 s.");
     });
   };
   openSheet({
-    title: "Get Sepolia ETH",
+    title: `Get ${d.short} ETH`,
     body: (
       <div class="sheet-stack">
         <div class="empty-mark" aria-hidden="true">
-          <ChainMark mark="ethereum" cls="mark--28" />
+          <ChainMark mark={d.mark} cls="mark--28" />
         </div>
         <p class="sheet-lead">
           {inDir
-            ? `You send the mint on Sepolia yourself, so you pay its gas: about ${MINT_GAS} M gas, in Sepolia ETH.`
-            : `The burn is a Sepolia transaction: about ${BURN_GAS} k gas, in Sepolia ETH.`}{" "}
-          Bridge Zero has no faucet of its own; any public Sepolia faucet works.
+            ? `You send the mint on ${d.short} yourself, so you pay its gas: about ${d.mintGas.gas} M gas${l1Note(d)}, in ${d.short} ETH.`
+            : `The burn is a ${d.short} transaction: about ${d.burnGas.gas} k gas${l1Note(d)}, in ${d.short} ETH.`}{" "}
+          {d.key === "sepolia"
+            ? "Bridge Zero has no faucet of its own; any public Sepolia faucet works."
+            : `Bridge Zero has no faucet of its own: ${d.short}'s own bridge takes Sepolia ETH there, and its public faucets give some.`}
         </p>
         <div class="kv">
           <dt class="kv__k">Send it to</dt>
@@ -437,7 +487,7 @@ function openGetEth(dir: Dir, address: string): void {
           </dd>
         </div>
         <button class="btn btn--primary btn--lg btn--block" type="button" data-autofocus onClick={check}>
-          I have Sepolia ETH, check again
+          I have {d.short} ETH, check again
         </button>
         <p class="sheet-foot">Your balance updates here on its own. {inDir ? "Lock once you have it, so the mint doesn't wait on you." : ""}</p>
       </div>
@@ -445,11 +495,14 @@ function openGetEth(dir: Dir, address: string): void {
   });
 }
 
-/** The mint's gas while the light client is `behind` V3's validator set: the mint imports each change first (sends.ts, the self-relay). */
-const mintGas = (behind: number): string => fmt(Number(MINT_GAS) + IMPORT_GAS * behind, 1);
+/** The mint's gas on `d` while its light client is `behind` V3's validator set: the mint imports each change first (sends.ts, the self-relay). */
+const mintGas = (d: Dest, behind: number): string => fmt(Number(d.mintGas.gas) + IMPORT_GAS * behind, 1);
 
-/** The Sepolia transactions of a mint that imports `behind` set changes first: the plan's calls, at most CALLS_PER_TX to a transaction (../../lib/proof/plan.ts). */
-const sepoliaTxs = (behind: number): number => Math.ceil((behind + 1) / CALLS_PER_TX);
+/** The transactions of a mint that imports `behind` set changes first: the plan's calls, at most CALLS_PER_TX to a transaction (../../lib/proof/plan.ts). */
+const mintTxs = (behind: number): number => Math.ceil((behind + 1) / CALLS_PER_TX);
+
+/** What a rollup's ETH pays for besides its gas: Base's L1 data fee; Arbitrum's L1 part is in the gas. */
+const l1Note = (d: Dest): string => (d.l1 === "op" ? " and an L1 data fee" : "");
 
 /** A lock from a Polkadot wallet, as the review checks it on V3 before Confirm: the dry run from the account, its deposit, the fee. */
 type LockCheck = { state: "checking" } | { state: "ok"; prep: PreparedLock } | { state: "problem"; title: string; text: string };
@@ -457,12 +510,12 @@ type LockCheck = { state: "checking" } | { state: "ok"; prep: PreparedLock } | {
 const lockCheck = new Box<LockCheck>({ state: "checking" });
 let checkSeq = 0;
 
-/** Checks the lock on V3 (read-only: a dry run and a fee quote), for the review's costs and its Confirm. */
-function checkLock(origin: string, amount: bigint, recipient: Hex): void {
+/** Checks the lock to `d` on V3 (read-only: a dry run and a fee quote), for the review's costs and its Confirm. */
+function checkLock(origin: string, amount: bigint, recipient: Hex, d: Dest): void {
   const seq = ++checkSeq;
   lockCheck.set({ state: "checking" });
   void loadChain()
-    .then((c) => c.prepareLock(origin, amount, recipient))
+    .then((c) => c.prepareLock(origin, amount, recipient, { chainId: BigInt(d.chainId), minter: deployed(d).minter }))
     .then(
       (prep) => {
         if (seq === checkSeq) lockCheck.set("problem" in prep ? { state: "problem", ...prep.problem } : { state: "ok", prep });
@@ -542,10 +595,12 @@ interface SubLock {
 /**
  * `amount`: the field's text, which the sends parse exactly; `value` is how the sheet shows it, to
  * its last decimal; `address`: the account the sheet names, which Confirm locks or burns for and
- * from, or nothing; `txs`: the mint's Sepolia transactions; `sub`: a lock from a Polkadot wallet.
+ * from, or nothing; `txs`: the mint's transactions on the destination; `sub`: a lock from a Polkadot wallet.
  */
 function ReviewFoot({ k, value, amount, address, txs, sub }: { k: Facts; value: string; amount: string; address: string; txs: number; sub: SubLock | null }) {
   const inDir = k.dir === "in";
+  const d = k.d;
+  const words = backWords(d);
   const [consent, setConsent] = useState(false);
   const check = useBox(lockCheck);
   // A burn is asked to be understood as trusted; a typed recipient, to be checked: it cannot be undone.
@@ -553,9 +608,9 @@ function ReviewFoot({ k, value, amount, address, txs, sub }: { k: Facts; value: 
   const blocked = sub !== null && check.state !== "ok";
   const confirm = () => {
     closeSheet(true);
-    if (sub) startSubstrateLock(amount, sub.address, sub.recipient);
-    else if (inDir) startLock(amount, address);
-    else startBurn(amount, address);
+    if (sub) startSubstrateLock(amount, sub.address, sub.recipient, d.key);
+    else if (inDir) startLock(amount, address, d.key);
+    else startBurn(amount, address, d.key);
   };
   return (
     <>
@@ -566,8 +621,8 @@ function ReviewFoot({ k, value, amount, address, txs, sub }: { k: Facts; value: 
             {inDir
               ? "I checked the recipient: wtPOT minted to a wrong address cannot be recovered."
               : k.speed === "fast"
-                ? "I understand Fast is trusted: the committee releases before Sepolia finality, and once sent, a burn cannot be cancelled."
-                : "I understand the release is trusted: the committee releases after Sepolia finality, and once sent, a burn cannot be cancelled."}
+                ? `I understand Fast is trusted: the committee releases before ${words.final}, and once sent, a burn cannot be cancelled.`
+                : `I understand the release is trusted: the committee releases after ${words.final}, and once sent, a burn cannot be cancelled.`}
           </span>
         </label>
       ) : null}
@@ -579,7 +634,7 @@ function ReviewFoot({ k, value, amount, address, txs, sub }: { k: Facts; value: 
         data-autofocus={needsConsent ? undefined : ""}
         onClick={confirm}
       >
-        {inDir ? `Lock ${value} tPOT on V3` : `Burn ${value} wtPOT on Sepolia`}
+        {inDir ? `Lock ${value} tPOT on V3` : `Burn ${value} wtPOT on ${d.short}`}
       </button>
       <p class="sheet-foot">
         {!inDir || k.auto
@@ -588,27 +643,51 @@ function ReviewFoot({ k, value, amount, address, txs, sub }: { k: Facts; value: 
             : "Your wallet asks once. Nothing is sent until you confirm."
           : sub
             ? // Two wallets: the Polkadot one signs the lock, the Ethereum one sends the mint.
-              `${sub.walletName} asks for the lock on V3, then ${sub.ethWallet ?? "your Ethereum wallet"} for ${txs > 1 ? `${txs} transactions on Sepolia, each after the one before is mined` : "the mint on Sepolia"}. Nothing is sent until you confirm.`
+              `${sub.walletName} asks for the lock on V3, then ${sub.ethWallet ?? "your Ethereum wallet"} for ${txs > 1 ? `${txs} transactions on ${d.short}, each after the one before is mined` : `the mint on ${d.short}`}. Nothing is sent until you confirm.`
             : txs > 1
-              ? `Your wallet asks for the lock on V3, then for ${txs} transactions on Sepolia, each after the one before is mined. Nothing is sent until you confirm.`
-              : "Your wallet asks twice: the lock on V3, then the mint on Sepolia. Nothing is sent until you confirm."}
+              ? `Your wallet asks for the lock on V3, then for ${txs} transactions on ${d.short}, each after the one before is mined. Nothing is sent until you confirm.`
+              : `Your wallet asks twice: the lock on V3, then the mint on ${d.short}. Nothing is sent until you confirm.`}
       </p>
     </>
   );
 }
+
+/**
+ * On a rollup, auto-mint waits for the relayer after each V3 set change (handoff.ts, relayWait): a
+ * lock made now that would meet that wait, said with the times as the clock gives them. Whatever the
+ * clock says, a light client that reads `behind` V3's set (net.ts) makes auto-mint wait for the
+ * relayer's import: said too.
+ */
+function relayWaitNow(d: Dest, behind: number): string | null {
+  const w = relayWait(d.key, Date.now());
+  if (w) {
+    return `V3 changes validator set at about ${utcClock(w.change)}, and the relayer brings the light client on ${d.short} to the new set at about ${utcClock(w.relay)}: auto-mint mints a lock made now after that run.`;
+  }
+  if (!behind) return null;
+  const client = d.key === "sepolia" ? "The V3 light client" : `The light client on ${d.short}`;
+  return `${client} is ${behind === 1 ? "a validator-set change" : `${behind} validator-set changes`} behind V3: auto-mint mints a lock made now once the relayer has imported ${behind === 1 ? "it" : "them"}.`;
+}
+
+/** When V3 changes set (UTC), for the copy: "01:54, 07:54, 13:54 and 19:54 UTC". */
+const CHANGES = SET_CHANGES_TEXT;
 
 function openReview(k: Facts, address: string, amount: string, net: NetState, sub: SubLock | null = null): void {
   // What Confirm sends, to its last decimal: the sends parse the field exactly, so no rounding here.
   const exact = parseAmount(amount);
   const v = exact === null ? fmt(k.value) : formatUnits(exact, DECIMALS);
   const inDir = k.dir === "in";
-  // Auto-mint mints it: nothing to sign on Sepolia.
+  const d = k.d;
+  const words = backWords(d);
+  // Auto-mint mints it: nothing to sign on the destination.
   const auto = inDir && k.auto;
   const behind = inDir && net.key === "relay" ? net.behind : 0;
   // Who sends the mint when it is the visitor's: a Polkadot wallet's lock is minted from the Ethereum wallet.
   const minter = sub ? (sub.ethWallet ?? "Your Ethereum wallet") : "Your wallet";
-  const txs = behind ? sepoliaTxs(behind) : 1;
-  if (sub && exact !== null) checkLock(sub.address, exact, sub.recipient);
+  const txs = behind ? mintTxs(behind) : 1;
+  const wait = auto ? relayWaitNow(d, behind) : null;
+  // The time as of opening the review: a lock made now may meet a relayer wait the card's last render did not.
+  const T = auto ? (relayTime(d.key, Date.now()) ?? timeOf(d.key, "auto")) : k.time;
+  if (sub && exact !== null) checkLock(sub.address, exact, sub.recipient, d);
   const sumRow = (label: string, c: ChainInfo) => (
     <div class="sum__row">
       <ChainMark mark={c.mark} cls="mark--36" />
@@ -639,19 +718,23 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
       <Nb>≈ {LOCK_COST} tPOT</Nb> · <Nb>{LOCK_DEPOSIT} storage deposit + gas</Nb>
     </>
   );
+  const fastTime = timeOf(d.key, "fast");
   const steps = inDir ? (
     <>
       {step(1, "Lock on Portaldot V3", sub ? `${sub.walletName}, once` : "Your wallet, on V3", lockCost)}
       {auto
-        ? step(2, "Mint on Sepolia", `Auto-mint, ${AUTO_TIME[0]} after your lock · nothing to sign`, null)
+        ? step(2, `Mint on ${d.short}`, `Auto-mint, ${T[0]} after your lock · nothing to sign`, null)
         : step(
             2,
-            "Mint on Sepolia",
+            `Mint on ${d.short}`,
             behind
-              ? `${minter}, on Sepolia, after V3 finality and the proof · it imports the ${behind === 1 ? "validator-set change" : `${behind} validator-set changes`} the light client lacks first${txs > 1 ? `, in ${txs} transactions` : ""}`
-              : `${minter}, on Sepolia, after V3 finality and the proof`,
+              ? `${minter}, on ${d.short}, after V3 finality and the proof · it imports the ${behind === 1 ? "validator-set change" : `${behind} validator-set changes`} the light client lacks first${txs > 1 ? `, in ${txs} transactions` : ""}`
+              : `${minter}, on ${d.short}, after V3 finality and the proof`,
             <>
-              <Nb>≈ {behind ? mintGas(behind) : MINT_GAS} M gas</Nb> <Nb>in Sepolia ETH</Nb>
+              <Nb>≈ {behind ? mintGas(d, behind) : d.mintGas.gas} M gas</Nb>{" "}
+              <Nb>
+                in {d.short} ETH{l1Note(d)}
+              </Nb>
             </>,
           )}
     </>
@@ -659,10 +742,13 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
     <>
       {step(
         1,
-        "Burn on Sepolia",
-        "Your wallet, on Sepolia · no approval step",
+        `Burn on ${d.short}`,
+        `Your wallet, on ${d.short} · no approval step`,
         <>
-          <Nb>≈ {BURN_GAS} k gas</Nb> <Nb>in Sepolia ETH</Nb>
+          <Nb>≈ {d.burnGas.gas} k gas</Nb>{" "}
+          <Nb>
+            in {d.short} ETH{l1Note(d)}
+          </Nb>
         </>,
       )}
       {step(
@@ -670,11 +756,11 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
         "Committee releases on V3",
         k.speed === "fast" ? (
           <>
-            After 3 Sepolia confirmations, <Nb>≈ 84 s after your burn's block</Nb> · nothing to sign
+            After {words.confs}, <Nb>{fastTime[0]} after your burn's block</Nb> · nothing to sign
           </>
         ) : (
           <>
-            After Sepolia finality, <Nb>{TIME.std[0]} in all</Nb> · nothing to sign
+            After {words.final}, <Nb>{T[0]} in all</Nb> · nothing to sign
           </>
         ),
         null,
@@ -686,7 +772,7 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
     <div class="notice notice--verify">
       <Icon id="i-shield-check" />
       <div>
-        <p class="notice__title">Checked on Sepolia</p>
+        <p class="notice__title">Checked on {d.short}</p>
         <p>
           2 of 2 V3 validator signatures and a storage proof of your lock. Still trusted: the V3 validator set (2 keys, testnet), V3's sudo key and the
           light client's admin.
@@ -701,14 +787,14 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
           <>
             <p class="notice__title">Trusted: 2-of-3 committee, before finality</p>
             <p>
-              Fast releases after 3 Sepolia confirmations, before your burn is final. A reorg deeper than 3 blocks could undo the burn after V3 has released,
-              breaking the 1:1 backing: that is why Fast is capped at 1 tPOT. Nothing on V3 checks your burn. On the testnet one operator holds all three keys.
+              Fast releases after {words.confs}, before your burn is final. {words.reorg} after V3 has released, breaking the 1:1 backing: that is why Fast is
+              capped at 1 tPOT. Nothing on V3 checks your burn. On the testnet one operator holds all three keys.
             </p>
           </>
         ) : (
           <>
             <p class="notice__title">Trusted: 2-of-3 committee</p>
-            <p>Two of three members release it after Sepolia finality; nothing on V3 checks your burn. On the testnet one operator holds all three keys.</p>
+            <p>Two of three members release it after {words.final}; nothing on V3 checks your burn. On the testnet one operator holds all three keys.</p>
           </>
         )}
       </div>
@@ -744,7 +830,9 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
             {sub ? (
               <dd class="kv__v kv__v--wrap">
                 <span class="mono kv__full">{sub.shown}</span>
-                <span class="kv__note kv__line">on Sepolia · {sub.from === "wallet" ? `your ${sub.ethWallet ?? "Ethereum wallet"}'s address` : "typed"}</span>
+                <span class="kv__note kv__line">
+                  on {d.short} · {sub.from === "wallet" ? `your ${sub.ethWallet ?? "Ethereum wallet"}'s address` : "typed"}
+                </span>
               </dd>
             ) : (
               <dd class="kv__v">
@@ -766,7 +854,11 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
               <dt class="kv__k">Speed</dt>
               <dd class="kv__v">
                 <Icon id={k.speed === "fast" ? "i-bolt" : "i-clock"} cls="i--14 kv__ic" />
-                {SPEED_NAME[k.speed]} <span class="kv__note">· {k.speed === "fast" ? "after 3 confirmations" : "after Sepolia finality"} · set by the amount</span>
+                {SPEED_NAME[k.speed]}{" "}
+                <span class="kv__note">
+                  · {k.speed === "fast" ? (d.key === "sepolia" ? "after 3 confirmations" : `after ${d.fastConfirmations} blocks`) : `after ${d.key === "sepolia" ? "Sepolia finality" : `${d.short}'s finality`}`} ·
+                  set by the amount
+                </span>
               </dd>
             </div>
           )}
@@ -781,7 +873,7 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
           <div class="kv">
             <dt class="kv__k">Time</dt>
             <dd class="kv__v">
-              {k.time[0]} <span class="kv__note">· {k.time[1]}</span>
+              {T[0]} <span class="kv__note">· {T[1]}</span>
             </dd>
           </div>
           <div class="kv">
@@ -799,8 +891,8 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
             <p class="rnote">
               <Icon id="i-info" cls="i--14" />
               <span>
-                Fast takes up to 1 tPOT per burn, and up to 1 tPOT in all across fast releases not yet final. If other fast burns are in flight, yours is released
-                the standard way ({TIME.std[0]}).
+                Fast takes up to 1 tPOT per burn, and up to 1 tPOT in all across fast releases not yet final, on every chain the committee serves. If other fast
+                burns are in flight, yours is released the standard way ({timeOf(d.key, "std")[0]}).
               </span>
             </p>
           ) : null}
@@ -808,24 +900,35 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
             <p class="rnote">
               <Icon id="i-info" cls="i--14" />
               <span>
-                If auto-mint has not minted it within 5 minutes of your lock, this page offers you the mint: any Ethereum wallet with Sepolia ETH can send it.
-                Auto-mint takes locks of {tpot(AUTO_MINT.min, 3)} tPOT or more.
+                If auto-mint has not minted it within 5 minutes of your lock
+                {d.key === "sepolia" ? "" : `, or ${AUTO_MINT.afterRelayMs / 60_000} minutes after a relayer run it waits for`}, this page offers you the mint: any
+                Ethereum wallet with {d.short} ETH can send it. Auto-mint takes locks of {tpot(AUTO_MINT.min, 3)} tPOT or more.
+                {/* The live note below says it with the times when a lock made now would wait. */}
+                {d.key === "sepolia" || wait
+                  ? null
+                  : ` After V3 changes validator set (${CHANGES}), auto-mint waits for the relayer's run about ${RELAY_AFTER_CHANGE_MS / 60_000} minutes later, which brings the light client on ${d.short} to the new set: a lock made in those minutes is minted after it.`}
               </span>
             </p>
           ) : inDir && sub && !k.below ? (
             <p class="rnote">
               <Icon id="i-info" cls="i--14" />
               <span>
-                Auto-mint does not see locks from Polkadot wallets yet, so you send the mint on Sepolia from {sub.ethWallet ?? "your Ethereum wallet"}: about {MINT_GAS} M
-                gas in Sepolia ETH. It pays the recipient above.
+                Auto-mint does not see locks from Polkadot wallets yet, so you send the mint on {d.short} from {sub.ethWallet ?? "your Ethereum wallet"}: about{" "}
+                {d.mintGas.gas} M gas in {d.short} ETH. It pays the recipient above.
               </span>
             </p>
           ) : inDir ? (
             <p class="rnote">
               <Icon id="i-info" cls="i--14" />
               <span>
-                Below auto-mint's {tpot(AUTO_MINT.min, 3)} tPOT minimum: you mint it on Sepolia, about {MINT_GAS} M gas in Sepolia ETH.
+                Below auto-mint's {tpot(AUTO_MINT.min, 3)} tPOT minimum: you mint it on {d.short}, about {d.mintGas.gas} M gas in {d.short} ETH{l1Note(d)}.
               </span>
+            </p>
+          ) : null}
+          {wait ? (
+            <p class="rnote">
+              <Icon id="i-clock" cls="i--14" />
+              <span>{wait}</span>
             </p>
           ) : null}
         </div>
@@ -840,16 +943,26 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
 // ---------------------------------------------------------------------------------------------
 // The card
 
-/** The strip under the card: what each way trusts, and its recorded numbers; the way in's time is auto-mint's when it mints the card's lock (`auto`). */
-function ProofStrip({ dir, auto }: { dir: Dir; auto: boolean }) {
+/** A rollup's first lock and burn, which the strip links to (README rows 98 to 113): lock 4 and burn 0 on Base Sepolia, lock 5 and burn 0 on Arbitrum Sepolia. */
+const FIRSTS: Record<Exclude<DestKey, "sepolia">, { lock: number; burn: number }> = { "base-sepolia": { lock: 4, burn: 0 }, "arbitrum-sepolia": { lock: 5, burn: 0 } };
+
+/**
+ * The strip under the card: what each way trusts, and its recorded numbers, for the card's
+ * destination `d`; the way in's time is auto-mint's when it mints the card's lock (`auto`). Sepolia's
+ * are its recorded runs, which the replays play; a rollup's are its own records of Oct 28 and the
+ * rules that set its times, with its first lock and burn read from its chain.
+ */
+function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
   const back = dir === "back";
+  const sep = d.key === "sepolia";
+  const firsts = sep ? null : FIRSTS[d.key as Exclude<DestKey, "sepolia">];
   return (
     <aside class="proof" aria-labelledby="proof-title" data-dir={dir}>
       <div class="proof__head">
         <h2 class="proof__title" id="proof-title">
           What each way trusts
         </h2>
-        <span class="badge badge--sm proof__rec">Recorded Oct 20 · Oct 24</span>
+        <span class="badge badge--sm proof__rec">{sep ? "Recorded Oct 20 · Oct 24" : "Recorded Oct 27 · Oct 28"}</span>
       </div>
       <div class="lanes">
         <div class="lanes__node">
@@ -875,48 +988,82 @@ function ProofStrip({ dir, auto }: { dir: Dir; auto: boolean }) {
             <p class="lane__label">
               <Icon id="i-users" cls="i--14" />
               <span>
-                <strong>Trusted</strong> · 2-of-3 committee<span class="lane__more"> releases · fast ≈ 84 s</span>
+                <strong>Trusted</strong> · 2-of-3 committee<span class="lane__more"> releases · fast {timeOf(d.key, "fast")[0]}</span>
               </span>
             </p>
           </div>
         </div>
         <div class="lanes__node">
-          <ChainMark mark="ethereum" cls="mark--36" />
-          <span class="lanes__chain">Ethereum</span>
-          <span class="lanes__net">Sepolia</span>
+          <ChainMark mark={d.mark} cls="mark--36" />
+          <span class="lanes__chain">{d.name}</span>
+          <span class="lanes__net">{d.sub}</span>
           <span class="lanes__short" aria-hidden="true">
-            Sepolia
+            {sep ? d.short : d.name}
           </span>
         </div>
       </div>
       <ul class="facts">
         {back ? (
-          <>
-            <li class="fact">
-              <a class="fact__link" href="#/receipt/burn-1">
-                <span class="fact__num">
-                  84<span class="unit">s</span>
-                </span>
-                <span class="fact__text">from the burn's block to the release, Fast · Oct 24 (108 s from sending)</span>
-              </a>
-            </li>
-            <li class="fact">
-              <a class="fact__link" href="#/receipt/burn-0">
-                <span class="fact__num">
-                  <span class="fact__approx">≈</span>20<span class="unit">min</span>
-                </span>
-                <span class="fact__text">from sending the burn to the release, Standard · Oct 20, released by hand before the watcher</span>
-              </a>
-            </li>
-            <li class="fact">
-              <a class="fact__link" href="#/network">
-                <span class="fact__num">
-                  <span class="fact__approx">≤</span>1<span class="unit">tPOT</span>
-                </span>
-                <span class="fact__text">per Fast burn, and in all before finality; larger burns go Standard</span>
-              </a>
-            </li>
-          </>
+          sep ? (
+            <>
+              <li class="fact">
+                <a class="fact__link" href="#/receipt/burn-1">
+                  <span class="fact__num">
+                    84<span class="unit">s</span>
+                  </span>
+                  <span class="fact__text">from the burn's block to the release, Fast · Oct 24 (108 s from sending)</span>
+                </a>
+              </li>
+              <li class="fact">
+                <a class="fact__link" href="#/receipt/burn-0">
+                  <span class="fact__num">
+                    <span class="fact__approx">≈</span>20<span class="unit">min</span>
+                  </span>
+                  <span class="fact__text">from sending the burn to the release, Standard · Oct 20, released by hand before the watcher</span>
+                </a>
+              </li>
+              <li class="fact">
+                <a class="fact__link" href="#/network">
+                  <span class="fact__num">
+                    <span class="fact__approx">≤</span>1<span class="unit">tPOT</span>
+                  </span>
+                  <span class="fact__text">per Fast burn, and in all before finality; larger burns go Standard</span>
+                </a>
+              </li>
+            </>
+          ) : (
+            <>
+              <li class="fact">
+                <a class="fact__link" href="#/network">
+                  <span class="fact__num">
+                    {d.fastConfirmations}
+                    <span class="unit">blocks</span>
+                  </span>
+                  <span class="fact__text">
+                    of {d.short} before a Fast release: 36 s at {d.blockSeconds} s each, as long as Sepolia's 3 confirmations
+                  </span>
+                </a>
+              </li>
+              <li class="fact">
+                <a class="fact__link" href={`#/receipt/${burnKey(d.key, firsts?.burn ?? 0)}`}>
+                  <span class="fact__num">
+                    <span class="fact__approx">≈</span>
+                    {Math.round(d.finality.seconds / 60)}
+                    <span class="unit">min</span>
+                  </span>
+                  <span class="fact__text">for a burn to be final on {d.short}, its batch final on Sepolia · burn 0, released at finality Oct 28</span>
+                </a>
+              </li>
+              <li class="fact">
+                <a class="fact__link" href="#/network">
+                  <span class="fact__num">
+                    <span class="fact__approx">≤</span>1<span class="unit">tPOT</span>
+                  </span>
+                  <span class="fact__text">per Fast burn, and 1 tPOT in all across the three chains before finality; larger burns go Standard</span>
+                </a>
+              </li>
+            </>
+          )
         ) : (
           <>
             {auto ? (
@@ -924,14 +1071,14 @@ function ProofStrip({ dir, auto }: { dir: Dir; auto: boolean }) {
                 <span class="fact__num">
                   <span class="fact__approx">≈</span>2½<span class="unit">min</span>
                 </span>
-                <span class="fact__text">lock to mint, sent by auto-mint · measured Oct 27</span>
+                <span class="fact__text">{sep ? "lock to mint, sent by auto-mint · measured Oct 27" : "lock to mint, sent by auto-mint · as measured on Sepolia, Oct 27"}</span>
               </li>
             ) : (
               <li class="fact">
                 <span class="fact__num">
                   48<span class="unit">s</span>
                 </span>
-                <span class="fact__text">lock to mint, the mint sent by its locker · measured Oct 20</span>
+                <span class="fact__text">{sep ? "lock to mint, the mint sent by its locker · measured Oct 20" : "lock to mint on Sepolia, the mint sent by its locker · Oct 20"}</span>
               </li>
             )}
             <li class="fact">
@@ -939,25 +1086,45 @@ function ProofStrip({ dir, auto }: { dir: Dir; auto: boolean }) {
                 <span class="fact__num">
                   6<span class="fact__of"> of </span>6
                 </span>
-                <span class="fact__text">attacks reverted on chain: 5 tampered mints and a replay</span>
+                <span class="fact__text">{sep ? "attacks reverted on chain: 5 tampered mints and a replay" : "attacks reverted on Sepolia, against the contracts from the same build"}</span>
               </a>
             </li>
             <li class="fact">
               <a class="fact__link" href="#/network">
-                <span class="fact__num">
-                  10<span class="unit">min</span>
-                </span>
-                <span class="fact__text">between relayer runs; each client ≤ 70 min behind</span>
+                {sep ? (
+                  <>
+                    <span class="fact__num">
+                      10<span class="unit">min</span>
+                    </span>
+                    <span class="fact__text">between relayer runs; each client ≤ 70 min behind</span>
+                  </>
+                ) : (
+                  <>
+                    <span class="fact__num">
+                      {RELAY_AFTER_CHANGE_MS / 60_000}
+                      <span class="unit">min</span>
+                    </span>
+                    <span class="fact__text">after each V3 set change, the relayer brings this client to V3's set</span>
+                  </>
+                )}
               </a>
             </li>
           </>
         )}
       </ul>
-      <a class="proof__link" href={back ? "#/tx/replay-back?speed=fast" : "#/tx/replay-in"}>
-        <Icon id="i-play" cls="i--14" />
-        <span>{back ? "Watch the 84 s fast release" : "Watch the recorded run"}</span>
-        <Icon id="i-arrow-right" cls="i--16" />
-      </a>
+      {sep ? (
+        <a class="proof__link" href={back ? "#/tx/replay-back?speed=fast" : "#/tx/replay-in"}>
+          <Icon id="i-play" cls="i--14" />
+          <span>{back ? "Watch the 84 s fast release" : "Watch the recorded run"}</span>
+          <Icon id="i-arrow-right" cls="i--16" />
+        </a>
+      ) : (
+        <a class="proof__link" href={`#/receipt/${back ? burnKey(d.key, firsts?.burn ?? 0) : lockKey(firsts?.lock ?? 0)}`}>
+          <Icon id="i-check" cls="i--14" />
+          <span>{back ? `See burn ${firsts?.burn ?? 0}, released from ${d.short}` : `See lock ${firsts?.lock ?? 0}, minted on ${d.short}`}</span>
+          <Icon id="i-arrow-right" cls="i--16" />
+        </a>
+      )}
     </aside>
   );
 }
@@ -1000,13 +1167,14 @@ function subAction(k: Facts, f: Form, w: WalletState, p: PolkaState, net: NetSta
   if (net.key === "paused") return { label: <span>Mints are paused</span>, hint: "Watch Network for the light client to resume.", disabled: true };
   if (net.key === "rpc" && net.down === "v3") return { label: <span>Can't reach Portaldot V3</span>, hint: "Retrying every 30 s.", disabled: true };
   if (!k.value) return { label: <span>Enter an amount</span>, hint: "", disabled: true };
-  // Auto-mint does not mint this lock (handoff.ts: a Polkadot wallet's, or below its minimum): its
-  // mint is the visitor's, sent from an Ethereum wallet with Sepolia ETH, so that comes first.
+  const d = k.d;
+  // Auto-mint does not mint this lock (handoff.ts: below its minimum): its mint is the visitor's,
+  // sent from an Ethereum wallet with the destination's ETH, so that comes first.
   if (!k.auto && k.noEth) {
     const why = k.below
-      ? `Below ${tpot(AUTO_MINT.min, 3)} tPOT auto-mint skips the lock, so you send its mint on Sepolia: about ${MINT_GAS} M gas in Sepolia ETH, from an Ethereum wallet.`
-      : `Auto-mint does not see locks from Polkadot wallets yet, so you send the mint on Sepolia: about ${MINT_GAS} M gas in Sepolia ETH, from an Ethereum wallet such as MetaMask.`;
-    if (w.status === "on" && w.address) return { label: <span>Get Sepolia ETH first</span>, hint: why, warn: true, disabled: true };
+      ? `Below ${tpot(AUTO_MINT.min, 3)} tPOT auto-mint skips the lock, so you send its mint on ${d.short}: about ${d.mintGas.gas} M gas in ${d.short} ETH, from an Ethereum wallet.`
+      : `Auto-mint does not see locks from Polkadot wallets yet, so you send the mint on ${d.short}: about ${d.mintGas.gas} M gas in ${d.short} ETH, from an Ethereum wallet such as MetaMask.`;
+    if (w.status === "on" && w.address) return { label: <span>Get {d.short} ETH first</span>, hint: why, warn: true, disabled: true };
     return {
       label: (
         <>
@@ -1015,13 +1183,17 @@ function subAction(k: Facts, f: Form, w: WalletState, p: PolkaState, net: NetSta
         </>
       ),
       hint: why,
-      run: () => openWalletPicker(undefined, "evm", "mint"),
+      run: () => openWalletPicker(undefined, "evm", "mint", d.key),
     };
   }
   if (k.short) return { label: <span>Not enough tPOT</span>, hint: `A lock uses about ${LOCK_COST} tPOT besides the amount: V3's storage deposit for its record, and the fee.`, disabled: true };
   const rc = k.rc;
   if (!rc || !rc.ok) {
-    return { label: <span>{rc?.kind === "empty" ? "Enter a Sepolia address" : "Check the Sepolia address"}</span>, hint: rc?.kind === "empty" ? "The address that receives the wtPOT on Sepolia." : "", disabled: true };
+    return {
+      label: <span>{rc?.kind === "empty" ? `Enter a ${d.short} address` : `Check the ${d.short} address`}</span>,
+      hint: rc?.kind === "empty" ? `The address that receives the wtPOT on ${d.short}.` : "",
+      disabled: true,
+    };
   }
   const a = p.account;
   return {
@@ -1054,7 +1226,7 @@ function action(
   run: (fn: () => Promise<void>, wait: string) => void,
   polkaWallets: boolean,
 ): Action {
-  const { dir, from, to } = k;
+  const { dir, from, to, d } = k;
   if (busy) return { label: <span>{busy}</span>, hint: "", busy: true, disabled: true };
   if (k.sub) return subAction(k, f, w, p, net);
   if (w.status === "none" && !polkaWallets) {
@@ -1070,7 +1242,7 @@ function action(
     };
   }
   if (w.status === "none" && dir === "back") {
-    // A Polkadot wallet is here, and the burn is a Sepolia transaction.
+    // A Polkadot wallet is here, and the burn is a transaction on the destination.
     return {
       label: (
         <>
@@ -1078,8 +1250,8 @@ function action(
           <span>Connect an Ethereum wallet to burn</span>
         </>
       ),
-      hint: "The way back burns wtPOT on Sepolia from an Ethereum wallet such as MetaMask. Nothing is sent until you sign.",
-      run: () => openWalletPicker(undefined, "evm", "burn"),
+      hint: `The way back burns wtPOT on ${d.short} from an Ethereum wallet such as MetaMask. Nothing is sent until you sign.`,
+      run: () => openWalletPicker(undefined, "evm", "burn", d.key),
     };
   }
   if (w.status === "off" || w.status === "none") {
@@ -1091,7 +1263,7 @@ function action(
         </>
       ),
       hint: dir === "back" ? "The burn is sent from an Ethereum wallet. Nothing is sent until you sign." : "Connect to see your balances. Nothing is sent until you sign.",
-      run: () => (dir === "back" ? openWalletPicker(undefined, "evm", "burn") : openWalletPicker()),
+      run: () => (dir === "back" ? openWalletPicker(undefined, "evm", "burn", d.key) : openWalletPicker()),
     };
   }
   if (k.loading) {
@@ -1104,7 +1276,7 @@ function action(
     };
   }
   if (k.wrong) {
-    const on = w.chainId === to.chainId ? to.full : "another network";
+    const on = chainById(w.chainId)?.full ?? "another network";
     return {
       label: <span>Switch to {from.full}</span>,
       hint: `Your wallet is on ${on}. The ${dir === "in" ? "lock" : "burn"} is sent on ${from.short}.`,
@@ -1118,11 +1290,11 @@ function action(
   if (k.short) return { label: <span>Not enough {from.token}</span>, hint: "", disabled: true };
   if (k.noEth) {
     return {
-      label: <span>Get Sepolia ETH first</span>,
+      label: <span>Get {d.short} ETH first</span>,
       hint:
         dir === "in"
-          ? `Below ${tpot(AUTO_MINT.min, 3)} tPOT you send the mint yourself: ≈ ${MINT_GAS} M gas in Sepolia ETH. Get some before you lock, or lock ${tpot(AUTO_MINT.min, 3)} tPOT or more and auto-mint mints it for you.`
-          : `The burn needs ≈ ${BURN_GAS} k gas in Sepolia ETH.`,
+          ? `Below ${tpot(AUTO_MINT.min, 3)} tPOT you send the mint yourself: ≈ ${d.mintGas.gas} M gas in ${d.short} ETH${l1Note(d)}. Get some before you lock, or lock ${tpot(AUTO_MINT.min, 3)} tPOT or more and auto-mint mints it for you.`
+          : `The burn needs ≈ ${d.burnGas.gas} k gas in ${d.short} ETH${l1Note(d)}.`,
       warn: true,
       disabled: true,
     };
@@ -1168,22 +1340,25 @@ function Notice({ k, f, net }: { k: Facts; f: Form; net: NetState }) {
     ];
   } else if (k.dir === "in" && net.key === "relay") {
     const one = net.behind === 1;
+    const d = k.d;
     // The mint imports what the relayer has not (sends.ts): six calls fit one transaction, so past
     // five changes it takes more than one.
-    const txs = sepoliaTxs(net.behind);
+    const txs = mintTxs(net.behind);
+    // A rollup's client is brought to V3's set by one relayer run 6 minutes after each change (handoff.ts).
+    const when = d.key === "sepolia" ? "usually within minutes" : `one run, about ${RELAY_AFTER_CHANGE_MS / 60_000} minutes after each set change`;
     n = [
       "notice--trust",
       "i-refresh",
-      `The light client is ${net.behind} validator-set change${one ? "" : "s"} behind V3`,
+      `The light client${d.key === "sepolia" ? "" : ` on ${d.short}`} is ${net.behind} validator-set change${one ? "" : "s"} behind V3`,
       k.auto
         ? // Auto-mint imports no change itself: a lock after the client's latest header waits for the relayer's import (relayer/src/automint.ts).
-          `Auto-mint mints your lock once the relayer has imported ${one ? "it" : "them"}, usually within minutes, so it can take longer than ${AUTO_TIME[0]}. If it has not minted it within 5 minutes of your lock, this page offers you the mint, which imports ${one ? "the change" : "the changes"} itself.`
-        : `You can lock and mint now: your mint imports ${one ? "the change" : `the ${net.behind} changes`} first, through Multicall3${txs > 1 ? `, in ${txs} transactions` : ""}, for about ${fmt(IMPORT_GAS * net.behind, 1)} M gas more (≈ ${mintGas(net.behind)} M in all, in Sepolia ETH). Nothing waits for the relayer.`,
+          `Auto-mint mints your lock once the relayer has imported ${one ? "it" : "them"} (${when}), so it can take longer than ${timeOf(d.key, "auto")[0]}. If it has not minted it within 5 minutes of your lock${d.key === "sepolia" ? "" : `, or ${AUTO_MINT.afterRelayMs / 60_000} minutes after the relayer run it waits for`}, this page offers you the mint, which imports ${one ? "the change" : "the changes"} itself.`
+        : `You can lock and mint now: your mint imports ${one ? "the change" : `the ${net.behind} changes`} first, through Multicall3${txs > 1 ? `, in ${txs} transactions` : ""}, for about ${fmt(IMPORT_GAS * net.behind, 1)} M gas more (≈ ${mintGas(d, net.behind)} M in all, in ${d.short} ETH). Nothing waits for the relayer.`,
     ];
   } else if (k.dir === "in" && net.key === "paused") {
     n = ["notice--revert", "i-alert", "The light client is paused by its admin", "Mints are refused until it resumes. Nothing you hold is affected. Burns still work."];
   } else if (net.key === "rpc") {
-    const name = net.down === "v3" ? "Portaldot V3" : "Sepolia";
+    const name = net.down === "v3" ? "Portaldot V3" : k.d.short;
     n = ["notice--muted", "i-server", `Can't reach ${name}`, `Showing recorded values. ${k.dir === "in" && net.down === "v3" ? "Locks need V3, so the way in waits. " : ""}Your funds are not affected.`];
   }
   if (!n) return null;
@@ -1206,7 +1381,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
   const polkaWallets = useBox(polkaList).length > 0;
   const [busy, setBusy] = useState<string | null>(null);
 
-  // Deep links: #/bridge/back?amount=0.5&details=1 (and review=1 once connected).
+  // Deep links: #/bridge/back?amount=0.5&details=1&dest=base-sepolia (and review=1 once connected).
   const query = route.q.toString();
   useEffect(() => {
     const q = new URLSearchParams(query);
@@ -1214,12 +1389,26 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
     const a = q.get("amount");
     if (a) patch.amount = cleanAmount(a);
     if (q.get("details")) patch.details = true;
+    const dest = q.get("dest");
+    // Only a destination the app sends to (../dests.ts, SENDS).
+    if (dest && SENDS.has(dest as DestKey)) patch.dest = dest as DestKey;
     if (Object.keys(patch).length) setForm(patch);
   }, [query]);
 
-  // The card is Sepolia's: f.dest is a destination the app sends to (../dests.ts, SENDS), and only Sepolia is.
+  // The card's destination: its wtPOT and ETH are the ones read (App.tsx reads a rollup's light client for the status).
+  useEffect(() => balancesOn(f.dest), [f.dest]);
+  // On a rollup the way in's time follows the clock around V3's set changes (relayTime): the card is drawn again every 30 s.
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    if (dir !== "in" || f.dest === "sepolia") return;
+    const t = setInterval(() => {
+      if (!document.hidden) redraw((n) => n + 1);
+    }, 30_000);
+    return () => clearInterval(t);
+  }, [dir, f.dest]);
+
   const k = work(dir, f, w, p);
-  const { from, to } = k;
+  const { from, to, d } = k;
 
   useEffect(() => {
     if (route.q.get("review") && k.ready && !k.sub && w.address && !k.wrong && k.value) openReview(k, w.address, f.amount, net);
@@ -1237,7 +1426,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
         setBusy(null);
         if (walletCode(e) === 4001) return;
         if (from.key === "v3") setForm({ addHelp: true });
-        toast("revert", "Your wallet did not switch", (e as Error).message || "Add the network by hand, with the values on the card.");
+        // V3's values are on the card to add by hand; a rollup's chain id is in the words for a wallet that lacks it.
+        toast("revert", "Your wallet did not switch", from.key === "v3" ? (e as Error).message || "Add the network by hand, with the values on the card." : problemOf(e, from.key).text);
       },
     );
   };
@@ -1247,8 +1437,10 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
     setForm({ amount: k.max });
     document.getElementById("amt")?.focus();
   };
-  const explainSpeed = () =>
-    toast("info", "The amount sets the speed", "Up to 1 tPOT goes Fast, after 3 Sepolia confirmations. More goes Standard, after Sepolia finality.");
+  const words = backWords(d);
+  const stdTime = timeParts(timeOf(d.key, "std")[0]);
+  const fastTime = timeParts(timeOf(d.key, "fast")[0]);
+  const explainSpeed = () => toast("info", "The amount sets the speed", `Up to 1 tPOT goes Fast, after ${words.confs}. More goes Standard, after ${words.final}.`);
 
   // The line under the amount: only before an amount is in, to say what 1 token becomes.
   const subShown = !(k.ready && k.value > 0 && !k.short);
@@ -1270,7 +1462,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
         <h1 class="intro__title" id="intro-title">
           {dir === "in" ? (
             <>
-              Bridge tPOT to Sepolia, <span class="intro__grad">proven by a light client.</span>
+              Bridge tPOT to {d.short}, <span class="intro__grad">proven by a light client.</span>
             </>
           ) : (
             <>
@@ -1280,8 +1472,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
         </h1>
         <p class="intro__lead">
           {dir === "in"
-            ? "Each mint on Sepolia checks Portaldot's own validator signatures and a storage proof of your lock. The way back is run by a committee, and the card says so."
-            : "Burn wtPOT on Sepolia and a 2-of-3 committee releases your tPOT on V3. Nothing on V3 checks the burn: this way is trusted, and the card says so."}
+            ? `Each mint on ${d.short} checks Portaldot's own validator signatures and a storage proof of your lock. The way back is run by a committee, and the card says so.`
+            : `Burn wtPOT on ${d.short} and a 2-of-3 committee releases your tPOT on V3. Nothing on V3 checks the burn: this way is trusted, and the card says so.`}
         </p>
       </section>
 
@@ -1316,7 +1508,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                   : null
               }
             />
-            <button class="swap-btn" type="button" aria-label={`Swap direction: send from ${to.full} to ${from.full}`} onClick={() => swapDir(dir)}>
+            <button class="swap-btn" type="button" aria-label={`Swap direction: send from ${to.full} to ${from.full}`} onClick={() => swapDir(dir, f.dest)}>
               <Icon id="i-swap-h" />
             </button>
             <ChainButton side="to" c={to} dir={dir} />
@@ -1365,7 +1557,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               <span>{from.token}</span>
             </span>
             <p class="amount__sub" id="amt-sub" hidden={k.short || !subShown}>
-              {subShown ? `1 ${from.token} ${dir === "in" ? "locked on V3 becomes" : "burned on Sepolia releases"} 1 ${to.token} on ${to.short}` : ""}
+              {subShown ? `1 ${from.token} ${dir === "in" ? "locked on V3 becomes" : `burned on ${d.short} releases`} 1 ${to.token} on ${to.short}` : ""}
             </p>
             <p class="amount__err" id="amt-err" role="alert" hidden={!k.short}>
               {k.short ? (
@@ -1382,7 +1574,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                             ? `With ${fmt(k.bal ?? 0)} tPOT you can lock up to ${k.max} tPOT.`
                             : `This amount needs ${fmt(Math.ceil((k.value + (k.sub ? SUBSTRATE_ROOM : LOCK_CEILING) - (k.bal ?? 0)) * 100) / 100, 2)} more tPOT.`
                         }`
-                      : `You have ${fmt(k.bal ?? 0)} wtPOT on Sepolia.`}{" "}
+                      : `You have ${fmt(k.bal ?? 0)} wtPOT on ${d.short}.`}{" "}
                     {Number(k.max) > 0 ? (
                       <button type="button" class="text-link" onClick={useMax}>
                         Use max
@@ -1423,7 +1615,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                       </button>
                       <span class="tip__bubble tip__bubble--end" role="tooltip" id="tip-change">
                         {dir === "in"
-                          ? "From an Ethereum wallet the recipient is your own address. From a Polkadot wallet you give the Sepolia address."
+                          ? `From an Ethereum wallet the recipient is your own address. From a Polkadot wallet you give the ${d.short} address.`
                           : "The committee pays your own address on V3."}
                       </span>
                     </span>
@@ -1441,7 +1633,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               <p class="route__title">
                 <span class="route__kind route__kind--verify">Verified</span> by the light client{" "}
                 {net.key === "ready" || net.key === "relay" ? (
-                  <span class="livechip" title="Read live: the light client on Sepolia and V3's validator set. When the client is behind, your mint imports V3's changes itself.">
+                  <span class="livechip" title={`Read live: the light client on ${d.short} and V3's validator set. When the client is behind, your mint imports V3's changes itself.`}>
                     Live
                   </span>
                 ) : null}
@@ -1451,25 +1643,28 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                 {k.auto ? (
                   <>
                     {/* Two unbreakable parts, so the line wraps inside the panel at phone width. */}
-                    <Nb>Auto-mint mints it for you</Nb> <Nb>{AUTO_TIME[0]} after your lock</Nb> · <Nb>nothing to sign on Sepolia</Nb> ·{" "}
+                    <Nb>Auto-mint mints it for you</Nb> <Nb>{k.time[0]} after your lock</Nb> · <Nb>nothing to sign on {d.short}</Nb> ·{" "}
                     <Nb>for locks of {tpot(AUTO_MINT.min, 3)} tPOT or more</Nb>
                   </>
                 ) : k.below ? (
                   <>
-                    Below {tpot(AUTO_MINT.min, 3)} tPOT you mint it on Sepolia · ≈ {MINT_GAS} M gas
+                    Below {tpot(AUTO_MINT.min, 3)} tPOT you mint it on {d.short} · ≈ {d.mintGas.gas} M gas
                   </>
                 ) : (
                   <>
-                    <Nb>From a Polkadot wallet you mint it on Sepolia</Nb> · <Nb>≈ {MINT_GAS} M gas</Nb> · <Nb>auto-mint does not see these locks yet</Nb>
+                    <Nb>From a Polkadot wallet you mint it on {d.short}</Nb> · <Nb>≈ {d.mintGas.gas} M gas</Nb> · <Nb>auto-mint does not see these locks yet</Nb>
                   </>
                 )}
               </p>
             </div>
             <Tip id="tip-in" label="What the way in checks and trusts, and auto-mint">
-              Sepolia checks 2 of 2 V3 validator signatures, a storage proof of your lock and its nonce. It still trusts V3's validator set (2 keys on the testnet),
-              V3's sudo key and the light client's admin. Auto-mint is the operator's process: about 2½ minutes after your lock it sends the mint from its own key and
-              pays the gas, at most {AUTO_MINT.dailyEth} ETH a day, on one machine. It can only mint what your lock commits to. Anyone can still send the mint: if
-              auto-mint has not minted it within 5 minutes, this page offers it to you.{" "}
+              {d.short} checks 2 of 2 V3 validator signatures, a storage proof of your lock and its nonce. It still trusts V3's validator set (2 keys on the testnet),
+              V3's sudo key and the light client's admin.{" "}
+              {d.key === "sepolia"
+                ? `Auto-mint is the operator's process: about 2½ minutes after your lock it sends the mint from its own key and pays the gas, at most ${AUTO_MINT.dailyEth} ETH a day, on one machine.`
+                : `Auto-mint is the operator's process, one for Sepolia and the two rollups: about 2½ minutes after your lock it sends the mint on ${d.short} from its own key and pays the gas, at most ${AUTO_MINT.rollupDailyEth} ETH a day there, on one machine. After V3 changes validator set (${CHANGES}), it waits for the relayer to bring this client to the new set, about ${RELAY_AFTER_CHANGE_MS / 60_000} minutes later.`}{" "}
+              It can only mint what your lock commits to. Anyone can still send the mint: if auto-mint has not minted it within 5 minutes, this page offers it to
+              you.{" "}
               {AUTO_MINT.substrate
                 ? "It mints locks signed with a Polkadot wallet too: it finds their event on V3, which V3's EVM logs do not show."
                 : "It does not see locks signed with a Polkadot wallet yet: you send their mint."}
@@ -1493,16 +1688,15 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               </p>
               <p class="route__sub">
                 {k.speed === "fast"
-                  ? "Fast: released after 3 Sepolia confirmations, before finality. Nothing on V3 checks the burn."
-                  : "Released on V3 after Sepolia finality. Nothing on V3 checks the burn."}
+                  ? `Fast: released after ${words.confs}, before finality. Nothing on V3 checks the burn.`
+                  : `Released on V3 after ${words.final}. Nothing on V3 checks the burn.`}
               </p>
             </div>
             <Tip id="tip-back" label="About the committee">
-              Two of the three committee members must approve the release on V3. Both speeds are trusted. The amount sets the speed: Fast releases after 3
-              Sepolia confirmations, before finality, up to 1 tPOT per burn and up to 1 tPOT in all across fast releases whose burn is not final yet; a larger burn
-              goes Standard, after finality. A reorg deeper than 3 blocks could undo a burn on Sepolia after V3 has released, which would break the 1:1 backing.
-              On the testnet one operator holds all three keys, and the watcher that sends their approvals runs on one machine: while it is off, burns wait. Once
-              sent, a burn cannot be cancelled.
+              Two of the three committee members must approve the release on V3. Both speeds are trusted. The amount sets the speed: Fast releases after {words.confs},
+              before finality, up to 1 tPOT per burn and up to 1 tPOT in all across fast releases whose burn is not final yet, on every chain; a larger burn goes
+              Standard, after finality. {words.reorg} after V3 has released, which would break the 1:1 backing. On the testnet one operator holds all three keys,
+              and the watcher that sends their approvals runs on one machine: while it is off, burns wait. Once sent, a burn cannot be cancelled.
             </Tip>
             <div class="speed" role="radiogroup" aria-readonly="true" aria-label="Release speed, set by the amount">
               <button class="opt opt--row" type="button" role="radio" id="opt-std" aria-checked={k.speed === "std"} tabIndex={k.speed === "std" ? 0 : -1} onClick={explainSpeed}>
@@ -1512,13 +1706,14 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                   </span>
                   <span class="opt__title">Standard</span>
                   <span class="opt__time">
-                    ≈ 17<span class="unit">min</span>
+                    {stdTime[0]}
+                    <span class="unit">{stdTime[1]}</span>
                   </span>
                 </span>
                 <span class="opt__meta">
                   <span>Any amount</span>
                 </span>
-                <span class="opt__src">{TIME.std[1]}</span>
+                <span class="opt__src">{timeOf(d.key, "std")[1]}</span>
               </button>
               <button
                 class="opt opt--row"
@@ -1536,13 +1731,14 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                   </span>
                   <span class="opt__title">Fast</span>
                   <span class="opt__time">
-                    ≈ 84<span class="unit">s</span>
+                    {fastTime[0]}
+                    <span class="unit">{fastTime[1]}</span>
                   </span>
                 </span>
                 <span class="opt__meta">
                   <span>{k.fastOK ? "≤ 1 tPOT" : "Over the 1 tPOT cap"}</span>
                 </span>
-                <span class="opt__src">measured Oct 24</span>
+                <span class="opt__src">{timeOf(d.key, "fast")[1]}</span>
               </button>
             </div>
             <p class="speed__fix" hidden={k.fastOK || dir !== "back"}>
@@ -1590,8 +1786,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                     </span>
                     {dir === "in" ? (
                       !k.auto ? (
-                        <span class="nowrap" title={`≈ ${LOCK_COST} tPOT on V3 for the lock, ≈ ${MINT_GAS} M gas on Sepolia for the mint`}>
-                          ≈ <Mono>{LOCK_COST}</Mono> tPOT + <Mono>{MINT_GAS}</Mono> M gas
+                        <span class="nowrap" title={`≈ ${LOCK_COST} tPOT on V3 for the lock, ≈ ${d.mintGas.gas} M gas on ${d.short} for the mint`}>
+                          ≈ <Mono>{LOCK_COST}</Mono> tPOT + <Mono>{d.mintGas.gas}</Mono> M gas
                         </span>
                       ) : (
                         <span class="nowrap" title={`≈ ${LOCK_COST} tPOT on V3 for the lock; auto-mint pays the mint's gas`}>
@@ -1600,7 +1796,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                       )
                     ) : (
                       <Nb>
-                        Gas ≈ <Mono>{BURN_GAS}</Mono> k
+                        Gas ≈ <Mono>{d.burnGas.gas}</Mono> k
                       </Nb>
                     )}
                   </>
@@ -1625,7 +1821,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                   <div class="kv">
                     <dt class="kv__k">
                       <Icon id="i-gas" />
-                      <span>{dir === "in" ? "Lock on V3" : "Burn on Sepolia"}</span>
+                      <span>{dir === "in" ? "Lock on V3" : `Burn on ${d.short}`}</span>
                     </dt>
                     <dd class="kv__v">
                       {dir === "in" ? (
@@ -1640,9 +1836,12 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                         </>
                       ) : (
                         <>
-                          ≈ <Mono>{BURN_GAS}</Mono> k gas
+                          ≈ <Mono>{d.burnGas.gas}</Mono> k gas
                           <Tip id="tip-burn" label="About the burn gas">
-                            Burn 1 used {BURN_GAS_FULL} gas, paid in Sepolia ETH. No approval step is needed.
+                            {d.burnGas.used
+                              ? `${d.burnGas.run} needed ${d.burnGas.full} gas to run and used ${d.burnGas.used}, after the refund for burning its sender's whole balance`
+                              : `${d.burnGas.run} used ${d.burnGas.full} gas`}
+                            {d.burnGas.note ? `, ${d.burnGas.note}` : ""}, paid in {d.short} ETH. No approval step is needed.
                           </Tip>
                         </>
                       )}
@@ -1651,28 +1850,29 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                   <div class="kv">
                     <dt class="kv__k">
                       <Icon id="i-gas" />
-                      <span>{dir === "in" ? "Mint on Sepolia" : "Release on V3"}</span>
+                      <span>{dir === "in" ? `Mint on ${d.short}` : "Release on V3"}</span>
                     </dt>
                     <dd class="kv__v">
                       {dir === "in" ? (
                         !k.auto ? (
                           <>
-                            ≈ <Mono>{MINT_GAS}</Mono> M gas
+                            ≈ <Mono>{d.mintGas.gas}</Mono> M gas
                             <Tip id="tip-mint" label="About the mint gas">
-                              Lock 1's mint used {MINT_GAS_FULL} gas.{" "}
+                              {d.mintGas.run} used {d.mintGas.full} gas{d.mintGas.note ? `, ${d.mintGas.note}` : ""}.{" "}
                               {k.below
-                                ? `Below auto-mint's ${tpot(AUTO_MINT.min, 3)} tPOT minimum you send the mint, so you pay its gas in Sepolia ETH.`
-                                : "Auto-mint does not see locks from Polkadot wallets yet: you send the mint from an Ethereum wallet, so you pay its gas in Sepolia ETH."}
+                                ? `Below auto-mint's ${tpot(AUTO_MINT.min, 3)} tPOT minimum you send the mint, so you pay its gas in ${d.short} ETH${l1Note(d)}.`
+                                : `Auto-mint does not see locks from Polkadot wallets yet: you send the mint from an Ethereum wallet, so you pay its gas in ${d.short} ETH.`}
                             </Tip>
                           </>
                         ) : (
                           <>
-                            Nothing to pay <span class="kv__note">· auto-mint</span>
+                            {/* Kept whole beside a rollup's longer name at phone width. */}
+                            Nothing to pay <span class="kv__note nowrap">· auto-mint</span>
                           </>
                         )
                       ) : (
                         <>
-                          Nothing to pay <span class="kv__note">· committee</span>
+                          Nothing to pay <span class="kv__note nowrap">· committee</span>
                         </>
                       )}
                     </dd>
@@ -1713,8 +1913,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                     <span class="need__label">ETH for the {dir === "in" ? "mint" : "burn"}</span>
                     <span class="need__val mono">{k.eth === null ? "—" : fmt(k.eth, 3)}</span>
                     {k.noEth && w.address ? (
-                      <button class="text-link need__fix" type="button" onClick={() => openGetEth(dir, w.address ?? "")}>
-                        Get Sepolia ETH
+                      <button class="text-link need__fix" type="button" onClick={() => openGetEth(dir, w.address ?? "", d)}>
+                        Get {d.short} ETH
                       </button>
                     ) : null}
                   </li>
@@ -1751,7 +1951,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
         </p>
       </div>
 
-      <ProofStrip dir={dir} auto={k.auto} />
+      <ProofStrip dir={dir} auto={k.auto} d={d} />
     </div>
   );
 }

@@ -4,7 +4,7 @@
 // calldata checked: lock 1's own mint (row 55) without the account proof, and each importHeader
 // byte for byte against the dataHash the relayer recorded for that set change. Then the statuses:
 // minted, moved, waiting, blocked, failed, and the fallbacks when the node does not serve a block's
-// state. Nothing leaves the machine.
+// state. And the same plan on a rollup, each transaction with its L1 part. Nothing leaves the machine.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -15,6 +15,7 @@ import { sha512 } from "@noble/hashes/sha2.js";
 import { decodeFunctionData, parseAbi, type Hex as ViemHex } from "viem";
 import { blake2b256, eventTopic, keccak256 } from "../src/lib/hashes.ts";
 import { bytesToHex, hexToBytes, type Hex } from "../src/lib/hex.ts";
+import { GAS_PRICE_ORACLE, l1ComponentCalldata, NO_L1, NODE_INTERFACE } from "../src/lib/l1.ts";
 import { importAndMintCalldata, mintCalldata, MULTICALL3, type LockProof } from "../src/lib/proof/calldata.ts";
 import { clientCrypto, signersHint } from "../src/lib/proof/grandpa.ts";
 import { CHECK_KEYS, lockRefOf, PlanError, planMint, unreachable, type Check, type LockRef, type PlanOptions } from "../src/lib/proof/plan.ts";
@@ -26,6 +27,7 @@ import {
   bundle,
   enc,
   fakeChains,
+  fakeFetch,
   fixture,
   HELD_116992,
   HELD_118614,
@@ -43,6 +45,7 @@ import {
   S2,
   VAULT,
   type Chains,
+  type Seen,
   type V3Block,
 } from "./fake-chains.ts";
 
@@ -628,4 +631,73 @@ test("lockRefOf: lock 1's Locked log gives the lock planMint takes; another cont
   assert.equal(lockRefOf({ ...log, data: data(1n, MINTER) }, env), null);
   assert.equal(lockRefOf({ ...log, data: data(11_155_111n, LIGHT_CLIENT) }, env), null);
   assert.equal(lockRefOf({ ...log, topics: log.topics.slice(0, 3) }, env), null);
+});
+
+// ---------------------------------------------------------------------------------------------
+// On a rollup: the L1 part of each transaction
+
+/** The fake chains again, the destination's node also answering NodeInterface and GasPriceOracle, as a rollup's node does. */
+function withL1(c: Chains, answer: (to: string, data: Hex) => Hex): Seen[] {
+  return fakeFetch({
+    [c.v3.endpoint.url]: c.v3.handle,
+    [c.sepolia.endpoint.url]: (method, params) => {
+      const tx = params[0] as { to?: string; data?: Hex } | undefined;
+      const to = tx?.to?.toLowerCase();
+      if (method === "eth_call" && tx?.data && (to === NODE_INTERFACE || to === GAS_PRICE_ORACLE)) return answer(to, tx.data);
+      return c.sepolia.handle(method, params);
+    },
+  });
+}
+
+test("on a rollup each transaction carries its L1 part, read once the dry run passed: Arbitrum's L1 gas once more in its limit, Base's L1 fee besides it", async () => {
+  const arb = fakeChains();
+  atSet33(arb);
+  headAt(arb, B);
+  lockProofs(arb, B);
+  const asked: Hex[] = [];
+  withL1(arb, (_to, data) => (asked.push(data), enc("uint64,uint256,uint256", [5_000n, 20_000_000n, 0n])));
+  const p = await planMint(LOCK1, { ...arb.env, l1: "arbitrum", chain: "Arbitrum Sepolia" }, opts());
+  assert.equal(p.status, "ready", p.why);
+  const tx = p.txs[0]!;
+  // The dry run's gas plus the margin, as on Sepolia, and the L1 gas once more.
+  assert.deepEqual([tx.gas, tx.gasLimit], [2_466_245n, 2_712_869n + 5_000n]);
+  assert.deepEqual(tx.l1, { kind: "arbitrum", gas: 5_000n, fee: 5_000n * 20_000_000n });
+  // NodeInterface was asked about this very transaction: to the minter, with its calldata.
+  assert.deepEqual(asked, [l1ComponentCalldata(tx.to, tx.data)]);
+  restoreFetch();
+
+  const base = fakeChains();
+  atSet33(base);
+  headAt(base, B);
+  lockProofs(base, B);
+  withL1(base, () => enc("uint256", [7_777n]));
+  const q = await planMint(LOCK1, { ...base.env, l1: "op", chain: "Base Sepolia" }, opts());
+  assert.equal(q.status, "ready", q.why);
+  assert.equal(q.txs[0]?.gasLimit, 2_712_869n);
+  assert.deepEqual(q.txs[0]?.l1, { kind: "op", gas: 0n, fee: 7_777n });
+});
+
+test("on Sepolia the plan asks no L1 question: its transactions carry none, and their limits are as they were", async () => {
+  const c = fakeChains();
+  atSet33(c);
+  headAt(c, B);
+  lockProofs(c, B);
+  const plan = await planMint(LOCK1, c.env, opts());
+  assert.equal(plan.status, "ready", plan.why);
+  assert.deepEqual(plan.txs[0]?.l1, NO_L1);
+  assert.equal(plan.txs[0]?.gasLimit, 2_712_869n);
+  assert.ok(c.seen.every((s) => !(s.method === "eth_call" && [NODE_INTERFACE, GAS_PRICE_ORACLE].includes(((s.params[0] as { to: string }).to ?? "").toLowerCase() as Hex))));
+});
+
+test("a plan that does not reach ready reads no L1 part: a minted lock asks nothing more of the rollup", async () => {
+  const c = fakeChains();
+  atSet33(c);
+  headAt(c, B);
+  lockProofs(c, B);
+  c.sepolia.minter.used.add(1n);
+  let asked = 0;
+  withL1(c, () => (asked++, enc("uint256", [1n])));
+  const plan = await planMint(LOCK1, { ...c.env, l1: "op", chain: "Base Sepolia" }, opts());
+  assert.equal(plan.status, "minted");
+  assert.equal(asked, 0);
 });

@@ -2,15 +2,19 @@
 // that answer as V3's EVM RPC and Sepolia answered on Oct 26 (scratchpad probe): the lock's calldata
 // names this bridge and the sender, its value is whole native units, its gas the estimate plus 10%
 // at V3's fees; a sender V3 will not run the lock for, a vault refusal, a sender with code on
-// Sepolia, too little wtPOT, an empty vault or too little ETH each stop it before the wallet. A
-// method that sends or signs is an error here. Offline.
+// Sepolia, too little wtPOT, an empty vault or too little ETH each stop it before the wallet. Then
+// the rollups: a lock names the rollup's chain id and minter; a burn there counts its L1 part
+// (src/lib/l1.ts), Arbitrum's L1 gas in its gas limit and Base's L1 data fee in the balance it
+// needs, and the words name the chain. A method that sends or signs is an error here. Offline.
 
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
+import { decodeFunctionData, encodeFunctionData, parseAbi, type Hex as ViemHex } from "viem";
 import { prepareBurn, prepareLock, unreachable, type Prepared, type SendEnv } from "../src/app/preflight.ts";
-import { SEPOLIA_MIN_TIP } from "../src/app/txmath.ts";
+import { SEPOLIA_MIN_TIP, sepoliaFees, upFront, withMargin } from "../src/app/txmath.ts";
 import { encodeCall } from "../src/lib/abi.ts";
 import type { Hex } from "../src/lib/hex.ts";
+import { feeBesides, GAS_PRICE_ORACLE, l1Call, l1ComponentCalldata, l1FeeBoundCalldata, l1Of, limitWithL1, NO_L1, NODE_INTERFACE, UNSIGNED_TX_OVERHEAD } from "../src/lib/l1.ts";
 import { AllFailed, TransportError, type Endpoint } from "../src/lib/rpc.ts";
 import { enc, fakeFetch, MINTER, restoreFetch, revertData, RpcFail, registry, VAULT, type Seen } from "./fake-chains.ts";
 
@@ -20,7 +24,15 @@ const TOKEN: Hex = "0x1fcbbd66922ac5aa20219a5c16c2591a76b4cb14";
 const ME: Hex = "0xd9838a86cf83c28ee486544060d1ca4ca2971071";
 const SEP: Endpoint = { id: "sep", label: "fake Sepolia", url: "https://sepolia.fake/" };
 const V3E: Endpoint = { id: "v3e", label: "fake V3 EVM", url: "https://v3-evm.fake/" };
-const env: SendEnv = { sepolia: [SEP], v3Evm: [V3E], vault: VAULT, minter: MINTER, token: TOKEN, sepoliaChainId: 11_155_111n, registry };
+const env: SendEnv = { evm: [SEP], chainId: 11_155_111n, chain: "Sepolia", l1: "none", v3Evm: [V3E], vault: VAULT, minter: MINTER, token: TOKEN, registry };
+
+/** The rollups' BridgeMinter and wtPOT, the same addresses on both (deployments/<network>-bridge.json). */
+const ROLLUP_MINTER: Hex = "0xdc31a3bc1354545eeb985aad7b2aa662e9272348";
+const ROLLUP_TOKEN: Hex = "0xe1130718c56de008b47c392c85895a1a605ba95e";
+const BASE: Endpoint = { id: "base", label: "fake Base Sepolia", url: "https://base-sepolia.fake/", logRange: 50_000 };
+const ARB: Endpoint = { id: "arb", label: "fake Arbitrum Sepolia", url: "https://arbitrum-sepolia.fake/" };
+const baseEnv: SendEnv = { ...env, evm: [BASE], chainId: 84_532n, chain: "Base Sepolia", l1: "op", minter: ROLLUP_MINTER, token: ROLLUP_TOKEN };
+const arbEnv: SendEnv = { ...env, evm: [ARB], chainId: 421_614n, chain: "Arbitrum Sepolia", l1: "arbitrum", minter: ROLLUP_MINTER, token: ROLLUP_TOKEN };
 
 const qty = (n: bigint): Hex => `0x${n.toString(16)}`;
 const ONE = 100_000_000_000_000n;
@@ -53,7 +65,11 @@ interface SepoliaState {
 const V3_HEAD = 0x32f42n;
 const SEP_HEAD = 0xb71cddn;
 
-function chains(v3: Partial<V3State> = {}, sep: Partial<SepoliaState> = {}): Seen[] {
+/**
+ * The fake chains: V3's EVM RPC, and the destination's node at `dest` (Sepolia's by default), whose
+ * wtPOT is `token`; `l1` answers an eth_call to NodeInterface or GasPriceOracle, as a rollup's node does.
+ */
+function chains(v3: Partial<V3State> = {}, sep: Partial<SepoliaState> = {}, dest: { ep: Endpoint; token: Hex; l1?: (to: string, data: Hex) => Hex } = { ep: SEP, token: TOKEN }): Seen[] {
   const V: V3State = { balance: RICH, outstanding: 14n * ONE / 10n, poor: false, revert: null, mute: false, ...v3 };
   const S: SepoliaState = { code: "0x", wtpot: 14n * ONE / 10n, eth: 10n ** 17n, base: 17n, tip: 3n, revert: null, ...sep };
   return fakeFetch({
@@ -79,8 +95,10 @@ function chains(v3: Partial<V3State> = {}, sep: Partial<SepoliaState> = {}): See
       }
       throw new Error(method);
     },
-    [SEP.url]: (method, params) => {
+    [dest.ep.url]: (method, params) => {
       const tx = params[0] as { to?: string; data?: string };
+      const to = method === "eth_call" ? tx.to?.toLowerCase() : undefined;
+      if (to && dest.l1 && (to === NODE_INTERFACE || to === GAS_PRICE_ORACLE)) return dest.l1(to, tx.data as Hex);
       switch (method) {
         case "eth_getCode":
           return S.code;
@@ -96,7 +114,7 @@ function chains(v3: Partial<V3State> = {}, sep: Partial<SepoliaState> = {}): See
           return params[1] === "pending" ? "0x54" : "0x53";
         case "eth_call":
         case "eth_estimateGas":
-          if (tx.to?.toLowerCase() === TOKEN) return enc("uint256", [S.wtpot]);
+          if (tx.to?.toLowerCase() === dest.token) return enc("uint256", [S.wtpot]);
           if (S.revert) throw new RpcFail(3, "execution reverted", S.revert);
           return method === "eth_call" ? enc("uint256", [2n]) : qty(62_261n);
       }
@@ -217,4 +235,112 @@ test("only a read that reached no node counts as unreachable; a node's refusal d
   assert.equal(unreachable(new Error("execution reverted")), false);
   // The V3 node's refusal to prove a block it has not finalized is an answer: asking again the same way gets the same.
   assert.equal(unreachable(new AllFailed("grandpa_proveFinality", ["grandpa_proveFinality: fake V3 node: GRANDPA prove finality rpc failed: Block not yet finalized"])), false);
+});
+
+// ---------------------------------------------------------------------------------------------
+// The rollups: the lock names the rollup, the burn counts its L1 part
+
+const L1_ABI = parseAbi([
+  "function gasEstimateL1Component(address to, bool contractCreation, bytes data) returns (uint64 gasEstimateForL1, uint256 baseFee, uint256 l1BaseFeeEstimate)",
+  "function getL1FeeUpperBound(uint256 unsignedTxSize) view returns (uint256)",
+]);
+
+test("the L1 calls are the predeploys' own: NodeInterface's gasEstimateL1Component and GasPriceOracle's getL1FeeUpperBound, encoded as viem encodes them", () => {
+  const burn = encodeCall("burn(uint256,address)", [ONE / 1000n, ME]);
+  assert.equal(l1ComponentCalldata(ROLLUP_MINTER, burn), encodeFunctionData({ abi: L1_ABI, functionName: "gasEstimateL1Component", args: [ROLLUP_MINTER, false, burn as ViemHex] }));
+  // Calldata whose length is no multiple of 32 bytes is padded as the ABI pads bytes.
+  const odd = "0x0102030405" as Hex;
+  assert.equal(l1ComponentCalldata(ROLLUP_MINTER, odd), encodeFunctionData({ abi: L1_ABI, functionName: "gasEstimateL1Component", args: [ROLLUP_MINTER, false, odd as ViemHex] }));
+  // The bound is of the unsigned transaction's size: its calldata and 200 bytes, as the relayer's.
+  assert.equal(l1FeeBoundCalldata(burn), encodeFunctionData({ abi: L1_ABI, functionName: "getL1FeeUpperBound", args: [BigInt((burn.length - 2) / 2 + UNSIGNED_TX_OVERHEAD)] }));
+  assert.deepEqual(l1Call("arbitrum", ROLLUP_MINTER, burn), { to: NODE_INTERFACE, data: l1ComponentCalldata(ROLLUP_MINTER, burn) });
+  assert.deepEqual(l1Call("op", ROLLUP_MINTER, burn), { to: GAS_PRICE_ORACLE, data: l1FeeBoundCalldata(burn) });
+  assert.equal(l1Call("none", ROLLUP_MINTER, burn), null);
+});
+
+test("an L1 part, read: Arbitrum's gas goes into the limit once more, Base's fee is paid besides it, Sepolia has none", () => {
+  const arb = l1Of("arbitrum", enc("uint64,uint256,uint256", [1_234n, 20_000_000n, 9n]));
+  assert.deepEqual(arb, { kind: "arbitrum", gas: 1_234n, fee: 1_234n * 20_000_000n });
+  assert.equal(limitWithL1(100_000n, arb), 101_234n);
+  assert.equal(feeBesides(arb), 0n);
+  const op = l1Of("op", enc("uint256", [666_738n]));
+  assert.deepEqual(op, { kind: "op", gas: 0n, fee: 666_738n });
+  assert.equal(limitWithL1(100_000n, op), 100_000n);
+  assert.equal(feeBesides(op), 666_738n);
+  assert.equal(limitWithL1(100_000n, NO_L1), 100_000n);
+  assert.equal(feeBesides(NO_L1), 0n);
+});
+
+test("a lock to Base Sepolia or Arbitrum Sepolia names that chain id and its minter; the rest of the lock is as Sepolia's", async () => {
+  for (const e of [baseEnv, arbEnv]) {
+    chains();
+    const p = ok(await prepareLock(e, ME, ONE / 1000n));
+    assert.equal(p.data, encodeCall("lock(uint256,address,address)", [e.chainId, ROLLUP_MINTER, ME]));
+    assert.equal(p.value, (ONE / 1000n) * 10_000n);
+    assert.equal(p.gas, LOCK_GAS + LOCK_GAS / 10n);
+    // The lock is a V3 transaction: no L1 part.
+    assert.deepEqual(p.l1, NO_L1);
+    restoreFetch();
+  }
+  // Sepolia's lock is the one it always was: lock(11155111, 0x8287…cb9e, the sender).
+  chains();
+  assert.equal(ok(await prepareLock(env, ME, ONE)).data, encodeCall("lock(uint256,address,address)", [11_155_111n, MINTER, ME]));
+});
+
+test("a burn on Arbitrum Sepolia: NodeInterface's L1 gas for this very burn goes into the gas limit once more", async () => {
+  let asked: Hex | null = null;
+  const seen = chains({}, {}, { ep: ARB, token: ROLLUP_TOKEN, l1: (_to, data) => ((asked = data), enc("uint64,uint256,uint256", [4_321n, 20_000_000n, 0n])) });
+  const amount = ONE / 1000n;
+  const p = ok(await prepareBurn(arbEnv, ME, amount));
+  assert.equal(p.data, encodeCall("burn(uint256,address)", [amount, ME]));
+  assert.equal(p.gas, withMargin(62_261n) + 4_321n);
+  assert.deepEqual(p.l1, { kind: "arbitrum", gas: 4_321n, fee: 4_321n * 20_000_000n });
+  // The L1 part is gas: the wallet's up-front check is the limit at the max fee, nothing besides.
+  assert.equal(p.need, upFront(0n, p.gas, p.fees));
+  // NodeInterface was asked about the burn to the rollup's minter, not about a creation.
+  const d = decodeFunctionData({ abi: L1_ABI, data: asked! as ViemHex });
+  assert.equal(d.functionName, "gasEstimateL1Component");
+  assert.equal((d.args[0] as string).toLowerCase(), ROLLUP_MINTER);
+  assert.equal(d.args[1], false);
+  assert.equal(d.args[2], p.data);
+  // The wtPOT read is the rollup's token's, on the rollup's node.
+  assert.ok(seen.some((s) => s.url === ARB.url && s.method === "eth_call" && (s.params[0] as { to: string }).to.toLowerCase() === ROLLUP_TOKEN));
+  assert.ok(seen.every((s) => s.url !== SEP.url), "nothing is read from Sepolia");
+});
+
+test("a burn on Base Sepolia: GasPriceOracle's bound of the L1 data fee counts in the ETH it needs, and the words name the fee and the chain", async () => {
+  const fee = 1_333_476n;
+  chains({}, {}, { ep: BASE, token: ROLLUP_TOKEN, l1: () => enc("uint256", [fee]) });
+  const amount = ONE / 1000n;
+  const p = ok(await prepareBurn(baseEnv, ME, amount));
+  assert.equal(p.gas, withMargin(62_261n));
+  assert.deepEqual(p.l1, { kind: "op", gas: 0n, fee });
+  const fees = sepoliaFees(17n, 3n);
+  assert.equal(p.need, upFront(0n, p.gas, fees) + fee);
+  assert.equal(p.cost, 62_261n * (17n + SEPOLIA_MIN_TIP) + fee);
+  restoreFetch();
+  // One wei short of the gas and the fee: refused before the wallet, naming both.
+  chains({}, { eth: p.need - 1n }, { ep: BASE, token: ROLLUP_TOKEN, l1: () => enc("uint256", [fee]) });
+  const short = problemOf(await prepareBurn(baseEnv, ME, amount));
+  assert.equal(short.title, "Not enough Base Sepolia ETH");
+  assert.match(short.text, /gas and its L1 data fee need up to/);
+});
+
+test("the burn's checks name the rollup: its contract senders, its wtPOT, its dry run", async () => {
+  chains({}, { code: "0x6080604052" }, { ep: ARB, token: ROLLUP_TOKEN, l1: () => enc("uint64,uint256,uint256", [0n, 1n, 0n]) });
+  assert.equal(problemOf(await prepareBurn(arbEnv, ME, ONE / 1000n)).title, "Not burned: your address is a contract on Arbitrum Sepolia");
+  restoreFetch();
+  chains({}, { wtpot: 0n }, { ep: ARB, token: ROLLUP_TOKEN, l1: () => enc("uint64,uint256,uint256", [0n, 1n, 0n]) });
+  assert.equal(problemOf(await prepareBurn(arbEnv, ME, ONE / 1000n)).text, "You hold 0 wtPOT on Arbitrum Sepolia. Nothing was burned.");
+  restoreFetch();
+  chains({}, { revert: revertData("ZeroRecipient()") }, { ep: BASE, token: ROLLUP_TOKEN, l1: () => enc("uint256", [1n]) });
+  assert.match(problemOf(await prepareBurn(baseEnv, ME, ONE / 1000n)).text, /^Its dry run on Base Sepolia reverted: ZeroRecipient/);
+});
+
+test("Sepolia's burn asks no L1 question: its checks are the ones it always made", async () => {
+  const seen = chains();
+  const p = ok(await prepareBurn(env, ME, ONE / 100n));
+  assert.deepEqual(p.l1, NO_L1);
+  assert.equal(p.gas, withMargin(62_261n));
+  assert.ok(seen.every((s) => !(s.method === "eth_call" && [NODE_INTERFACE, GAS_PRICE_ORACLE].includes((s.params[0] as { to: string }).to.toLowerCase() as Hex))));
 });

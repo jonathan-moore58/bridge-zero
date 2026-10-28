@@ -14,13 +14,24 @@ import { lagMinutes, setsBehind, type ClientState } from "../../lib/lc-read.ts";
 import { registry, useField, type ChainHead, type Field, type LcState } from "../../lib/live.ts";
 import { burnId } from "../../lib/proofs.ts";
 import { request } from "../../lib/rpc.ts";
-import { ROLLUPS, destState, type Dest } from "../dests.ts";
-import { FAST_CAP, IMPORT_GAS, LATER_CHAINS, SPEED_NAME, V3_SCAN } from "../facts.ts";
+import { ROLLUPS, destOf, destState, type Dest } from "../dests.ts";
+import { FAST_CAP, IMPORT_GAS, LATER_CHAINS, SPEED_NAME, V3_SCAN, timeOf } from "../facts.ts";
+import { RELAY_AFTER_CHANGE_MS, SET_CHANGES_TEXT } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
-import { lookImport as lookRollupImport, recordedImport as recordedRollupImport, useRollup, watchRollups, type ImportLookup, type RollupKey } from "../rollups.ts";
+import {
+  lookImport as lookRollupImport,
+  recordedImport as recordedRollupImport,
+  useRollup,
+  useRollupSupply,
+  watchRollups,
+  watchSupplies,
+  type ImportLookup,
+  type RollupKey,
+  type RollupSupply,
+} from "../rollups.ts";
 import { Addr, Chip, Icon, fmt, num, short } from "../ui.tsx";
-import { RUNS, clockUtc, dayTime, qty, sepoliaTime, tok, type RawLog, type Run } from "./Activity.tsx";
+import { RUNS, clockUtc, dayTime, qty, runTitle, sepoliaTime, tok, type RawLog, type Run } from "./Activity.tsx";
 
 type ClientKey = "v3" | "mainnet";
 type Dot = "verify" | "trust" | "revert" | "muted";
@@ -62,7 +73,9 @@ interface Moment {
 function lastMoment(): Moment {
   let best: Moment = { at: Number.NEGATIVE_INFINITY, what: "", block: null };
   for (const r of RUNS) {
-    const what = `${r.dir === "in" ? "lock" : "burn"} ${r.n}`;
+    // "lock 1", "burn 0 on Arbitrum Sepolia".
+    const title = runTitle(r);
+    const what = `${title.charAt(0).toLowerCase()}${title.slice(1)}`;
     if (r.at > best.at) best = { at: r.at, what, block: null };
     if (r.release && r.release.at > best.at) best = { at: r.release.at, what, block: r.release.block };
   }
@@ -265,7 +278,7 @@ function useImport(key: ClientKey, lc: Field<LcState>): Imported | "reading" | "
 }
 
 interface Waiting {
-  /** Burns on Sepolia the vault has not released yet; null when that is not known. */
+  /** Burns the vault has not released yet, on Sepolia (useWaiting) or on every chain (withRollups); null when that is not known. */
   count: number | null;
   reading: boolean;
   live: boolean;
@@ -323,6 +336,22 @@ function useWaiting(): Waiting {
   const unknown = known.some((c) => c.released === null) || states.some((s) => s === "failed" || s === undefined);
   const count = known.filter((c) => c.released === false).length + states.filter((s) => s === false).length;
   return { count: unknown ? null : count, reading, live, at: live ? Math.min(minter.at ?? Date.now(), checks.at ?? Date.now()) : null };
+}
+
+/**
+ * The burns waiting on every chain: Sepolia's (useWaiting) and each rollup's (rollups.ts), counted
+ * only when each is known, and live only when every one was read live.
+ */
+function withRollups(w: Waiting, rollups: readonly Field<RollupSupply>[]): Waiting {
+  const each = rollups.map((r) => (r.status === "loading" ? undefined : r.value?.waiting));
+  const live = w.live && rollups.every((r) => r.status === "live");
+  const unknown = w.count === null || each.some((x) => x === undefined || x === null);
+  return {
+    count: unknown ? null : (w.count ?? 0) + each.reduce<number>((n, x) => n + (x ?? 0), 0),
+    reading: w.reading || rollups.some((r) => r.status === "loading"),
+    live,
+    at: live ? Math.min(w.at ?? Date.now(), ...rollups.map((r) => r.at ?? Date.now())) : null,
+  };
 }
 
 function usePhone(): boolean {
@@ -688,7 +717,7 @@ function RollupLcCard({ d }: { d: Dest & { key: RollupKey } }) {
           <span class="lag__big">{lag === null ? reading || chain.status === "loading" ? wait : "—" : <LagFigure lag={lag} />}</span>
           <span class="lag__label">behind Portaldot's finalized head</span>
         </div>
-        {/* No relayer runs here on a schedule, so no ceiling applies: the bar is neutral, never a warning. */}
+        {/* The relayer keeps this client at V3's set, not its head within a ceiling: the bar is neutral, never a warning. */}
         <Meter lag={lag} ceiling={null} />
       </div>
       <dl class="ncard__grid">
@@ -798,8 +827,8 @@ function RollupLcCard({ d }: { d: Dest & { key: RollupKey } }) {
       </dl>
       <p class="ncard__note">
         <span>
-          Imported on demand: no relayer runs to {d.short} on a schedule yet, so the client falls hours behind between imports. Its address is also the old
-          mainnet's client's on Sepolia: another chain, another contract.
+          Kept at V3's validator set by one relayer run about {RELAY_AFTER_CHANGE_MS / 60_000} minutes after each set change ({SET_CHANGES_TEXT}); between runs, mints
+          import V3's head themselves, so the head lag grows to hours. Its address is also the old mainnet's client's on Sepolia: another chain, another contract.
         </span>
       </p>
     </article>
@@ -947,12 +976,12 @@ function Topo({ net }: { net: NetState }) {
           </span>
           <span class="topo__state">
             <span class={`topo__dot topo__dot--${dot("trust")}`} aria-hidden="true" />
-            <span class="topo__val">{last ? `last release: burn ${last.n}${last.took ? `, ${last.took}` : ""}` : "no release recorded"}</span>
+            <span class="topo__val">{last ? `last release: ${runTitle(last).replace(/^B/, "b")}${last.took ? `, ${last.took}` : ""}` : "no release recorded"}</span>
           </span>
         </div>
         <p class="topo__backlabel">
           <span>
-            <strong>Way back · trusted:</strong> a burn on Sepolia, released on V3 by the committee
+            <strong>Way back · trusted:</strong> a burn on Sepolia, Base Sepolia or Arbitrum Sepolia, released on V3 by the committee
           </span>
         </p>
       </div>
@@ -1021,11 +1050,17 @@ function RelayerCard() {
   );
 }
 
+/** Fast's confirmations on each chain, in its own blocks: "3 Sepolia, 180 Base Sepolia or 144 Arbitrum Sepolia blocks". */
+const FAST_BLOCKS = (() => {
+  const each = [destOf("sepolia"), ...ROLLUPS].map((d) => `${num(d.fastConfirmations)} ${d.short}`);
+  return `${each.slice(0, -1).join(", ")} or ${each.at(-1) ?? ""} blocks`;
+})();
+
 function WatcherCard({ waiting }: { waiting: Waiting }) {
   const lastRelease = RELEASES[0]?.at ?? Number.NaN;
   const recordedTo = Number.isFinite(lastRelease) ? ` · releases recorded to ${dayTime(lastRelease)} UTC` : "";
   const asOf =
-    waiting.live && waiting.at !== null ? `Waiting read live at ${clockUtc(waiting.at)}${recordedTo}` : waiting.reading ? `Reading Sepolia and V3${recordedTo}` : AFTER_LAST;
+    waiting.live && waiting.at !== null ? `Waiting read live at ${clockUtc(waiting.at)}${recordedTo}` : waiting.reading ? `Reading Sepolia, the rollups and V3${recordedTo}` : AFTER_LAST;
   const n = waiting.count;
   return (
     <article class="card ncard" aria-labelledby="n-watch">
@@ -1053,7 +1088,7 @@ function WatcherCard({ waiting }: { waiting: Waiting }) {
           <span class="nlist__v">
             A round every 15 s, on one machine{" "}
             <span class="dim">
-              · releases after 3 confirmations · ≤ {FAST_CAP} tPOT per burn · ≤ {FAST_CAP} tPOT in flight before finality
+              · releases after {FAST_BLOCKS} (36 s) · ≤ {FAST_CAP} tPOT per burn · ≤ {FAST_CAP} tPOT in flight before finality, across the three chains
             </span>
           </span>
           {/* Whether the watcher runs right now is not something this page can read: its settings, not its state. */}
@@ -1070,7 +1105,8 @@ function WatcherCard({ waiting }: { waiting: Waiting }) {
             Standard
           </span>
           <span class="nlist__v">
-            After Sepolia finality <span class="dim">· any amount, and Fast above the cap · ≈ 17 min, est.</span>
+            After the chain's finality{" "}
+            <span class="dim">· any amount, and Fast above the cap · {andList([destOf("sepolia"), ...ROLLUPS].map((d) => `${timeOf(d.key, "std")[0]} on ${d.short}`))}, est.</span>
           </span>
           <span class="nlist__end">
             <span class="tag tag--verify">
@@ -1092,7 +1128,7 @@ function WatcherCard({ waiting }: { waiting: Waiting }) {
             <li key={run.id} class="nlist__row">
               <span class="nlist__k">Burn {run.n}</span>
               <span class="nlist__v">
-                {run.speed ? SPEED_NAME[run.speed] : "Released"}
+                {destOf(run.dest).short} · {run.speed ? SPEED_NAME[run.speed] : "Released"}
                 {run.took ? ` · ${run.took}` : ""}{" "}
                 <span class="dim">
                   · {Number.isFinite(at) ? `${dayTime(at)} UTC · ` : ""}V3 <span class="mono">#{num(block)}</span>
@@ -1110,7 +1146,10 @@ function WatcherCard({ waiting }: { waiting: Waiting }) {
       </div>
       <p class="ncard__note ncard__note--trust">
         <Icon id="i-alert" cls="i--14" />
-        <span>Fast is trusted: a reorg deeper than 3 blocks could undo a burn after its release.</span>
+        <span>
+          Fast is trusted: a reorg deeper than 3 blocks on Sepolia, or a rollup's sequencer dropping its latest blocks before their batch is on Sepolia, could undo a
+          burn after its release.
+        </span>
       </p>
     </article>
   );
@@ -1259,7 +1298,13 @@ function countNote(runs: Run[], onChain: number | null, done: string): string {
   return `${andList(names)}, ${state}${more ? `; ${more} more since the records` : ""}`;
 }
 
-function VaultCard({ phone, waiting }: { phone: boolean; waiting: Waiting }) {
+/**
+ * The vault against wtPOT on every chain it is minted on: one vault backs Sepolia's, Base Sepolia's
+ * and Arbitrum Sepolia's wtPOT, so its outstanding is set against their supplies summed, and the
+ * burns waiting are counted on all three (`waiting`, withRollups). `rollups`: each rollup's wtPOT
+ * and burns (rollups.ts).
+ */
+function VaultCard({ phone, waiting, rollups }: { phone: boolean; waiting: Waiting; rollups: readonly (Field<RollupSupply> & { d: Dest })[] }) {
   const vault = useField("v3.vault");
   const token = useField("sepolia.token");
   const minter = useField("sepolia.minter");
@@ -1267,55 +1312,72 @@ function VaultCard({ phone, waiting }: { phone: boolean; waiting: Waiting }) {
   const v = vault.status === "loading" ? undefined : vault.value;
   const t = token.status === "loading" ? undefined : token.value;
   const m = minter.status === "loading" ? undefined : minter.value;
+  const rs = rollups.map((r) => (r.status === "loading" ? undefined : r.value));
+  // The supply on every chain, once each one's is read.
+  const supply = t && rs.every((x) => x !== undefined) ? rs.reduce((s, x) => s + (x?.supply ?? 0n), t.totalSupply) : undefined;
   const wait = <span class="skel" />;
-  const live = vault.status === "live" && token.status === "live";
-  const bothRecorded = vault.status === "recorded" && token.status === "recorded";
-  const recorded = vault.status === "recorded" || token.status === "recorded" || minter.status === "recorded";
-  const at = Math.min(vault.at ?? Date.now(), token.at ?? Date.now());
+  // The supplies, read alike: all live, all recorded, or not yet.
+  const supplies =
+    token.status === "live" && rollups.every((r) => r.status === "live")
+      ? "live"
+      : token.status === "recorded" && rollups.every((r) => r.status === "recorded")
+        ? "recorded"
+        : token.status === "loading" || rollups.some((r) => r.status === "loading")
+          ? "loading"
+          : "mixed";
+  const live = vault.status === "live" && supplies === "live";
+  const bothRecorded = vault.status === "recorded" && supplies === "recorded";
+  const recorded = vault.status === "recorded" || token.status === "recorded" || minter.status === "recorded" || rollups.some((r) => r.status === "recorded");
+  const supplyAt = Math.min(token.at ?? Date.now(), ...rollups.map((r) => r.at ?? Date.now()));
+  const at = Math.min(vault.at ?? Date.now(), supplyAt);
   const asOf = live
     ? `Live · as of ${clockUtc(at)}${minter.status === "recorded" ? "; burn count recorded" : ""}`
     : bothRecorded
       ? AFTER_LAST
-      : vault.status === "recorded" && token.status === "live"
-        ? `Outstanding recorded; supply live, as of ${clockUtc(token.at ?? Date.now())}`
-        : vault.status === "live" && token.status === "recorded"
+      : vault.status === "recorded" && supplies === "live"
+        ? `Outstanding recorded; supply live, as of ${clockUtc(supplyAt)}`
+        : vault.status === "live" && supplies === "recorded"
           ? `Outstanding live, as of ${clockUtc(vault.at ?? Date.now())}; supply recorded`
-          : vault.status === "loading" || token.status === "loading"
-            ? "Reading V3 and Sepolia"
-            : "Could not read";
+          : vault.status === "loading" || supplies === "loading"
+            ? "Reading V3, Sepolia and the rollups"
+            : vault.status === "live" && supplies === "mixed"
+              ? `Outstanding live, as of ${clockUtc(vault.at ?? Date.now())}; supply live on some chains, recorded on others`
+              : "Could not read";
   const locks = RUNS.filter((r) => r.dir === "in").sort((x, y) => Number(x.n) - Number(y.n));
-  const burns = RUNS.filter((r) => r.dir === "back").sort((x, y) => Number(x.n) - Number(y.n));
   // The burns waiting sit under the supply, so they are shown only when read alike with it: live with live, recorded with recorded.
-  const alike = token.status === "live" ? waiting.live : token.status === "recorded" && !waiting.live;
+  const alike = supplies === "live" ? waiting.live : supplies === "recorded" && !waiting.live;
   const n = alike ? waiting.count : null;
+  // Each chain's burns to date: Sepolia's burnCount() and each rollup's.
+  const burnCounts = [{ d: destOf("sepolia"), n: m ? Number(m.burnCount) : undefined }, ...rollups.map((r, i) => ({ d: r.d, n: rs[i]?.burns }))];
+  const allBurns = burnCounts.every((b) => b.n !== undefined) ? burnCounts.reduce((s, b) => s + (b.n ?? 0), 0) : undefined;
 
   // Outstanding and supply are compared only when read alike: a recorded side against a live one would differ by every transfer since.
   let check: ComponentChildren = null;
-  if (v && t && (live || bothRecorded)) {
-    if (v.outstanding === t.totalSupply && n === 0) {
+  if (v && supply !== undefined && (live || bothRecorded)) {
+    if (v.outstanding === supply && n === 0) {
       check = (
         <p class="balance__ok">
           <Icon id="i-check-circle" cls="i--16" />
           Balanced: outstanding = supply + burns waiting
         </p>
       );
-    } else if (v.outstanding > t.totalSupply) {
+    } else if (v.outstanding > supply) {
       check = (
         <div class="notice">
           <Icon id="i-clock" />
           <div>
-            <p class="notice__title">{fmt(tok(v.outstanding - t.totalSupply))} tPOT in the vault is not wtPOT yet</p>
-            <p>A burn waiting for its release, or a lock waiting for its mint.</p>
+            <p class="notice__title">{fmt(tok(v.outstanding - supply))} tPOT in the vault is not wtPOT yet</p>
+            <p>A burn waiting for its release, or a lock waiting for its mint, on any of the three chains.</p>
           </div>
         </div>
       );
-    } else if (v.outstanding < t.totalSupply) {
+    } else if (v.outstanding < supply) {
       check = (
         <div class="notice notice--revert">
           <Icon id="i-alert" />
           <div>
             <p class="notice__title">More wtPOT than tPOT in the vault</p>
-            <p>{fmt(tok(t.totalSupply - v.outstanding))} wtPOT is not backed by the vault right now.</p>
+            <p>{fmt(tok(supply - v.outstanding))} wtPOT is not backed by the vault right now.</p>
           </div>
         </div>
       );
@@ -1363,14 +1425,30 @@ function VaultCard({ phone, waiting }: { phone: boolean; waiting: Waiting }) {
         <div class="balance__side">
           <ChainMark mark="ethereum" cls="mark--28" />
           <span class="balance__num">
-            {t ? fmt(tok(t.totalSupply)) : token.status === "loading" ? wait : "—"}
+            {supply !== undefined ? fmt(tok(supply)) : supplies === "loading" ? wait : "—"}
             <span class="unit">wtPOT</span>
           </span>
-          <span class="balance__label">{n === null ? "supply + burns waiting" : `supply + ${n} burn${n === 1 ? "" : "s"} waiting`}</span>
+          <span class="balance__label">{n === null ? "supply + burns waiting" : `supply + ${n} burn${n === 1 ? "" : "s"} waiting`}, on 3 chains</span>
         </div>
       </div>
       {check}
       <ul class="nlist">
+        <li class="nlist__row">
+          <span class="nlist__k">Supply</span>
+          <span class="nlist__v">
+            {t ? fmt(tok(t.totalSupply)) : token.status === "loading" ? wait : "—"} <span class="dim">on Sepolia</span>
+            {rollups.map((r, i) => {
+              const x = rs[i];
+              return (
+                <span key={r.d.key}>
+                  {" "}
+                  · {x ? fmt(tok(x.supply)) : r.status === "loading" ? wait : "—"} <span class="dim">on {r.d.short}</span>
+                </span>
+              );
+            })}
+          </span>
+          <span class="nlist__end" />
+        </li>
         <li class="nlist__row">
           <span class="nlist__k">Locks</span>
           <span class="nlist__v">
@@ -1389,8 +1467,8 @@ function VaultCard({ phone, waiting }: { phone: boolean; waiting: Waiting }) {
         <li class="nlist__row">
           <span class="nlist__k">Burns</span>
           <span class="nlist__v">
-            {m ? `${num(Number(m.burnCount))} to date` : minter.status === "loading" ? wait : "—"}{" "}
-            <span class="dim">· {countNote(burns, m ? Number(m.burnCount) : null, "released")}</span>
+            {allBurns !== undefined ? `${num(allBurns)} to date` : minter.status === "loading" || rollups.some((r) => r.status === "loading") ? wait : "—"}{" "}
+            <span class="dim">· {andList(burnCounts.map((b) => `${b.n === undefined ? "—" : num(b.n)} on ${b.d.short}`))}</span>
           </span>
           <span class="nlist__end" />
         </li>
@@ -1522,11 +1600,17 @@ function PageNotice({ net }: { net: NetState }) {
 
 export function NetworkView({ net }: { net: NetState }) {
   const phone = usePhone();
-  const waiting = useWaiting();
-  const down = useDown(net);
-  // The rollups' clients are read while this page is open.
-  useEffect(() => watchRollups(), []);
   const [base, arbitrum] = ROLLUPS;
+  // wtPOT and the burns on each rollup: the vault backs all three chains' wtPOT.
+  const supplies = [
+    { ...useRollupSupply("base-sepolia"), d: destOf("base-sepolia") },
+    { ...useRollupSupply("arbitrum-sepolia"), d: destOf("arbitrum-sepolia") },
+  ];
+  const waiting = withRollups(useWaiting(), supplies);
+  const down = useDown(net);
+  // The rollups' clients, and their wtPOT and burns, are read while this page is open.
+  useEffect(() => watchRollups(), []);
+  useEffect(() => watchSupplies(), []);
   const eyebrow = down.sepolia
     ? "Read from records · RPC down"
     : down.v3
@@ -1541,7 +1625,7 @@ export function NetworkView({ net }: { net: NetState }) {
           <p class="eyebrow page__eyebrow">{eyebrow}</p>
           <h1 class="page__title">Network</h1>
           <p class="page__lead">
-            The light client every mint uses and the relayer that keeps it current, the same client on two rollups, imported there on demand, the committee that runs the way back, and the contracts. Each card says when its values were read.
+            The light client every mint uses and the relayer that keeps it current, the same client on two rollups, kept at V3's validator set by the relayer after each set change, the committee that runs the way back, the vault against wtPOT on all three chains, and the contracts. Each card says when its values were read.
           </p>
         </div>
       </header>
@@ -1554,7 +1638,7 @@ export function NetworkView({ net }: { net: NetState }) {
             <LcCard which="v3" />
             {base ? <RollupLcCard d={base} /> : null}
             <WatcherCard waiting={waiting} />
-            <VaultCard phone={phone} waiting={waiting} />
+            <VaultCard phone={phone} waiting={waiting} rollups={supplies} />
           </div>
           <div class="ncol">
             <RelayerCard />

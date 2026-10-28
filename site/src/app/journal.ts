@@ -5,6 +5,7 @@
 // Kept apart from the build's records so that node --test runs it.
 
 import type { Hex } from "../lib/hex.ts";
+import { DESTS, type DestKey } from "./dests.ts";
 import type { BurnTransfer, CheckKey, CheckState, ExtrinsicRef, Failure, LiveTransfer, LockSender, LockTransfer, MintRoute, SentTx } from "./model.ts";
 
 export const JOURNAL_KEY = "bz-app.transfers";
@@ -12,16 +13,20 @@ export const JOURNAL_KEY = "bz-app.transfers";
 export const JOURNAL_MAX = 40;
 
 /**
- * 2: a lock names its sender (an Ethereum wallet's address, or a Substrate account and its wallet),
- * its extrinsic when it is a Substrate one, who sent its mint, and whether auto-mint had a mint
- * pending. Version 1's entries are read as Ethereum locks. A page of version 1 drops a journal of
- * version 2: its memory of those transfers, never funds.
+ * 3: each transfer names its destination (dest: Sepolia, Base Sepolia or Arbitrum Sepolia), the
+ * chain its lock names and its mint is sent on, or its burn is sent on; a lock found minted by a
+ * transaction older than the destination's nodes search says when (mintBeyond). 2: a lock names its sender
+ * (an Ethereum wallet's address, or a Substrate account and its wallet), its extrinsic when it is a
+ * Substrate one, who sent its mint, and whether auto-mint had a mint pending. Version 1's entries
+ * are read as Ethereum locks, and an entry of any version without a destination as Sepolia's, the
+ * only one the page sent to before. A page of an earlier version drops a journal of a later one: its
+ * memory of those transfers, never funds; it never takes a rollup's transfer for Sepolia's.
  */
-const VERSION = 2;
-const READS = [1, 2];
+const VERSION = 3;
+const READS = [1, 2, 3];
 
 /** Minted, or released. */
-const finished = (t: LiveTransfer): boolean => t.doneAt !== null || (t.dir === "in" ? t.mint?.stage === "mined" : t.release.released);
+const finished = (t: LiveTransfer): boolean => t.doneAt !== null || (t.dir === "in" ? t.mint?.stage === "mined" || t.mintBeyond !== undefined : t.release.released);
 
 /**
  * A lock from a Polkadot wallet that is, or may be, on V3 and is not minted: locked (its nonce read),
@@ -94,6 +99,7 @@ const hash = (x: unknown): Hex | null => hexOf(x, 32);
 const orNull = <T>(x: unknown, read: (y: unknown) => T | null): T | null | undefined => (x === null ? null : (read(x) ?? undefined));
 
 const ID = /^(in|back)-[0-9a-z]{1,16}-[0-9a-z]{1,16}$/;
+const DEST_KEYS: readonly DestKey[] = DESTS.map((d) => d.key);
 const CHECK_KEYS: readonly CheckKey[] = ["header", "sigs", "proof", "commit", "nonce"];
 const CHECK_STATES: readonly CheckState[] = ["waiting", "checking", "passed", "failed"];
 const REASONS: readonly Failure["reason"][] = ["rejected", "refused", "reverted", "proof", "blocked", "stopped"];
@@ -140,6 +146,8 @@ function routeOf(x: unknown): MintRoute | null {
 /** The fields both ways share; null when one does not read. */
 function commonOf(x: Obj) {
   const id = str(x.id);
+  // Absent in an entry from before the page sent to the rollups: Sepolia's.
+  const dest = x.dest === undefined ? "sepolia" : DEST_KEYS.find((k) => k === x.dest);
   const amount = typeof x.amount === "string" && /^[1-9]\d{0,40}$/.test(x.amount) ? BigInt(x.amount) : null;
   const recipient = hexOf(x.recipient, 20);
   const startedAt = time(x.startedAt);
@@ -147,8 +155,8 @@ function commonOf(x: Obj) {
   const failure = orNull(x.failure, failureOf);
   // Absent in an entry from before the page kept it.
   const fromBlock = x.fromBlock === undefined ? undefined : int(x.fromBlock);
-  if (!id || !ID.test(id) || amount === null || !recipient || startedAt === null || doneAt === undefined || failure === undefined || fromBlock === null) return null;
-  return { id, amount, recipient, startedAt, ...(fromBlock === undefined ? {} : { fromBlock }), doneAt, failure, note: null };
+  if (!id || !ID.test(id) || !dest || amount === null || !recipient || startedAt === null || doneAt === undefined || failure === undefined || fromBlock === null) return null;
+  return { id, dest, amount, recipient, startedAt, ...(fromBlock === undefined ? {} : { fromBlock }), doneAt, failure, note: null };
 }
 
 /** A lock's sender; a version-1 entry (no sender) is an Ethereum wallet's lock, its recipient the sender. */
@@ -186,7 +194,9 @@ function lockOf(x: Obj): LockTransfer | null {
   const sender = senderOf(x.sender, c.recipient);
   const ext = x.ext === undefined ? null : orNull(x.ext, extOf);
   const mintBy = x.mintBy === undefined ? null : orNull(x.mintBy, (y) => hexOf(y, 20));
-  if (!sender || ext === undefined || mintBy === undefined) return null;
+  // Absent unless the lock was found minted by a transaction older than the nodes search.
+  const mintBeyond = x.mintBeyond === undefined ? undefined : time(x.mintBeyond);
+  if (!sender || ext === undefined || mintBy === undefined || mintBeyond === null) return null;
   // An Ethereum lock's recipient is its sender; a Substrate lock is signed as an extrinsic.
   if (sender.kind === "evm" && (sender.address !== c.recipient || ext !== null)) return null;
   let finality: LockTransfer["finality"] = null;
@@ -231,6 +241,7 @@ function lockOf(x: Obj): LockTransfer | null {
     route,
     relayed,
     mint,
+    ...(mintBeyond === undefined ? {} : { mintBeyond }),
     mintBy,
     autoPending: x.autoPending === true,
     resumed: x.resumed === true,

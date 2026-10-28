@@ -50,7 +50,10 @@ export const v3Fees = (gasPrice: bigint): Fees => ({ maxFeePerGas: gasPrice + ga
  */
 export const SEPOLIA_MIN_TIP = 1_000n;
 
-/** Sepolia: the node's priority fee (at least SEPOLIA_MIN_TIP), and a max fee of twice the base fee plus it, so a base fee that doubles still includes it. */
+/**
+ * Sepolia: the node's priority fee (at least SEPOLIA_MIN_TIP), and a max fee of twice the base fee
+ * plus it, so a base fee that doubles still includes it. The rollups' sends take the same rule.
+ */
 export function sepoliaFees(baseFee: bigint, priority: bigint): Fees {
   const tip = priority > SEPOLIA_MIN_TIP ? priority : SEPOLIA_MIN_TIP;
   return { maxFeePerGas: 2n * baseFee + tip, maxPriorityFeePerGas: tip };
@@ -91,14 +94,15 @@ const argOf = (args: { name: string; value: AbiValue }[], name: string): AbiValu
 const sameAddress = (a: AbiValue | undefined, b: string): boolean => typeof a === "string" && a.toLowerCase() === b.toLowerCase();
 
 /**
- * What the lock's receipt has to show: this vault, this bridge's minter and chains, the sender (an
- * Ethereum wallet's address, or pallet-revive's address of a Substrate account), its amount, and the
- * recipient on Sepolia (the sender's own address, for an Ethereum wallet's lock).
+ * What the lock's receipt has to show: this vault, the destination's chain id and minter (Sepolia's,
+ * or a rollup's: the one the transfer was started for), the sender (an Ethereum wallet's address, or
+ * pallet-revive's address of a Substrate account), its amount, and the recipient on the destination
+ * (the sender's own address, for an Ethereum wallet's lock).
  */
 export interface LockExpect {
   vault: string;
   v3ChainId: bigint;
-  sepoliaChainId: bigint;
+  dstChainId: bigint;
   minter: string;
   sender: string;
   recipient: string;
@@ -119,26 +123,30 @@ export function lockedOf(logs: readonly ReceiptLog[], registry: AbiRegistry, e: 
     const amount = argOf(d.args, "amountNative");
     const commitment = argOf(d.args, "commitment");
     if (typeof nonce !== "bigint" || typeof amount !== "bigint" || typeof commitment !== "string") return { ok: false, why: "the Locked log does not decode" };
-    if (argOf(d.args, "dstChainId") !== e.sepoliaChainId || !sameAddress(argOf(d.args, "dstMinter"), e.minter)) return { ok: false, why: "the lock names another chain or minter" };
+    if (argOf(d.args, "dstChainId") !== e.dstChainId || !sameAddress(argOf(d.args, "dstMinter"), e.minter)) return { ok: false, why: "the lock names another chain or minter" };
     if (!sameAddress(argOf(d.args, "sender"), e.sender)) return { ok: false, why: "the lock's sender is not your address" };
     if (!sameAddress(argOf(d.args, "recipient"), e.recipient)) return { ok: false, why: "the lock's recipient is not the address you gave" };
     if (amount !== e.amount) return { ok: false, why: `the vault locked ${amount} base units, not ${e.amount}` };
-    const expected = lockCommitment({ v3ChainId: e.v3ChainId, vault: e.vault, dstChainId: e.sepoliaChainId, minter: e.minter, recipient: e.recipient, amountNative: e.amount, nonce });
+    const expected = lockCommitment({ v3ChainId: e.v3ChainId, vault: e.vault, dstChainId: e.dstChainId, minter: e.minter, recipient: e.recipient, amountNative: e.amount, nonce });
     if (expected !== commitment.toLowerCase()) return { ok: false, why: `the vault stored ${commitment}, and this lock's fields give ${expected}` };
     return { ok: true, nonce, commitment: expected };
   }
   return { ok: false, why: "the receipt has no Locked log of the vault" };
 }
 
-/** What the burn's receipt has to show: BridgeMinter on Sepolia, the sender's amount, paid to its own address on V3. */
+/** What the burn's receipt has to show: BridgeMinter on the chain it was sent on, and that chain's id, the sender's amount, paid to its own address on V3. */
 export interface BurnExpect {
   minter: string;
-  sepoliaChainId: bigint;
+  chainId: bigint;
   sender: string;
   amount: bigint;
 }
 
-/** BridgeMinter's BurnRequested log in a burn's receipt, its burn id checked against the convention the committee releases by. */
+/**
+ * BridgeMinter's BurnRequested log in a burn's receipt, its burn id checked against the convention
+ * the committee releases by: keccak256(abi.encode(BURN_TAG, block.chainid, minter, nonce)), so the
+ * rollups' minters, at one address and each counting from 0, never give two burns one id.
+ */
 export function burnedOf(logs: readonly ReceiptLog[], registry: AbiRegistry, e: BurnExpect): Checked<{ burnNonce: bigint; burnId: Hex }> {
   for (const log of logs) {
     if (log.address.toLowerCase() !== e.minter.toLowerCase()) continue;
@@ -150,7 +158,7 @@ export function burnedOf(logs: readonly ReceiptLog[], registry: AbiRegistry, e: 
     if (typeof n !== "bigint" || typeof amount !== "bigint" || typeof id !== "string") return { ok: false, why: "the BurnRequested log does not decode" };
     if (!sameAddress(argOf(d.args, "from"), e.sender) || !sameAddress(argOf(d.args, "v3Recipient"), e.sender)) return { ok: false, why: "the burn's sender or V3 recipient is not your address" };
     if (amount !== e.amount) return { ok: false, why: `the minter burned ${amount} base units, not ${e.amount}` };
-    const expected = burnId(e.sepoliaChainId, e.minter, n);
+    const expected = burnId(e.chainId, e.minter, n);
     if (expected !== id.toLowerCase()) return { ok: false, why: `the burn id is ${id}, and burn ${n}'s is ${expected}` };
     return { ok: true, burnNonce: n, burnId: expected };
   }

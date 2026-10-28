@@ -1,8 +1,9 @@
 // The visitor's browser wallets, through wagmi's core (@wagmi/core, on viem): every wallet that
 // announces itself (EIP-6963), window.ethereum for one that does not, the connected address and the
 // chain it is on. Balances are read from the public RPCs for that address, not through the wallet,
-// so they show on both chains whichever chain the wallet is on. The bridge's transactions are sent
-// through the wallet here (sendOn), with the gas and fees the page worked out, and their receipts
+// so they show whichever chain the wallet is on: tPOT on V3, and wtPOT and ETH on the destination
+// the bridge card shows (balancesOn). The bridge's transactions are sent through the wallet here
+// (sendOn), on the chain each is for, with the gas and fees the page worked out, and their receipts
 // read through the config's transports, the page's own RPCs.
 
 import {
@@ -24,20 +25,22 @@ import {
 } from "@wagmi/core";
 import { addChain } from "viem/actions";
 import { encodeCall } from "../lib/abi.ts";
-import { SEPOLIA, SEPOLIA_HISTORY, TOKEN, V3_EVM } from "../lib/chains.ts";
+import { SEPOLIA_HISTORY, V3_EVM } from "../lib/chains.ts";
 import type { Hex } from "../lib/hex.ts";
 import { request } from "../lib/rpc.ts";
-import { arbitrumSepolia, baseSepolia, sepolia, transports, v3 } from "./chains.ts";
-import type { ChainKey } from "./facts.ts";
+import { arbitrumSepolia, baseSepolia, sepolia, transports, v3, viemChain } from "./chains.ts";
+import { deployed, destOf, type DestKey } from "./dests.ts";
+import { CH, type ChainKey } from "./facts.ts";
 import { Box } from "./store.ts";
 
 export type WalletStatus = "none" | "off" | "connecting" | "on";
 
-/** In base units: tPOT and wtPOT with 14 decimals, ETH in wei. */
+/** In base units: tPOT and wtPOT with 14 decimals, ETH in wei. `wtpot` and `eth` are on `dest`, the destination the card showed when they were read. */
 export interface Balances {
   tpot: bigint | null;
   wtpot: bigint | null;
   eth: bigint | null;
+  dest: DestKey;
 }
 
 export interface WalletState {
@@ -120,8 +123,7 @@ function browserStorage() {
 }
 
 const config = createConfig({
-  // V3 and Sepolia, which the bridge sends on; Base Sepolia and Arbitrum Sepolia, where the V3 light
-  // client is live (./dests.ts), so that a later stage can switch a wallet to them. Nothing here sends on them.
+  // V3, and the destinations the bridge sends on (./dests.ts): Sepolia, Base Sepolia and Arbitrum Sepolia.
   chains: [v3, sepolia, baseSepolia, arbitrumSepolia],
   // window.ethereum, for a wallet that does not announce itself; EIP-6963 adds a connector for each
   // wallet that does. WalletConnect, for a phone wallet without an in-app browser, would be one more
@@ -305,9 +307,9 @@ export async function addV3(): Promise<void> {
 }
 
 /** wagmi's chain id of a bridge chain. */
-const idOf = (chain: ChainKey): number => (chain === "v3" ? v3.id : sepolia.id);
+const idOf = (chain: ChainKey): number => viemChain(chain).id;
 
-/** Switches the wallet to a bridge chain; wagmi adds V3 first when the wallet does not know it. */
+/** Switches the wallet to a bridge chain; wagmi adds it first when the wallet does not know it (V3, a rollup). */
 export async function switchTo(chain: ChainKey): Promise<void> {
   try {
     await switchChain(config, { chainId: idOf(chain) });
@@ -373,8 +375,8 @@ interface RawReceipt {
 
 /**
  * The receipt of `hash` on `chain`, from the page's RPCs; null while it is not mined. Throws when no
- * RPC answers. `deep`: on Sepolia, a receipt the first node no longer serves (the public node keeps
- * about a day of them) is asked of the page's other endpoints too, which keep older ones.
+ * RPC answers. `deep`: on a destination, a receipt the first node no longer serves (Sepolia's public
+ * node keeps about a day of them) is asked of the page's other endpoints too, which keep older ones.
  */
 export async function receiptOn(chain: ChainKey, hash: Hex, deep = false): Promise<Mined | null> {
   try {
@@ -388,9 +390,10 @@ export async function receiptOn(chain: ChainKey, hash: Hex, deep = false): Promi
   } catch (e) {
     if (!causes(e).some((x) => (x as { name?: unknown }).name === "TransactionReceiptNotFoundError")) throw e;
   }
-  if (!deep || chain !== "sepolia") return null;
+  if (!deep || chain === "v3") return null;
   try {
-    const r = (await request<RawReceipt | null>(SEPOLIA_HISTORY, "eth_getTransactionReceipt", [hash], { accept: (x) => x !== null, timeoutMs: 10_000, retries: 0 })).result;
+    const endpoints = chain === "sepolia" ? SEPOLIA_HISTORY : [...destOf(chain).rpcs];
+    const r = (await request<RawReceipt | null>(endpoints, "eth_getTransactionReceipt", [hash], { accept: (x) => x !== null, timeoutMs: 10_000, retries: 0 })).result;
     if (!r?.blockNumber || !r.gasUsed || !Array.isArray(r.logs)) return null;
     return { ok: r.status === "0x1", block: Number(BigInt(r.blockNumber)), gasUsed: Number(BigInt(r.gasUsed)), logs: r.logs.map((l) => ({ address: l.address, topics: [...l.topics], data: l.data })) };
   } catch {
@@ -413,14 +416,19 @@ export interface Problem {
 
 /**
  * The wallet's answer, mapped: 4001 the visitor said no; -32002 a request is already open; 4902 the
- * wallet lacks the network (wagmi adds V3 itself, so this is an add that failed); a wallet on
- * another chain than viem expected; no account connected. Anything else, in the wallet's own words.
+ * wallet lacks the network (wagmi adds it itself, so this is an add that failed: V3 has an item in
+ * the wallet menu, a rollup is named, `chain`, with its chain id to add by hand); a wallet on another
+ * chain than viem expected; no account connected. Anything else, in the wallet's own words.
  */
-export function problemOf(e: unknown): Problem {
+export function problemOf(e: unknown, chain: ChainKey | null = null): Problem {
   const code = walletCode(e);
   if (code === 4001) return { kind: "rejected", text: "You declined it in your wallet." };
   if (code === -32002) return { kind: "busy", text: "Your wallet already has a request open: open the wallet to finish or reject it, then try again." };
-  if (code === 4902) return { kind: "network", text: "Your wallet does not have this network: add it from the wallet menu, then try again." };
+  if (code === 4902) {
+    if (chain === null || chain === "v3") return { kind: "network", text: "Your wallet does not have this network: add it from the wallet menu, then try again." };
+    const c = CH[chain];
+    return { kind: "network", text: `Your wallet does not have ${c.full} and did not add it: add the network in your wallet (chain id ${c.chainId}), then try again.` };
+  }
   const names = causes(e).map((x) => (x as { name?: unknown }).name);
   if (names.includes("ChainMismatchError")) return { kind: "network", text: "Your wallet changed network before it sent: nothing was sent. Try again." };
   if (names.includes("ConnectorAccountNotFoundError")) return { kind: "account", text: "Your wallet no longer connects the account this page checked: nothing was sent. Switch back to it, then try again." };
@@ -431,29 +439,49 @@ export function problemOf(e: unknown): Problem {
 }
 
 /**
- * Asks the wallet to show wtPOT (EIP-747); true when it says it added it. A wallet files a token
- * under the network it is on, so this switches it to Sepolia first.
+ * Asks the wallet to show wtPOT on `dest` (EIP-747); true when it says it added it. A wallet files a
+ * token under the network it is on, so this switches it to that chain first.
  */
-export async function addWtpot(): Promise<boolean> {
+export async function addWtpot(dest: DestKey = "sepolia"): Promise<boolean> {
+  const id = idOf(dest);
   try {
-    if (getConnection(config).chainId !== sepolia.id) await switchChain(config, { chainId: sepolia.id });
-    return (await watchAsset(config, { type: "ERC20", options: { address: TOKEN, symbol: "wtPOT", decimals: 14 } })) === true;
+    if (getConnection(config).chainId !== id) await switchChain(config, { chainId: id });
+    return (await watchAsset(config, { type: "ERC20", options: { address: deployed(destOf(dest)).token, symbol: "wtPOT", decimals: 14 } })) === true;
   } catch (e) {
     throw new WalletError(e);
   }
 }
 
-/** The address's tPOT on V3, wtPOT and ETH on Sepolia. A failed read keeps its last value. */
+/** The destination whose wtPOT and ETH readBalances reads: the bridge card's. */
+let balanceDest: DestKey = "sepolia";
+
+/**
+ * The bridge card shows `dest`: its wtPOT and ETH are read from now on. A change of destination
+ * drops the balances read for the last one, as a change of account does: the card waits for the
+ * new read rather than show another chain's.
+ */
+export function balancesOn(dest: DestKey): void {
+  if (dest === balanceDest) return;
+  balanceDest = dest;
+  if (wallet.get().balances) patch({ balances: null });
+  void readBalances();
+}
+
+/** The address's tPOT on V3, and its wtPOT and ETH on the card's destination. A failed read keeps its last value. */
 export async function readBalances(): Promise<void> {
   const address = wallet.get().address;
   if (!address) return;
+  const dest = balanceDest;
+  const d = destOf(dest);
+  const evm = [...d.rpcs];
   const [tpot, wtpot, eth] = await Promise.allSettled([
     request<string>(V3_EVM, "eth_getBalance", [address, "latest"]).then((a) => BigInt(a.result) / V3_EVM_PER_NATIVE),
-    request<string>(SEPOLIA, "eth_call", [{ to: TOKEN, data: encodeCall("balanceOf(address)", [address]) }, "latest"]).then((a) => BigInt(a.result)),
-    request<string>(SEPOLIA, "eth_getBalance", [address, "latest"]).then((a) => BigInt(a.result)),
+    request<string>(evm, "eth_call", [{ to: deployed(d).token, data: encodeCall("balanceOf(address)", [address]) }, "latest"]).then((a) => BigInt(a.result)),
+    request<string>(evm, "eth_getBalance", [address, "latest"]).then((a) => BigInt(a.result)),
   ]);
-  if (wallet.get().address !== address) return;
+  if (wallet.get().address !== address || balanceDest !== dest) return;
   const prev = wallet.get().balances;
+  const same = prev?.dest === dest ? prev : null;
   const pick = (r: PromiseSettledResult<bigint>, old: bigint | null | undefined) => (r.status === "fulfilled" ? r.value : (old ?? null));
-  patch({ balances: { tpot: pick(tpot, prev?.tpot), wtpot: pick(wtpot, prev?.wtpot), eth: pick(eth, prev?.eth) } });
+  patch({ balances: { tpot: pick(tpot, prev?.tpot), wtpot: pick(wtpot, same?.wtpot), eth: pick(eth, same?.eth), dest } });
 }

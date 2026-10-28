@@ -373,8 +373,8 @@ function chainOf(o: { prep?: LockPrep; invalid?: string | null; submit?: Error |
       log.push(`best ${n}`);
       return n;
     },
-    prepareLock: async (origin, amount, recipient) => {
-      log.push(`prepare ${origin} ${amount} ${recipient}`);
+    prepareLock: async (origin, amount, recipient, to) => {
+      log.push(`prepare ${origin} ${amount} ${recipient} ${to.chainId} ${to.minter}`);
       return o.prep ?? PREP;
     },
     signLock: async (prep, origin, signer, onAsk) => {
@@ -410,7 +410,7 @@ function hooksOf(log: string[], still = () => true): SendHooks {
   };
 }
 
-const INPUT = { origin: DEPLOYER, amount: 100_000_000_000n, recipient: RECIPIENT };
+const INPUT = { origin: DEPLOYER, amount: 100_000_000_000n, recipient: RECIPIENT, to: { chainId: SEPOLIA_ID, minter: MINTER } };
 
 test("a lock is checked on V3 before the wallet is asked, signed once with the lock's own payload, checked by V3, recorded, then broadcast once", async () => {
   const { chain, log } = chainOf();
@@ -420,7 +420,7 @@ test("a lock is checked on V3 before the wallet is asked, signed once with the l
   assert.equal(r.kind === "sent" && r.broadcast, true);
   assert.deepEqual(log, [
     "checking",
-    `prepare ${DEPLOYER} 100000000000 ${RECIPIENT}`,
+    `prepare ${DEPLOYER} 100000000000 ${RECIPIENT} ${SEPOLIA_ID} ${MINTER}`,
     "build",
     "asking 7 219886-219949",
     "signed",
@@ -523,4 +523,46 @@ test("never two locks for one click: a second send of the same transfer while on
   assert.equal(ext.asked.sign.length, 2);
   // Done: the same transfer may be sent again (a retry after a refusal).
   assert.equal((await sendLockOnce("in-j", chain, ext.injected.signer, INPUT, hooksOf([]))).kind, "sent");
+});
+
+// ---------------------------------------------------------------------------------------------
+// A lock from a Polkadot wallet to a rollup
+
+/** Base Sepolia's and Arbitrum Sepolia's BridgeMinter and wtPOT, the same addresses on both (deployments/<network>-bridge.json). */
+const ROLLUP_MINTER: Hex = "0xdc31a3bc1354545eeb985aad7b2aa662e9272348";
+const ROLLUP_TOKEN: Hex = "0xe1130718c56de008b47c392c85895a1a605ba95e";
+
+test("a lock to a rollup names that chain and its minter: the send hands the destination to V3's checks, and the calldata carries it", async () => {
+  const { chain, log } = chainOf();
+  const base = { ...INPUT, to: { chainId: 84_532n, minter: ROLLUP_MINTER } };
+  const r = await sendLockOnce("in-base", chain, extension([{ address: DEPLOYER }]).injected.signer, base, hooksOf(log));
+  assert.equal(r.kind, "sent");
+  assert.equal(log[1], `prepare ${DEPLOYER} 100000000000 ${RECIPIENT} 84532 ${ROLLUP_MINTER}`);
+  // lock(84532, 0xdc31…2348, recipient): the same selector and recipient as Sepolia's, its own chain and minter.
+  const data = lockData(84_532n, ROLLUP_MINTER, RECIPIENT);
+  assert.equal(data.slice(0, 10), "0xecd1eb6c");
+  assert.equal(BigInt(`0x${data.slice(10, 74)}`), 84_532n);
+  assert.equal(`0x${data.slice(98, 138)}`, ROLLUP_MINTER);
+  assert.equal(`0x${data.slice(162, 202)}`, RECIPIENT);
+  assert.notEqual(data, LIVE.data);
+  // Arbitrum Sepolia's minter has the same address: only the chain id tells the two locks apart.
+  assert.notEqual(lockData(421_614n, ROLLUP_MINTER, RECIPIENT), data);
+});
+
+test("the recipient on a rollup: its own minter and wtPOT are refused, and the words name the chain", () => {
+  const ctx: RecipientContext = { mapped: ACCOUNTS[0]![1], minter: ROLLUP_MINTER, token: ROLLUP_TOKEN, vault: VAULT, chain: "Base Sepolia" };
+  const no = (text: string) => {
+    const r = checkRecipient(text, ctx);
+    assert.ok(!r.ok);
+    return r;
+  };
+  assert.equal(no("").text, "Enter the Base Sepolia address that receives the wtPOT.");
+  assert.equal(no("0x1234").text, "A Base Sepolia address is 0x and 40 hex digits.");
+  assert.match(no(ROLLUP_MINTER).text, /BridgeMinter/);
+  assert.match(no(ROLLUP_TOKEN).text, /wtPOT token/);
+  assert.equal(no(VAULT).text, "That is the vault's address on V3, not a Base Sepolia account.");
+  // Sepolia's minter is a plain address on Base Sepolia: the review's check on V3 and the note below look at it there.
+  assert.equal(checkRecipient(MINTER, ctx).ok, true);
+  assert.equal(recipientNote("0x6080", 0n, 0n, "Arbitrum Sepolia"), "A contract on Arbitrum Sepolia: make sure it can hold wtPOT, and burn it to bring it back.");
+  assert.equal(recipientNote("0x", 0n, 0n, "Base Sepolia"), "No transactions and no ETH on Base Sepolia yet: make sure you hold this address's key.");
 });

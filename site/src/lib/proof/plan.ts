@@ -21,11 +21,17 @@
 // When the V3 node no longer serves the state a path reads at (an old block), the next path is
 // tried. Whoever sends brings data, not trust: the light client and the minter check every byte,
 // and the recipient and the amount come from the proven commitment, nothing from the sender.
+//
+// The same plan runs on a rollup (Base Sepolia, Arbitrum Sepolia): ProofEnv names that chain's
+// endpoints, its V3 light client, its minter and its chain id, and how it charges for L1; each
+// transaction then carries its L1 part (../l1.ts), read after the dry run: Arbitrum's L1 gas, added
+// once more to its gas limit, or Base's L1 data fee, which the sender pays besides the gas.
 
 import type { AbiRegistry } from "../abi.ts";
 import { shortAddr } from "../display.ts";
 import { formatInt, formatUnits } from "../format.ts";
 import { bytesToHex, equalBytes, hexToBytes, type Hex } from "../hex.ts";
+import { limitWithL1, NO_L1, readL1, type L1Cost, type L1Kind } from "../l1.ts";
 import { lockCommitment } from "../proofs.ts";
 import { AllFailed, NodeError, TransportError, type Endpoint, type SubstrateClient } from "../rpc.ts";
 import { aggregate3Calldata, decodeAggregate3, importAndMintCalldata, importHeaderCalldata, mintCalldata, MULTICALL3_CODE_HASH, type Call3, type LockProof } from "./calldata.ts";
@@ -66,7 +72,11 @@ export interface LockRef {
   commitment: Hex;
 }
 
-/** The contracts and the endpoints, passed in: ./env.ts has the deployed ones, from the build's records. */
+/**
+ * The contracts and the endpoints, passed in: ./env.ts has Sepolia's deployed ones, from the build's
+ * records. `sepolia` and `sepoliaChainId` are the chain the mint is sent on: Sepolia's, or a rollup's
+ * endpoints and chain id, with its light client and minter.
+ */
 export interface ProofEnv {
   sepolia: Endpoint[];
   v3: SubstrateClient;
@@ -80,6 +90,10 @@ export interface ProofEnv {
   registry: AbiRegistry;
   /** The Sepolia block the plan reads and dry-runs at: "latest" unless given (an older block reruns a plan as of then). */
   sepoliaBlock?: string;
+  /** How the chain charges for L1 (../l1.ts): none unless given, as on Sepolia. */
+  l1?: L1Kind;
+  /** The chain's name in the plan's words: "Sepolia" unless given. */
+  chain?: string;
 }
 
 export type MintPath = "mint" | "head" | "change" | "selfRelay";
@@ -130,9 +144,15 @@ export interface PlannedTx {
   data: Hex;
   /** The dry run's gas: eth_estimateGas for the first transaction; eth_simulateV1 for one that needs the one before it mined. */
   gas: bigint | null;
-  /** gas plus the margin, at most Sepolia's cap: what the wallet is given. Null when no dry run could measure it (plan again once the one before is mined). */
+  /**
+   * gas plus the margin, at most the cap (16,777,216, on the rollups too), and on Arbitrum its L1 gas
+   * once more: what the wallet is given. Null when no dry run could measure it (plan again once the
+   * one before is mined).
+   */
   gasLimit: bigint | null;
   gasFrom: "estimate" | "simulation" | null;
+  /** What it pays for L1 on a rollup, read once its dry run passed: Arbitrum's L1 gas (in gasLimit), or Base's L1 data fee, paid besides the gas. NO_L1 on Sepolia. */
+  l1: L1Cost;
   title: string;
   detail: string;
   calls: PlannedCall[];
@@ -610,6 +630,7 @@ function chunk(env: ProofEnv, built: Built[], size: number): { tx: PlannedTx; ca
         gas: null,
         gasLimit: null,
         gasFrom: null,
+        l1: NO_L1,
         title: "",
         detail: "",
         calls: part.map((b) => b.planned),
@@ -660,7 +681,7 @@ async function dryRun(ctx: Ctx, txs: { tx: PlannedTx; calls: Call3[] }[]): Promi
   const limitOf = (gas: bigint, calls: number): bigint | null => {
     if (withMargin(gas) <= TX_GAS_CAP) return withMargin(gas);
     if (calls > 1) return null;
-    if (gas > TX_GAS_CAP) throw new PlanError(`the transaction needs ${n(gas)} gas, more than Sepolia's ${n(TX_GAS_CAP)} per transaction`);
+    if (gas > TX_GAS_CAP) throw new PlanError(`the transaction needs ${n(gas)} gas, more than ${env.chain ?? "Sepolia"}'s ${n(TX_GAS_CAP)} per transaction`);
     return TX_GAS_CAP;
   };
   const fail = async (index: number, revert: Revert): Promise<DryRun> => {
@@ -702,6 +723,21 @@ async function dryRun(ctx: Ctx, txs: { tx: PlannedTx; calls: Call3[] }[]): Promi
     Object.assign(t.tx, { gas: s.gasUsed, gasLimit: l, gasFrom: "simulation" });
   }
   return { ok: true };
+}
+
+/**
+ * The L1 part of each transaction on a rollup (../l1.ts), read once the dry run passed: Arbitrum's
+ * L1 gas, which eth_estimateGas includes at the L1 price of the moment, is added once more to the
+ * limit, as the relayer's tools send there; Base's L1 data fee is kept on the transaction, for the
+ * balance its sender needs. Nothing on Sepolia.
+ */
+async function l1Parts(ctx: Ctx, txs: PlannedTx[]): Promise<void> {
+  const kind = ctx.env.l1 ?? "none";
+  if (kind === "none") return;
+  for (const tx of txs) {
+    tx.l1 = await readL1(ctx.env.sepolia, kind, tx.to, tx.data, ctx.at);
+    if (tx.gasLimit !== null) tx.gasLimit = limitWithL1(tx.gasLimit, tx.l1);
+  }
 }
 
 /** What a revert in the dry run means for the transfer. */
@@ -775,7 +811,7 @@ export async function planMint(lock: LockRef, env: ProofEnv, opts: PlanOptions =
     return done("failed", "The lock's amount is 0.");
   }
 
-  checks.set("header", "checking", "reading the light client on Sepolia and V3's finalized head");
+  checks.set("header", "checking", `reading the light client on ${env.chain ?? "Sepolia"} and V3's finalized head`);
   const v3 = new V3Reader(env.v3);
   let client: ClientView;
   let minter: MinterView;
@@ -848,7 +884,7 @@ export async function planMint(lock: LockRef, env: ProofEnv, opts: PlanOptions =
     notes.push(`${env.multicall} does not hold Multicall3's code on this chain: each call is a transaction of its own.`);
     size = 1;
   }
-  checks.set("nonce", "checking", `used(${lock.nonce}) is ${minter.used}; dry-running the plan on Sepolia`);
+  checks.set("nonce", "checking", `used(${lock.nonce}) is ${minter.used}; dry-running the plan on ${env.chain ?? "Sepolia"}`);
   let txs = chunk(env, built, size);
   let dry = await dryRun(ctx, txs);
   while (!dry.ok && dry.overCap && size > 1) {
@@ -860,7 +896,7 @@ export async function planMint(lock: LockRef, env: ProofEnv, opts: PlanOptions =
   const planned = txs.map((t) => t.tx);
   const why = path === "selfRelay" && planned.length > 1 ? `${choice.why} ${plural(planned.length, "transaction")}, sent one after the other.` : choice.why;
   if (!dry.ok) {
-    if (dry.overCap) throw new PlanError("every call alone needs more gas than Sepolia allows in one transaction");
+    if (dry.overCap) throw new PlanError(`every call alone needs more gas than ${env.chain ?? "Sepolia"} allows in one transaction`);
     const r = dry.revert;
     const status = statusOf(r.name);
     const where = planned.length > 1 ? `transaction ${r.tx + 1}` : "the transaction";
@@ -868,6 +904,7 @@ export async function planMint(lock: LockRef, env: ProofEnv, opts: PlanOptions =
     checks.set("nonce", "failed", `the dry run of ${where} reverted${inCall}: ${r.text}`);
     return done(status, status === "minted" ? `Lock ${lock.nonce} is minted already: the dry run reverted ${r.text}.` : `The dry run of ${where} reverted${inCall}: ${r.text}.`, { path, txs: planned, target, revert: r });
   }
+  await l1Parts(ctx, planned);
   checks.set(
     "nonce",
     "passed",

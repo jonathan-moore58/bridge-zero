@@ -1,7 +1,8 @@
 // This browser's journal of its transfers (src/app/journal.ts): what it keeps across a reload, and
 // what it drops when the text in localStorage is not what the page wrote (another version, edited,
-// cut short). The chains stay the truth: an entry dropped costs the page its memory of a transfer,
-// never funds. Offline.
+// cut short). Each transfer is kept with its destination (Sepolia, Base Sepolia, Arbitrum Sepolia),
+// and one written before the page sent to the rollups reads as Sepolia's. The chains stay the truth:
+// an entry dropped costs the page its memory of a transfer, never funds. Offline.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -15,6 +16,7 @@ const ME: Hex = "0xd9838a86cf83c28ee486544060d1ca4ca2971071";
 /** A lock on V3, final, its proof built and a self-relay's first transaction mined, the mint sent. */
 const lock: LockTransfer = {
   id: "in-mh8k2q1x-1a2b3c",
+  dest: "sepolia",
   dir: "in",
   amount: 150_000_000_000_000n,
   recipient: ME,
@@ -40,6 +42,7 @@ const lock: LockTransfer = {
 /** A burn on Sepolia, released by the committee. */
 const burn: BurnTransfer = {
   id: "back-mh8k3z9a-zz9",
+  dest: "sepolia",
   dir: "back",
   amount: 10_000_000_000_000n,
   recipient: ME,
@@ -92,7 +95,7 @@ test("nothing, another version, or text that is not JSON reads as no transfers",
   assert.deepEqual(decodeJournal(""), []);
   assert.deepEqual(decodeJournal("{"), []);
   assert.deepEqual(decodeJournal("[]"), []);
-  assert.deepEqual(decodeJournal(text([raw(lock)], 3)), []);
+  assert.deepEqual(decodeJournal(text([raw(lock)], 4)), []);
   assert.deepEqual(decodeJournal(JSON.stringify({ v: 1, transfers: "no" })), []);
 });
 
@@ -207,7 +210,7 @@ const substrate: LockTransfer = {
 
 test("a lock from a Polkadot wallet comes back with its account, its wallet, its extrinsic's nonce and era, who minted it, and auto-mint's pending flag", () => {
   assert.deepEqual(decodeJournal(encodeJournal([substrate])), [{ ...substrate, note: null }]);
-  assert.equal(JSON.parse(encodeJournal([substrate])).v, 2);
+  assert.equal(JSON.parse(encodeJournal([substrate])).v, 3);
 });
 
 test("past the cap the oldest finished transfers go first, and a Polkadot wallet's lock that may be on V3 and is not minted is never dropped: only the journal finds it again", () => {
@@ -236,10 +239,11 @@ test("past the cap the oldest finished transfers go first, and a Polkadot wallet
 
 test("a version-1 journal still reads: its locks are Ethereum wallets' locks, paid to their own address", () => {
   const v1 = raw(lock);
-  for (const k of ["sender", "ext", "mintBy", "autoPending"]) delete v1[k];
+  for (const k of ["sender", "ext", "mintBy", "autoPending", "dest"]) delete v1[k];
   const back = decodeJournal(text([v1, raw(burn)], 1));
   assert.equal(back.length, 2);
   const l = back[0] as LockTransfer;
+  assert.equal(l.dest, "sepolia");
   assert.deepEqual(l.sender, { kind: "evm", address: ME });
   assert.equal(l.ext, null);
   assert.equal(l.mintBy, null);
@@ -261,4 +265,108 @@ test("a lock whose sender or extrinsic does not read is dropped: an Ethereum sen
     { ...r, mintBy: "auto-mint" },
   ];
   assert.deepEqual(decodeJournal(text([...bad, raw(burn)])), [{ ...burn, note: null }]);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Version 3: each transfer's destination
+
+/** Lock 4's kind of transfer: a lock that names Base Sepolia, minted there by auto-mint. */
+const toBase: LockTransfer = {
+  ...lock,
+  id: "in-mhb4a000-b4",
+  dest: "base-sepolia",
+  startedAt: 1_761_500_050_000,
+  mint: { stage: "mined", hash: H(13), sentAt: 1_761_500_090_000, block: 51_159_736, minedAt: 1_761_500_096_000, gasUsed: 2_637_646 },
+  doneAt: 1_761_500_096_000,
+  mintBy: "0x57cc2ba3b883339a9f32726e6d0d3a9ee861a113",
+};
+/** Burn 0's kind of transfer on Arbitrum Sepolia: its own burn nonce 0, waiting for finality. */
+const fromArbitrum: BurnTransfer = {
+  ...burn,
+  id: "back-mhb5a000-a5",
+  dest: "arbitrum-sepolia",
+  burnNonce: 0,
+  speed: "std",
+  doneAt: null,
+  depth: { confirmations: 2_000, final: false, qualifiedAt: null },
+  release: { approvals: 0, open: null, run: null, at: null, released: false },
+};
+
+test("each transfer comes back with its destination: a lock to Base Sepolia, a burn on Arbitrum Sepolia, Sepolia's", () => {
+  const back = decodeJournal(encodeJournal([toBase, fromArbitrum, lock]));
+  assert.deepEqual(back, [
+    { ...lock, note: null },
+    { ...toBase, note: null },
+    { ...fromArbitrum, note: null },
+  ]);
+  assert.deepEqual(
+    back.map((t) => t.dest),
+    ["sepolia", "base-sepolia", "arbitrum-sepolia"],
+  );
+  const written = JSON.parse(encodeJournal([toBase]));
+  assert.equal(written.v, 3);
+  assert.equal(written.transfers[0].dest, "base-sepolia");
+});
+
+test("a transfer stored without a chain reads as Sepolia's, whatever the version: the only chain the page sent to before", () => {
+  for (const v of [1, 2, 3]) {
+    const r = raw(lock);
+    delete r.dest;
+    const b = raw(burn);
+    delete b.dest;
+    const back = decodeJournal(text([r, b], v));
+    assert.deepEqual(
+      back.map((t) => [t.id, t.dest]),
+      [
+        [lock.id, "sepolia"],
+        [burn.id, "sepolia"],
+      ],
+      `version ${v}`,
+    );
+  }
+});
+
+test("a destination the page does not know is dropped, never taken for Sepolia's", () => {
+  const bad: unknown[] = [
+    { ...raw(toBase), dest: "optimism-sepolia" },
+    { ...raw(toBase), dest: 84_532 },
+    { ...raw(fromArbitrum), dest: null },
+    { ...raw(fromArbitrum), dest: "Arbitrum Sepolia" },
+  ];
+  assert.deepEqual(decodeJournal(text([...bad, raw(fromArbitrum)], 3)), [{ ...fromArbitrum, note: null }]);
+});
+
+test("the cap and the merge keep each transfer's destination", () => {
+  const stored = decodeJournal(encodeJournal([toBase]));
+  const merged = mergeJournal(stored, [fromArbitrum], (id) => id === fromArbitrum.id);
+  assert.deepEqual(
+    decodeJournal(encodeJournal(merged)).map((t) => [t.id, t.dest]),
+    [
+      [toBase.id, "base-sepolia"],
+      [fromArbitrum.id, "arbitrum-sepolia"],
+    ],
+  );
+});
+
+/** A lock to Base Sepolia found minted (used(nonce) true) by a transaction older than its nodes search: done, its mint unnamed. */
+const mintedBeyond: LockTransfer = {
+  ...toBase,
+  id: "in-mhb6a000-b6",
+  startedAt: 1_761_600_000_000,
+  mint: null,
+  mintBy: null,
+  mintBeyond: 1_761_900_000_000,
+  doneAt: 1_761_900_000_000,
+};
+
+test("a lock found minted by a transaction older than the nodes search keeps when the page found it so, and reads as done; a bad time drops it", () => {
+  const back = decodeJournal(encodeJournal([mintedBeyond, toBase]));
+  assert.deepEqual(back, [
+    { ...toBase, note: null },
+    { ...mintedBeyond, note: null },
+  ]);
+  // Absent on every other entry, as written before.
+  assert.equal("mintBeyond" in raw(toBase), false);
+  assert.equal(raw(mintedBeyond).mintBeyond, 1_761_900_000_000);
+  for (const bad of [0, -1, "soon", null]) assert.deepEqual(decodeJournal(text([{ ...raw(mintedBeyond), mintBeyond: bad }], 3)), [], String(bad));
 });

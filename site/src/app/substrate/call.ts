@@ -1,5 +1,6 @@
 // The lock as a Substrate extrinsic: Revive.call(vault, value, weight_limit, storage_deposit_limit,
-// lock(11155111, BridgeMinter, recipient)), as V3's metadata defines it (pallet 80, call 1). The
+// lock(the destination's chain id, its BridgeMinter, recipient)), as V3's metadata defines it
+// (pallet 80, call 1). The
 // page encodes the call here byte by byte too, and refuses unless the call @polkadot/api built and
 // the call the wallet is asked to sign are this one. Also: the dry run as reviveApi.call answers it
 // (its JSON form; V3's result type is newer than the library's static types, as the relayer reads
