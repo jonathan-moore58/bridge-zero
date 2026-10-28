@@ -131,6 +131,25 @@ details):
 | `mint --tamper signature\|header\|proof\|amount\|recipient` or `mint --replay`, with the options of `mint`, or `--sandbox` | The demo's two reverts, as transactions. A tamper is the lock's `importAndMint` with one part changed, which has to revert with the error that names that part, before the mint or after it; the replay, once the lock is minted, is the same `importAndMint` again, which has to revert `NonceAlreadyUsed`. The dry run requires exactly that revert; `--send` records the transaction, then checks status 0 in its receipt and the revert, replayed on its block. `--sandbox` runs them on `plan --sandbox`'s path: a tamper before the mint and again after it, the replay after it. |
 | `status` | The minter (bound or not, trie id, burns), the token (total supply, balances) and the vault's locks on V3, each with its commitment checked, marked minted or not, whether each burn has been released on V3, and the demo's reverts in the record. It reads the logs in windows of at most 10,000 blocks from each contract's deploy block; when an RPC refuses old logs (the public Sepolia RPC answers "pruned history unavailable" after about a week), it falls back to the views: `burnCount` and `burnIdOf` on Sepolia, `nextNonce` and the stored commitments, checked against the record's lock fields, on V3. |
 
+**On Base Sepolia and Arbitrum Sepolia**, `--network base-sepolia` or `--network arbitrum-sepolia`
+(with `bundle --nonce`, `plan`, `mint` and `status`, as with `deploy`) works on that rollup's minter:
+the lock has to name that chain and its minter, `CREATE(deployer, 9)`, `0xdc31…2348` on both; the
+light client, the minter and the token are that network's records (`deployments/<network>.json` and
+`deployments/<network>-bridge.json`, where a mint is recorded too) and the RPC its own (contracts/
+script/lib/sepolia.mjs `NETWORKS`). There `plan` and `mint` take `--bundle` or `--nonce`, `bundle`
+writes to `fixtures/v3-testnet-mint-<network>` unless `--out`, and the sandbox and the demo's reverts
+stay Sepolia's. Neither minter is bound to the vault before its first mint, which binds it:
+`importAndMint` carries the vault's account proof while the minter is not bound, as lock 0's did on
+Sepolia. The L1 part of a transaction ([relayer/src/l1.ts](../relayer/src/l1.ts)): on Arbitrum,
+NodeInterface's `gasEstimateL1Component` gives its L1 gas, in L2 gas units at the L2 gas price,
+which the tool prints and adds to the gas limit it sends with (the simulated gas + 10% + the L1
+gas); on Base, GasPriceOracle's `getL1FeeUpperBound` bounds the L1 data fee charged besides the gas,
+which counts in the balance the sender needs. A plan's first pass runs at the 16,777,216 cap and the
+max fee (ten times the base fee): on Arbitrum Sepolia, at 0.2 gwei, that needs about 0.0034 ETH in
+the sender's balance, so a dry run from a key with less fails on funds; `--from` an address that
+holds it, or a lower `--max-fee`, runs it. Lock 4 (Base Sepolia) and lock 5 (Arbitrum Sepolia) were
+planned this way on Oct 28: `importAndMint` with `bindVault`, 2,639,946 and 2,612,827 gas.
+
 `plan` and `mint` take the bundle file given, a bundle read on the spot for `--nonce`, or else
 `fixtures/v3-testnet-mint/mint-bundle.json`. Without `--send` nothing is signed: a dry run refuses
 `--account` and `--password-file`. A plan with a creation refuses a Sepolia build that was not
@@ -345,6 +364,20 @@ tool also dry-runs, from the multisig at V3's finalized head, the release that b
 refuses the burn when that release does not run. That checks V3 as it stands at the burn; it is no
 promise that the committee releases (D1).
 
+**From Base Sepolia and Arbitrum Sepolia** the way back is the same, through that chain's minter
+(`0xdc31…2348` on both), with `--network base-sepolia` or `arbitrum-sepolia`
+([`relayer/src/wayback.ts`](../relayer/src/wayback.ts) has each chain's rule). The burn id carries
+the chain's id, `keccak256(abi.encode(BURN_TAG, 84532 or 421614, minter, burnNonce))`, so burn 0 of
+each rollup has an id of its own, and the vault pays each once; each release in
+`deployments/v3-testnet.json` names its burn's chain id and minter. Final, there, is the chain's
+`finalized` block tag, which follows Sepolia's finality of the batch that holds the burn: an OP
+Stack node (Base) derives it from the batches in Sepolia's finalized blocks, an Arbitrum node marks a
+block finalized once its batch is in a finalized Sepolia block. On Oct 28 that came about 20 minutes
+after a block (5,800 to 6,700 of Base Sepolia's 0.2 s blocks, 3,800 to 4,500 of Arbitrum Sepolia's
+0.25 s blocks). The payee check reads the burn's chain where it reads Sepolia above. The first burns,
+0.001 wtPOT on each rollup, are the README's rows 108 and 109, and their releases on V3, by the
+auto-release watcher with each burn final on its rollup, rows 110 to 113.
+
 ### The release tool
 
 | Command | What it does |
@@ -355,9 +388,10 @@ promise that the committee releases (D1).
 | `release --burn-nonce <n> --approve --member <1\|2\|3> [--send --key-file <member json> --password-file <path>]` | Member k's approval: `asMulti` without a timepoint when nothing is open (it opens the operation), with the timepoint when the other member approved (it runs the call). Prints the fee and refuses a member whose free balance does not cover it, the deposit and the existential deposit. `--send` signs with the member's polkadot-js keystore (decoded with the password file, never printed), records the approval in `deployments/v3-testnet.json` (`releases`) before it submits, waits for finality and checks the events; after the second approval, `released[burnId]`, `outstanding` and the payee's balance (its `System.Account` at the block and its parent; through the EVM RPC too while that still serves the block's state, about 256 blocks). An approval a later run settles but cannot check stays submitted, with a warning, and does not hold up the command. |
 | `release --burn-nonce <n> --cancel --member <k> [--send ...]` | The opener's `cancelAsMulti`, which gives its deposit back. |
 | `release ... --confirmations <c> [--fast-cap <tPOT>]` | Fast mode: the burn read and checked `c` blocks below Sepolia's latest instead of at its finalized block, for a burn of at most the cap (1 tPOT by default); a larger one waits for finality. Above 10 tPOT the cap takes `--fast-cap-override`. The trade-off is printed every time ([below](#fast-mode-and-the-auto-release-watcher)). |
-| `release --watch <seconds> [--confirmations <c> [--fast-budget <tPOT>]] [--state-dir <path>] [--send --member-keys 1:<path>,2:<path> --password-file <path>]` | The auto-release watcher: each round settles what was on its way, then every burn that qualifies gets every check, then member 1's and member 2's approvals, checked and recorded; the fast releases not final yet stay within the budget; one per committee (its lock in `~/.bridge-zero`); a fatal stop leaves a halt file and exit code 4 ([below](#fast-mode-and-the-auto-release-watcher)). |
+| `release --watch <seconds> [--network <chain>[,<chain>...]] [--confirmations <c> [--fast-budget <tPOT>]] [--state-dir <path>] [--send --member-keys 1:<path>,2:<path> --password-file <path>]` | The auto-release watcher: each round settles what was on its way, then every burn that qualifies gets every check, then member 1's and member 2's approvals, checked and recorded; the fast releases not final yet stay within the budget; one per committee (its lock in `~/.bridge-zero`); a fatal stop leaves a halt file and exit code 4 ([below](#fast-mode-and-the-auto-release-watcher)). With several chains, one process serves them in turn, the budget counted across them; `--confirmations` takes one number or `<network>=<n>` pairs ([below](#several-chains)). |
 | `fund --member <1\|2\|3> \| --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]` | `balances.transferKeepAlive` from the testnet account `5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7` (or `--from`) to a member or to the multisig, with the fee and what the member needs; `--send` signs with a key file in `v3-vault deploy`'s format (`.substrate.mnemonic`) and records the transfer (`committeeFunding`). |
 | `status` | The burns on Sepolia (logs in windows, or `burnCount` and `burnIdOf` when the RPC refuses old logs) with the release state of each on V3 (`released[burnId]`, the record, the multisig's open operations), the members' and the multisig's balances, and the accounting: `outstanding` covers the wtPOT supply and the burns not released yet. |
+| `burn`, `release` or `status` `... --network base-sepolia\|arbitrum-sepolia` | The same on that rollup: its records (`deployments/<network>-bridge.json`, a burn a step of kind `burn` there), its RPC (`BASE_SEPOLIA_RPC_URL` or `ARBITRUM_SEPOLIA_RPC_URL`, else its first public one; a state it no longer serves from `<NETWORK>_ARCHIVE_RPC_URLS` or the public archives), its chain id in the burn id and its rule: final is its `finalized` tag; `--confirmations` from 1 to 7,200 of its blocks, with `--send` at least 180 on Base Sepolia and 144 on Arbitrum Sepolia. A burn's dry run runs its first pass at 1,000,000 gas (the cap at the max fee needs more ETH than a burner holds there) and the burn is sent with `eth_estimateGas`'s + 10% (on Arbitrum with its L1 gas once more), the L1 data fee counted in the balance on Base; the record keeps the receipt's `l1Fee` or `gasUsedForL1`. Without `--network`, Sepolia, as above; `fund` is V3's and takes none. |
 
 Nothing is signed without `--send`, and a dry run refuses the key options. Every fetch of the
 process refuses `eth_send*` and `eth_sign*`, and the V3 node's provider refuses `author_submit*`
@@ -371,7 +405,14 @@ sent, or the burn, is not final yet; and 4, a fatal stop or the committee's halt
 V3's EVM RPC serves the logs of Ethereum transactions, and a release is a Substrate extrinsic
 (`multisig.asMulti` dispatching `revive.call`): its `Released` event is the `revive.ContractEmitted`
 event the tool checks, and `eth_getLogs` may not return it (the tool says which it sees, and the
-status commands count such a release from `released[burnId]` and its burn's amount).
+status commands count such a release from `released[burnId]` and its burn's amount). The same holds
+for a lock sent from a Substrate account (`revive.call`, as the app's Portaldot Wallet path and
+`v3-vault lock --key-file` send it): `eth_getLogs` does not return its `Locked` event, so auto-mint,
+the mint tool (`bundle`, `plan`, `mint` and `status`) and `v3-vault status` find it in `System.Events`
+of the block where the vault's `nextNonce` passed its nonce (`relayer/src/substrate-locks.ts`: a
+binary search over the node's old state, then the block's events decoded with the metadata of the
+runtime that ran the block, its parent's), check it against `commitments(nonce)`, and read it as they
+read a log.
 
 ### What the way back costs
 
@@ -495,7 +536,9 @@ block or two deep; finality is the only guarantee. Two limits bound what fast mo
   `--send` those whose check against the final chain (below) has not passed yet, stay within
   `--fast-budget <tPOT>` in all (by default the cap): splitting 10 wtPOT into ten burns gets one
   released fast, and the rest wait for finality until the first one's block is final and its check
-  passed.
+  passed. An approval by hand in fast mode keeps to it too, counted as the watcher with `--send`
+  counts it, on every chain: the releases made fast and not checked yet, with its burn, at most
+  `--fast-cap` (by hand the budget is the cap); above it, the burn waits for finality.
 
 A cap or a budget above 10 tPOT takes `--fast-cap-override`, so a typo cannot make every burn fast.
 The default, without `--confirmations`, stays finality. Once Sepolia finalizes a fast release's
@@ -638,6 +681,82 @@ there. 84 seconds from the burn's block to the release's by the block timestamps
 starting the burn command (09:51:24); Sepolia had not finalized the burn's block when the release
 ran. The README's rows 56 to 58; the record is `deployments/sepolia-bridge.json` (the burn) and
 `deployments/v3-testnet.json` (the release, `"by": "fast"`).
+
+### Several chains
+
+Since Oct 28 the watcher takes `--network` with one chain or several, comma separated (Sepolia alone
+by default, as above), and serves them from one process: a round for one chain after the other,
+each with that chain's RPC, records and rule, and each with its own wait, so a chain whose RPC fails
+backs off alone. What is the committee's stays one: its lock (one watcher with `--send` for every
+chain), its halt file, its record of releases (`deployments/v3-testnet.json`, each release naming its
+burn's chain id and minter) and the fast budget.
+
+- **Each chain's rule** ([`relayer/src/wayback.ts`](../relayer/src/wayback.ts)). Final is the
+  chain's `finalized` block tag: Sepolia's finality, or on a rollup Sepolia's finality of the batch
+  that holds the burn, about 20 minutes after it on Oct 28. Fast mode reads a burn `--confirmations`
+  of the chain's own blocks below its latest: Sepolia 1 to 64, 3 or more with `--send`; Base
+  Sepolia and Arbitrum Sepolia 1 to 7,200, with `--send` at least 180 and 144, the 36 seconds of
+  their 0.2 s and 0.25 s blocks that Sepolia's 3 take. Until its batch is on Sepolia a rollup's
+  sequencer alone orders its latest blocks: a restart or a failover that drops them is the reorg
+  that could undo a burn released fast. `--confirmations <n>` gives every chain n; `<network>=<n>`
+  pairs give each its own, and a chain left out waits for finality.
+- **One fast budget.** The fast releases of every chain whose burns are not final on their own
+  chain yet (with `--send`, or not checked against their chain's final blocks yet) stay within
+  `--fast-budget` in all, by default the cap, 1 tPOT: one vault and one committee pay for all. With
+  `--send` another chain's fast release counts until its check against its chain's final blocks
+  passes, whatever its block; a dry run reads that chain's finalized head instead (once, from an RPC
+  that answers that chain's id) to tell whether its block is final, and one it cannot read counts as
+  not final. Each chain's own fast releases are checked against its final blocks in its own rounds,
+  as on Sepolia. An approval by hand in fast mode counts every chain's too.
+- **Kept apart.** Base Sepolia's and Arbitrum Sepolia's minters share one address, so the watcher
+  tells a chain's releases by chain id and minter, its burn cache is one file per chain
+  (`release-watch-<multisig>.<network>.burns.json` in `--state-dir`; Sepolia's as before), and burn
+  ids differ per chain (the chain id is in each), so no release of one chain's burn n stands for
+  another's. Messages and the halt file name a rollup's burn with its chain (`0 on Base Sepolia`);
+  Sepolia's keep their bare nonce.
+- **Rounds and exit codes.** Each chain counts its own rounds (`=== round n on <chain>`), so
+  `--rounds n` runs n rounds of each chain, and ends with the worst of each chain's last round's
+  code: a failed check first, then a node that could not be reached, then something not final yet.
+  A fatal stop on any chain stops the watcher (exit code 4), as before.
+- **One opener.** Member 1 opens every release, on every chain, and 9.27 tPOT of its balance stays
+  reserved until that release runs. A round opens and runs a release one after the other, so the
+  deposit normally comes back before the next opening; but when a chain's round stops between the
+  two (its RPC fails while it reads the burn again for member 2's approval), that release stays
+  open, and only that chain's next round runs it, after its backoff (up to an hour). Meanwhile
+  member 1 cannot cover a second deposit (it held 9.934 tPOT free on Oct 28): another chain's
+  opening waits, naming the open release, instead of being refused round after round. Funded with
+  at least 18.71 tPOT free (two deposits, two fees and the existential deposit), member 1 opens on
+  another chain meanwhile.
+- **Fewer chains is a choice the watcher names.** At the start it warns of each chain with a bridge
+  record here that it does not serve: the burns there wait. With `--send` it does not start (exit
+  code 4, no halt file) while `deployments/v3-testnet.json` holds a release of such a chain that only
+  that chain's round finishes: one left open (its opener's deposit stays reserved), or one made in
+  fast mode and not checked against that chain's final blocks yet (a reorg there that undid a burn
+  the vault paid would be found nowhere else). Its dry run warns of one and goes on. The refusal
+  names each burn and the `--network` to start it with.
+
+For the three chains, the dry run first:
+
+```
+npm run release -- release --watch 15 --network sepolia,base-sepolia,arbitrum-sepolia --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144 --rounds 1
+npm run release -- release --watch 15 --network sepolia,base-sepolia,arbitrum-sepolia --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144 --send --member-keys 1:<member-1.json>,2:<member-2.json> --password-file <committee password file>
+```
+
+Sepolia's rounds run as they did with the earlier command line, and its burn cache stays where it
+was. Each release takes the same from the members and the multisig, whatever the chain (9.403 tPOT
+free for member 1 to open one, 0.134 for member 2 to run one, up to 3.9415 tPOT of storage deposit
+from the multisig); member 1's deposit comes back when the release runs, which is in the same round
+unless that round stops between the two approvals (**One opener**, above). By hand,
+`npm run release -- release --burn-nonce <n> --network <chain>` and its `--approve` and `--cancel`
+take the same lock and the same halt file as on Sepolia.
+
+**Going live.** The second line replaces the watcher's earlier one wherever that one is written,
+not only in the shell that starts it now: the command that starts it at logon or restarts it after
+a crash (the scheduled task's script, a service wrapper) has to run this line too. A restart with
+the earlier, Sepolia-only line leaves the rollups' burns waiting, with a warning at the start of its
+log, and does not start at all (exit code 4) while the record holds a rollup's release that only a
+round of that rollup finishes. The same goes for the auto-mint: the line that starts it again has
+to name `--network sepolia,base-sepolia,arbitrum-sepolia`, as the running one does.
 
 ## What the minter trusts
 

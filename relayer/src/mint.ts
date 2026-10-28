@@ -7,9 +7,11 @@
 //   npm run mint -- bundle --check <file>
 //   npm run mint -- plan [--bundle <file> | --nonce <n>] [--sandbox] [--from <address>]
 //   npm run mint -- deploy [--bundle <file> | --nonce <n>] [--send --account <keystore> --password-file <path>]
+//   npm run mint -- deploy --network base-sepolia|arbitrum-sepolia [--send --account <keystore> --password-file <path>]
 //   npm run mint -- mint [--bundle <file> | --nonce <n>] [--from <address>] [--send --account <keystore> --password-file <path>]
 //   npm run mint -- mint --tamper signature|header|proof|amount|recipient | --replay [--bundle <file> | --nonce <n>] [--sandbox | --from <address> | --send ...]
 //   npm run mint -- status
+//   npm run mint -- bundle|plan|mint|status --network base-sepolia|arbitrum-sepolia [... as above, below]
 //   more options: --rpc <wss url> (the V3 node), --evm <http(s) url> (its EVM RPC), --artifacts <dir>
 //   (the Sepolia build, by default contracts/out-sepolia), --priority-fee <gwei>, --max-fee <gwei>
 //
@@ -26,9 +28,11 @@
 // commitments[n] in the child trie (chain.ts, as capture-contract.ts reads them). Each proof is
 // walked here; the account entry must be a contract whose code hash is the recorded vault's, and
 // the slot must hold the commitment recomputed from the lock in deployments/v3-testnet.json (or the
-// vault's Locked log). The node discards state after about 256 blocks, so the proofs are read at
-// the head; the bundle stays usable while the light client is in B's set and not past B. bundle
-// --check verifies a bundle file offline the same way (check.ts verifies it again in its own style).
+// vault's Locked log; for a lock sent as a Substrate extrinsic, whose log eth_getLogs does not
+// return, its Locked event in System.Events, substrate-locks.ts). The node discards state after
+// about 256 blocks, so the proofs are read at the head; the bundle stays usable while the light
+// client is in B's set and not past B. bundle --check verifies a bundle file offline the same way
+// (check.ts verifies it again in its own style).
 //
 // plan and mint take a bundle file (--bundle), a capture of lock <n> that is checked the same way
 // and not written (--nonce), or else fixtures/v3-testnet-mint/mint-bundle.json, where bundle writes.
@@ -68,6 +72,27 @@
 // and the Etherscan verification command (sepolia profile) is printed for each contract, in the
 // dry run too. deploy needs the deployer's keystore; the mint is open to anyone. A deploy reads the
 // lock (lock 0 unless --bundle or --nonce) only for its minter address.
+// deploy --network base-sepolia or arbitrum-sepolia (contracts/script/lib/sepolia.mjs NETWORKS: that
+// rollup's chain id, RPC and gas cap) deploys the same pair from the same build there, bound to the V3
+// light client of that network (GrandpaLightClient #2 in deployments/<network>.json) and to the same
+// vault, V3 chain id and vault code hash: BridgeMinter at the deployer's nonce 9 and WrappedTPOT at 10,
+// its next two there after the light client's deployment (nonces 0 to 7, the libraries the build links
+// at the addresses they have on Sepolia) and the relayer's funding (8). It reads no lock, as none names
+// that minter yet, and records in deployments/<network>-bridge.json what deployments/sepolia-bridge.json
+// records for Sepolia; the minter there computes each commitment with that rollup's chain id. Without
+// --network, everything is Sepolia's, as above.
+// bundle --nonce, plan, mint and status take --network base-sepolia or arbitrum-sepolia too: the lock
+// has to name that network's chain id and its minter, CREATE(deployer, 9); the light client, the
+// minter and the token are that network's records (deployments/<network>.json and
+// deployments/<network>-bridge.json) and the RPC its own; a mint's record is
+// deployments/<network>-bridge.json. There plan and mint take --bundle or --nonce (the default bundle
+// is Sepolia's lock 0's), bundle writes to fixtures/v3-testnet-mint-<network> unless --out, and the
+// sandbox and the demo's reverts stay Sepolia's. Their minter is not bound to the vault until its
+// first mint: importAndMint carries the vault's account proof and binds it, as lock 0's did on
+// Sepolia. The L1 part of a transaction (l1.ts): on Arbitrum, NodeInterface's estimate of its L1 gas
+// is printed and added to the gas limit it is sent with (the simulated gas + 10% + the L1 gas), as the
+// L1 price can rise before inclusion; on Base, GasPriceOracle's bound of its L1 data fee, paid besides
+// the gas, counts in the balance the sender needs.
 // mint --tamper and mint --replay are the demo's two reverts, as transactions anyone can send. A
 // tamper is the bundle's importAndMint with one part changed (bridge.ts tamperedCall: a signature
 // byte in the finality proof, a byte of B's state root in the header, a byte of the slot proof,
@@ -89,7 +114,9 @@
 // it falls back to the views: burnCount and burnIdOf on Sepolia, nextNonce and the commitments with
 // the record's lock fields on V3. A release has its Released log through eth_getLogs only when V3's
 // EVM RPC serves it, which it does for Ethereum transactions; the committee's releases are
-// Substrate extrinsics, counted from released[burnId] and the burn's amount.
+// Substrate extrinsics, counted from released[burnId] and the burn's amount. Likewise a lock sent
+// as a Substrate extrinsic: a nonce below nextNonce without a Locked log is read from System.Events
+// (substrate-locks.ts) and counted like the others.
 //
 // Nothing is signed without --send, and --account and --password-file are refused without it.
 // Every RPC client of this process refuses eth_send*, eth_sign*, personal_* and author_submit*
@@ -136,7 +163,6 @@ import {
   minterConstructorArgs,
   replayCall,
   revertName,
-  SEPOLIA_CHAIN_ID,
   signersHint,
   sourceHashes,
   TAMPERS,
@@ -171,6 +197,8 @@ import { CHILD_STORAGE_DEFAULT_PREFIX, childRootKey, storageKey } from "./hash.j
 import { decodeReviveAccountInfo, reviveAccountInfoKey, reviveSlotKey } from "./revive.js";
 import { RpcClient, RpcError } from "./rpc.js";
 import { decodeAuthorityList, decodeFinalityProof, decodeJustification, decodeU64, grandpaLogs } from "./scale.js";
+import { L1_KIND, l1Request, limitWithL1, NO_L1, type L1Cost } from "./l1.js";
+import { findSubstrateLock, findSubstrateLocks, LookupError, nodeReads, type FoundLock, type V3Reads } from "./substrate-locks.js";
 import { readProof } from "./trie.js";
 import {
   addressWord,
@@ -192,6 +220,8 @@ import {
 } from "./vault.js";
 import {
   CAP,
+  NETWORK,
+  NETWORKS,
   PROBE,
   PROBE_CODE,
   PROBE_GAS,
@@ -199,6 +229,7 @@ import {
   RECEIPT_TIMEOUT,
   REQUEST_GAS,
   RPC,
+  useNetwork,
   eth,
   feesAt,
   findLog,
@@ -223,6 +254,7 @@ import {
   writeJsonAtomic,
   type Fees,
   type Log,
+  type NetworkName,
   type Receipt,
 } from "../../contracts/script/lib/sepolia.mjs";
 
@@ -234,16 +266,52 @@ const V3 = {
   genesis: "0xd4f9acbcf7f52388d8b095abe3c198d19fc510e0343e643e87cfbccb155283bd",
   chainId: V3_CHAIN_ID,
 } as const;
-/** The light client on Sepolia that follows V3 (deployments/sepolia.json). */
+/** The light client that follows V3, on Sepolia (deployments/sepolia.json) and on each other network (deployments/<network>.json). */
 const CLIENT_NAME = "GrandpaLightClient #2";
-/** The deployer's nonces that create the minter and the token: lock 0 names CREATE(deployer, 31) as its minter. */
-const MINTER_NONCE = 31;
-const TOKEN_NONCE = 32;
+
+/** Where a network has its pair: the record of its light client, the record of its minter and token, and the deployer's nonces that create them. */
+export interface BridgePair {
+  clientRecord: string;
+  bridgeRecord: string;
+  minterNonce: number;
+  tokenNonce: number;
+}
+
+/**
+ * The deployer's nonces that create the minter and the token. On Sepolia 31 and 32: lock 0 names
+ * CREATE(deployer, 31) as its minter. On Base Sepolia and Arbitrum Sepolia 9 and 10, the deployer's
+ * next two there after its light client's deployment (nonces 0 to 7, deployments/<network>.json) and
+ * the relayer's funding (8, deployments/<network>-funding.json).
+ */
+const PAIR_NONCES: Record<NetworkName, readonly [minter: number, token: number]> = {
+  sepolia: [31, 32],
+  "base-sepolia": [9, 10],
+  "arbitrum-sepolia": [9, 10],
+};
+
+/** The pair of `network`: its records, deployments/<network>.json and deployments/<network>-bridge.json, and its nonces. */
+export function bridgePair(network: NetworkName): BridgePair {
+  const [minterNonce, tokenNonce] = PAIR_NONCES[network];
+  return { clientRecord: `deployments/${network}.json`, bridgeRecord: `deployments/${network}-bridge.json`, minterNonce, tokenNonce };
+}
+
+/**
+ * The network of the pair this run works on (Sepolia's unless deploy --network), its records, and the
+ * nonces that create the minter and the token. Only useBridgeNetwork changes them: captureBundle, which
+ * automint.ts imports, reads Sepolia's whatever network sepolia.mjs is on.
+ */
+let BRIDGE_NETWORK: NetworkName = "sepolia";
+let { clientRecord: CLIENT_RECORD, bridgeRecord: BRIDGE_RECORD, minterNonce: MINTER_NONCE, tokenNonce: TOKEN_NONCE } = bridgePair(BRIDGE_NETWORK);
+
+/** Switches the tool to `network`: the RPC, chain id and cap (sepolia.mjs useNetwork), the records and the nonces. */
+function useBridgeNetwork(network: NetworkName): void {
+  useNetwork(network);
+  BRIDGE_NETWORK = network;
+  ({ clientRecord: CLIENT_RECORD, bridgeRecord: BRIDGE_RECORD, minterNonce: MINTER_NONCE, tokenNonce: TOKEN_NONCE } = bridgePair(network));
+}
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
-const SEPOLIA_RECORD = "deployments/sepolia.json";
 const V3_RECORD = "deployments/v3-testnet.json";
-const BRIDGE_RECORD = "deployments/sepolia-bridge.json";
 const DEFAULT_ARTIFACTS = "contracts/out-sepolia";
 const DEFAULT_OUT = "fixtures/v3-testnet-mint";
 const BUNDLE_FILE = "mint-bundle.json";
@@ -312,8 +380,8 @@ async function sepolia<R>(what: string, read: () => Promise<R>): Promise<R> {
     return await retry(what, read);
   } catch (error) {
     if (error instanceof DryRunViolation) throw error;
-    if (offline(error)) throw new Unreachable(`Sepolia RPC unreachable (${what}: ${errorText(error)})`);
-    throw new Stop(`Sepolia RPC: ${what}: ${errorText(error)}`);
+    if (offline(error)) throw new Unreachable(`${NETWORK.title} RPC unreachable (${what}: ${errorText(error)})`);
+    throw new Stop(`${NETWORK.title} RPC: ${what}: ${errorText(error)}`);
   }
 }
 
@@ -325,9 +393,11 @@ const USAGE = `usage (from relayer/):
   npm run mint -- bundle --check <file>
   npm run mint -- plan [--bundle <file> | --nonce <n>] [--sandbox] [--from <address>]
   npm run mint -- deploy [--bundle <file> | --nonce <n>] [--send --account <keystore> --password-file <path>]
+  npm run mint -- deploy --network base-sepolia|arbitrum-sepolia [--send --account <keystore> --password-file <path>]
   npm run mint -- mint [--bundle <file> | --nonce <n>] [--from <address>] [--send --account <keystore> --password-file <path>]
   npm run mint -- mint --tamper ${TAMPERS.join("|")} | --replay [--bundle <file> | --nonce <n>] [--sandbox | --from <address> | --send ...]
   npm run mint -- status
+  bundle, plan, mint and status: --network base-sepolia|arbitrum-sepolia for that rollup's minter (Sepolia's by default)
   more options: --rpc <wss url>, --evm <http(s) url>, --artifacts <dir>, --priority-fee <gwei>, --max-fee <gwei>
   plan and mint read ${DEFAULT_OUT}/${BUNDLE_FILE} unless given --bundle or --nonce`;
 
@@ -406,16 +476,28 @@ function parseCommon(values: Record<string, string | boolean | undefined>): Comm
 
 const COMMON = { rpc: { type: "string" }, evm: { type: "string" } } as const;
 
+/** --network of bundle, plan, mint and status: the network whose minter the lock names (Sepolia's by default). The RPC, records and nonces follow it from here on. */
+function networkOption(text: string | undefined): NetworkName {
+  const network = text ?? "sepolia";
+  if (!Object.hasOwn(NETWORKS, network)) usage(`--network takes one of ${Object.keys(NETWORKS).join(", ")}`);
+  useBridgeNetwork(network as NetworkName);
+  return network as NetworkName;
+}
+
 function bundleOptions(args: string[]): BundleOptions {
-  const v = parse(args, { nonce: { type: "string" }, out: { type: "string" }, check: { type: "string" }, force: { type: "boolean", default: false }, ...COMMON });
+  const v = parse(args, { nonce: { type: "string" }, out: { type: "string" }, check: { type: "string" }, force: { type: "boolean", default: false }, network: { type: "string" }, ...COMMON });
   const nonceText = str(v.nonce);
   const checkFile = str(v.check);
   if ((nonceText === undefined) === (checkFile === undefined)) usage("bundle takes --nonce <n> (to capture one) or --check <file> (to verify one)");
-  if (checkFile !== undefined && (str(v.out) !== undefined || str(v.rpc) !== undefined || str(v.evm) !== undefined || v.force === true)) usage("--check is offline: --out, --force, --rpc and --evm are for a capture");
+  if (checkFile !== undefined && (str(v.out) !== undefined || str(v.rpc) !== undefined || str(v.evm) !== undefined || v.force === true || str(v.network) !== undefined)) {
+    usage("--check is offline: --out, --force, --rpc, --evm and --network are for a capture");
+  }
+  const network = networkOption(str(v.network));
   return {
     ...parseCommon(v),
     nonce: nonceText === undefined ? undefined : option("--nonce", () => parseNonce(nonceText)),
-    out: resolve(str(v.out) ?? at(DEFAULT_OUT)),
+    // A rollup's bundle goes next to Sepolia's default, in a directory of its own.
+    out: resolve(str(v.out) ?? at(network === "sepolia" ? DEFAULT_OUT : `${DEFAULT_OUT}-${network}`)),
     force: v.force === true,
     checkFile: checkFile === undefined ? undefined : resolve(checkFile),
   };
@@ -435,11 +517,23 @@ function planOptions(command: Command, args: string[]): PlanOptions {
     artifacts: { type: "string" },
     "priority-fee": { type: "string" },
     "max-fee": { type: "string" },
+    network: { type: "string" },
     ...COMMON,
   });
   let bundleFile = str(v.bundle);
   const nonceText = str(v.nonce);
   if (bundleFile !== undefined && nonceText !== undefined) usage("choose one of --bundle <file> and --nonce <n>");
+  // Another network than Sepolia: a deploy reads no lock (none named that minter when it was
+  // deployed); plan and mint take that network's lock, by --bundle or --nonce.
+  const network = str(v.network) ?? "sepolia";
+  if (!Object.hasOwn(NETWORKS, network)) usage(`--network takes one of ${Object.keys(NETWORKS).join(", ")}`);
+  if (network !== "sepolia" && command === "deploy" && (bundleFile !== undefined || nonceText !== undefined)) usage(`a deploy on ${network} reads no lock: --bundle and --nonce are for Sepolia's, where lock 0 names the minter`);
+  if (network !== "sepolia" && command !== "deploy" && bundleFile === undefined && nonceText === undefined) {
+    usage(`${command} on ${network} takes --bundle <file> or --nonce <n>: ${DEFAULT_OUT}/${BUNDLE_FILE} is Sepolia's lock 0`);
+  }
+  if (network !== "sepolia" && (v.sandbox === true || str(v.tamper) !== undefined || v.replay === true)) usage("--sandbox, --tamper and --replay are Sepolia's: the demo ran there");
+  // The RPC, the chain id, the records and the nonces follow --network from here on.
+  useBridgeNetwork(network as NetworkName);
   if (bundleFile === undefined && nonceText === undefined && command !== "deploy") {
     bundleFile = at(join(DEFAULT_OUT, BUNDLE_FILE));
     if (!existsSync(bundleFile)) usage(`${command} reads ${DEFAULT_OUT}/${BUNDLE_FILE} unless given --bundle <file> or --nonce <n>, and there is none: capture one with bundle --nonce <n>`);
@@ -488,13 +582,15 @@ function planOptions(command: Command, args: string[]): PlanOptions {
 }
 
 function statusOptions(args: string[]): Common {
-  return parseCommon(parse(args, COMMON));
+  const v = parse(args, { ...COMMON, network: { type: "string" } });
+  networkOption(str(v.network));
+  return parseCommon(v);
 }
 
 // ---------------------------------------------------------------------------------------
 // The records
 
-/** What deployments/sepolia.json says: the deployer and the light client that follows V3. */
+/** What deployments/sepolia.json (deployments/<network>.json) says: the deployer and the light client that follows V3. */
 interface SepoliaDeployment {
   deployer: Hex;
   deployerName: string;
@@ -502,11 +598,13 @@ interface SepoliaDeployment {
   clientCodeHash: Hex;
 }
 
-function readSepolia(): SepoliaDeployment {
-  const record = readJson<{ chainId: number; deployer: string; contracts: Record<string, string>; steps: { name: string; codeHash: string | null }[] }>(at(SEPOLIA_RECORD));
+function readSepolia(name: NetworkName = BRIDGE_NETWORK): SepoliaDeployment {
+  const { clientRecord } = bridgePair(name);
+  const record = readJson<{ chainId: number; deployer: string; contracts: Record<string, string>; steps: { name: string; codeHash: string | null }[] }>(at(clientRecord));
   const client = record.contracts?.[CLIENT_NAME];
   const codeHash = record.steps?.find((s) => s.name === CLIENT_NAME)?.codeHash;
-  if (record.chainId !== Number(SEPOLIA_CHAIN_ID) || !client || !codeHash) throw new Stop(`${SEPOLIA_RECORD} has no ${CLIENT_NAME} on Sepolia`);
+  const network = NETWORKS[name];
+  if (record.chainId !== Number(network.chainId) || !client || !codeHash) throw new Stop(`${clientRecord} has no ${CLIENT_NAME} on ${network.title}`);
   return { deployer: record.deployer.toLowerCase() as Hex, deployerName: record.deployer, client: client.toLowerCase() as Hex, clientCodeHash: codeHash.toLowerCase() as Hex };
 }
 
@@ -521,12 +619,15 @@ interface RecordedLock {
   amountNative: string;
   vaultNonce?: string;
   commitment?: Hex;
+  /** Its V3 block (for a lock sent as a Substrate extrinsic, the Substrate block's hash). */
+  block?: { number: number; hash: Hex };
 }
 
 /** A release round as deployments/v3-testnet.json records it (release.ts). */
 interface RecordedRelease {
   status: string;
-  burn: { burnNonce: string; burnId: Hex };
+  /** The burn it pays out for: its chain and minter (release.ts records them), nonce and id. */
+  burn: { burnNonce: string; burnId: Hex; chainId?: string; minter?: Hex };
   payee: Hex;
   amountNative: string;
   released?: { block: { number: number } };
@@ -603,7 +704,7 @@ interface BridgeStep {
 }
 
 interface BridgeRecord {
-  network: "sepolia";
+  network: NetworkName;
   chainId: number;
   deployer: string;
   lightClient: { name: string; address: Hex };
@@ -623,7 +724,8 @@ function readBridge(): BridgeRecord | null {
   } catch (error) {
     throw new Stop(`${BRIDGE_RECORD}: ${errorText(error)}`);
   }
-  if (record.network !== "sepolia" || record.chainId !== Number(SEPOLIA_CHAIN_ID) || !Array.isArray(record.steps)) throw new Stop(`${BRIDGE_RECORD} is not a Sepolia bridge record`);
+  const network = NETWORKS[BRIDGE_NETWORK];
+  if (record.network !== network.name || record.chainId !== Number(network.chainId) || !Array.isArray(record.steps)) throw new Stop(`${BRIDGE_RECORD} is not a ${network.title} bridge record`);
   return record;
 }
 
@@ -741,7 +843,7 @@ function artifactOf(dir: string, name: ArtifactName): Artifact {
 function verifyCommand(a: Artifact, address: Hex, constructorArgs: Hex): string {
   const parts = [
     "FOUNDRY_PROFILE=sepolia forge verify-contract", checksumAddress(hexToBytes(address)), a.contractId,
-    "--chain sepolia --verifier etherscan --watch", `--compiler-version ${a.compiler}`, `--evm-version ${a.evmVersion}`,
+    `--chain ${BRIDGE_NETWORK} --verifier etherscan --watch`, `--compiler-version ${a.compiler}`, `--evm-version ${a.evmVersion}`,
   ];
   if (a.optimizerRuns !== null) parts.push(`--num-of-optimizations ${a.optimizerRuns}`);
   for (const [id, address] of Object.entries(a.libraries)) parts.push(`--libraries ${id}:${address}`);
@@ -878,7 +980,40 @@ interface LockFacts {
   txHash?: Hex;
 }
 
-async function lockOf(vault: VaultDeployment, nonce: bigint, o: Common): Promise<LockFacts> {
+/**
+ * Lock `nonce` from System.Events (substrate-locks.ts): a lock sent as a Substrate extrinsic emits
+ * its Locked event only as Revive.ContractEmitted, which eth_getLogs does not return. Null while no
+ * final block counts it. `hint.block` (a block where the lock is said to be) narrows the search.
+ */
+async function substrateLockOf(vault: VaultDeployment, nonce: bigint, o: Common, hint: { block?: number }): Promise<FoundLock | null> {
+  return withV3Reads(o, (reads) => findSubstrateLock(reads, { vault: vault.address, vaultBlock: vault.block, nonce, ...hint }));
+}
+
+/** `work` on the V3 node's reads (paced, substrate-locks.ts nodeReads), once its genesis is V3's; a LookupError is a Stop. */
+async function withV3Reads<R>(o: Common, work: (reads: V3Reads) => Promise<R>): Promise<R> {
+  const chain = await connectV3(o.rpc);
+  try {
+    const genesis = (await chain.rpc.request<Hex>("chain_getBlockHash", [0])).toLowerCase();
+    if (genesis !== V3.genesis) throw new Stop(`the node serves genesis ${genesis}, not ${V3.title}`);
+    return await work(nodeReads(chain.rpc));
+  } catch (error) {
+    if (noAnswer(error)) throw new Unreachable(`the V3 node is unreachable (${errorText(error)})`);
+    if (error instanceof LookupError) throw new Stop(`System.Events: ${errorText(error)}`);
+    throw error;
+  } finally {
+    await chain.rpc.close();
+  }
+}
+
+/** Where a lock's facts came from when they came from System.Events: lockOf's source, which the bundle keeps. */
+const SYSTEM_EVENTS_SOURCE = "System.Events";
+
+/**
+ * Lock `nonce` of the vault: the record's, else the vault's Locked log (eth_getLogs), else, for a lock
+ * sent as a Substrate extrinsic, its Locked event in System.Events (`hint.block` narrows that search).
+ * Exported so that a check can run it with a vault whose record lacks the lock.
+ */
+export async function lockOf(vault: VaultDeployment, nonce: bigint, o: Common, hint: { block?: number } = {}): Promise<LockFacts> {
   const recorded = vault.locks.find((l) => l.status === "locked" && l.vault === vault.address && l.vaultNonce === nonce.toString());
   if (recorded?.commitment) {
     return {
@@ -900,8 +1035,17 @@ async function lockOf(vault: VaultDeployment, nonce: bigint, o: Common): Promise
     if (error instanceof RpcError) throw new Stop(`the EVM RPC's eth_getLogs: ${errorText(error)}`);
     throw error;
   }
+  let source = "the vault's Locked log";
+  if (logs.length === 0) {
+    const found = await substrateLockOf(vault, nonce, o, hint);
+    if (!found) throw new Stop(`${V3_RECORD} has no lock ${nonce}, the vault's logs hold no Locked event for that nonce, and no final block of V3 counts it in the vault's nextNonce`);
+    logs = [found.log];
+    source = `${SYSTEM_EVENTS_SOURCE} of V3 #${fmt(found.block.number)}`;
+    log(`     lock ${nonce} is in ${source} (extrinsic ${found.extrinsic?.hash ?? "none"}): a lock sent as a Substrate extrinsic, whose log eth_getLogs does not return`);
+  }
   if (logs.length !== 1) throw new Stop(`${V3_RECORD} has no lock ${nonce}, and the vault's logs hold ${logs.length} Locked events for that nonce`);
   const e = decodeLocked(logs[0]);
+  if (e.nonce !== nonce) throw new Stop(`the Locked event found for lock ${nonce} is of nonce ${e.nonce}`);
   return {
     nonce,
     recipient: e.recipient,
@@ -909,30 +1053,41 @@ async function lockOf(vault: VaultDeployment, nonce: bigint, o: Common): Promise
     dstChainId: e.dstChainId,
     dstMinter: e.dstMinter,
     commitment: e.commitment,
-    source: "the vault's Locked log",
+    source,
     ...(logs[0].transactionHash ? { txHash: logs[0].transactionHash.toLowerCase() as Hex } : {}),
   };
 }
 
-/** The lock must be one this tool can mint: for Sepolia, through the minter at CREATE(deployer, 31), with a commitment that is its own. */
-function checkLock(lock: LockFacts, vault: VaultDeployment, deployment: SepoliaDeployment): void {
-  const minter = createAddress(hexToBytes(deployment.deployer), BigInt(MINTER_NONCE));
-  if (lock.dstChainId !== SEPOLIA_CHAIN_ID) throw new Stop(`lock ${lock.nonce} is for chain ${lock.dstChainId}, not Sepolia (${SEPOLIA_CHAIN_ID})`);
+/**
+ * The lock must be one this tool can mint on `name`: for Sepolia, through the minter at
+ * CREATE(deployer, 31), on Base Sepolia and Arbitrum Sepolia at CREATE(deployer, 9) (bridgePair), on
+ * that network's chain id, with a commitment that is its own.
+ */
+function checkLock(lock: LockFacts, vault: VaultDeployment, deployment: SepoliaDeployment, name: NetworkName = BRIDGE_NETWORK): void {
+  const { minterNonce } = bridgePair(name);
+  const network = NETWORKS[name];
+  const minter = createAddress(hexToBytes(deployment.deployer), BigInt(minterNonce));
+  if (lock.dstChainId !== network.chainId) throw new Stop(`lock ${lock.nonce} is for chain ${lock.dstChainId}, not ${network.title} (${network.chainId})`);
   if (!equalBytes(lock.dstMinter, minter)) {
-    throw new Stop(`lock ${lock.nonce} names the minter ${checksumAddress(lock.dstMinter)}, not ${checksumAddress(minter)} (CREATE(${deployment.deployerName}, ${MINTER_NONCE})): no minter this tool deploys can mint it`);
+    throw new Stop(`lock ${lock.nonce} names the minter ${checksumAddress(lock.dstMinter)}, not ${checksumAddress(minter)} (CREATE(${deployment.deployerName}, ${minterNonce})): no minter this tool deploys can mint it`);
   }
   const expected = lockCommitment({ v3ChainId: V3.chainId, vault: hexToBytes(vault.address), dstChainId: lock.dstChainId, dstMinter: lock.dstMinter, recipient: lock.recipient, amountNative: lock.amountNative, nonce: lock.nonce });
   if (!equalBytes(expected, lock.commitment)) throw new Stop(`the fields of lock ${lock.nonce} give commitment ${bytesToHex(expected)}, ${lock.source} says ${bytesToHex(lock.commitment)}`);
   if (lock.amountNative === 0n || lock.recipient.every((b) => b === 0)) throw new Stop(`lock ${lock.nonce} has a zero amount or recipient, which the minter refuses`);
 }
 
-/** Reads the bundle of lock `nonce` at the latest finalized head, every proof walked here, and returns it; nothing is written. automint.ts uses it too. */
-export async function captureBundle(o: Common, nonce: bigint): Promise<MintBundleFixture> {
-  const deployment = readSepolia();
+/**
+ * Reads the bundle of lock `nonce` at the latest finalized head, every proof walked here, and
+ * returns it; nothing is written. The lock must be for `network`'s minter (by default the network
+ * this run works on). automint.ts uses it too, for each network it serves, with the lock's block as
+ * `hint` (which narrows the search in System.Events for a lock sent as a Substrate extrinsic).
+ */
+export async function captureBundle(o: Common, nonce: bigint, hint: { block?: number } = {}, network: NetworkName = BRIDGE_NETWORK): Promise<MintBundleFixture> {
+  const deployment = readSepolia(network);
   const vault = readV3();
   const tool = toolInfo();
-  const lock = await lockOf(vault, nonce, o);
-  checkLock(lock, vault, deployment);
+  const lock = await lockOf(vault, nonce, o, hint);
+  checkLock(lock, vault, deployment, network);
   log(`Lock ${nonce} (${lock.source}): ${formatTpot(lock.amountNative)} for ${checksumAddress(lock.recipient)} on chain ${lock.dstChainId}, minter ${checksumAddress(lock.dstMinter)}`);
   log(`Connecting to ${new URL(o.rpc).host}`);
   const chain = await connectV3(o.rpc);
@@ -1080,7 +1235,7 @@ export async function captureBundle(o: Common, nonce: bigint): Promise<MintBundl
         `The signers hint names ${hint.counted.map((p) => `precommit ${p.index} (key ${p.authorityIndex})`).join(" and ")}, each signature checked with the light client's own check (grandpa.ts clientVerifies).`,
         `${direct === undefined ? "The node does not expose childstate_getStorage: the slot's value comes from the child proof alone." : "childstate_getStorage returns the same word as the child proof."} ` +
           `state_getChildReadProof served ${served.length} items: the ${mainTrieItems} main-trie items of childRoot.proof and the ${childNodes.length} child-trie items in slot.proof.`,
-        `The lock is ${lock.source === V3_RECORD ? `the one ${V3_RECORD} records` : "the vault's Locked log for this nonce"}; the slot holds the commitment recomputed from its fields.`,
+        `The lock is ${lock.source === V3_RECORD ? `the one ${V3_RECORD} records` : lock.source.startsWith(SYSTEM_EVENTS_SOURCE) ? `the vault's Locked event in ${lock.source} (a Substrate extrinsic's, whose log eth_getLogs does not return)` : "the vault's Locked log for this nonce"}; the slot holds the commitment recomputed from its fields.`,
         "A light client at the signing set whose latest header is below B imports B with this finality proof (B's parent is such a checkpoint); one that holds B already verifies it again and writes nothing.",
       ],
     };
@@ -1364,13 +1519,17 @@ interface Setting {
   balanceBefore: bigint;
 }
 
-/** The deployer creates the minter at nonce 31 and the token at 32; nothing else puts them where lock 0 expects them. */
+/**
+ * The deployer creates the minter at nonce 31 and the token at 32 (on another network at its own two,
+ * bridgePair); nothing else puts them where lock 0 expects them, or there where the record says.
+ */
 function requireDeployerNonce(s: Setting, n: { latest: number; pending: number }, nonce: number): void {
   if (n.latest === nonce && n.pending === nonce && s.deployerNonce === nonce) {
     check(true, `the deployer's next nonce is ${nonce}, mined and pending`);
     return;
   }
-  const what = nonce === MINTER_NONCE ? `BridgeMinter has to be its nonce-${MINTER_NONCE} creation, ${checksumAddress(hexToBytes(s.bridge.minter))}, the minter lock 0 names` : `WrappedTPOT has to be its nonce-${TOKEN_NONCE} creation, ${checksumAddress(hexToBytes(s.bridge.token))}, the token the minter takes`;
+  const named = BRIDGE_NETWORK === "sepolia" ? "the minter lock 0 names" : `the minter on ${NETWORKS[BRIDGE_NETWORK].title}`;
+  const what = nonce === MINTER_NONCE ? `BridgeMinter has to be its nonce-${MINTER_NONCE} creation, ${checksumAddress(hexToBytes(s.bridge.minter))}, ${named}` : `WrappedTPOT has to be its nonce-${TOKEN_NONCE} creation, ${checksumAddress(hexToBytes(s.bridge.token))}, the token the minter takes`;
   throw new Stop(
     `the deployer ${s.deployment.deployerName} is at nonce ${n.latest} (pending ${n.pending}), and ${what}` +
       (n.latest > nonce ? `: nonce ${nonce} is spent, so no transaction can put it there any more` : ": wait until the pending transaction is mined"),
@@ -1546,7 +1705,7 @@ function makePlan(s: Setting): Plan {
     // The sender's nonces from here on; the deployer's go on after its creations.
     let next = from === deployer ? nonce : s.senderNonce;
     const demo: (ExpectedRevert & { kind: "tamper" | "replay" }) | null = o.tamper
-      ? { kind: "tamper", ...tamperedCall(b, o.tamper, hexToBytes(minter), SEPOLIA_CHAIN_ID) }
+      ? { kind: "tamper", ...tamperedCall(b, o.tamper, hexToBytes(minter), NETWORKS[BRIDGE_NETWORK].chainId) }
       : o.replay
         ? { kind: "replay", ...replayCall(b) }
         : null;
@@ -1743,7 +1902,7 @@ async function simulate(plan: Plan, limitOf: (s: Step) => number, boundOf: (s: S
     }
     const blocks = await rpc<SimBlock[]>("eth_simulateV1", [{ blockStateCalls, validation: true }, block]).catch((error: unknown) => {
       if (error instanceof DryRunViolation) throw error;
-      if (offline(error)) throw new Unreachable(`Sepolia RPC unreachable (eth_simulateV1: ${errorText(error)})`);
+      if (offline(error)) throw new Unreachable(`${NETWORK.title} RPC unreachable (eth_simulateV1: ${errorText(error)})`);
       throw new Error(`request [${request.map((s) => s.index).join(",")}]: ${errorText(error)}`);
     });
 
@@ -1856,8 +2015,12 @@ interface DryRun {
   codeHashes: Map<number, Hex>;
 }
 
-/** Runs the plan on the node, twice (the cap, then the limits); null when a check fails. */
-async function dryRun(plan: Plan, ctx: { block: { number: string; hash: string }; fees: Fees; balances: Map<Hex, bigint> }): Promise<DryRun | null> {
+/**
+ * Runs the plan on the node, twice (the cap, then the limits); null when a check fails. `l1` is the
+ * L1 part of each step on a rollup (l1.ts): Arbitrum's L1 gas is added to the step's gas limit, an
+ * OP Stack rollup's L1 data fee to what its sender needs.
+ */
+async function dryRun(plan: Plan, ctx: { block: { number: string; hash: string }; fees: Fees; balances: Map<Hex, bigint>; l1?: Map<number, L1Cost> }): Promise<DryRun | null> {
   const { fees } = ctx;
   log(`Fees: next base fee ${fmt(fees.base)} wei, priority fee ${fmt(fees.tip)} wei, max fee ${fmt(fees.maxFee)} wei (node gas price ${fmt(fees.gasPrice)} wei)`);
   if (!check(fees.maxFee >= fees.base && fees.maxFee >= fees.tip, "the max fee covers the next base fee and the priority fee")) return null;
@@ -1876,7 +2039,9 @@ async function dryRun(plan: Plan, ctx: { block: { number: string; hash: string }
   // A demo step keeps the limit it was measured with: on the Sepolia node a call that reverts can
   // need a limit well above the gas it reports (the amount tamper before the mint reports 2,316,080
   // and reverts without data below a limit of about 2,650,000), so its gas + 10% is not enough.
-  const limits = new Map(plan.steps.map((s) => [s.index, s.expect ? cap(s) : withHeadroom(gas.get(s.index)!)]));
+  const l1Of = (s: Step) => ctx.l1?.get(s.index) ?? NO_L1;
+  const l1Fee = (s: Step) => (l1Of(s).kind === "op" ? l1Of(s).fee : 0n);
+  const limits = new Map(plan.steps.map((s) => [s.index, s.expect ? cap(s) : limitWithL1(L1_KIND[BRIDGE_NETWORK], withHeadroom(gas.get(s.index)!), l1Of(s))]));
 
   // 2. The exact plan: every step with the gas limit it is sent with.
   const run = await simulate(plan, (s) => limits.get(s.index)!, (s) => gas.get(s.index)!, ctx.block.number, fees);
@@ -1904,9 +2069,9 @@ async function dryRun(plan: Plan, ctx: { block: { number: string; hash: string }
     let need = 0n;
     let paid = 0n;
     for (const s of plan.steps.filter((x) => x.from === sender)) {
-      const upfront = paid + BigInt(limits.get(s.index)!) * fees.maxFee;
+      const upfront = paid + BigInt(limits.get(s.index)!) * fees.maxFee + l1Fee(s);
       if (upfront > need) need = upfront;
-      paid += BigInt(gas.get(s.index)!) * fees.maxFee;
+      paid += BigInt(gas.get(s.index)!) * fees.maxFee + l1Fee(s);
     }
     if (need === 0n) continue;
     const after = run.balances.get(sender) ?? balance;
@@ -1929,8 +2094,8 @@ const dataHash = (s: Step): Hex => bytesToHex(keccak_256(hexToBytes(s.data)));
 
 function newRecord(s: Setting): BridgeRecord {
   return {
-    network: "sepolia",
-    chainId: Number(SEPOLIA_CHAIN_ID),
+    network: BRIDGE_NETWORK,
+    chainId: Number(NETWORKS[BRIDGE_NETWORK].chainId),
     deployer: s.deployment.deployerName,
     lightClient: { name: CLIENT_NAME, address: s.deployment.client },
     vault: { network: "portaldot-v3-testnet", chainId: Number(V3.chainId), address: s.vault.address, codeHash: s.vault.codeHash },
@@ -2104,7 +2269,7 @@ async function receiptChecks(entry: BridgeStep, receipt: Receipt, errors: Map<He
           ? entry.kind === "replay"
             ? replayCall(b).data
             : entry.tamper
-              ? tamperedCall(b, entry.tamper.part, hexToBytes(entry.address), SEPOLIA_CHAIN_ID).data
+              ? tamperedCall(b, entry.tamper.part, hexToBytes(entry.address), NETWORKS[BRIDGE_NETWORK].chainId).data
               : null
           : null;
       if (data && bytesToHex(keccak_256(data)) === entry.dataHash) {
@@ -2120,7 +2285,7 @@ async function receiptChecks(entry: BridgeStep, receipt: Receipt, errors: Map<He
       const e = l ? decodeBurnRequested(l) : null;
       lines.push([status === 1, head]);
       const fields = !!e && bytesToHex(e.from) === entry.sender && bytesToHex(e.v3Recipient) === entry.burn?.v3Recipient && e.amount === BigInt(entry.burn?.amount ?? -1);
-      lines.push([fields && equalBytes(e!.burnId, burnId(SEPOLIA_CHAIN_ID, hexToBytes(entry.address), e!.burnNonce)), `BurnRequested: ${e ? `burn ${e.burnNonce}, ${formatWtpot(e.amount)} for ${checksumAddress(e.v3Recipient)} on V3, burn id ${shortHex(e.burnId)} (the vault's convention)` : "no event"}`]);
+      lines.push([fields && equalBytes(e!.burnId, burnId(NETWORKS[BRIDGE_NETWORK].chainId, hexToBytes(entry.address), e!.burnNonce)), `BurnRequested: ${e ? `burn ${e.burnNonce}, ${formatWtpot(e.amount)} for ${checksumAddress(e.v3Recipient)} on V3, burn id ${shortHex(e.burnId)} (the vault's convention)` : "no event"}`]);
       if (e && entry.burn) Object.assign(entry.burn, { burnNonce: e.burnNonce.toString(), burnId: bytesToHex(e.burnId) });
       break;
     }
@@ -2229,7 +2394,8 @@ async function planCommand(o: PlanOptions): Promise<number> {
         : o.command === "mint"
           ? (demo ?? "minting")
           : "planning the mint";
-  log(`${new Date().toISOString()}: ${what} on Sepolia${o.send ? "" : " (dry run)"}`);
+  const network = NETWORKS[BRIDGE_NETWORK];
+  log(`${new Date().toISOString()}: ${what} on ${network.title}${o.send ? "" : " (dry run)"}`);
   const deployment = readSepolia();
   const vault = readV3();
   let sender: Hex = deployment.deployer;
@@ -2241,18 +2407,21 @@ async function planCommand(o: PlanOptions): Promise<number> {
   } else if (o.from) sender = o.from;
 
   // The lock: from the bundle (plan, mint, or a deploy given one), else, for a deploy, as the
-  // record or the vault's log has it, without a capture.
+  // record or the vault's log has it, without a capture. A deploy on another network reads none:
+  // no lock names that minter yet.
   let captured: { bundle: MintBundleFixture; file: string | null } | null = null;
-  let lock: LockFacts;
+  let lock: LockFacts | null = null;
   if (o.command !== "deploy" || o.bundleFile !== undefined) {
     captured = await bundleFor(o);
     lock = lockOfBundle(captured.bundle);
     const b = captured.bundle;
     if (b.provenance.genesisHash !== V3.genesis || BigInt(b.vault.chainId) !== V3.chainId) throw new Stop(`the bundle is not from ${V3.title}`);
     if (b.vault.address !== vault.address || b.vault.codeHash !== vault.codeHash) throw new Stop(`the bundle's vault (${b.vault.address}, code hash ${shortHex(b.vault.codeHash)}) is not the one ${V3_RECORD} records`);
-  } else lock = await lockOf(vault, o.nonce ?? 0n, o);
-  checkLock(lock, vault, deployment);
-  log(`Lock ${lock.nonce} (${lock.source}): ${formatTpot(lock.amountNative)} for ${checksumAddress(lock.recipient)}, minter ${checksumAddress(lock.dstMinter)} = CREATE(deployer, ${MINTER_NONCE})`);
+  } else if (BRIDGE_NETWORK === "sepolia") lock = await lockOf(vault, o.nonce ?? 0n, o);
+  if (lock) {
+    checkLock(lock, vault, deployment);
+    log(`Lock ${lock.nonce} (${lock.source}): ${formatTpot(lock.amountNative)} for ${checksumAddress(lock.recipient)}, minter ${checksumAddress(lock.dstMinter)} = CREATE(deployer, ${MINTER_NONCE})`);
+  } else log(`No lock is read: none names the minter on ${network.title} yet, CREATE(deployer, ${MINTER_NONCE})`);
   const bundle = o.command === "deploy" ? null : captured!.bundle;
 
   // Everything is read at one block, the one the plan is simulated on.
@@ -2261,9 +2430,9 @@ async function planCommand(o: PlanOptions): Promise<number> {
     chainId = await rpc<string>("eth_chainId", []);
   } catch (error) {
     if (error instanceof DryRunViolation) throw error;
-    throw new Unreachable(`Sepolia RPC unreachable (${errorText(error)})`);
+    throw new Unreachable(`${network.title} RPC unreachable (${errorText(error)})`);
   }
-  if (!check(BigInt(chainId) === SEPOLIA_CHAIN_ID, `chain id ${BigInt(chainId)} is Sepolia`)) throw new Stop("the Sepolia RPC serves another chain");
+  if (!check(BigInt(chainId) === network.chainId, `chain id ${BigInt(chainId)} is ${network.title}`)) throw new Stop(`the ${network.title} RPC serves another chain`);
   const block = await sepolia("latest block", () => rpc<{ number: string; hash: string }>("eth_getBlockByNumber", ["latest", false]));
   const fees = await sepolia("fees", () => feesAt(block, { priorityFee: o.priorityFee, maxFee: o.maxFee }));
   const balanceOf = async (address: Hex) => BigInt(await sepolia("balance", () => rpc<string>("eth_getBalance", [address, block.number])));
@@ -2271,15 +2440,15 @@ async function planCommand(o: PlanOptions): Promise<number> {
   const deployerNonce = await nonceOf(deployment.deployer);
   const n = await sepolia("nonces", () => nonces(deployment.deployer));
   const senderNonce = sender === deployment.deployer ? deployerNonce : await nonceOf(sender);
-  log(`Sepolia block ${fmt(Number(BigInt(block.number)))} (${block.hash}), simulated on top of it via ${new URL(RPC).host}`);
+  log(`${network.title} block ${fmt(Number(BigInt(block.number)))} (${block.hash}), simulated on top of it via ${new URL(RPC).host}`);
   log(`Deployer ${deployment.deployerName}: nonce ${deployerNonce} (pending ${n.pending}), balance ${eth(await balanceOf(deployment.deployer))}`);
   if (sender !== deployment.deployer) log(`Sender of the mint ${checksumAddress(hexToBytes(sender))}${o.send ? ` (keystore ${o.account})` : " (--from)"}: nonce ${senderNonce}, balance ${eth(await balanceOf(sender))}`);
   const clientCode = await codeAt(deployment.client, block.number);
-  if (!check(bytesToHex(keccak_256(clientCode)) === deployment.clientCodeHash, `${CLIENT_NAME} ${deployment.client} has the code ${SEPOLIA_RECORD} recorded`)) throw new Stop("the light client is not the recorded one");
+  if (!check(bytesToHex(keccak_256(clientCode)) === deployment.clientCodeHash, `${CLIENT_NAME} ${deployment.client} has the code ${CLIENT_RECORD} recorded`)) throw new Stop("the light client is not the recorded one");
   const client = await readClient(deployment.client, block.number);
   log(`${CLIENT_NAME}: set ${client.setId}, latest #${fmt(client.latestNumber)} ${shortHex(client.latestHash)}, ${client.halted ? "HALTED" : "not halted"}, ${client.paused ? "PAUSED" : "not paused"}`);
   const bridge = await readBridgeState(deployment.deployer, block.number);
-  if (!equalBytes(hexToBytes(bridge.minter), lock.dstMinter)) throw new Stop("CREATE(deployer, 31) is not the lock's minter");
+  if (lock && !equalBytes(hexToBytes(bridge.minter), lock.dstMinter)) throw new Stop(`CREATE(deployer, ${MINTER_NONCE}) is not the lock's minter`);
   log(
     `BridgeMinter ${checksumAddress(hexToBytes(bridge.minter))} (CREATE(deployer, ${MINTER_NONCE})): ` +
       (bridge.minterDeployed ? `deployed, ${bridge.bound ? `bound to trie id ${shortHex(bridge.trieId)}` : "not bound"}, ${bridge.burnCount} burns` : "not deployed") +
@@ -2335,12 +2504,27 @@ async function planCommand(o: PlanOptions): Promise<number> {
     log(`     ${tag(s)} ${s.name} at ${checksumAddress(hexToBytes(s.address!))}, constructor arguments ${s.constructorArgs}`);
     log(`          verify once mined: ${verifyCommand(s.artifact!, s.address!, s.constructorArgs!)}`);
   }
+  // The L1 part of each transaction on a rollup (l1.ts): NodeInterface's L1 gas on Arbitrum, added to
+  // its gas limit; GasPriceOracle's bound of the L1 data fee on an OP Stack rollup. None on Sepolia.
+  const l1 = new Map<number, L1Cost>();
+  for (const s of plan.steps) {
+    const request = l1Request(L1_KIND[BRIDGE_NETWORK], s.kind === "deploy" ? null : s.to!, s.data);
+    if (!request) continue;
+    const cost = request.decode(await sepolia("L1 estimate", () => rpc<Hex>("eth_call", [{ to: request.to, data: request.data }, block.number])));
+    l1.set(s.index, cost);
+    log(
+      `     ${tag(s)} L1: ` +
+        (cost.kind === "arbitrum"
+          ? `${fmt(cost.gas)} L1 gas by NodeInterface (L1 base fee estimate ${fmt(cost.l1BaseFee ?? 0n)} wei), in its gas and added once more to its gas limit`
+          : `an L1 data fee of at most ${eth(cost.fee)} by GasPriceOracle, paid besides the gas`),
+    );
+  }
   log();
   const balances = new Map<Hex, bigint>();
   for (const s of plan.steps) if (s.from !== SANDBOX_SENDER && !balances.has(s.from)) balances.set(s.from, await balanceOf(s.from));
   let dry: DryRun | null = null;
   try {
-    dry = await dryRun(plan, { block, fees, balances });
+    dry = await dryRun(plan, { block, fees, balances, l1 });
   } catch (error) {
     if (error instanceof Unreachable || error instanceof DryRunViolation) throw error;
     check(false, errorText(error));
@@ -2352,7 +2536,7 @@ async function planCommand(o: PlanOptions): Promise<number> {
   if (!o.send) {
     const next =
       o.command === "plan" && !o.sandbox && plan.steps.some((s) => s.sentBy === "deploy")
-        ? ` Next: npm run mint -- deploy --send ..., then npm run mint -- mint ${captured?.file ? `--bundle ${repoPath(captured.file)}` : `--nonce ${lock.nonce}`} --send ...`
+        ? ` Next: npm run mint -- deploy --send ..., then npm run mint -- mint ${captured?.file ? `--bundle ${repoPath(captured.file)}` : `--nonce ${lock!.nonce}`} --send ...`
         : "";
     log(`\nThe dry run passed. Nothing was signed or sent.${next}`);
     return OK;
@@ -2367,7 +2551,9 @@ async function planCommand(o: PlanOptions): Promise<number> {
 // status
 
 async function status(o: Common): Promise<number> {
-  log(`${new Date().toISOString()}: the bridge from ${V3.title} to Sepolia`);
+  // The destination network (Sepolia unless --network): its title and chain id in every line below.
+  const net = NETWORKS[BRIDGE_NETWORK];
+  log(`${new Date().toISOString()}: the bridge from ${V3.title} to ${net.title}`);
   const deployment = readSepolia();
   const vault = readV3();
   const record = readBridge();
@@ -2376,14 +2562,14 @@ async function status(o: Common): Promise<number> {
     chainId = await rpc<string>("eth_chainId", []);
   } catch (error) {
     if (error instanceof DryRunViolation) throw error;
-    throw new Unreachable(`Sepolia RPC unreachable (${errorText(error)})`);
+    throw new Unreachable(`${net.title} RPC unreachable (${errorText(error)})`);
   }
-  if (!check(BigInt(chainId) === SEPOLIA_CHAIN_ID, `chain id ${BigInt(chainId)} is Sepolia`)) throw new Stop("the Sepolia RPC serves another chain");
+  if (!check(BigInt(chainId) === net.chainId, `chain id ${BigInt(chainId)} is ${net.title}`)) throw new Stop(`the ${net.title} RPC serves another chain`);
 
-  // Sepolia: the light client, the minter and the token.
+  // The destination network: the light client, the minter and the token.
   const block = await sepolia("latest block", () => rpc<{ number: string }>("eth_getBlockByNumber", ["latest", false]));
   const client = await readClient(deployment.client, block.number);
-  log(`Sepolia block ${fmt(Number(BigInt(block.number)))}: ${CLIENT_NAME} ${deployment.client} at set ${client.setId}, latest #${fmt(client.latestNumber)} ${shortHex(client.latestHash)}`);
+  log(`${net.title} block ${fmt(Number(BigInt(block.number)))}: ${CLIENT_NAME} ${deployment.client} at set ${client.setId}, latest #${fmt(client.latestNumber)} ${shortHex(client.latestHash)}`);
   const bridge = await readBridgeState(deployment.deployer, block.number);
   const minterText = checksumAddress(hexToBytes(bridge.minter));
   if (!bridge.minterDeployed) log(`BridgeMinter ${minterText} (CREATE(deployer, ${MINTER_NONCE})): not deployed`);
@@ -2425,7 +2611,7 @@ async function status(o: Common): Promise<number> {
     const recomputed = lockCommitment({ v3ChainId: V3.chainId, vault: hexToBytes(vault.address), dstChainId: e.dstChainId, dstMinter: e.dstMinter, recipient: e.recipient, amountNative: e.amountNative, nonce: e.nonce });
     const stored = await evm.word(vault.address, commitmentSlot(e.nonce), tagV3);
     let state = "for another chain or minter";
-    if (e.dstChainId === SEPOLIA_CHAIN_ID && bytesToHex(e.dstMinter) === bridge.minter) {
+    if (e.dstChainId === net.chainId && bytesToHex(e.dstMinter) === bridge.minter) {
       ours += 1;
       if (!bridge.minterDeployed || !bridge.tokenDeployed) state = "for this minter, which is not deployed: not minted";
       else {
@@ -2471,7 +2657,25 @@ async function status(o: Common): Promise<number> {
       await lockLine(e, where);
       lockCount += 1;
     }
-    check(BigInt(lockNonces.size) === nextNonce && [...lockNonces].every((x) => x < nextNonce), `one Locked log for each of the ${nextNonce} nonces`);
+    // A lock sent as a Substrate extrinsic has its Locked event only in System.Events, which eth_getLogs does not return.
+    const missing = Array.from({ length: Number(nextNonce) }, (_, i) => BigInt(i)).filter((x) => !lockNonces.has(x));
+    const blocks = new Map(vault.locks.filter((l) => l.status === "locked" && l.vaultNonce !== undefined && l.block).map((l) => [BigInt(l.vaultNonce!), l.block!.number] as const));
+    const fromEvents = missing.length === 0 ? new Map<bigint, FoundLock | null>() : await withV3Reads(o, (reads) => findSubstrateLocks(reads, { vault: vault.address, vaultBlock: vault.block, nonces: missing, blocks }));
+    for (const [n, f] of fromEvents) {
+      if (!f) {
+        log(`     lock ${n}: no final block of V3 counts it yet (it is not in eth_getLogs either): run again in a minute`);
+        continue;
+      }
+      const e = decodeLocked(f.log);
+      lockNonces.add(e.nonce);
+      await lockLine(e, `#${fmt(f.block.number)} ${shortHex(f.extrinsic?.hash ?? "0x")}, from System.Events: a Substrate extrinsic's, whose log eth_getLogs does not return`);
+      lockCount += 1;
+    }
+    const counted = [...fromEvents.values()].filter(Boolean).length;
+    check(
+      BigInt(lockNonces.size) === nextNonce && [...lockNonces].every((x) => x < nextNonce),
+      `one Locked event for each of the ${nextNonce} nonces${counted > 0 ? ` (${counted} from System.Events)` : ""}`,
+    );
   }
   log(`     ${ours} of ${lockCount} lock${lockCount === 1 ? "" : "s"} for this minter, ${minted} minted`);
 
@@ -2495,11 +2699,11 @@ async function status(o: Common): Promise<number> {
       return `released on V3 (released[burnId] is set${recorded?.released ? `; ${V3_RECORD}: #${fmt(recorded.released.block.number)}, ${formatTpot(BigInt(recorded.amountNative))}` : ""}; the EVM RPC serves no Released log for it)`;
     };
     if ("refused" in minterLogs) {
-      log(`\n${bridge.burnCount} burn${bridge.burnCount === 1n ? "" : "s"} on Sepolia, from burnCount and burnIdOf: the Sepolia RPC refuses eth_getLogs (${minterLogs.refused}) (the trusted return path: the committee releases on V3, which no contract here checks)`);
+      log(`\n${bridge.burnCount} burn${bridge.burnCount === 1n ? "" : "s"} on ${net.title}, from burnCount and burnIdOf: the ${net.title} RPC refuses eth_getLogs (${minterLogs.refused}) (the trusted return path: the committee releases on V3, which no contract here checks)`);
       for (let n = 0n; n < bridge.burnCount; n++) {
         const id = wordAt(await sepolia("burnIdOf", () => view(bridge.minter, callData(MINTER.burnIdOf, uintWord(n)), block.number)), 0);
         const recorded = record?.steps.find((s) => s.kind === "burn" && s.ok && s.burn?.burnNonce === n.toString());
-        check(equalBytes(id, burnId(SEPOLIA_CHAIN_ID, hexToBytes(bridge.minter), n)), `burn ${n}: burn id ${shortHex(id)} (the vault's convention); ${await releaseState(id, recorded?.burn ? BigInt(recorded.burn.amount) : null)}`);
+        check(equalBytes(id, burnId(net.chainId, hexToBytes(bridge.minter), n)), `burn ${n}: burn id ${shortHex(id)} (the vault's convention); ${await releaseState(id, recorded?.burn ? BigInt(recorded.burn.amount) : null)}`);
       }
       log("     without the logs, the total supply is not checked against the mints and the burns");
     } else {
@@ -2507,11 +2711,11 @@ async function status(o: Common): Promise<number> {
       let burnedSum = 0n;
       for (const l of minterLogs.filter((x) => x.topics[0]?.toLowerCase() === MINTED_TOPIC)) mintedSum += decodeMinted(l).amount;
       const burns = minterLogs.filter((x) => x.topics[0]?.toLowerCase() === BURN_REQUESTED_TOPIC);
-      log(`\n${burns.length} burn${burns.length === 1 ? "" : "s"} on Sepolia (the trusted return path: the committee releases on V3, which no contract here checks)`);
+      log(`\n${burns.length} burn${burns.length === 1 ? "" : "s"} on ${net.title} (the trusted return path: the committee releases on V3, which no contract here checks)`);
       for (const l of burns) {
         const e = decodeBurnRequested(l);
         burnedSum += e.amount;
-        const id = burnId(SEPOLIA_CHAIN_ID, hexToBytes(bridge.minter), e.burnNonce);
+        const id = burnId(net.chainId, hexToBytes(bridge.minter), e.burnNonce);
         check(
           equalBytes(id, e.burnId),
           `burn ${e.burnNonce} (${shortHex(l.transactionHash ?? "0x")}): ${formatWtpot(e.amount)} from ${checksumAddress(e.from)} for ${checksumAddress(e.v3Recipient)} on V3, ` +
@@ -2521,11 +2725,29 @@ async function status(o: Common): Promise<number> {
       check(BigInt(burns.length) === bridge.burnCount, `burnCount() is the ${burns.length} BurnRequested event${burns.length === 1 ? "" : "s"}`);
       check(bridge.totalSupply === mintedSum - burnedSum, `wtPOT total supply = minted ${formatWtpot(mintedSum)} - burned ${formatWtpot(burnedSum)}`);
       const burnIds = new Set(burns.map((l) => bytesToHex(decodeBurnRequested(l).burnId)));
-      for (const [id, amount] of releases) if (!burnIds.has(id)) check(false, `a Released log for burn id ${shortHex(id)} (${formatTpot(amount)}), which no burn on Sepolia has`);
+      for (const [id, amount] of releases) if (!burnIds.has(id)) check(false, `a Released log for burn id ${shortHex(id)} (${formatTpot(amount)}), which no burn on ${net.title} has`);
     }
   }
+  // The vault's outstanding counts every chain's locks and releases: on a rollup, the committee's
+  // releases for burns on another chain (Sepolia's, in the record) count too, once the vault's
+  // released[burnId] holds them. On Sepolia every recorded release is for a burn above.
+  let releasedElsewhere = 0n;
+  for (const r of vault.releases) {
+    const b = r.burn;
+    if (r.status !== "released" || !b?.burnId || releases.has(b.burnId)) continue;
+    const here = BigInt(b.chainId ?? net.chainId) === net.chainId && (b.minter ?? bridge.minter).toLowerCase() === bridge.minter;
+    if (here || (await evm.word(vault.address, releasedSlot(hexToBytes(b.burnId)), tagV3)) === 0n) continue;
+    releasedElsewhere += BigInt(r.amountNative);
+    log(`     release of burn ${b.burnNonce} on chain ${b.chainId ?? "?"}, burn id ${shortHex(b.burnId)}: ${formatTpot(BigInt(r.amountNative))} (${V3_RECORD}; released[burnId] is set)`);
+  }
   if (unknownAmounts > 0) log(`     note: ${unknownAmounts} release${unknownAmounts === 1 ? "" : "s"} of an unknown amount: outstanding is not checked against the locks`);
-  else check(locked - released - releasedUnlogged === outstanding, `outstanding = locked ${formatTpot(locked)} - released ${formatTpot(released + releasedUnlogged)}${releasedUnlogged ? ` (${formatTpot(releasedUnlogged)} of it without a Released log)` : ""}`);
+  else {
+    check(
+      locked - released - releasedUnlogged - releasedElsewhere === outstanding,
+      `outstanding = locked ${formatTpot(locked)} - released ${formatTpot(released + releasedUnlogged + releasedElsewhere)}${releasedUnlogged ? ` (${formatTpot(releasedUnlogged)} of it without a Released log)` : ""}` +
+        `${releasedElsewhere ? ` (${formatTpot(releasedElsewhere)} of it for burns on other chains)` : ""}`,
+    );
+  }
   return failures === 0 ? OK : FAILED;
 }
 

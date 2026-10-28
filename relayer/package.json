@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "description": "Fetches Portaldot finality and storage proofs, captures and re-verifies chain fixtures, relays finality to the Sepolia light clients, deploys and uses the vault on the V3 testnet, mints wtPOT on Sepolia from a proven lock, and runs the trusted return path: a burn on Sepolia and its release by the committee on V3.",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "type": "module",
   "engines": {
     "node": ">=24"
@@ -24,7 +24,8 @@
   "dependencies": {
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
-    "@polkadot/api": "17.0.2"
+    "@polkadot/api": "17.0.2",
+    "@polkadot/types": "17.0.2"
   },
   "devDependencies": {
     "@types/node": "24.19.0",

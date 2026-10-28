@@ -150,6 +150,111 @@
       "vaultNonce": "2",
       "commitment": "0x7a4d0e3ffc22ddc8d3c4c84b1032c0cd87432edd727dfd21be45090eb7e78636",
       "slot": "0xabbb5caa7dda850e60932de0934eb1f9d0f59695050f761dc64e443e5030a569"
+    },
+    {
+      "status": "locked",
+      "via": "substrate",
+      "txHash": "0x953fc65cac111af0db9f6109ece77984067425be6b58b610b52ebc2d4627b7f7",
+      "from": "0xb621f9a9dd96ba88681c40b04657cef602854e24",
+      "substrate": {
+        "ss58": "5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7",
+        "accountId": "0x682eb86097c5da7e886fe086e59ede2303801fb28de24c10db23a560321b7777"
+      },
+      "nonce": 10,
+      "vault": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+      "dstChainId": "11155111",
+      "dstMinter": "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
+      "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "amountNative": "100000000000",
+      "value": "1000000000000000",
+      "weightLimit": {
+        "refTime": "612367009",
+        "proofSize": "35329"
+      },
+      "storageDepositLimit": "391833000000000",
+      "dryRun": {
+        "refTime": "556697281",
+        "proofSize": "32118",
+        "storageDeposit": "384150000000000"
+      },
+      "expected": {
+        "vaultNonce": "3",
+        "commitment": "0x423bce04e121e2cdd972a7dd5edf9fdceab4b72d2461200d85f56bfed7c052f0"
+      },
+      "signedAt": "2026-10-27T19:53:33.031Z",
+      "submittedAfter": 222021,
+      "block": {
+        "number": 222024,
+        "hash": "0xeaf6ab5f907c7c1c0d58798141d5f7ee11bea414e0e5ccd801a442930b324a47"
+      },
+      "extrinsicIndex": 1,
+      "fee": "2531001217525",
+      "lockedLog": "not served",
+      "deposit": "384150000000000",
+      "cost": "3866810012175250000",
+      "vaultNonce": "3",
+      "commitment": "0x423bce04e121e2cdd972a7dd5edf9fdceab4b72d2461200d85f56bfed7c052f0",
+      "slot": "0x101e368776582e57ab3d116ffe2517c0a585cd5b23174b01e275c2d8329c3d83"
+    },
+    {
+      "status": "locked",
+      "txHash": "0x8e26f3ed6fcbb3bd1f13cc576cdf19914b19bbd9d1eb79d80fda23802f669bc5",
+      "from": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "nonce": 3,
+      "vault": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+      "dstChainId": "84532",
+      "dstMinter": "0xdc31a3bc1354545eeb985aad7b2aa662e9272348",
+      "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "amountNative": "100000000000",
+      "value": "1000000000000000",
+      "gasLimit": "151331810741137",
+      "gasPrice": "28530",
+      "maxFee": "32096",
+      "expected": {
+        "vaultNonce": "4",
+        "commitment": "0x911489350293bf3f3d029c18a41148225eda61d272d4dd829b92a41d6c514f61"
+      },
+      "signedAt": "2026-10-27T23:55:14.603Z",
+      "block": {
+        "number": 224435,
+        "hash": "0x8f8fb709f0cdc2fc1d3558ce01e93700576eb3e997ee1b361629b3177806f1db"
+      },
+      "gasUsed": "135440318527793",
+      "effectiveGasPrice": "28530",
+      "cost": "3864112287597934290",
+      "vaultNonce": "4",
+      "commitment": "0x911489350293bf3f3d029c18a41148225eda61d272d4dd829b92a41d6c514f61",
+      "slot": "0x52d75039926638d3c558b2bdefb945d5be8dae29dedd1c313212a4d472d9fde5"
+    },
+    {
+      "status": "locked",
+      "txHash": "0x22d2ecbef94480e6cbef8ec7741a6cde69834bc638194d3620cbd577f4b05c21",
+      "from": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "nonce": 4,
+      "vault": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+      "dstChainId": "421614",
+      "dstMinter": "0xdc31a3bc1354545eeb985aad7b2aa662e9272348",
+      "recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "amountNative": "100000000000",
+      "value": "1000000000000000",
+      "gasLimit": "151358336907555",
+      "gasPrice": "28525",
+      "maxFee": "32090",
+      "expected": {
+        "vaultNonce": "5",
+        "commitment": "0x636ef291c881c6839ace1d82bfb896a8f8c5322154c31d7e9cde9142e540beb9"
+      },
+      "signedAt": "2026-10-27T23:55:46.304Z",
+      "block": {
+        "number": 224440,
+        "hash": "0x7c97582790dc0610e574560d87b5bd11a867005234973c7593d163ccc5182cd5"
+      },
+      "gasUsed": "135464059157160",
+      "effectiveGasPrice": "28525",
+      "cost": "3864112287457989000",
+      "vaultNonce": "5",
+      "commitment": "0x636ef291c881c6839ace1d82bfb896a8f8c5322154c31d7e9cde9142e540beb9",
+      "slot": "0x2b232c97452f0950c94e2539fdc7e69d21166113cf7a9bcb99b220a3fe5d720a"
     }
   ],
   "committeeFunding": [
@@ -470,6 +575,268 @@
         "ok": true,
         "why": "the same burn in final block #11983026",
         "at": "2026-10-24T10:09:52.235Z"
+      }
+    },
+    {
+      "status": "released",
+      "trust": "trusted: the committee's 2-of-3 multisig releases on V3; no contract checks the release against the burn",
+      "burn": {
+        "chainId": "84532",
+        "minter": "0xdc31a3bc1354545eeb985aad7b2aa662e9272348",
+        "burnNonce": "0",
+        "burnId": "0x6ae40d53f7c3d1156db402387484ed10011948fca8a2dfedd2b25eabbedb6d8d",
+        "from": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "v3Recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "amount": "100000000000",
+        "txHash": "0xaffaf9e0f464552686c3478cb4ffb3b822accb98b656cbd2053579de70eefd2e",
+        "block": 51177673,
+        "blockHash": "0xbf79747c9ffc51588ef44efe4036c233f75a31306f45d6735577f46084a740ea"
+      },
+      "vault": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+      "payee": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "amountNative": "100000000000",
+      "value": "1000000000000000",
+      "call": {
+        "hex": "0x5001a02ee16eb03d2cf1aef199f7658fb8c8e3188ffd000300105e5f82a903000f00fcbc327a66019101f5b16b846ae40d53f7c3d1156db402387484ed10011948fca8a2dfedd2b25eabbedb6d8d000000000000000000000000d9838a86cf83c28ee486544060d1ca4ca2971071000000000000000000000000000000000000000000000000000000174876e800",
+        "hash": "0xe2ce3541a7bf6addb648a0637e35caa03d114c46ebb2c3b230134b6bfe0f25f1",
+        "weightLimit": {
+          "refTime": "1600000000",
+          "proofSize": "60000"
+        },
+        "storageDepositLimit": "394150000000000",
+        "weight": {
+          "refTime": "2106623000",
+          "proofSize": "67725"
+        }
+      },
+      "dryRun": {
+        "block": 227756,
+        "refTime": "782299332",
+        "proofSize": "26093",
+        "storageDeposit": "384150000000000",
+        "maxStorageDeposit": "384150000000000"
+      },
+      "multisig": {
+        "account": "5FTrjzEPPdxo3WP1RcQGTzUX1y1udD7tAkaETV1iLH24xPk3",
+        "threshold": 2,
+        "timepoint": {
+          "height": 227761,
+          "index": 1
+        },
+        "depositor": "5DLnLMAsR3kkHnHndC4eRWhMFXPjCU8bGiSugCjUmGJaBism",
+        "deposit": "927000000000000"
+      },
+      "approvals": [
+        {
+          "member": 1,
+          "account": "5DLnLMAsR3kkHnHndC4eRWhMFXPjCU8bGiSugCjUmGJaBism",
+          "action": "open",
+          "timepoint": null,
+          "maxWeight": {
+            "refTime": "2106623000",
+            "proofSize": "67725"
+          },
+          "nonce": 2,
+          "extrinsicHash": "0x0e99ca5bf64e634083697cf9c95f50a459f3ca8754cc44dd50c5f1bfb42a22eb",
+          "signedAt": "2026-10-28T05:29:08.406Z",
+          "submittedAfter": 227756,
+          "status": "final",
+          "block": {
+            "number": 227761,
+            "hash": "0xb3697d5ca9ed671ba4949b0659d6bb874db00ee48029ad52e8d4d1f1fec0522b",
+            "index": 1
+          },
+          "fee": "3280474798969",
+          "events": [
+            "balances.Withdraw",
+            "balances.Reserved",
+            "multisig.NewMultisig",
+            "balances.Deposit",
+            "balances.Deposit",
+            "transactionPayment.TransactionFeePaid",
+            "system.ExtrinsicSuccess"
+          ]
+        },
+        {
+          "member": 2,
+          "account": "5F99Y91UgQ4EDTubPWWPvWKc3ghhVA77nc7HjRhsTyXn38z9",
+          "action": "execute",
+          "timepoint": {
+            "height": 227761,
+            "index": 1
+          },
+          "maxWeight": {
+            "refTime": "2106623000",
+            "proofSize": "67725"
+          },
+          "nonce": 2,
+          "extrinsicHash": "0x0bfe3286b122b82124fcd2be8153b921afe162180c06bb98e30680d65b59b52f",
+          "signedAt": "2026-10-28T05:29:35.864Z",
+          "submittedAfter": 227761,
+          "status": "final",
+          "block": {
+            "number": 227765,
+            "hash": "0x09aa98110e614e17a5d4b8c5656002166833e90b3ac567970489fca09bcea08e",
+            "index": 1
+          },
+          "fee": "3361305960574",
+          "events": [
+            "balances.Withdraw",
+            "balances.Unreserved",
+            "balances.Transfer",
+            "revive.ContractEmitted",
+            "balances.TransferAndHold",
+            "multisig.MultisigExecuted",
+            "balances.Deposit",
+            "balances.Deposit",
+            "transactionPayment.TransactionFeePaid",
+            "system.ExtrinsicSuccess"
+          ],
+          "result": "Ok"
+        }
+      ],
+      "note": "git 9fa74ae100d3488891820d74a36896b6d311e2bf",
+      "by": "finality",
+      "released": {
+        "block": {
+          "number": 227765,
+          "hash": "0x09aa98110e614e17a5d4b8c5656002166833e90b3ac567970489fca09bcea08e"
+        },
+        "outstandingAfter": "141200000000000",
+        "payeeCredited": "100000000000",
+        "payeeReceived": "1000000000000000",
+        "releasedLog": "not served"
+      }
+    },
+    {
+      "status": "released",
+      "trust": "trusted: the committee's 2-of-3 multisig releases on V3; no contract checks the release against the burn",
+      "burn": {
+        "chainId": "421614",
+        "minter": "0xdc31a3bc1354545eeb985aad7b2aa662e9272348",
+        "burnNonce": "0",
+        "burnId": "0x9890de419e811a71bd9e8f16963d616b7f746ec284d8ce03813d2508cfe80522",
+        "from": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "v3Recipient": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+        "amount": "100000000000",
+        "txHash": "0xc2ec4b933efeeabb01414348c0b430d084fc3ddec40ee2fe765adeb381f48cb8",
+        "block": 323549062,
+        "blockHash": "0x68ef66143cf4a348055320629b5068addcaf5bd91fbaa1b7ed21bfaedf292059"
+      },
+      "vault": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+      "payee": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "amountNative": "100000000000",
+      "value": "1000000000000000",
+      "call": {
+        "hex": "0x5001a02ee16eb03d2cf1aef199f7658fb8c8e3188ffd000300105e5f82a903000f00fcbc327a66019101f5b16b849890de419e811a71bd9e8f16963d616b7f746ec284d8ce03813d2508cfe80522000000000000000000000000d9838a86cf83c28ee486544060d1ca4ca2971071000000000000000000000000000000000000000000000000000000174876e800",
+        "hash": "0xf3c921503e96f8e8e0acc8726956bf5fbb6a5484671437570e1607ae77a13855",
+        "weightLimit": {
+          "refTime": "1600000000",
+          "proofSize": "60000"
+        },
+        "storageDepositLimit": "394150000000000",
+        "weight": {
+          "refTime": "2106623000",
+          "proofSize": "67725"
+        }
+      },
+      "dryRun": {
+        "block": 227767,
+        "refTime": "782299332",
+        "proofSize": "26093",
+        "storageDeposit": "384150000000000",
+        "maxStorageDeposit": "384150000000000"
+      },
+      "multisig": {
+        "account": "5FTrjzEPPdxo3WP1RcQGTzUX1y1udD7tAkaETV1iLH24xPk3",
+        "threshold": 2,
+        "timepoint": {
+          "height": 227772,
+          "index": 1
+        },
+        "depositor": "5DLnLMAsR3kkHnHndC4eRWhMFXPjCU8bGiSugCjUmGJaBism",
+        "deposit": "927000000000000"
+      },
+      "approvals": [
+        {
+          "member": 1,
+          "account": "5DLnLMAsR3kkHnHndC4eRWhMFXPjCU8bGiSugCjUmGJaBism",
+          "action": "open",
+          "timepoint": null,
+          "maxWeight": {
+            "refTime": "2106623000",
+            "proofSize": "67725"
+          },
+          "nonce": 3,
+          "extrinsicHash": "0x48221e335a49bf82c6cad5b7b9572d341239438cc47ef942096ae9c3a5b20197",
+          "signedAt": "2026-10-28T05:30:14.694Z",
+          "submittedAfter": 227767,
+          "status": "final",
+          "block": {
+            "number": 227772,
+            "hash": "0x20962e2a5ca5364d0aa629310c4810433d9339b06a82ab89fc2612b6a41f19e1",
+            "index": 1
+          },
+          "fee": "3280474788892",
+          "events": [
+            "balances.Withdraw",
+            "balances.Reserved",
+            "multisig.NewMultisig",
+            "balances.Deposit",
+            "balances.Deposit",
+            "transactionPayment.TransactionFeePaid",
+            "system.ExtrinsicSuccess"
+          ]
+        },
+        {
+          "member": 2,
+          "account": "5F99Y91UgQ4EDTubPWWPvWKc3ghhVA77nc7HjRhsTyXn38z9",
+          "action": "execute",
+          "timepoint": {
+            "height": 227772,
+            "index": 1
+          },
+          "maxWeight": {
+            "refTime": "2106623000",
+            "proofSize": "67725"
+          },
+          "nonce": 3,
+          "extrinsicHash": "0x9ed92cde1621596f9ed50bb129649f67d31fc859b3a2b65fa842706397910c9f",
+          "signedAt": "2026-10-28T05:30:43.607Z",
+          "submittedAfter": 227772,
+          "status": "final",
+          "block": {
+            "number": 227777,
+            "hash": "0x202677ea2274bb1662716ce3ae21a53a01a29972449066a134aafb3d0f49c967",
+            "index": 1
+          },
+          "fee": "3361305924659",
+          "events": [
+            "balances.Withdraw",
+            "balances.Unreserved",
+            "balances.Transfer",
+            "revive.ContractEmitted",
+            "balances.TransferAndHold",
+            "multisig.MultisigExecuted",
+            "balances.Deposit",
+            "balances.Deposit",
+            "transactionPayment.TransactionFeePaid",
+            "system.ExtrinsicSuccess"
+          ],
+          "result": "Ok"
+        }
+      ],
+      "note": "git 9fa74ae100d3488891820d74a36896b6d311e2bf",
+      "by": "finality",
+      "released": {
+        "block": {
+          "number": 227777,
+          "hash": "0x202677ea2274bb1662716ce3ae21a53a01a29972449066a134aafb3d0f49c967"
+        },
+        "outstandingAfter": "141100000000000",
+        "payeeCredited": "100000000000",
+        "payeeReceived": "1000000000000000",
+        "releasedLog": "not served"
       }
     }
   ]

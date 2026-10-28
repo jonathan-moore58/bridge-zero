@@ -3,7 +3,9 @@
 // on top of it up to --fast-cap), what the committee does next for it (open the operation, run it,
 // nothing, or leave it to the members), one round of the watcher over the burns through ports
 // release.ts fills with the chains, the lock that lets one watcher run per committee, and the wait
-// between rounds. release.ts and watch.test.ts use it.
+// between rounds. A burn on a rollup (Base Sepolia, Arbitrum Sepolia) qualifies the same way, by
+// that chain's finality and confirmations (wayback.ts has each chain's rule), and a round reads one
+// chain's burns. release.ts and watch.test.ts use it.
 
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
@@ -49,9 +51,9 @@ export function parseConfirmations(text: string): number {
   return n;
 }
 
-/** The trade-off fast mode makes, printed every time it is on. */
-export const tradeOff = (confirmations: number) =>
-  `fast mode: the committee releases before Sepolia finalizes this burn; a reorg deeper than ${confirmations} block${confirmations === 1 ? "" : "s"} could undo the burn after the release`;
+/** The trade-off fast mode makes, printed every time it is on; `title` is the burn's chain (wayback.ts), Sepolia by default. */
+export const tradeOff = (confirmations: number, title = "Sepolia") =>
+  `fast mode: the committee releases before ${title} finalizes this burn; a reorg deeper than ${confirmations} block${confirmations === 1 ? "" : "s"} could undo the burn after the release`;
 
 export interface Heads {
   /** Sepolia's latest block and its finalized block. */
@@ -77,16 +79,18 @@ export type Qualification = { ok: true; by: "finality" | "fast"; why: string } |
  * fast mode when it has at least `confirmations` blocks on top of it (its block is at most the
  * latest minus confirmations), its amount is at most the cap, and with the burns released fast
  * whose blocks are not final yet, or (with --send) not checked against Sepolia's final chain yet
- * (`exposed`, in all), it stays within the budget.
+ * (`exposed`, in all), it stays within the budget. `finalChain` names what a fast release is checked
+ * against in the message: Sepolia's final chain by default, every chain's when the budget counts
+ * several (wayback.ts).
  */
-export function qualification(burn: { block: number; amount: bigint }, heads: Heads, rule: Rule, exposed = 0n): Qualification {
+export function qualification(burn: { block: number; amount: bigint }, heads: Heads, rule: Rule, exposed = 0n, finalChain = "Sepolia's final chain"): Qualification {
   if (burn.block <= heads.finalized) return { ok: true, by: "finality", why: `its block #${burn.block} is final (finalized #${heads.finalized})` };
   if (rule.confirmations === null) return { ok: false, why: `its block #${burn.block} is not final yet (finalized #${heads.finalized}): the committee releases a burn once it is final` };
   if (burn.amount > rule.fastCap) return { ok: false, why: `its amount is above the fast cap (${burn.amount} > ${rule.fastCap} base units): it waits for finality (its block #${burn.block}, finalized #${heads.finalized})` };
   if (exposed + burn.amount > rule.fastBudget) {
     return {
       ok: false,
-      why: `the burns released fast and not final, or not checked against Sepolia's final chain, yet hold ${exposed} base units; with its ${burn.amount} that is above the fast budget of ${rule.fastBudget}: it waits for finality (its block #${burn.block}, finalized #${heads.finalized})`,
+      why: `the burns released fast and not final, or not checked against ${finalChain}, yet hold ${exposed} base units; with its ${burn.amount} that is above the fast budget of ${rule.fastBudget}: it waits for finality (its block #${burn.block}, finalized #${heads.finalized})`,
     };
   }
   const depth = heads.latest - burn.block;
@@ -137,6 +141,13 @@ export interface BurnState {
   released: boolean;
   op: OpenOperation | null;
   rounds: RecordedRound[];
+  /**
+   * Set when nothing is open for this burn and the member who would open it cannot: its deposit is
+   * reserved by another chain's release, opened and not run yet, which that chain's round runs
+   * first, and what it holds free does not cover another deposit (release.ts burnStateOf says which
+   * release). The opening waits instead of being refused round after round.
+   */
+  openerBusy?: string;
 }
 
 export type Next =
@@ -177,6 +188,7 @@ export function nextStep(s: BurnState, keyed: number[], threshold: number): Next
     return { kind: "hold", why: "the record has its operation open, and multisig.multisigs does not: the members look at it" };
   }
   if (keyed.length === 0) return { kind: "wait", why: "the watcher holds no member's key" };
+  if (s.openerBusy) return { kind: "wait", why: s.openerBusy };
   return { kind: "open", member: keyed[0], why: `nothing is open: member ${keyed[0]} opens it` };
 }
 
@@ -394,11 +406,14 @@ export const V3_RECORD = "deployments/v3-testnet.json";
 /** What a member adds to a fatal finding the record holds (the approval, or the release's finalizedCheck), once they have looked at it. */
 export const ACKNOWLEDGED = `"acknowledged": "<who, when, what you found>"`;
 
-/** A release round as the record has it, for recordedStop: its burn, its approvals and, for a fast release, its check against Sepolia's final chain. */
+/** A release round as the record has it, for recordedStop: its burn, its approvals and, for a fast release, its check against its chain's final chain. */
 export interface RecordedFindings {
+  /** The burn as messages and the halt file name it: its nonce on Sepolia, "<nonce> on <chain>" on a rollup (wayback.ts burnLabel). */
   burn: string;
   approvals: { member: number; action: string; extrinsicHash: string; status: string; block: { number: number } | null; acknowledged?: string }[];
   finalizedCheck?: { ok: boolean; why?: string; acknowledged?: string };
+  /** The burn's chain, whose final chain a fast release is checked against: Sepolia when absent. */
+  chain?: string;
 }
 
 const acknowledged = (x: { acknowledged?: string }): boolean => typeof x.acknowledged === "string" && x.acknowledged.trim() !== "";
@@ -406,10 +421,11 @@ const acknowledged = (x: { acknowledged?: string }): boolean => typeof x.acknowl
 /**
  * The first fatal finding the record holds that no member acknowledged (by hand, in the record: the
  * approval's or the finalizedCheck's acknowledged, who, when and what they found): an approval that
- * ran on chain (in a block) and failed its checks, or a fast release whose check against Sepolia's
- * final chain failed. Each run leaves the halt file before the record holds such a finding; this
- * finds one whose halt file is not there (the process died before it could write it, or it could
- * not be written), so that the watcher with --send stops on the record too. Null when there is none.
+ * ran on chain (in a block) and failed its checks, or a fast release whose check against its burn's
+ * chain's final chain (Sepolia's, or the rollup's: `chain`) failed. Each run leaves the halt file
+ * before the record holds such a finding; this finds one whose halt file is not there (the process
+ * died before it could write it, or it could not be written), so that the watcher with --send stops
+ * on the record too. Null when there is none.
  */
 export function recordedStop(rounds: RecordedFindings[]): FatalStop | null {
   for (const r of rounds) {
@@ -424,7 +440,7 @@ export function recordedStop(rounds: RecordedFindings[]): FatalStop | null {
     if (r.finalizedCheck?.ok === false && !acknowledged(r.finalizedCheck)) {
       const executed = r.approvals.filter((a) => a.action === "execute" && a.block !== null).at(-1);
       return {
-        why: `the record holds the release of burn ${r.burn}, made in fast mode, as failing its check against Sepolia's final chain${r.finalizedCheck.why ? ` (${r.finalizedCheck.why})` : ""}, and no member has acknowledged it (finalizedCheck.acknowledged)`,
+        why: `the record holds the release of burn ${r.burn}, made in fast mode, as failing its check against ${r.chain ?? "Sepolia"}'s final chain${r.finalizedCheck.why ? ` (${r.finalizedCheck.why})` : ""}, and no member has acknowledged it (finalizedCheck.acknowledged)`,
         burn: r.burn,
         extrinsicHash: executed?.extrinsicHash ?? null,
       };
@@ -517,9 +533,12 @@ export interface Ports<B extends SeenBurn = SeenBurn> {
   burns(): Promise<B[]>;
   /**
    * The releases the record has made in fast mode: each burn's amount and block, and whether its
-   * check against Sepolia's final chain passed (finalizedCheck).
+   * check against Sepolia's final chain passed (finalizedCheck). One vault and one committee serve
+   * every chain, so the fast budget counts every chain's (wayback.ts fastReleasesOf): a release of
+   * a burn on another chain than the round's carries `final`, whether its block is final there,
+   * which the round's finalized head cannot tell.
    */
-  fastReleases(): Promise<{ amount: bigint; block: number; checked: boolean }[]>;
+  fastReleases(): Promise<{ amount: bigint; block: number; checked: boolean; final?: boolean }[]>;
   /**
    * Checks each release made in fast mode whose burn's block is final now, and not checked yet,
    * against BurnRequested(n) on the final chain (reconcileVerdict), and records it; fatal on a
@@ -589,9 +608,20 @@ const STEPS = 2;
  * ends there while one is on its way); then, for each burn since the last one handled, in order, nothing when it is
  * released; a wait while it does not qualify; else the committee's next step, run through the tool
  * (every check first), then the next one, until it is released, refused, or left to the members.
- * Without `send` each burn's next approval is dry-run, and nothing more.
+ * Without `send` each burn's next approval is dry-run, and nothing more. `title` is the chain whose
+ * burns the round reads (Sepolia by default), and `finalChain` what qualification's message says a
+ * fast release is checked against (Sepolia's final chain by default; every chain's when the budget
+ * counts several). `label` names a burn in the lines and in a fatal stop (the halt file's burn): its
+ * nonce by default, as on Sepolia; "<nonce> on <chain>" on a rollup (wayback.ts burnLabel), as every
+ * chain has a burn 0.
  */
-export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o: { send: boolean; keyed: number[]; threshold: number }): Promise<RoundResult> {
+export async function watchRound<B extends SeenBurn>(
+  p: Ports<B>,
+  rule: Rule,
+  o: { send: boolean; keyed: number[]; threshold: number; title?: string; finalChain?: string; label?: (nonce: bigint) => string },
+): Promise<RoundResult> {
+  const title = o.title ?? "Sepolia";
+  const label = o.label ?? ((nonce: bigint) => String(nonce));
   const r: RoundResult = { released: 0, waiting: 0, refused: 0, held: 0, planned: 0, pending: false, fatal: null, halted: null };
   r.halted = p.halted();
   if (r.halted) return r;
@@ -606,9 +636,9 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
     return r;
   }
   const heads = await p.heads();
-  p.log(`Sepolia: latest #${heads.latest}, finalized #${heads.finalized}`);
+  p.log(`${title}: latest #${heads.latest}, finalized #${heads.finalized}`);
   const reconciled = await p.reconcile(heads);
-  if (reconciled.checked > 0) p.log(`${reconciled.checked} release${reconciled.checked === 1 ? "" : "s"} made in fast mode checked against Sepolia's final blocks`);
+  if (reconciled.checked > 0) p.log(`${reconciled.checked} release${reconciled.checked === 1 ? "" : "s"} made in fast mode checked against ${title}'s final blocks`);
   if (reconciled.fatal) {
     r.fatal = reconciled.fatal;
     return r;
@@ -617,16 +647,19 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
   p.log(`${burns.length} burn${burns.length === 1 ? "" : "s"} from the last one handled`);
   // What a reorg could still undo: the burns released fast whose blocks are not final yet, and with
   // --send those final whose check against the final chain has not passed yet (reconcile may defer
-  // it). Without --send no check is recorded, and the block alone counts.
-  let exposed = (await p.fastReleases()).filter((x) => x.block > heads.finalized || (o.send && !x.checked)).reduce((sum, x) => sum + x.amount, 0n);
+  // it). Without --send no check is recorded, and the block alone counts. Another chain's release
+  // says itself whether its block is final there (`final`).
+  let exposed = (await p.fastReleases())
+    .filter((x) => (x.final === undefined ? x.block > heads.finalized : !x.final) || (o.send && !x.checked))
+    .reduce((sum, x) => sum + x.amount, 0n);
   if (rule.confirmations !== null) p.log(`released fast and not final or not checked yet: ${exposed} of the fast budget's ${rule.fastBudget} base units`);
   for (const burn of burns) {
     if (burn.missing !== undefined) {
-      p.log(`burn ${burn.burnNonce}: waits: ${burn.missing}`);
+      p.log(`burn ${label(burn.burnNonce)}: waits: ${burn.missing}`);
       r.waiting += 1;
       continue;
     }
-    const name = `burn ${burn.burnNonce} (${burn.amountText ?? `${burn.amount} base units`} for ${burn.payee}, #${burn.block})`;
+    const name = `burn ${label(burn.burnNonce)} (${burn.amountText ?? `${burn.amount} base units`} for ${burn.payee}, #${burn.block})`;
     // A burn held for the members keeps the cursor at its nonce: the burns after it that the record
     // has released are not read on V3 again every round.
     if (burn.releasedInRecord) {
@@ -638,14 +671,14 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
       p.log(`${name}: released already; nothing to do`);
       continue;
     }
-    const q = qualification(burn, heads, rule, exposed);
+    const q = qualification(burn, heads, rule, exposed, o.finalChain);
     if (!q.ok) {
       p.log(`${name}: waits: ${q.why}`);
       r.waiting += 1;
       continue;
     }
     p.log(`${name}: qualifies: ${q.why}`);
-    if (q.by === "fast") p.log(`     ${tradeOff(rule.confirmations!)}`);
+    if (q.by === "fast") p.log(`     ${tradeOff(rule.confirmations!, title)}`);
     for (let i = 0; ; i++) {
       const next = nextStep(state, o.keyed, o.threshold);
       if (next.kind === "done") {
@@ -663,7 +696,7 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
         break;
       }
       if (i === STEPS) {
-        r.fatal = { why: `${name}: still not released after ${STEPS} approvals in one round`, burn: String(burn.burnNonce), extrinsicHash: null };
+        r.fatal = { why: `${name}: still not released after ${STEPS} approvals in one round`, burn: label(burn.burnNonce), extrinsicHash: null };
         return r;
       }
       // A fatal stop another process left since the round started signs nothing more either.
@@ -687,7 +720,7 @@ export async function watchRound<B extends SeenBurn>(p: Ports<B>, rule: Rule, o:
         return r;
       }
       if (out.kind === "failed") {
-        r.fatal = { why: `${name}: member ${next.member}'s approval failed its checks: ${out.why}`, burn: String(burn.burnNonce), extrinsicHash: out.extrinsicHash ?? null };
+        r.fatal = { why: `${name}: member ${next.member}'s approval failed its checks: ${out.why}`, burn: label(burn.burnNonce), extrinsicHash: out.extrinsicHash ?? null };
         return r;
       }
       if (!o.send) {

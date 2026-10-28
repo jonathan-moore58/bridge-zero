@@ -12,6 +12,9 @@
 //     root is in the main trie under ":child_storage:default:" ++ trie id (hash.ts, childRootKey).
 //   - A 32-byte storage key K, such as an EVM slot, is stored in that child trie under
 //     blake2_256(K); the value is the stored bytes.
+//   - Revive.OriginalAccount maps a 20-byte address (Identity hasher) to the AccountId32 mapped to
+//     it: a Substrate account's address is keccak-256 of its id, last 20 bytes (V3's AutoMap maps
+//     each account when it is created), and this is the way back.
 //   - Revive.BlockHash maps a block number (u32, Identity hasher) to the hash of the Ethereum
 //     block the runtime builds for that block. An eth-rpc that serves those blocks reports this
 //     hash, not the Substrate one; the block's parent hash is Revive.BlockHash of the block
@@ -28,6 +31,8 @@ export const REVIVE_ACCOUNT_INFO_PREFIX = storageKey("Revive", "AccountInfoOf");
 export const REVIVE_CODE_INFO_PREFIX = storageKey("Revive", "CodeInfoOf");
 /** twox128("Revive") ++ twox128("BlockHash"). */
 export const REVIVE_BLOCK_HASH_PREFIX = storageKey("Revive", "BlockHash");
+/** twox128("Revive") ++ twox128("OriginalAccount"). */
+export const REVIVE_ORIGINAL_ACCOUNT_PREFIX = storageKey("Revive", "OriginalAccount");
 
 /** Revive.AccountInfoOf(address): prefix ‖ address (Identity hasher), 52 bytes. */
 export function reviveAccountInfoKey(address: Uint8Array): Uint8Array {
@@ -39,6 +44,12 @@ export function reviveAccountInfoKey(address: Uint8Array): Uint8Array {
 export function reviveCodeInfoKey(codeHash: Uint8Array): Uint8Array {
   if (codeHash.length !== 32) throw new Error(`code hash must be 32 bytes, got ${codeHash.length}`);
   return concatBytes(REVIVE_CODE_INFO_PREFIX, codeHash);
+}
+
+/** Revive.OriginalAccount(address): prefix ‖ address (Identity hasher), 52 bytes; its value is the 32-byte account id. */
+export function reviveOriginalAccountKey(address: Uint8Array): Uint8Array {
+  if (address.length !== 20) throw new Error(`address must be 20 bytes, got ${address.length}`);
+  return concatBytes(REVIVE_ORIGINAL_ACCOUNT_PREFIX, address);
 }
 
 /** Revive.BlockHash(number): prefix ‖ u32le(number) (Identity hasher), 36 bytes. */

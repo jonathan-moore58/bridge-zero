@@ -1,7 +1,8 @@
 // PortaldotVault (contracts/src/bridge/PortaldotVault.sol) computed off chain the way the contract
 // computes it: the lock commitment and the burn id, the calldata and events, the storage slots a
-// minter proves, the addresses pallet-revive and pallet-multisig derive, and the V3 build's code
-// with its immutables. No network access: v3-vault.ts and vault.test.ts use it.
+// minter proves, the addresses pallet-revive and pallet-multisig derive (and the recipients a lock
+// must not name), the destination a bridge record names, and the V3 build's code with its
+// immutables. No network access: v3-vault.ts and vault.test.ts use it.
 
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex, concatBytes, equalBytes, hexToBytes, utf8, type Hex } from "./bytes.js";
@@ -297,6 +298,23 @@ export function reviveAddress(accountId: Uint8Array): Uint8Array {
 export const ethAccountId = (address: Uint8Array): Uint8Array => concatBytes(address, ETH_DERIVED_SUFFIX);
 
 /**
+ * Why a lock must not name `recipient`, or null. The address V3 gives a Substrate account is a hash
+ * of its id (reviveAddress), which no Ethereum key matches: wtPOT minted there could never move or
+ * be burned, so the tPOT locked for it would never come back. `original` names the account
+ * revive.originalAccount maps the recipient to (null: none); `sender` is the locking Substrate
+ * account's id (null for an EVM lock), whose own address is such a hash before it is mapped, unless
+ * the account stands for an Ethereum address (its last 12 bytes are 0xEE).
+ */
+export function recipientProblem(recipient: Uint8Array, original: string | null, sender: Uint8Array | null): string | null {
+  const stuck = "no Ethereum key holds it, so wtPOT minted there could never move or be burned, and the tPOT locked for it would never come back";
+  if (original !== null) return `the recipient ${checksumAddress(recipient)} is the address V3 gives the Substrate account ${original} (revive.originalAccount): ${stuck}`;
+  if (sender !== null && !equalBytes(sender.subarray(20), ETH_DERIVED_SUFFIX) && equalBytes(reviveAddress(sender), recipient)) {
+    return `the recipient ${checksumAddress(recipient)} is the locking Substrate account's own address on V3 (keccak-256 of its account id): ${stuck}`;
+  }
+  return null;
+}
+
+/**
  * pallet-multisig's account of `members` (in any order; the pallet sorts them) and `threshold`:
  * blake2_256("modlpy/utilisuba" ++ SCALE(sorted members) ++ u16le(threshold)).
  */
@@ -310,6 +328,36 @@ export function multisigAccountId(members: Uint8Array[], threshold: number): Uin
   return blake2_256(
     concatBytes(utf8("modlpy/utilisuba"), encodeCompact(sorted.length), ...sorted.map((m) => hexToBytes(m)), Uint8Array.of(threshold & 0xff, threshold >> 8)),
   );
+}
+
+// ---------------------------------------------------------------------------------------
+// A lock's destination (deployments/<chain>-bridge.json)
+
+/** Where a lock can be minted: a chain and the BridgeMinter there that proves the vault's locks. */
+export interface Destination {
+  chainId: bigint;
+  minter: Uint8Array;
+}
+
+const chainIdOf = (v: unknown, what: string): bigint => {
+  if (!(typeof v === "number" && Number.isSafeInteger(v) && v > 0) && !(typeof v === "string" && /^[1-9]\d*$/.test(v))) throw new Error(`${what} is not a chain id`);
+  return BigInt(v);
+};
+
+/**
+ * The destination a bridge record (deployments/<chain>-bridge.json) names for `vault` on the V3 chain
+ * `v3ChainId`: its chainId and contracts.BridgeMinter; null when it records a minter for another
+ * vault. Throws when the record does not have that shape. A lock commits to its destination, which
+ * only that minter can prove, and the vault never gives a lock back.
+ */
+export function bridgeDestination(json: unknown, vault: Uint8Array, v3ChainId: bigint): Destination | null {
+  if (typeof json !== "object" || json === null || Array.isArray(json)) throw new Error("not a JSON object");
+  const r = json as { chainId?: unknown; contracts?: { BridgeMinter?: unknown } | null; vault?: { address?: unknown; chainId?: unknown } | null };
+  if (typeof r.vault?.address !== "string") throw new Error("no vault.address");
+  const theirs = parseAddress(r.vault.address, "vault.address");
+  if (!equalBytes(theirs, vault) || chainIdOf(r.vault.chainId, "vault.chainId") !== v3ChainId) return null;
+  if (typeof r.contracts?.BridgeMinter !== "string") throw new Error("no contracts.BridgeMinter");
+  return { chainId: chainIdOf(r.chainId, "chainId"), minter: parseAddress(r.contracts.BridgeMinter, "contracts.BridgeMinter") };
 }
 
 // ---------------------------------------------------------------------------------------

@@ -6,8 +6,9 @@
 //
 //   npm run automint [-- --watch <seconds>] [--grace <seconds>] [--from <V3 block>] [--sender <address>] [--rehearse <nonce>]
 //   npm run automint -- --send --account <keystore> --password-file <path> [--watch <seconds>] [--grace <seconds>] [--keep <eth>] [--from <V3 block>] [--retry <nonce>]
-//   more options: --state-dir <path> (default ~/.bridge-zero), --rpc <wss url> (the V3 node), --evm <http(s) url> (its EVM RPC),
-//   --grace <seconds> (default 90), --replace-after <minutes> (default 10), --min-amount <tPOT> (default 0.01),
+//   more options: --network sepolia|base-sepolia|arbitrum-sepolia[,...] (default sepolia; below),
+//   --state-dir <path> (default ~/.bridge-zero), --rpc <wss url> (the V3 node), --evm <http(s) url> (its EVM RPC),
+//   --grace <seconds> (default 90), --replace-after <minutes> (default 10), --min-amount <tPOT> (default 0.001),
 //   --max-spend <eth> a day (default 0.02), --priority-fee <gwei>, --max-fee <gwei>, --max-base-fee <gwei> (default 1.5)
 //
 // A round:
@@ -21,9 +22,19 @@
 // 2. Reads the vault's Locked events on V3's EVM RPC with eth_getLogs, in windows of 10,000 blocks,
 //    from the state's next block (less 64 blocks, read again in case the RPC's index lagged) up to
 //    the RPC's finalized block, and checks the vault's nextNonce at that block against the locks in
-//    the state: one the scan missed is looked up by its nonce and taken in, with a WARN. A lock for
-//    another destination chain or minter, or whose commitment is not the one its fields give, is
-//    recorded as skipped and never minted.
+//    the state. A nonce the state lacks is looked up: first its Locked log by eth_getLogs (one the
+//    scan missed as the RPC's index lagged is taken in, with a WARN), else in System.Events
+//    (substrate-locks.ts): a lock sent as a Substrate extrinsic (revive.call from a 5... account, as
+//    the app's Portaldot Wallet path sends it) emits its Locked event only as Revive.ContractEmitted,
+//    which eth_getLogs never returns. That lookup finds the block where the vault's nextNonce passed
+//    the nonce (a binary search over the node's old state), decodes the vault's Locked event there,
+//    checks it against commitments(nonce), and the lock is taken in as the EVM logs' parser reads
+//    it (via "System.Events"). Both sources give a lock by its nonce, which keys the state: a lock
+//    is taken in once, whichever source finds it, and used(nonce), the history and the minter stop
+//    a second mint anyway. At most MAX_LOOKUPS_PER_ROUND nonces are looked up in a round, each
+//    within TIMEOUTS.lookupMs and with its requests paced. A lock for another destination chain or
+//    minter, or whose commitment is not the one its fields give, is recorded as skipped and never
+//    minted.
 // 3. For each lock not minted yet, in nonce order: used(nonce) on Sepolia (true: minted, by whoever
 //    sent it); --min-amount (a lock below it is skipped: dust costs its locker nearly nothing, and
 //    its locker mints it from the app); V3's finality of its block, by the V3 node the proofs come
@@ -75,8 +86,9 @@
 //
 // Timeouts: every request has one, so no hung request stalls the loop: Sepolia 15 s a request
 // (SEPOLIA_RPC_URL when set, else publicnode, then tenderly, each tried twice), V3's EVM RPC 20 s
-// (twice), the V3 node 15 s to connect and 30 s a request, a captureBundle 4 minutes in all, each
-// cast 2 minutes, the receipt 5 minutes.
+// (twice), the V3 node 15 s to connect and 30 s a request (at most 10 a second in a lookup), a
+// lookup in System.Events 3 minutes in all, a captureBundle 4 minutes in all, each cast 2 minutes,
+// the receipt 5 minutes.
 //
 // Without --send nothing is signed, --account and --password-file are refused, and every RPC client
 // of this process refuses eth_send*, eth_sign*, personal_* and author_submit* (bridge.ts
@@ -91,6 +103,34 @@
 // starts <seconds> after the one before ends (twice as long after each round a node could not be
 // reached, up to 10 minutes); only a Fatal ends it: a lost lock, a record that cannot be written, a
 // refused key, or cast unable to sign.
+//
+// --network sepolia (the default, and everything above as written) | base-sepolia | arbitrum-sepolia,
+// or several, comma separated (--network sepolia,base-sepolia,arbitrum-sepolia): one process serves
+// each network's BridgeMinter in turn, a round for one network after the other, each with its own
+// records (deployments/<network>-bridge.json, the minter, its token and the light client it takes),
+// RPCs (contracts/script/lib/sepolia.mjs NETWORKS: <NETWORK>_RPC_URL when set, then its public
+// ones), state, history and locks (automint-<network>-<sender>.*, and
+// automint-<network>-minter-<minter>.lock, as the rollups share one minter address), scan start
+// (V3 #222,500 on the rollups, below the minters there) and wait (a round that could not reach a node
+// backs off that network alone). Where "Sepolia" stands above, read that network. --keep,
+// --max-spend and --max-base-fee take one value for every network, or <network>=<value> pairs,
+// comma separated; a network left out takes its default (--keep 0.05 ETH and --max-spend 0.02 ETH
+// on Sepolia, 0.0002 and 0.002 on a rollup). --retry and --rehearse take one network.
+// What a rollup adds: its minter may not be bound to the vault yet (a mint before the bind reverts
+// VaultNotBound()), so its first mint goes by the head path, whose importAndMint carries the vault's
+// account proof and binds it in the same transaction (lock 0's mint on Sepolia did, README row 32);
+// mint(p) at a held header cannot bind, so while the minter is not bound a lock waits for the head
+// path. And the L1 part of each transaction (l1.ts): on Arbitrum, L1 gas units at the L2 gas price,
+// part of the gas (eth_estimateGas includes them); NodeInterface's estimate of them is printed and
+// added once more to the gas limit, which keeps the execution part within the cap. On Base (OP
+// Stack), an L1 data fee in wei besides the gas: GasPriceOracle's upper bound of it counts in the
+// balance a send needs and in --max-spend, and each mined transaction's l1Fee in what was spent.
+// And a hold: a rollup's lock whose send (or a dry run's) waited for what it costs (the next base fee
+// above --max-base-fee, --max-spend reached, or the sender's balance short) is not planned again for
+// 5 minutes (HOLD_MS), or until the sender's balance rises or the base fee is back within the gate,
+// so that no bundle is captured every round only to wait again (one process serves every network,
+// and such a round slows the others'). Sepolia's locks are planned every round, as before.
+//
 // automint-main.ts runs it (npm run automint); automint.test.ts tests it.
 
 import { spawnSync } from "node:child_process";
@@ -101,7 +141,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { keccak_256 } from "@noble/hashes/sha3.js";
-import { eth, fmt, keystoreAddress, mktxArgs, parseGwei, qty, redact, redactAlso, sleep, type Fees, type Receipt } from "../../contracts/script/lib/sepolia.mjs";
+import { eth, fmt, keystoreAddress, mktxArgs, NETWORKS, parseGwei, qty, redact, redactAlso, sleep, type Fees, type NetworkName, type Receipt } from "../../contracts/script/lib/sepolia.mjs";
 import {
   addressAt,
   BRIDGE_ERRORS,
@@ -120,7 +160,6 @@ import {
   MINTER,
   mintCalldata,
   revertName,
-  SEPOLIA_CHAIN_ID,
   uintAt,
   V3_CHAIN_ID,
   wordAt,
@@ -130,10 +169,12 @@ import { bytesToHex, equalBytes, hexToBytes, shortHex, type Hex } from "./bytes.
 import { Chain, childItems } from "./chain.js";
 import type { MintBundleFixture } from "./fixture.js";
 import { childRootKey, storageKey } from "./hash.js";
+import { L1_KIND, l1Request, limitWithL1, NO_L1, receiptL1Fee, type L1Cost, type L1Kind } from "./l1.js";
 import { captureBundle } from "./mint.js";
 import { reviveSlotKey } from "./revive.js";
 import { RpcClient, RpcError } from "./rpc.js";
 import { decodeU64 } from "./scale.js";
+import { findSubstrateLock, nodeReads, type FoundLock, type V3Reads } from "./substrate-locks.js";
 import { readProof } from "./trie.js";
 import { checksumAddress, commitmentSlot, decodeLocked, formatTpot, LOCKED_TOPIC, lockCommitment, parseTpot, SLOTS, uintWord, type LockedEvent, type LogJson } from "./vault.js";
 import { LOCK_STALE, takeLock, type Lock } from "./watch.js";
@@ -152,6 +193,15 @@ export const sepoliaRpcs = (env = process.env.SEPOLIA_RPC_URL): string[] => [
   ...new Set([env, "https://ethereum-sepolia-rpc.publicnode.com", "https://sepolia.gateway.tenderly.co"].filter((u): u is string => !!u && URL.canParse(u))),
 ];
 
+/** A network's RPCs, in order: its variable (NETWORKS rpcEnv) when set, then its public ones (Sepolia's are sepoliaRpcs). */
+export const rpcsOf = (network: NetworkName, env = process.env[NETWORKS[network].rpcEnv]): string[] =>
+  network === "sepolia" ? sepoliaRpcs(env) : [...new Set([env, ...NETWORKS[network].rpcs].filter((u): u is string => !!u && URL.canParse(u)))];
+
+/** The networks auto-mint serves, in the order of sepolia.mjs NETWORKS. */
+export const NETWORK_NAMES = Object.keys(NETWORKS) as NetworkName[];
+/** The title of the network with chain id `chainId` ("Sepolia", "Base Sepolia", ...), or "chain <id>". */
+export const titleOf = (chainId: bigint): string => Object.values(NETWORKS).find((x) => x.chainId === chainId)?.title ?? `chain ${chainId}`;
+
 /**
  * Where the first run scans from without --from: V3 block #218,400. On Oct 27, 2026, V3's finalized
  * block was #218,465 (13:56 UTC); the vault's nextNonce was 2, and no Locked log lies between lock
@@ -160,12 +210,20 @@ export const sepoliaRpcs = (env = process.env.SEPOLIA_RPC_URL): string[] => [
  * --from reaches further back.
  */
 export const DEFAULT_START_BLOCK = 218_400;
+/**
+ * Where each network's first run scans from without --from. On Base Sepolia and Arbitrum Sepolia
+ * BridgeMinter was created at about 20:58 UTC on Oct 27, 2026 (V3 #222,6xx; README rows 94 to 97),
+ * and the first lock naming it is lock 4 (V3 #224,435): #222,500 is below both.
+ */
+export const START_BLOCKS: Record<NetworkName, number> = { sepolia: DEFAULT_START_BLOCK, "base-sepolia": 222_500, "arbitrum-sepolia": 222_500 };
 /** Blocks below the state's next block that each round reads again, in case the EVM RPC's log index lagged behind its finalized block. */
 export const SCAN_OVERLAP = 64;
 /** Our transactions for one lock that may be mined without minting it before the lock is left to the operator. */
 export const MAX_FAILED_SENDS = 3;
 /** The most blocks one eth_getLogs asks for (bridge.ts logWindows' default): the scan's and every lookup's windows. */
 export const LOG_WINDOW = 10_000;
+/** The most lookups in System.Events one round makes (each a binary search on the V3 node, for a nonce eth_getLogs has no log of); the nonces after wait for later rounds. */
+export const MAX_LOOKUPS_PER_ROUND = 4;
 /** The window --max-spend counts our mined transactions' cost over. */
 export const SPEND_WINDOW_MS = 24 * 3_600_000;
 /** Every wait is bounded (see the header). */
@@ -174,19 +232,30 @@ export const TIMEOUTS = {
   evmMs: 20_000,
   v3ConnectMs: 15_000,
   v3RequestMs: 30_000,
+  lookupMs: 180_000,
   captureMs: 240_000,
   castMs: 120_000,
   receiptMs: 300_000,
   receiptPollMs: 4_000,
 };
 const DEFAULT_KEEP = "0.05";
+/**
+ * --keep and --max-spend of each network when left out: Sepolia's as before; on a rollup, where a
+ * mint costs about 0.00005 ETH on Arbitrum Sepolia and a quarter of that on Base Sepolia (2.5 M gas
+ * at 0.02 and 0.005 gwei, Oct 28), 0.0002 ETH kept and 0.002 ETH a day.
+ */
+export const NETWORK_DEFAULTS: Record<NetworkName, { keep: string; maxSpend: string }> = {
+  sepolia: { keep: DEFAULT_KEEP, maxSpend: "0.02" },
+  "base-sepolia": { keep: "0.0002", maxSpend: "0.002" },
+  "arbitrum-sepolia": { keep: "0.0002", maxSpend: "0.002" },
+};
 const DEFAULT_MAX_BASE_FEE = "1.5";
 /** --grace: the app still offers its own mint once a lock is final, so a send waits this long for the locker first. */
 const DEFAULT_GRACE = "90";
 /** --replace-after, in minutes: our transaction pending this long is signed again at its nonce, with higher fees. */
 const DEFAULT_REPLACE_AFTER = "10";
 /** --min-amount, in tPOT: a lock below it is not ours to pay for (dust locks cost their locker nearly nothing). */
-const DEFAULT_MIN_AMOUNT = "0.01";
+const DEFAULT_MIN_AMOUNT = "0.001";
 /** --max-spend, in ETH: the most our mined transactions may cost over SPEND_WINDOW_MS. */
 const DEFAULT_MAX_SPEND = "0.02";
 const MAX_REPLACE_AFTER_MINUTES = 1_440;
@@ -512,15 +581,22 @@ export interface Options {
   priorityFee?: bigint;
   maxFee?: bigint;
   maxBaseFee: bigint;
+  /** --network: the networks served, in the order given (Sepolia alone by default). keep, maxSpend and maxBaseFee are the first one's. */
+  networks: NetworkName[];
+  keepBy: Record<NetworkName, bigint>;
+  maxSpendBy: Record<NetworkName, bigint>;
+  maxBaseFeeBy: Record<NetworkName, bigint>;
 }
 
 export const USAGE = `usage (from relayer/):
   npm run automint [-- --watch <seconds>] [--grace <seconds>] [--from <V3 block>] [--sender <address>] [--rehearse <nonce>]
   npm run automint -- --send --account <keystore> --password-file <path> [--watch <seconds>] [--grace <seconds>] [--keep <eth>] [--from <V3 block>] [--retry <nonce>]
-  more options: --state-dir <path> (default ~/.bridge-zero), --rpc <wss url>, --evm <http(s) url>,
+  more options: --network sepolia|base-sepolia|arbitrum-sepolia, or several comma separated (default sepolia),
+    --state-dir <path> (default ~/.bridge-zero), --rpc <wss url>, --evm <http(s) url>,
     --grace <seconds> (default ${DEFAULT_GRACE}), --replace-after <minutes> (default ${DEFAULT_REPLACE_AFTER}),
     --min-amount <tPOT> (default ${DEFAULT_MIN_AMOUNT}), --max-spend <eth> a day (default ${DEFAULT_MAX_SPEND}),
-    --priority-fee <gwei>, --max-fee <gwei>, --max-base-fee <gwei> (default ${DEFAULT_MAX_BASE_FEE})`;
+    --priority-fee <gwei>, --max-fee <gwei>, --max-base-fee <gwei> (default ${DEFAULT_MAX_BASE_FEE});
+    --keep, --max-spend and --max-base-fee take one value, or <network>=<value> pairs (comma separated)`;
 
 function usage(problem: string): never {
   throw new Usage(problem);
@@ -563,6 +639,7 @@ export function parseOptions(args: string[]): Options {
         "priority-fee": { type: "string" },
         "max-fee": { type: "string" },
         "max-base-fee": { type: "string" },
+        network: { type: "string" },
       },
     }).values as Record<string, string | boolean | undefined>;
   } catch (error) {
@@ -604,19 +681,18 @@ export function parseOptions(args: string[]): Options {
   const fromText = str("from");
   const from = fromText === undefined ? undefined : whole(fromText);
   if (from !== undefined && !Number.isSafeInteger(from)) usage("--from must be a V3 block number");
-  let keep: bigint;
-  try {
-    keep = parseEth(str("keep") ?? DEFAULT_KEEP);
-  } catch (error) {
-    usage(`--keep: ${errorText(error)}`);
-  }
-  let maxSpend: bigint;
-  try {
-    maxSpend = parseEth(str("max-spend") ?? DEFAULT_MAX_SPEND);
-  } catch (error) {
-    usage(`--max-spend: ${errorText(error)}`);
-  }
-  if (maxSpend === 0n) usage("--max-spend must be above 0: nothing could be sent");
+  const networkText = str("network") ?? "sepolia";
+  const networks = networkText.split(",").map((x) => x.trim());
+  for (const x of networks) if (!(NETWORK_NAMES as string[]).includes(x)) usage(`--network takes ${NETWORK_NAMES.join(", ")}, or several of them comma separated: not ${JSON.stringify(x)}`);
+  if (new Set(networks).size !== networks.length) usage("--network names a network twice");
+  const served = networks as NetworkName[];
+  if (served.length > 1 && str("retry") !== undefined) usage("--retry takes one --network: the network whose state left the lock to the operator");
+  if (served.length > 1 && str("rehearse") !== undefined) usage("--rehearse takes one --network: the network that minted the lock");
+  const keepBy = perNetwork("keep", str("keep"), served, (x) => NETWORK_DEFAULTS[x].keep, parseEth);
+  const maxSpendBy = perNetwork("max-spend", str("max-spend"), served, (x) => (x === "sepolia" ? DEFAULT_MAX_SPEND : NETWORK_DEFAULTS[x].maxSpend), parseEth);
+  for (const x of served) if (maxSpendBy[x] === 0n) usage("--max-spend must be above 0: nothing could be sent");
+  const keep = keepBy[served[0]];
+  const maxSpend = maxSpendBy[served[0]];
   const minText = str("min-amount") ?? DEFAULT_MIN_AMOUNT;
   let minAmount: bigint;
   try {
@@ -636,7 +712,8 @@ export function parseOptions(args: string[]): Options {
   };
   const priorityFee = gwei("priority-fee");
   const maxFee = gwei("max-fee");
-  const maxBaseFee = gwei("max-base-fee", DEFAULT_MAX_BASE_FEE)!;
+  const maxBaseFeeBy = perNetwork("max-base-fee", str("max-base-fee"), served, () => DEFAULT_MAX_BASE_FEE, parseGwei);
+  const maxBaseFee = maxBaseFeeBy[served[0]];
   if (priorityFee !== undefined && maxFee !== undefined && maxFee < priorityFee) usage("--max-fee must be at least --priority-fee");
   const rpcUrl = str("rpc") ?? V3_RPC;
   const evm = str("evm") ?? V3_EVM;
@@ -666,7 +743,39 @@ export function parseOptions(args: string[]): Options {
     priorityFee,
     maxFee,
     maxBaseFee,
+    networks: served,
+    keepBy,
+    maxSpendBy,
+    maxBaseFeeBy,
   };
+}
+
+/**
+ * An option that takes one value for every network served, or <network>=<value> pairs, comma
+ * separated (a network left out takes `fallback`): the value of each network served, parsed.
+ */
+export function perNetwork(name: string, text: string | undefined, networks: NetworkName[], fallback: (network: NetworkName) => string, parse: (s: string) => bigint): Record<NetworkName, bigint> {
+  const given = new Map<string, string>();
+  if (text !== undefined && text.includes("=")) {
+    for (const part of text.split(",")) {
+      const m = /^\s*([a-z-]+)\s*=\s*(\S+)\s*$/.exec(part);
+      if (!m) usage(`--${name}: ${JSON.stringify(part)} is not <network>=<value>`);
+      if (!(NETWORK_NAMES as string[]).includes(m[1])) usage(`--${name}: no network ${m[1]}`);
+      if (!networks.includes(m[1] as NetworkName)) usage(`--${name}: ${m[1]} is not a --network of this run`);
+      if (given.has(m[1])) usage(`--${name} names ${m[1]} twice`);
+      given.set(m[1], m[2]);
+    }
+  }
+  const out = {} as Record<NetworkName, bigint>;
+  for (const x of networks) {
+    const value = text === undefined ? fallback(x) : text.includes("=") ? (given.get(x) ?? fallback(x)) : text;
+    try {
+      out[x] = parse(value);
+    } catch (error) {
+      usage(`--${name}${networks.length > 1 ? ` (${x})` : ""}: ${errorText(error)}`);
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -681,10 +790,18 @@ export interface Bridge {
   minter: Hex;
   token: Hex;
   client: Hex;
+  /** The network the minter is on (Sepolia when absent). */
+  network?: NetworkName;
 }
 
-/** The vault (deployments/v3-testnet.json) and the minter, its token and light client on Sepolia (deployments/sepolia-bridge.json), lower case. */
-export function readBridge(root = REPO): Bridge {
+/** The network of a bridge: its own, else Sepolia (a Bridge written before there were others). */
+export const networkOf = (bridge: Pick<Bridge, "network">): NetworkName => bridge.network ?? "sepolia";
+
+/**
+ * The vault (deployments/v3-testnet.json) and the minter, its token and light client on `network`
+ * (deployments/<network>-bridge.json: deployments/sepolia-bridge.json on Sepolia), lower case.
+ */
+export function readBridge(root = REPO, network: NetworkName = "sepolia"): Bridge {
   const read = <T>(file: string): T => {
     try {
       return JSON.parse(readFileSync(join(root, "deployments", file), "utf8")) as T;
@@ -693,7 +810,9 @@ export function readBridge(root = REPO): Bridge {
     }
   };
   const v3 = read<{ genesisHash?: string; chainId?: number; vault?: { status?: string; address?: string; block?: { number?: number } } }>("v3-testnet.json");
-  const sep = read<{ chainId?: number; contracts?: Record<string, string>; lightClient?: { address?: string }; vault?: { address?: string; chainId?: number } }>("sepolia-bridge.json");
+  const record = `${network}-bridge.json`;
+  const title = NETWORKS[network].title;
+  const sep = read<{ chainId?: number; contracts?: Record<string, string>; lightClient?: { address?: string }; vault?: { address?: string; chainId?: number } }>(record);
   const vault = v3.vault?.address?.toLowerCase();
   const minter = sep.contracts?.BridgeMinter?.toLowerCase();
   const token = sep.contracts?.WrappedTPOT?.toLowerCase();
@@ -701,18 +820,19 @@ export function readBridge(root = REPO): Bridge {
   if (v3.vault?.status !== "deployed" || !vault || typeof v3.vault.block?.number !== "number" || !v3.genesisHash || BigInt(v3.chainId ?? 0) !== V3_CHAIN_ID) {
     throw new Fatal("deployments/v3-testnet.json records no deployed vault on the V3 testnet");
   }
-  if (BigInt(sep.chainId ?? 0) !== SEPOLIA_CHAIN_ID || !minter || !token || !client || sep.vault?.address?.toLowerCase() !== vault) {
-    throw new Fatal("deployments/sepolia-bridge.json records no BridgeMinter, WrappedTPOT and light client on Sepolia for that vault");
+  if (BigInt(sep.chainId ?? 0) !== NETWORKS[network].chainId || !minter || !token || !client || sep.vault?.address?.toLowerCase() !== vault) {
+    throw new Fatal(`deployments/${record} records no BridgeMinter, WrappedTPOT and light client on ${title} for that vault`);
   }
   return {
     vault: vault as Hex,
     vaultBlock: v3.vault.block.number,
     v3ChainId: V3_CHAIN_ID,
     v3Genesis: v3.genesisHash.toLowerCase() as Hex,
-    chainId: SEPOLIA_CHAIN_ID,
+    chainId: NETWORKS[network].chainId,
     minter: minter as Hex,
     token: token as Hex,
     client: client as Hex,
+    ...(network === "sepolia" ? {} : { network }),
   };
 }
 
@@ -766,7 +886,7 @@ export function parseLockedLog(log: LogJson & { removed?: boolean }, bridge: Pic
     dstMinter: bytesToHex(e.dstMinter),
     commitment: bytesToHex(e.commitment),
   };
-  if (e.dstChainId !== bridge.chainId) return { kind: "skip", lock, why: `its commitment names chain ${e.dstChainId}, not Sepolia (${bridge.chainId})` };
+  if (e.dstChainId !== bridge.chainId) return { kind: "skip", lock, why: `its commitment names chain ${e.dstChainId}, not ${titleOf(bridge.chainId)} (${bridge.chainId})` };
   if (lock.dstMinter !== bridge.minter) return { kind: "skip", lock, why: `its commitment names the minter ${short(lock.dstMinter)}, not this BridgeMinter ${short(bridge.minter)}` };
   const expected = lockCommitment({
     v3ChainId: bridge.v3ChainId,
@@ -798,6 +918,8 @@ export interface LockRecord {
   commitment: Hex;
   status: "pending" | "minted" | "skipped";
   why?: string;
+  /** Where the lock was found when not by eth_getLogs: System.Events, for a lock sent as a Substrate extrinsic (txHash is then the extrinsic's hash). */
+  via?: "System.Events";
   /**
    * Why a skipped lock was left to the operator, when it may be minted after all (--retry takes it
    * in again): our transactions were mined without minting it, or it is below --min-amount. A lock
@@ -853,6 +975,11 @@ export interface Facts {
   failedSends: number;
   /** --min-amount, in native base units. */
   minAmount: bigint;
+  /**
+   * Whether the minter is bound to the vault (true when absent). An unbound minter's first mint has
+   * to bind it: importAndMint at V3's finalized head does, mint(p) at a held header cannot.
+   */
+  bound?: boolean;
 }
 
 export type Decision =
@@ -868,7 +995,9 @@ export type Decision =
  * (or is paused or halted); else mint, by the cheapest path that adds no wait: at the header the
  * client holds (held) when it is at or after the lock's block, else importing V3's finalized head
  * (head). A lock whose transactions were mined MAX_FAILED_SENDS times without minting it is left to
- * the operator.
+ * the operator. While the minter is not bound to the vault (a new rollup's, before its first mint),
+ * only the head path can mint, as its importAndMint binds the vault in the same transaction: the
+ * lock waits while that path does not apply.
  */
 export function decide(rec: LockRecord, f: Facts): Decision {
   if (rec.status === "skipped") return { kind: "skip", why: rec.why ?? "skipped" };
@@ -894,6 +1023,16 @@ export function decide(rec: LockRecord, f: Facts): Decision {
     if (f.now < until) return { kind: "wait", why: `--grace: ${Math.ceil((until - f.now) / 1000)} s more, so that a mint from the app is not raced`, until };
   }
   const c = f.client;
+  if (f.bound === false) {
+    const unbound = "the minter is not bound to the vault yet, and mint(p) at a held header cannot bind it";
+    if (c.halted || c.paused) return { kind: "wait", why: `${unbound}; ${CLIENT_NAME} is ${c.halted ? "halted" : "paused"}, so no importAndMint can bind it until its admin acts` };
+    if (f.v3SetId === null) return { kind: "wait", why: `${unbound}; V3's validator set was not read in this round` };
+    if (f.v3SetId > c.setId) {
+      return { kind: "wait", why: `${unbound}; ${CLIENT_NAME} is at set ${c.setId} and V3 at set ${f.v3SetId}: the relayer imports the set change, and a later round binds and mints` };
+    }
+    if (f.v3SetId < c.setId) return { kind: "wait", why: `${unbound}; the V3 node's finalized head is in set ${f.v3SetId}, behind the light client's set ${c.setId}` };
+    return { kind: "mint", path: "head", why: `${CLIENT_NAME} is at V3's set ${c.setId} and the minter is not bound yet: importAndMint at V3's finalized head binds the vault and mints` };
+  }
   if (c.latestNumber >= rec.block) {
     return { kind: "mint", path: "held", why: `${CLIENT_NAME} holds #${n(c.latestNumber)}, at or after the lock's block: mint(p) there, with no import` };
   }
@@ -913,7 +1052,7 @@ export function decide(rec: LockRecord, f: Facts): Decision {
 
 export interface State {
   version: 1;
-  network: "sepolia";
+  network: NetworkName;
   chainId: number;
   minter: Hex;
   vault: Hex;
@@ -932,17 +1071,18 @@ export interface Files {
   lock: string;
 }
 
-export const filesOf = (stateDir: string, sender: Hex): Files => {
-  const base = join(stateDir, `automint-sepolia-${sender.toLowerCase()}`);
+export const filesOf = (stateDir: string, sender: Hex, network: NetworkName = "sepolia"): Files => {
+  const base = join(stateDir, `automint-${network}-${sender.toLowerCase()}`);
   return { state: `${base}.json`, history: `${base}.jsonl`, lock: `${base}.lock` };
 };
 
 /**
  * The lock every --send auto-mint of `minter` takes, whatever its key and --state-dir: two of them,
  * with two keys or two state directories, would each send a mint for every lock, and one of each
- * pair would revert. It is in the relayers' state directory, where every checkout looks.
+ * pair would revert. It is in the relayers' state directory, where every checkout looks. Its name
+ * holds the network: Base Sepolia and Arbitrum Sepolia have their minter at the same address.
  */
-export const minterLockOf = (minter: Hex, home = STATE_DIR): string => join(home, `automint-sepolia-minter-${minter.toLowerCase()}.lock`);
+export const minterLockOf = (minter: Hex, home = STATE_DIR, network: NetworkName = "sepolia"): string => join(home, `automint-${network}-minter-${minter.toLowerCase()}.lock`);
 
 /** Where a relayer's files can be: auto-mint's --state-dir, the relayers' (~/.bridge-zero, relay.ts's default), and deployments/ of this checkout (where an earlier relayer kept them). */
 export const keyDirsOf = (stateDir: string, home = STATE_DIR, repo = REPO): string[] => [...new Set([resolve(stateDir), resolve(home), resolve(join(repo, "deployments"))])];
@@ -1033,10 +1173,10 @@ function stateProblem(s: unknown): string | null {
  * is set aside (renamed, kept) and rebuilt when `setAside` (a --send run), else left alone (a dry
  * run). A state of another minter, vault or sender is refused.
  */
-export function loadState(path: string, bridge: Pick<Bridge, "chainId" | "minter" | "vault">, sender: Hex, start: number, setAside: boolean): { state: State; note: string } {
+export function loadState(path: string, bridge: Pick<Bridge, "chainId" | "minter" | "vault" | "network">, sender: Hex, start: number, setAside: boolean): { state: State; note: string } {
   const fresh = (): State => ({
     version: 1,
-    network: "sepolia",
+    network: networkOf(bridge),
     chainId: Number(bridge.chainId),
     minter: bridge.minter,
     vault: bridge.vault,
@@ -1059,7 +1199,7 @@ export function loadState(path: string, bridge: Pick<Bridge, "chainId" | "minter
     if (!setAside) return { state: fresh(), note: `${path} does not parse (${problem}): a --send run sets it aside and rebuilds it; this dry run starts at V3 #${n(start)}` };
     const aside = `${path}.unreadable-${Date.now()}`;
     busyRetry(() => renameSync(path, aside));
-    return { state: fresh(), note: `${path} did not parse (${problem}): kept as ${aside}, and rebuilt from V3 #${n(start)} and used(nonce) on Sepolia` };
+    return { state: fresh(), note: `${path} did not parse (${problem}): kept as ${aside}, and rebuilt from V3 #${n(start)} and used(nonce) on ${titleOf(bridge.chainId)}` };
   }
   const s = parsed as State;
   if (s.chainId !== Number(bridge.chainId) || s.minter !== bridge.minter || s.vault !== bridge.vault || s.sender !== sender) {
@@ -1117,6 +1257,8 @@ export interface ResultLine {
   sepoliaBlock: number | null;
   gasUsed: number | null;
   effectiveGasPrice: string | null;
+  /** On an OP Stack rollup: the receipt's l1Fee (wei), the L1 data fee paid besides the gas. */
+  l1Fee?: string;
   at: string;
 }
 
@@ -1221,14 +1363,14 @@ export function failedSendsOf(lines: HistoryLine[], nonce: string): number {
   return new Set(lines.filter((l) => l.kind === "result" && l.lock === nonce && l.outcome === "reverted" && since.has(l.id)).map((l) => l.id)).size;
 }
 
-/** What our transactions settled since `since` (ms) cost: gas used times the effective gas price of each mined one, counted once. */
+/** What our transactions settled since `since` (ms) cost: gas used times the effective gas price of each mined one, and its L1 fee on an OP Stack rollup, counted once. */
 export function spentSince(lines: HistoryLine[], since: number): bigint {
   const seen = new Set<string>();
   let total = 0n;
   for (const l of lines) {
     if (l.kind !== "result" || seen.has(l.id) || l.gasUsed === null || l.effectiveGasPrice === null || !(Date.parse(l.at) >= since)) continue;
     seen.add(l.id);
-    total += BigInt(l.gasUsed) * BigInt(l.effectiveGasPrice);
+    total += BigInt(l.gasUsed) * BigInt(l.effectiveGasPrice) + (l.l1Fee && /^\d+$/.test(l.l1Fee) ? BigInt(l.l1Fee) : 0n);
   }
   return total;
 }
@@ -1256,6 +1398,8 @@ export interface SepoliaReads {
   transaction(hash: Hex): Promise<{ blockNumber: string | null } | null>;
   /** Where cast publishes. */
   publishUrl(): string;
+  /** What a call of `to` with `data` pays for L1 on a rollup (l1.ts); none when left out (Sepolia, the tests' stand-ins). */
+  l1Cost?(to: Hex, data: Hex): Promise<L1Cost>;
 }
 
 /** The revert data in an RPC error: its data, or data.data (nodes differ). */
@@ -1369,6 +1513,18 @@ export class SepoliaChain implements SepoliaReads {
   publishUrl(): string {
     return this.rpc.lastUrl;
   }
+
+  /** How this network charges for L1 (l1.ts L1_KIND): none on Sepolia, gas on Arbitrum, a fee on an OP Stack rollup. */
+  get l1Kind(): L1Kind {
+    return L1_KIND[networkOf(this.bridge)];
+  }
+
+  /** The L1 part of a call of `to` with `data`: NodeInterface's L1 gas on Arbitrum, GasPriceOracle's fee bound on an OP Stack rollup; nothing asked on Sepolia. */
+  async l1Cost(to: Hex, data: Hex): Promise<L1Cost> {
+    const request = l1Request(this.l1Kind, to, data);
+    if (!request) return NO_L1;
+    return request.decode(await this.rpc.call<Hex>("eth_call", [{ to: request.to, data: request.data }, "latest"]));
+  }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1477,7 +1633,9 @@ export function headJob(b: MintBundleFixture, rec: LockRecord, client: ClientVie
     block: { number: b.header.number, hash: b.header.hash },
     to: minter,
     data: bytesToHex(importAndMintCalldata(hexToBytes(b.header.scale), hexToBytes(b.finalityProof.scale), hexToBytes(b.signers.hint), proof)),
-    what: `importAndMint at V3's finalized #${n(b.header.number)}, signed by set ${b.provenance.setId} (${b.signers.count} of its ${b.signingSet.count} keys)`,
+    what:
+      `importAndMint at V3's finalized #${n(b.header.number)}, signed by set ${b.provenance.setId} (${b.signers.count} of its ${b.signingSet.count} keys)` +
+      (bound ? "" : `, binding the vault first (its account proof, ${p.accountProof.length} items: the minter is not bound yet)`),
   };
 }
 
@@ -1511,16 +1669,23 @@ export function raisedFees(old: { maxFee: bigint; tip: bigint }, now: Fees, cap:
 /** The most a replacement offers per gas: --max-fee when given, else the max fee feesFor sets at a base fee of --max-base-fee (and at least the current one). */
 export const replacementCap = (o: { maxFee?: bigint; maxBaseFee: bigint }, now: Fees): bigint => o.maxFee ?? maxOf(10n * o.maxBaseFee + now.tip, now.maxFee);
 
+/** What a send that waits for what it costs waits for: the next base fee above --max-base-fee, --max-spend reached, or the sender's balance short. */
+export type Cost = "base-fee" | "max-spend" | "balance";
+
 export type SendEnd =
   | { kind: "minted"; ours: boolean; txHash: Hex | null; why: string }
-  | { kind: "wait"; why: string }
+  /** `cost` when it waits for what the send costs (with the sender's balance then, for "balance"). */
+  | { kind: "wait"; why: string; cost?: Cost; balance?: bigint }
   | { kind: "failed"; why: string; txHash?: Hex }
   | { kind: "pending"; txHash: Hex };
 
 export interface Ready {
   kind: "ready";
+  /** eth_estimateGas: on Arbitrum it includes the L1 gas. */
   gas: number;
   gasLimit: number;
+  /** The L1 part (l1.ts): on Arbitrum its gas is in `gas` and once more in `gasLimit`; on an OP Stack rollup its fee is paid besides the gas. */
+  l1?: L1Cost;
   fees: Fees;
   /** The nonce it is signed at: the sender's next, mined and pending, or a replacement's; -1 when the sender was not checked (a dry run without --sender). */
   txNonce: number;
@@ -1541,6 +1706,8 @@ export interface Stuck {
 
 export interface PreflightCtx {
   sepolia: SepoliaReads;
+  /** The destination network's title and per-transaction gas cap: Sepolia's when left out. */
+  network?: { title: string; gasCap: number };
   sender: Hex;
   /** --max-spend (wei; none when left out) against `spent`, what our transactions mined over the last SPEND_WINDOW_MS cost. */
   fees: { priorityFee?: bigint; maxFee?: bigint; maxBaseFee: bigint; keep: bigint; maxSpend?: bigint };
@@ -1571,14 +1738,31 @@ export async function preflight(job: Job, ctx: PreflightCtx, checkSender: boolea
     if (error instanceof AnswerError) return { kind: "failed", why: `eth_estimateGas: ${errorText(error)}` };
     throw error;
   }
-  const gasLimit = gasLimitOf(gas);
-  if (gasLimit > GAS_CAP) return { kind: "failed", why: `its gas ${n(gas)} + 10% is above Sepolia's ${n(GAS_CAP)} cap` };
+  const net = ctx.network ?? { title: "Sepolia", gasCap: GAS_CAP };
+  // The L1 part on a rollup (l1.ts): Arbitrum's L1 gas is in the estimate, and is added once more to
+  // the limit (the L1 price can rise before inclusion); the cap bounds the execution part.
+  let l1: L1Cost = NO_L1;
+  if (ctx.sepolia.l1Cost) {
+    try {
+      l1 = await ctx.sepolia.l1Cost(job.to, job.data);
+    } catch (error) {
+      if (error instanceof AnswerError) return { kind: "failed", why: `the L1 estimate: ${errorText(error)}` };
+      throw error;
+    }
+  }
+  const execution = l1.kind === "arbitrum" ? Math.max(0, gas - l1.gas) : gas;
+  const gasLimit = limitWithL1(l1.kind, gasLimitOf(gas), l1);
+  if (gasLimitOf(execution) > net.gasCap) {
+    return { kind: "failed", why: `its gas ${n(execution)}${execution === gas ? "" : ` (without its ${n(l1.gas)} L1 gas)`} + 10% is above ${net.title}'s ${n(net.gasCap)} cap` };
+  }
+  /** On an OP Stack rollup, the L1 data fee paid besides the gas. */
+  const l1Fee = l1.kind === "op" ? l1.fee : 0n;
   const base = await ctx.sepolia.nextBaseFee();
   let fees = feesFor(base, ctx.fees);
   if (fees.maxFee < fees.base || fees.maxFee < fees.tip) {
     return { kind: "failed", why: `the max fee ${n(fees.maxFee)} wei does not cover the next base fee ${n(base)} wei and the priority fee ${n(fees.tip)} wei` };
   }
-  if (base > ctx.fees.maxBaseFee) return { kind: "wait", why: `the next base fee ${n(base)} wei is above --max-base-fee ${n(ctx.fees.maxBaseFee)} wei` };
+  if (base > ctx.fees.maxBaseFee) return { kind: "wait", why: `the next base fee ${n(base)} wei is above --max-base-fee ${n(ctx.fees.maxBaseFee)} wei`, cost: "base-fee" };
   if (replacing) {
     const cap = replacementCap(ctx.fees, fees);
     const raised = raisedFees(replacing, fees, cap);
@@ -1592,18 +1776,27 @@ export async function preflight(job: Job, ctx: PreflightCtx, checkSender: boolea
   }
   if (ctx.fees.maxSpend !== undefined) {
     const spent = ctx.spent?.() ?? 0n;
-    const next = BigInt(gasLimit) * (fees.base + fees.tip);
+    const next = BigInt(gasLimit) * (fees.base + fees.tip) + l1Fee;
     if (spent + next > ctx.fees.maxSpend) {
-      return { kind: "wait", why: `our transactions of the last ${SPEND_WINDOW_MS / 3_600_000} hours cost ${eth(spent)}, and this one would cost about ${eth(next)}: above --max-spend ${eth(ctx.fees.maxSpend)}` };
+      return {
+        kind: "wait",
+        why: `our transactions of the last ${SPEND_WINDOW_MS / 3_600_000} hours cost ${eth(spent)}, and this one would cost about ${eth(next)}: above --max-spend ${eth(ctx.fees.maxSpend)}`,
+        cost: "max-spend",
+      };
     }
   }
   let balance: bigint | null = null;
   let txNonce = -1;
   if (checkSender) {
     balance = await ctx.sepolia.balance(ctx.sender);
-    const need = BigInt(gasLimit) * fees.maxFee;
+    const need = BigInt(gasLimit) * fees.maxFee + l1Fee;
     if (need + ctx.fees.keep > balance) {
-      return { kind: "wait", why: `the sender has ${eth(balance)}: the gas limit at the max fee is ${eth(need)}, and --keep ${eth(ctx.fees.keep)} stays` };
+      return {
+        kind: "wait",
+        why: `the sender has ${eth(balance)}: the gas limit at the max fee${l1Fee > 0n ? " and the L1 fee" : ""} is ${eth(need)}, and --keep ${eth(ctx.fees.keep)} stays`,
+        cost: "balance",
+        balance,
+      };
     }
     const nonces = await ctx.sepolia.nonces(ctx.sender);
     if (replacing) {
@@ -1619,12 +1812,14 @@ export async function preflight(job: Job, ctx: PreflightCtx, checkSender: boolea
     }
   }
   if (await ctx.sepolia.used(nonce)) return { kind: "minted", ours: false, txHash: null, why: `used(${nonce}) turned true just before the send: minted by another transaction` };
-  return { kind: "ready", gas, gasLimit, fees, txNonce, balance };
+  return { kind: "ready", gas, gasLimit, ...(l1.kind === "none" ? {} : { l1 }), fees, txNonce, balance };
 }
 
 export interface SettleCtx {
   sepolia: SepoliaReads;
   minter: Hex;
+  /** The destination network's title in the results ("Sepolia" when left out). */
+  title?: string;
   /** Appends a line to the history (fenced by the lock); a dry run prints it instead. */
   record: (line: HistoryLine) => void;
 }
@@ -1639,6 +1834,8 @@ const resultOf = (a: AttemptLine, txHash: Hex | null, outcome: Outcome, why: str
   sepoliaBlock: mined ? Number(BigInt(mined.blockNumber)) : null,
   gasUsed: mined ? Number(BigInt(mined.gasUsed)) : null,
   effectiveGasPrice: mined?.effectiveGasPrice ? BigInt(mined.effectiveGasPrice).toString() : null,
+  // An OP Stack receipt's L1 data fee, paid besides the gas (none on Sepolia and Arbitrum).
+  ...(mined && receiptL1Fee(mined as { l1Fee?: string }) > 0n ? { l1Fee: receiptL1Fee(mined as { l1Fee?: string }).toString() } : {}),
   at: iso(),
 });
 
@@ -1654,7 +1851,7 @@ export async function resultFromReceipt(a: AttemptLine, txHash: Hex, r: Receipt,
     if (log) {
       const m = decodeMinted(log);
       if (bytesToHex(m.recipient) === a.recipient && m.amount.toString() === a.amount) {
-        return resultOf(a, txHash, "minted", `mined in Sepolia block ${n(block)}: Minted(${a.lock}) of ${formatWtpot(m.amount)} to ${short(a.recipient)}`, r);
+        return resultOf(a, txHash, "minted", `mined in ${ctx.title ?? "Sepolia"} block ${n(block)}: Minted(${a.lock}) of ${formatWtpot(m.amount)} to ${short(a.recipient)}`, r);
       }
       return resultOf(a, txHash, "reverted", `mined in block ${n(block)}, but Minted names ${bytesToHex(m.recipient)} and ${m.amount}, not the attempt's`, r);
     }
@@ -1771,6 +1968,8 @@ export async function settle(open: OpenAttempt[], ctx: SettleCtx, replaceAfterMs
 }
 
 export interface SendCtx extends PreflightCtx, SettleCtx {
+  /** The destination network's chain id, which cast signs for (EIP-155): Sepolia's when left out. */
+  chainId?: bigint;
   signer: Signer;
   account: string;
   passwordFile: string;
@@ -1808,6 +2007,9 @@ export async function sendJob(job: Job, ctx: SendCtx, replacing: Stuck | null = 
   // Built before anything is recorded: a command line cast could not take leaves no attempt behind.
   const args = mktxArgs(`lock ${job.lock.nonce}`, { to: job.to, data: job.data, nonce: pf.txNonce, gasLimit: pf.gasLimit, fees: pf.fees, account: ctx.account, passwordFile: ctx.passwordFile });
   args[args.indexOf("--rpc-url") + 1] = ctx.sepolia.publishUrl();
+  // mktxArgs names sepolia.mjs's chain, Sepolia's in this process (which never calls useNetwork): a
+  // rollup's transaction is signed for the rollup's chain id.
+  if (ctx.chainId !== undefined) args[args.indexOf("--chain") + 1] = ctx.chainId.toString();
   const attempt: AttemptLine = {
     kind: "attempt",
     id: randomUUID(),
@@ -1859,6 +2061,48 @@ export async function sendJob(job: Job, ctx: SendCtx, replacing: Stuck | null = 
   return endOf(line);
 }
 
+/**
+ * How long a rollup's lock is not planned again after its send (or a dry run's) waited for what it
+ * costs: the next base fee above --max-base-fee, --max-spend reached, or the sender's balance short.
+ * Planning it captures a bundle from the V3 node (the head path's captureBundle, some 10 s of work)
+ * and asks for eth_call and eth_estimateGas, only to wait again; and every network's rounds run in
+ * one process, one after the other, so a lock that cannot be paid for would slow the others' rounds
+ * for as long as it waits. None on Sepolia: its locks are planned every round, as before.
+ */
+export const HOLD_MS: Record<NetworkName, number> = { sepolia: 0, "base-sepolia": 5 * 60_000, "arbitrum-sepolia": 5 * 60_000 };
+
+/** A lock not planned again on `path` before `until`, as its last send waited for `cost` (why): unless the sender's balance rises above `balance`, or the next base fee is back within --max-base-fee. */
+export interface Hold {
+  path: Path;
+  until: number;
+  cost: Cost;
+  why: string;
+  balance?: bigint;
+}
+
+/**
+ * The hold a send that ended with `end` puts on its lock, or null: only a wait for what it costs
+ * (SendEnd's cost), on a network with a hold (HOLD_MS), and never for a replacement (a stuck
+ * transaction is signed again as soon as it can be).
+ */
+export function holdAfter(end: Ready | SendEnd, network: NetworkName, path: Path, replacing: boolean, now = Date.now()): Hold | null {
+  if (end.kind !== "wait" || end.cost === undefined || replacing || HOLD_MS[network] <= 0) return null;
+  return { path, until: now + HOLD_MS[network], cost: end.cost, why: end.why, ...(end.balance === undefined ? {} : { balance: end.balance }) };
+}
+
+/**
+ * Whether `hold` still keeps a lock from being planned on `path`: before its end, on the path it was
+ * put on, and while what the send waited for has not changed: for the balance, the sender's is not
+ * above the one it had (one read); for the base fee, the next one is still above --max-base-fee (one
+ * read); for --max-spend, until the end.
+ */
+export async function stillHolds(hold: Hold | undefined, path: Path, reads: Pick<SepoliaReads, "balance" | "nextBaseFee">, sender: Hex, maxBaseFee: bigint, now = Date.now()): Promise<boolean> {
+  if (!hold || hold.path !== path || now >= hold.until) return false;
+  if (hold.cost === "balance") return hold.balance !== undefined && (await reads.balance(sender)) <= hold.balance;
+  if (hold.cost === "base-fee") return (await reads.nextBaseFee()) > maxBaseFee;
+  return true;
+}
+
 // ---------------------------------------------------------------------------------------
 // The scan
 
@@ -1877,10 +2121,11 @@ export function scanRange(state: Pick<State, "startBlock" | "nextBlock">, finali
 
 /**
  * Adds the locks of `logs` to the state: a new nonce as pending (or skipped, with why); a nonce seen
- * already, with the same block and commitment, changes nothing; one whose log disagrees with the
- * record is left to the operator (skipped, and returned as a conflict).
+ * already, with the same block and commitment, changes nothing, whichever source gave it (eth_getLogs
+ * or System.Events, `via`); one whose log disagrees with the record is left to the operator
+ * (skipped, and returned as a conflict).
  */
-export function absorbLogs(state: State, logs: (LogJson & { removed?: boolean })[], bridge: Pick<Bridge, "vault" | "v3ChainId" | "chainId" | "minter">, now = Date.now()) {
+export function absorbLogs(state: State, logs: (LogJson & { removed?: boolean })[], bridge: Pick<Bridge, "vault" | "v3ChainId" | "chainId" | "minter">, now = Date.now(), via?: "System.Events") {
   const added: LockRecord[] = [];
   const conflicts: string[] = [];
   let ignored = 0;
@@ -1893,7 +2138,7 @@ export function absorbLogs(state: State, logs: (LogJson & { removed?: boolean })
     const key = p.lock.nonce.toString();
     const known = state.locks[key];
     if (!known) {
-      state.locks[key] = recordOf(p, now);
+      state.locks[key] = { ...recordOf(p, now), ...(via ? { via } : {}) };
       added.push(state.locks[key]);
       continue;
     }
@@ -1930,6 +2175,10 @@ export interface Run {
   genesisChecked: boolean;
   /** Nonces below the scan's start whose lock was looked up, once per process. */
   accounted: Set<string>;
+  /** The V3 runtime's metadata by spec version, read once per process for the lookups in System.Events. */
+  metadata: Map<number, Promise<Uint8Array>>;
+  /** The locks not planned again for a while (HOLD_MS), by nonce: their last send waited for what it costs. In memory only. */
+  holds: Map<string, Hold>;
 }
 
 interface RoundFacts {
@@ -1990,14 +2239,14 @@ function applyResult(run: Run, line: ResultLine): void {
   else if (line.outcome === "already-minted") markMinted(rec, line.why, null);
 }
 
-/** Checked once: the RPCs serve Sepolia and V3, and the minter takes the recorded light client and vault. */
+/** Checked once: the RPCs serve the destination network (Sepolia, or a rollup) and V3, and the minter takes the recorded light client and vault. */
 async function checkWiring(run: Run): Promise<void> {
   const sepoliaId = await run.sepolia.chainId();
   const v3Id = BigInt(await run.evm.call<string>("eth_chainId", []));
   const m = await run.sepolia.minter();
   const ok = sepoliaId === run.bridge.chainId && v3Id === run.bridge.v3ChainId && m.lightClient === run.bridge.client && m.vault === run.bridge.vault && m.vaultChainId === run.bridge.v3ChainId;
   const what =
-    `Sepolia's RPC serves chain ${sepoliaId}, V3's EVM RPC chain ${v3Id}; BridgeMinter ${short(run.bridge.minter)} takes the light client ${short(m.lightClient)} ` +
+    `${titleOf(run.bridge.chainId)}'s RPC serves chain ${sepoliaId}, V3's EVM RPC chain ${v3Id}; BridgeMinter ${short(run.bridge.minter)} takes the light client ${short(m.lightClient)} ` +
     `and the vault ${short(m.vault)} of chain ${m.vaultChainId}, as deployments/ records`;
   if (!check(ok, what)) throw new Fatal("the chains or the minter are not the ones deployments/ records");
   const sender = run.o.send ? run.sender : run.o.sender;
@@ -2022,12 +2271,16 @@ async function v3Head(chain: Chain): Promise<{ finalized: number; hash: Hex; set
   return { finalized: header.number, hash, setId: decodeU64(scale, "Grandpa.CurrentSetId") };
 }
 
+/** Once per process, before the V3 node's answers count: it serves the V3 testnet's genesis. */
+async function checkGenesis(run: Run, chain: Chain): Promise<void> {
+  if (run.genesisChecked) return;
+  const genesis = (await v3("genesis", () => chain.rpc.request<Hex>("chain_getBlockHash", [0]))).toLowerCase();
+  if (genesis !== run.bridge.v3Genesis) throw new Fatal(`the V3 node serves genesis ${genesis}, not the V3 testnet's ${run.bridge.v3Genesis}`);
+  run.genesisChecked = true;
+}
+
 async function readFacts(run: Run, chain: Chain): Promise<RoundFacts> {
-  if (!run.genesisChecked) {
-    const genesis = (await v3("genesis", () => chain.rpc.request<Hex>("chain_getBlockHash", [0]))).toLowerCase();
-    if (genesis !== run.bridge.v3Genesis) throw new Fatal(`the V3 node serves genesis ${genesis}, not the V3 testnet's ${run.bridge.v3Genesis}`);
-    run.genesisChecked = true;
-  }
+  await checkGenesis(run, chain);
   const head = await v3("V3's finalized head", () => v3Head(chain));
   const client = await run.sepolia.client();
   const m = await run.sepolia.minter();
@@ -2055,7 +2308,7 @@ async function buildJob(run: Run, chain: Chain, rec: LockRecord, path: Path, f: 
     }
   }
   try {
-    const b = await withDeadline(captureBundle({ rpc: run.o.rpc, evm: run.o.evm }, BigInt(rec.nonce)), TIMEOUTS.captureMs, `the capture of lock ${rec.nonce}'s bundle`);
+    const b = await withDeadline(captureBundle({ rpc: run.o.rpc, evm: run.o.evm }, BigInt(rec.nonce), { block: rec.block }, networkOf(run.bridge)), TIMEOUTS.captureMs, `the capture of lock ${rec.nonce}'s bundle`);
     return headJob(b, rec, f.client, f.minter.bound, run.bridge.minter);
   } catch (error) {
     if (error instanceof Unreachable || error instanceof Fatal || error instanceof DryRunViolation) throw error;
@@ -2067,27 +2320,50 @@ async function buildJob(run: Run, chain: Chain, rec: LockRecord, path: Path, f: 
   }
 }
 
-/** A dry run of a job: preflight without sending, printed. */
-async function dryRunJob(run: Run, job: Job, replacing: Stuck | null): Promise<void> {
+/** A dry run of a job: preflight without sending, printed; returns what preflight found. */
+async function dryRunJob(run: Run, job: Job, replacing: Stuck | null): Promise<Ready | SendEnd> {
   const pf = await preflight(job, sendCtx(run), run.o.sender !== undefined, replacing);
   if (pf.kind === "ready") {
-    const cost = BigInt(pf.gasLimit) * pf.fees.maxFee;
+    const l1Fee = pf.l1?.kind === "op" ? pf.l1.fee : 0n;
+    const cost = BigInt(pf.gasLimit) * pf.fees.maxFee + l1Fee;
+    const l1 =
+      pf.l1?.kind === "arbitrum"
+        ? ` (of it L1 gas ${n(pf.l1.gas)} by NodeInterface, at an L1 base fee estimate of ${n(pf.l1.l1BaseFee ?? 0n)} wei; the limit adds it once more)`
+        : pf.l1?.kind === "op"
+          ? ` (and an L1 data fee of at most ${eth(pf.l1.fee)} by GasPriceOracle, paid besides the gas)`
+          : "";
     check(
       true,
-      `${labelOf(job.lock)}: a --send run would send ${job.what}${replacing ? `, replacing ${replacing.hashes.join(", ")} at nonce ${replacing.txNonce}` : ""}: gas ${n(pf.gas)}, limit ${n(pf.gasLimit)}; ` +
+      `${labelOf(job.lock)}: a --send run would send ${job.what}${replacing ? `, replacing ${replacing.hashes.join(", ")} at nonce ${replacing.txNonce}` : ""}: gas ${n(pf.gas)}${l1}, limit ${n(pf.gasLimit)}; ` +
         `next base fee ${n(pf.fees.base)} wei, max fee ${n(pf.fees.maxFee)} wei, at most ${eth(cost)}` +
         `${pf.balance === null ? " (the sender's balance and nonce are checked with --sender)" : `; the sender has ${eth(pf.balance)}, nonce ${pf.txNonce}`}`,
     );
-    return;
+    return pf;
   }
   if (pf.kind === "minted") log(`${labelOf(job.lock)}: minted already: ${pf.why}`);
   else if (pf.kind === "failed") check(false, `${labelOf(job.lock)}: ${job.what}: ${pf.why}`);
   else if (pf.kind === "wait") log(`${labelOf(job.lock)}: ${job.what}: a --send run would wait: ${pf.why}`);
+  return pf;
 }
 
+/** With --watch, puts on lock `rec` the hold that `end` calls for (holdAfter), if any, and says so (a single round has no next one to hold). */
+function holdOn(run: Run, rec: LockRecord, path: Path, end: Ready | SendEnd, replacing: Stuck | null): void {
+  if (run.o.watch === undefined) return;
+  const hold = holdAfter(end, networkOf(run.bridge), path, replacing !== null);
+  if (!hold) return;
+  run.holds.set(rec.nonce, hold);
+  log(`     ${labelOf(rec)} is not planned again before ${iso(hold.until)}${heldUnless(hold)}: no bundle is captured for it until then`);
+}
+
+const heldUnless = (hold: Hold) =>
+  hold.cost === "balance" ? ", or before once the sender's balance rises" : hold.cost === "base-fee" ? ", or before once the next base fee is within --max-base-fee" : "";
+
 function sendCtx(run: Run): SendCtx {
+  const network = NETWORKS[networkOf(run.bridge)];
   return {
     sepolia: run.sepolia,
+    ...(network.name === "sepolia" ? {} : { network: { title: network.title, gasCap: network.gasCap }, title: network.title }),
+    chainId: run.bridge.chainId,
     sender: run.sender,
     minter: run.bridge.minter,
     fees: { priorityFee: run.o.priorityFee, maxFee: run.o.maxFee, maxBaseFee: run.o.maxBaseFee, keep: run.o.keep, maxSpend: run.o.maxSpend },
@@ -2106,28 +2382,87 @@ function sendCtx(run: Run): SendCtx {
 }
 
 /**
- * The vault's nextNonce at `evmFinal` (the block the scan read up to, so every lock it counts is in
- * a final block) against the locks in the state. A nonce the state lacks is looked up by its Locked
- * log (in LOG_WINDOW windows from the vault's block): at or above the scan's start, the scan missed
- * it (the RPC's log index lagged more than SCAN_OVERLAP blocks), and it is taken in now, with a
- * WARN; below the start, once per process, it is printed, minted or not (a lock not minted there is
- * left to --from, never minted unseen); one no lookup finds is a WARN, looked up again next round.
+ * Lock `nonce` of the vault in System.Events (substrate-locks.ts findSubstrateLock): its Locked event
+ * as a log, or null while no final block counts it. `hint` narrows the search. The round's lookup
+ * reads the V3 node, paced, within TIMEOUTS.lookupMs; the tests give a stand-in.
  */
-export async function accountForNonces(run: Run, evmFinal: number): Promise<void> {
+export type SubstrateLookup = (nonce: bigint, hint: { from?: number; block?: number }) => Promise<FoundLock | null>;
+
+/** Where a lookup of `nonce` in System.Events starts: the block of the state's latest lock below it (the vault's nonces grow block by block). */
+export function lookupHint(state: Pick<State, "locks">, nonce: bigint): { from?: number } {
+  const below = Object.values(state.locks).filter((r) => BigInt(r.nonce) < nonce);
+  return below.length === 0 ? {} : { from: Math.max(...below.map((r) => r.block)) };
+}
+
+/** A lock's Locked log, and where it was found. */
+interface FoundLog {
+  logs: (LogJson & { removed?: boolean })[];
+  parsed: Exclude<Parsed, { kind: "ignore" }>;
+  via?: "System.Events";
+}
+
+/**
+ * Lock `nonce`'s Locked log: by eth_getLogs (in LOG_WINDOW windows from the vault's block to
+ * `evmFinal`), else, for a lock sent as a Substrate extrinsic, from System.Events (`substrate`);
+ * null when neither has it (yet). A log of the vault that does not parse as a lock is a CheckError.
+ */
+async function lockLogOf(run: Run, nonce: bigint, evmFinal: number, substrate: SubstrateLookup): Promise<FoundLog | null> {
+  const logs = await scanLocks(run.evm, run.bridge.vault, run.bridge.vaultBlock, evmFinal, LOG_WINDOW, [LOCKED_TOPIC, bytesToHex(uintWord(nonce))]);
+  const p = logs.map((l) => parseLockedLog(l, run.bridge)).find((x) => x.kind !== "ignore");
+  if (p) return { logs, parsed: p };
+  const found = await substrate(nonce, lookupHint(run.state, nonce));
+  if (!found) return null;
+  const q = parseLockedLog(found.log, run.bridge);
+  if (q.kind === "ignore") throw new CheckError(`System.Events of V3 #${n(found.block.number)}: the vault's Locked event of nonce ${nonce} does not read as a lock: ${q.why}`);
+  return { logs: [found.log], parsed: q, via: "System.Events" };
+}
+
+/**
+ * The vault's nextNonce at `evmFinal` (the block the scan read up to, so every lock it counts is in
+ * a final block) against the locks in the state. A nonce the state lacks is looked up (lockLogOf:
+ * eth_getLogs, else System.Events), at most MAX_LOOKUPS_PER_ROUND a round. A lock found at or above
+ * the scan's start is taken in now: one eth_getLogs returns was missed by the scan (the RPC's log
+ * index lagged more than SCAN_OVERLAP blocks), a WARN; one only System.Events holds was sent as a
+ * Substrate extrinsic, whose log eth_getLogs never returns. Below the start, once per process, it is
+ * printed, minted or not (a lock not minted there is left to --from, never minted unseen). One no
+ * lookup finds, or whose lookup fails, is a WARN, looked up again next round.
+ */
+export async function accountForNonces(run: Run, evmFinal: number, substrate: SubstrateLookup): Promise<void> {
   const next = BigInt(await run.evm.call<string>("eth_getStorageAt", [run.bridge.vault, qty(SLOTS.nextNonce), qty(evmFinal)]));
   let below = 0;
+  // The lookups in System.Events this round: each is a binary search on the V3 node.
+  let lookups = 0;
+  const counted: SubstrateLookup = (nonce, hint) => {
+    lookups += 1;
+    return substrate(nonce, hint);
+  };
   for (let i = 0n; i < next; i++) {
     const key = i.toString();
     if (run.state.locks[key] || run.accounted.has(key)) continue;
-    const logs = await scanLocks(run.evm, run.bridge.vault, run.bridge.vaultBlock, evmFinal, LOG_WINDOW, [LOCKED_TOPIC, bytesToHex(uintWord(i))]);
-    const p = logs.map((l) => parseLockedLog(l, run.bridge)).find((x) => x.kind !== "ignore");
-    if (!p) {
-      log(`WARN the vault's nextNonce at V3 #${n(evmFinal)}, a final block, counts lock ${key}, but V3's EVM RPC returns no Locked log of it: looked up again next round`);
+    if (lookups >= MAX_LOOKUPS_PER_ROUND) {
+      log(`     more nonces of the vault are not in the state yet, from ${key}: a later round looks them up (${MAX_LOOKUPS_PER_ROUND} lookups in System.Events a round)`);
+      break;
+    }
+    let found: FoundLog | null;
+    try {
+      found = await lockLogOf(run, i, evmFinal, counted);
+    } catch (error) {
+      if (error instanceof Unreachable || error instanceof Fatal || error instanceof DryRunViolation) throw error;
+      log(`WARN lock ${key}: its lookup failed (${errorText(error)}): looked up again next round`);
       continue;
     }
+    if (!found) {
+      log(`WARN the vault's nextNonce at V3 #${n(evmFinal)}, a final block, counts lock ${key}, but neither V3's EVM RPC (eth_getLogs) nor System.Events at the V3 node's finalized head has its Locked event yet: looked up again next round`);
+      continue;
+    }
+    const p = found.parsed;
+    const where = found.via ? `System.Events of #${n(p.lock.block)}, extrinsic ${p.lock.txHash ?? "?"}: a lock sent as a Substrate extrinsic, whose log eth_getLogs does not return` : "";
     if (p.lock.block >= run.state.startBlock) {
-      const a = absorbLogs(run.state, logs, run.bridge);
-      for (const r of a.added) log(`WARN the scan missed ${labelOf(r)} (the RPC's log index lagged?): taken in now${r.status === "skipped" ? `, skipped, never minted: ${r.why}` : ""}`);
+      const a = absorbLogs(run.state, found.logs, run.bridge, Date.now(), found.via);
+      for (const r of a.added) {
+        const skipped = r.status === "skipped" ? `, skipped, never minted: ${r.why}` : "";
+        log(found.via ? `     new ${labelOf(r)}, found in ${where}${skipped}` : `WARN the scan missed ${labelOf(r)} (the RPC's log index lagged?): taken in now${skipped}`);
+      }
       for (const c of a.conflicts) check(false, c);
       save(run);
       continue;
@@ -2135,12 +2470,13 @@ export async function accountForNonces(run: Run, evmFinal: number): Promise<void
     run.accounted.add(key);
     below += 1;
     const minted = p.kind === "lock" && (await run.sepolia.used(i));
+    const from = found.via ? ` (${where})` : "";
     log(
       p.kind === "skip"
-        ? `     lock ${key} (#${n(p.lock.block)}, below the scan's start #${n(run.state.startBlock)}) is not for this minter: ${p.why}`
+        ? `     lock ${key} (#${n(p.lock.block)}, below the scan's start #${n(run.state.startBlock)}) is not for this minter: ${p.why}${from}`
         : minted
-          ? `     lock ${key} (#${n(p.lock.block)}, below the scan's start #${n(run.state.startBlock)}): minted already`
-          : `WARN lock ${key} (#${n(p.lock.block)}) is below the scan's start #${n(run.state.startBlock)} and not minted: auto-mint leaves it; run once with --from ${p.lock.block} to take it in`,
+          ? `     lock ${key} (#${n(p.lock.block)}, below the scan's start #${n(run.state.startBlock)}): minted already${from}`
+          : `WARN lock ${key} (#${n(p.lock.block)}) is below the scan's start #${n(run.state.startBlock)} and not minted: auto-mint leaves it; run once with --from ${p.lock.block} to take it in${from}`,
     );
   }
   const seen = Object.keys(run.state.locks).length;
@@ -2148,17 +2484,16 @@ export async function accountForNonces(run: Run, evmFinal: number): Promise<void
 }
 
 /** --rehearse: the mint of a lock that is minted already, on each path that applies now; each eth_call must revert NonceAlreadyUsed(nonce). */
-async function rehearse(run: Run, chain: Chain, f: RoundFacts, nonce: bigint, evmFinal: number): Promise<void> {
+async function rehearse(run: Run, chain: Chain, f: RoundFacts, nonce: bigint, evmFinal: number, substrate: SubstrateLookup): Promise<void> {
   const key = nonce.toString();
   let rec = run.state.locks[key];
   if (!rec) {
-    const logs = await scanLocks(run.evm, run.bridge.vault, run.bridge.vaultBlock, evmFinal, LOG_WINDOW, [LOCKED_TOPIC, bytesToHex(uintWord(nonce))]);
-    const p = logs.map((l) => parseLockedLog(l, run.bridge)).find((x) => x.kind === "lock");
-    if (!p || p.kind !== "lock") {
-      check(false, `rehearsal: no final Locked log of lock ${key} for this minter`);
+    const found = await lockLogOf(run, nonce, evmFinal, substrate);
+    if (!found || found.parsed.kind !== "lock") {
+      check(false, `rehearsal: no final Locked log or event of lock ${key} for this minter`);
       return;
     }
-    rec = recordOf(p);
+    rec = { ...recordOf(found.parsed), ...(found.via ? { via: found.via } : {}) };
   }
   log(`\nRehearsal of ${labelOf(rec)}:`);
   if (!check(await run.sepolia.used(nonce), `used(${key}) is true: the lock is minted already, as a rehearsal needs (it can only revert)`)) return;
@@ -2173,7 +2508,7 @@ async function rehearse(run: Run, chain: Chain, f: RoundFacts, nonce: bigint, ev
         path === "held"
           ? await heldJob(chain, run.sepolia, rec, f.client, f.minter.trieId, run.bridge.minter)
           : headJob(
-              await withDeadline(captureBundle({ rpc: run.o.rpc, evm: run.o.evm }, nonce), TIMEOUTS.captureMs, `the capture of lock ${key}'s bundle`),
+              await withDeadline(captureBundle({ rpc: run.o.rpc, evm: run.o.evm }, nonce, { block: rec.block }, networkOf(run.bridge)), TIMEOUTS.captureMs, `the capture of lock ${key}'s bundle`),
               rec,
               f.client,
               f.minter.bound,
@@ -2197,8 +2532,18 @@ async function rehearse(run: Run, chain: Chain, f: RoundFacts, nonce: bigint, ev
 export async function round(run: Run): Promise<{ code: number; trouble: boolean }> {
   failures = 0;
   const { o, state } = run;
-  log(`\n${iso()}: auto-mint round${o.send ? "" : " (dry run)"}, sender ${run.sender}`);
-  let chain: Chain | null = null;
+  const where = networkOf(run.bridge) === "sepolia" ? "" : ` on ${NETWORKS[networkOf(run.bridge)].title}`;
+  log(`\n${iso()}: auto-mint round${where}${o.send ? "" : " (dry run)"}, sender ${run.sender}`);
+  // The V3 node, opened when the round first needs it (a lookup in System.Events, or a lock to plan) and closed at its end.
+  const node: { chain: Chain | null; reads: V3Reads | null } = { chain: null, reads: null };
+  const v3Chain = async (): Promise<Chain> => (node.chain ??= await openV3(o.rpc));
+  const substrate: SubstrateLookup = async (nonce, hint) => {
+    const chain = await v3Chain();
+    await checkGenesis(run, chain);
+    const reads = (node.reads ??= nodeReads(chain.rpc, undefined, run.metadata));
+    const q = { vault: run.bridge.vault, vaultBlock: run.bridge.vaultBlock, nonce, ...hint };
+    return v3(`lock ${nonce} in System.Events`, () => withDeadline(findSubstrateLock(reads, q), TIMEOUTS.lookupMs, `the lookup of lock ${nonce} in System.Events`));
+  };
   let pendingTx: Hex | null = null;
   /** Our pending transactions past --replace-after: the next mint planned signs their nonce again (once a round). */
   let stuck: Stuck | null = null;
@@ -2241,7 +2586,7 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
       save(run);
     }
     try {
-      await accountForNonces(run, evmFinal);
+      await accountForNonces(run, evmFinal, substrate);
     } catch (error) {
       // A check of the scan, not a step of the mint: the locks in the state are planned anyway.
       if (error instanceof Fatal || error instanceof DryRunViolation) throw error;
@@ -2256,7 +2601,7 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
       if (once) log(`     nothing to mint${pendingTx ? `; ${pendingTx} is still pending` : ""}`);
       return { code: failures > 0 ? FAILED : pendingTx ? PENDING : OK, trouble: false };
     }
-    chain = await openV3(o.rpc);
+    const chain = await v3Chain();
     let facts = await readFacts(run, chain);
     for (const rec of pending) {
       const nonce = BigInt(rec.nonce);
@@ -2272,6 +2617,7 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
         used,
         failedSends: failedSendsOf(history.lines, rec.nonce),
         minAmount: o.minAmount,
+        bound: facts.minter.bound,
       });
       if (d.kind === "minted") {
         const ours = history.lines.find((l): l is ResultLine => l.kind === "result" && l.lock === rec.nonce && l.outcome === "minted")?.txHash ?? null;
@@ -2294,6 +2640,14 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
         log(`${labelOf(rec)}: waits: ${d.why}`);
         continue;
       }
+      // A rollup's lock whose last send waited for what it costs is not planned again for a while
+      // (HOLD_MS): its plan would capture a bundle only to wait again. Our pending transaction ends it.
+      const hold = run.holds.get(rec.nonce);
+      if (hold && !pendingTx && (await stillHolds(hold, d.path, run.sepolia, run.sender, o.maxBaseFee, now))) {
+        log(`${labelOf(rec)}: ${d.path} path: waits: ${hold.why} (not planned again before ${iso(hold.until)}${heldUnless(hold)})`);
+        continue;
+      }
+      if (hold) run.holds.delete(rec.nonce);
       log(`${labelOf(rec)}: ${d.path} path: ${d.why}`);
       if (pendingTx && !stuck) {
         log(`     our ${pendingTx} is still pending: nothing else is sent until it is settled`);
@@ -2305,7 +2659,7 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
       if (!job) continue;
       stuck = null;
       if (!o.send) {
-        await dryRunJob(run, job, replacing);
+        holdOn(run, rec, d.path, await dryRunJob(run, job, replacing), replacing);
         continue;
       }
       save(run);
@@ -2315,7 +2669,10 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
         check(true, `${labelOf(rec)}: ${rec.why}`);
       } else if (end.kind === "pending") pendingTx = end.txHash;
       else if (end.kind === "failed") check(false, `${labelOf(rec)}: ${job.what}: ${end.why}`);
-      else log(`${labelOf(rec)}: waits: ${end.why}`);
+      else {
+        log(`${labelOf(rec)}: waits: ${end.why}`);
+        holdOn(run, rec, d.path, end, replacing);
+      }
       // A replacement mined (minted or reverted) used the stuck nonce: what it replaced never can be mined.
       if (replacing && ((end.kind === "minted" && end.ours) || (end.kind === "failed" && end.txHash))) pendingTx = null;
       save(run);
@@ -2323,7 +2680,7 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
       const sent = end.kind === "pending" || ((end.kind === "minted" || end.kind === "failed") && !!end.txHash);
       if (sent) facts = await readFacts(run, chain);
     }
-    if (o.rehearse !== undefined) await rehearse(run, chain, facts, o.rehearse, evmFinal);
+    if (o.rehearse !== undefined) await rehearse(run, chain, facts, o.rehearse, evmFinal, substrate);
     save(run);
     return { code: failures > 0 ? FAILED : pendingTx ? PENDING : OK, trouble: false };
   } catch (error) {
@@ -2340,7 +2697,7 @@ export async function round(run: Run): Promise<{ code: number; trouble: boolean 
     check(false, errorText(error));
     return { code: FAILED, trouble: false };
   } finally {
-    await chain?.rpc.close();
+    await node.chain?.rpc.close();
   }
 }
 
@@ -2397,7 +2754,13 @@ export function retryLock(run: Run, nonce: bigint): boolean {
   return true;
 }
 
-/** The auto-mint: one round, or with --watch one round after another. automint-main.ts runs it (npm run automint). */
+/** The exit code of a run over several networks: a failed check first, then a node that could not be reached, then a transaction still pending. */
+export function worstCode(codes: number[]): number {
+  for (const code of [FAILED, UNREACHABLE, PENDING]) if (codes.includes(code)) return code;
+  return OK;
+}
+
+/** The auto-mint: one round per network, or with --watch one round after another. automint-main.ts runs it (npm run automint). */
 export async function main(argv = process.argv.slice(2)): Promise<number> {
   let o: Options;
   try {
@@ -2411,24 +2774,32 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
   }
   // Every RPC client of this process refuses the write methods: cast signs and publishes, in a process of its own.
   installDryRunGuard();
+  const titles = o.networks.map((x) => NETWORKS[x].title);
   log(
-    `${iso()}: auto-mint of wtPOT on Sepolia for the locks in the vault on V3` +
+    `${iso()}: auto-mint of wtPOT on ${titles.join(", ")} for the locks in the vault on V3` +
       (o.send ? ", with --send" : " (dry run: nothing is signed, and this process's RPC clients refuse eth_send*, eth_sign*, personal_* and author_submit*)"),
   );
-  const bridge = readBridge();
+  const bridges = o.networks.map((x) => readBridge(REPO, x));
   let sender: Hex;
   if (o.send) {
     const unlocked = keystoreAddress(o.account!, o.passwordFile!);
     if (!unlocked) return FAILED;
     sender = unlocked.toLowerCase() as Hex;
   } else sender = o.sender ?? DRY_RUN_SENDER;
-  const files = filesOf(o.stateDir, sender);
-  log(
-    `     vault ${short(bridge.vault)} on V3 to BridgeMinter ${short(bridge.minter)} on Sepolia (${CLIENT_NAME} ${short(bridge.client)}); ` +
-      `sender ${checksumAddress(hexToBytes(sender))}${o.send ? ` (keystore ${o.account})` : o.sender ? " (--sender)" : " (no one's: --sender checks a key's balance and nonce)"}; ` +
-      `--grace ${o.graceMs / 1000} s, --keep ${eth(o.keep)}, --max-base-fee ${n(o.maxBaseFee)} wei, --replace-after ${o.replaceAfterMs / 60_000} min, ` +
-      `--min-amount ${formatTpot(o.minAmount)}, --max-spend ${eth(o.maxSpend)} a day`,
-  );
+  const who = `sender ${checksumAddress(hexToBytes(sender))}${o.send ? ` (keystore ${o.account})` : o.sender ? " (--sender)" : " (no one's: --sender checks a key's balance and nonce)"}; `;
+  for (const [i, bridge] of bridges.entries()) {
+    const x = o.networks[i];
+    // Sepolia alone prints the line it always printed; with several networks, each its own values.
+    log(
+      `     vault ${short(bridge.vault)} on V3 to BridgeMinter ${short(bridge.minter)} on ${NETWORKS[x].title} (${CLIENT_NAME} ${short(bridge.client)}); ` +
+        (i === 0 ? who : "") +
+        (i === 0 ? `--grace ${o.graceMs / 1000} s, ` : "") +
+        `--keep ${eth(o.keepBy[x])}, --max-base-fee ${n(o.maxBaseFeeBy[x])} wei` +
+        (i === 0 ? `, --replace-after ${o.replaceAfterMs / 60_000} min, --min-amount ${formatTpot(o.minAmount)}` : "") +
+        `, --max-spend ${eth(o.maxSpendBy[x])} a day`,
+    );
+  }
+  const filesBy = o.networks.map((x) => filesOf(o.stateDir, sender, x));
   let locks: Lock[] = [];
   if (o.send) {
     const problem = relayerKeyProblem(keyDirsOf(o.stateDir), sender);
@@ -2442,51 +2813,76 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       check(false, `the state directory ${o.stateDir} cannot be created: ${errorText(error)}`);
       return FAILED;
     }
-    const held = await holdLocks([minterLockOf(bridge.minter), files.lock], o.watch);
+    // Every network's locks, the minter's then the sender's, all or none.
+    const paths = o.networks.flatMap((x, i) => [minterLockOf(bridges[i].minter, STATE_DIR, x), filesBy[i].lock]);
+    const held = await holdLocks(paths, o.watch);
     if (!held) {
-      check(false, `${minterLockOf(bridge.minter)} or ${files.lock} is held by another process: one auto-mint per minter, with any key or state directory`);
+      check(false, `${paths.join(" or ")} is held by another process: one auto-mint per minter, with any key or state directory`);
       return FAILED;
     }
     locks = held;
   }
   try {
-    const start = Math.max(bridge.vaultBlock, o.from ?? DEFAULT_START_BLOCK);
-    const loaded = loadState(files.state, bridge, sender, start, o.send);
-    log(`     ${loaded.note}`);
-    const state = loaded.state;
-    if (o.from !== undefined && state.nextBlock !== start) {
-      log(`     --from: the scan starts at V3 #${n(start)} (the state had #${n(state.nextBlock)})`);
-      state.nextBlock = start;
-      state.startBlock = Math.min(state.startBlock, start);
-    }
     const errors = errorMap(BRIDGE_ERRORS);
-    const run: Run = {
-      o,
-      bridge,
-      sender,
-      files,
-      state,
-      sepolia: new SepoliaChain(new HttpRpc("Sepolia's RPC", sepoliaRpcs(), TIMEOUTS.sepoliaMs), bridge, errors),
-      evm: new HttpRpc("V3's EVM RPC", [o.evm], TIMEOUTS.evmMs),
-      locks,
-      signer: castSigner,
-      errors,
-      wired: false,
-      genesisChecked: false,
-      accounted: new Set(),
-    };
-    save(run);
-    if (o.retry !== undefined && !retryLock(run, o.retry)) return FAILED;
-    let wait = o.watch ?? 0;
+    // What every network's round shares: V3's EVM RPC and the V3 runtime's metadata.
+    const evm = new HttpRpc("V3's EVM RPC", [o.evm], TIMEOUTS.evmMs);
+    const metadata = new Map<number, Promise<Uint8Array>>();
+    const runs: Run[] = [];
+    for (const [i, bridge] of bridges.entries()) {
+      const x = o.networks[i];
+      const files = filesBy[i];
+      const start = Math.max(bridge.vaultBlock, o.from ?? START_BLOCKS[x]);
+      const loaded = loadState(files.state, bridge, sender, start, o.send);
+      log(`     ${loaded.note}`);
+      const state = loaded.state;
+      if (o.from !== undefined && state.nextBlock !== start) {
+        log(`     --from: the scan starts at V3 #${n(start)} (the state had #${n(state.nextBlock)})`);
+        state.nextBlock = start;
+        state.startBlock = Math.min(state.startBlock, start);
+      }
+      const network = NETWORKS[x];
+      const run: Run = {
+        // This network's --keep, --max-spend and --max-base-fee, where a round reads them.
+        o: { ...o, keep: o.keepBy[x], maxSpend: o.maxSpendBy[x], maxBaseFee: o.maxBaseFeeBy[x] },
+        bridge,
+        sender,
+        files,
+        state,
+        sepolia: new SepoliaChain(new HttpRpc(x === "sepolia" ? "Sepolia's RPC" : `${network.title}'s RPC`, rpcsOf(x), TIMEOUTS.sepoliaMs), bridge, errors),
+        evm,
+        locks,
+        signer: castSigner,
+        errors,
+        wired: false,
+        genesisChecked: false,
+        accounted: new Set(),
+        metadata,
+        holds: new Map(),
+      };
+      save(run);
+      if (o.retry !== undefined && !retryLock(run, o.retry)) return FAILED;
+      runs.push(run);
+    }
+    // Each network has its own wait: one whose round could not reach a node backs off alone.
+    const due = runs.map(() => 0);
+    const waits = runs.map(() => o.watch ?? 0);
     for (;;) {
-      const r = await round(run);
+      const codes: number[] = [];
+      for (const [i, run] of runs.entries()) {
+        if (o.watch !== undefined && Date.now() < due[i]) continue;
+        const r = await round(run);
+        codes.push(r.code);
+        if (o.watch === undefined) continue;
+        waits[i] = nextWait(o.watch, waits[i], r.trouble);
+        due[i] = Date.now() + waits[i] * 1000;
+      }
       if (o.watch === undefined) {
         log(o.send ? "" : "\nThe dry run is over. Nothing was signed or sent.");
-        return r.code;
+        return worstCode(codes);
       }
-      wait = nextWait(o.watch, wait, r.trouble);
-      log(`\nNext round in ${wait} s, at ${iso(Date.now() + wait * 1000)}.`);
-      await sleep(wait * 1000);
+      if (runs.length === 1) log(`\nNext round in ${waits[0]} s, at ${iso(due[0])}.`);
+      else log(`\nNext rounds: ${runs.map((r, i) => `${NETWORKS[networkOf(r.bridge)].title} in ${Math.max(0, Math.round((due[i] - Date.now()) / 1000))} s`).join(", ")}.`);
+      await sleep(Math.max(0, Math.min(...due) - Date.now()));
     }
   } finally {
     for (const lock of locks.reverse()) lock.release();

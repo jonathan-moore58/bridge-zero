@@ -47,10 +47,11 @@ export function ReturnPath() {
   const recomputed = burn?.burnNonce !== null && burn ? computeBurnId(SEPOLIA_CHAIN_ID, MINTER, BigInt(burn.burnNonce ?? "0")) : null;
   const liveBurns = minter.status === "live" ? Number(minter.value?.burnCount ?? 0n) : null;
   const unrecorded = liveBurns !== null && liveBurns > burns.length;
-  const releasedAll = RP.releases.filter((r) => r.status === "released");
-  const status = ran ? (releasedAll.length > 1 ? `run ${releasedAll.length} times` : "run once") : burn ? "burned, release pending" : "built, not run yet";
+  // This section's burns are Sepolia's, so it counts their releases only: those whose record names Sepolia's chain id, or none, which the relayer reads as Sepolia's.
+  const sepoliaReleases = RP.releases.filter((r) => r.status === "released" && (r.chainId ?? String(SEPOLIA_CHAIN_ID)) === String(SEPOLIA_CHAIN_ID));
+  const status = ran ? (sepoliaReleases.length > 1 ? `run ${sepoliaReleases.length} times` : "run once") : burn ? "burned, release pending" : "built, not run yet";
   // A release fast mode ran (the record's "by"), with its burn's and its execution's signing times.
-  const fast = releasedAll.find((r) => r.by === "fast") ?? null;
+  const fast = sepoliaReleases.find((r) => r.by === "fast") ?? null;
   const fastBurn = fast ? (burns.find((b) => b.txHash === fast.burnTx) ?? null) : null;
   const fastRun = fast?.approvals.find((a) => a.action === "execute") ?? null;
   const fastRows = [rowOf(fast?.burnTx ?? null), rowOf(fastRun?.extrinsicHash ?? null)];

@@ -2,10 +2,23 @@
 // SS58 addresses.
 
 import assert from "node:assert/strict";
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildRecords, checkReadmeTiming, markStaleOutputs, parseEvidence, parseRoadmap, parseVerify, readmeTimingSection } from "../build/records.ts";
+import {
+  buildRecords,
+  checkReadmeTiming,
+  latestRecordedMint,
+  lockTotals,
+  markStaleOutputs,
+  parseEvidence,
+  parseRoadmap,
+  parseVerify,
+  readAutoMints,
+  readmeTimingSection,
+} from "../build/records.ts";
 import { formatDuration, formatInt, formatUnits } from "../src/lib/format.ts";
 import { checksumAddress } from "../src/lib/hex.ts";
 import { keccak256 } from "../src/lib/hashes.ts";
@@ -56,20 +69,117 @@ test("the page recomputes lock 0's commitment and slot key as the records hold t
   }
 });
 
-test("totals follow the records: minted, burned, released", () => {
+test("totals follow the records: minted, pending, burned, released", () => {
   const t = r.totals;
   assert.equal(BigInt(t.supply), BigInt(t.minted) - BigInt(t.burned));
   assert.ok(t.locks >= 2, "locks 0 and 1");
   assert.ok(BigInt(t.minted) >= 200000000000000n, "1 wtPOT each for locks 0 and 1");
-  // Every lock minted and every release paid: what the vault holds equals the wtPOT supply.
+  // Over the locks the records know: what the vault took (the V3 record's amount of each lock it
+  // holds) less what the committee released, which is what was minted plus the recorded locks not
+  // minted yet, less the same, only while the mint records agree with the V3 record on every lock.
   const released = r.returnPath.releases.filter((x) => x.status === "released").reduce((n, x) => n + BigInt(x.amountNative ?? "0"), 0n);
-  assert.equal(BigInt(t.outstandingNative), BigInt(t.minted) - released);
+  assert.equal(BigInt(t.outstandingNative), BigInt(t.minted) + BigInt(t.pending) - released);
+  assert.ok(BigInt(t.pending) >= 0n);
   // Lock 2 was minted by auto-mint, from its own key (deployments/automint-sepolia-*.jsonl).
   if (t.locks >= 3) assert.ok(BigInt(t.minted) >= 201000000000000n, "lock 2's 0.01 wtPOT, minted by auto-mint");
   if (t.locks === 2 && released === 50000000000000n) {
     assert.equal(t.supply, "150000000000000");
     assert.equal(t.outstandingNative, "150000000000000");
   }
+});
+
+test("a recorded lock not minted yet is pending, and an auto-mint of a lock the V3 record lacks counts with what its history names", () => {
+  const D = "0xd9838a86cf83c28ee486544060d1ca4ca2971071" as const;
+  const lock = (nonce: number, amountNative: bigint) => ({ nonce, amountNative, recipient: D });
+  // Locks 0 to 3 recorded, 0 to 2 minted: lock 3 (0.001 tPOT, sent from a Substrate account) waits for its mint.
+  const recorded = [lock(0, 10n ** 14n), lock(1, 10n ** 14n), lock(2, 10n ** 12n), lock(3, 10n ** 11n)];
+  const minted = [lock(0, 10n ** 14n), lock(1, 10n ** 14n), lock(2, 10n ** 12n)];
+  const a = lockTotals(recorded, minted);
+  assert.deepEqual([a.locks, a.minted, a.pending, a.locked], [4, 201n * 10n ** 12n, 10n ** 11n, 2011n * 10n ** 11n]);
+  // Then auto-mint mints lock 3, and lock 4, which the V3 record lacks (sent from the app), from its history.
+  const b = lockTotals(recorded, [...minted, lock(3, 10n ** 11n), lock(4, 5n * 10n ** 13n)]);
+  assert.deepEqual([b.locks, b.minted, b.pending, b.locked], [5, 2511n * 10n ** 11n, 0n, 2511n * 10n ** 11n]);
+  assert.equal(b.mintedTo(D), b.minted);
+  // A nonce named twice counts once.
+  assert.equal(lockTotals([...recorded, lock(3, 10n ** 11n)], [...minted, lock(0, 10n ** 14n)]).locks, 4);
+  for (const t of [a, b]) {
+    assert.equal(t.locked, t.minted + t.pending, "outstanding = minted + pending - released");
+    assert.deepEqual(t.disagree, []);
+  }
+  // A mint record that says lock 1 was 2 tPOT while the V3 record holds 1: the vault took what the V3
+  // record says, the identity fails, and the lock is named (the build refuses it).
+  const c = lockTotals(recorded, [lock(0, 10n ** 14n), lock(1, 2n * 10n ** 14n), lock(2, 10n ** 12n)]);
+  assert.equal(c.locked, a.locked);
+  assert.notEqual(c.locked, c.minted + c.pending);
+  assert.deepEqual(
+    c.disagree.map((d) => [d.minted.nonce, d.recorded.amountNative, d.minted.amountNative]),
+    [[1, 10n ** 14n, 2n * 10n ** 14n]],
+  );
+  // Another recipient disagrees too; a mint that names none (a history without its attempt line) does not.
+  const E = "0x000000000000000000000000000000000000beef" as const;
+  assert.deepEqual(lockTotals(recorded, [{ ...lock(0, 10n ** 14n), recipient: E }]).disagree.map((d) => d.minted.nonce), [0]);
+  assert.deepEqual(lockTotals(recorded, [{ ...lock(0, 10n ** 14n), recipient: null }]).disagree, []);
+
+  // The histories: the attempt line gives the amount and the recipient; a minted result without one,
+  // another outcome and a line cut short are each read as the tool reads them. Nonces 1000 and 1001
+  // stand for locks sent from the app, which the V3 record does not hold.
+  const dir = mkdtempSync(join(tmpdir(), "bz-site-automint-"));
+  try {
+    const at = "2026-10-28T00:00:00.000Z";
+    const lines = [
+      { kind: "attempt", id: "a", lock: "1000", recipient: D, amount: "50000000000000", txNonce: 1, at },
+      { kind: "signed", id: "a", lock: "1000", txHash: `0x${"aa".repeat(32)}`, at },
+      { kind: "result", id: "a", lock: "1000", txHash: `0x${"aa".repeat(32)}`, outcome: "minted", at },
+      { kind: "result", id: "b", lock: "1001", txHash: `0x${"bb".repeat(32)}`, outcome: "minted", at },
+      { kind: "attempt", id: "c", lock: "1002", recipient: D, amount: "1", at },
+      { kind: "result", id: "c", lock: "1002", txHash: null, outcome: "reverted", at },
+    ].map((l) => JSON.stringify(l));
+    const file = `automint-sepolia-0x${"57".repeat(20)}.jsonl`;
+    writeFileSync(join(dir, file), `${lines.join("\n")}\n{"kind":"res`);
+    const read = readAutoMints(dir);
+    assert.deepEqual([...read.keys()].sort(), [1000, 1001]);
+    assert.deepEqual(read.get(1000), { amountNative: "50000000000000", recipient: D, txHash: `0x${"aa".repeat(32)}`, file });
+    assert.deepEqual(read.get(1001), { amountNative: null, recipient: null, txHash: `0x${"bb".repeat(32)}`, file });
+    // The repository's records with the repository's histories and that one: lock 1000 counts (0.5
+    // wtPOT), lock 1001 has no amount anywhere and is left out with a warning, and the build does not fail.
+    for (const f of readdirSync(join(repo, "deployments")).filter((x) => /^automint-sepolia-0x[0-9a-f]{40}\.jsonl$/.test(x))) copyFileSync(join(repo, "deployments", f), join(dir, f));
+    const withApp = buildRecords(repo, undefined, dir);
+    assert.equal(BigInt(withApp.totals.minted), BigInt(r.totals.minted) + 5n * 10n ** 13n);
+    assert.equal(withApp.totals.pending, r.totals.pending);
+    assert.equal(withApp.totals.locks, r.totals.locks + 1);
+    const released = r.returnPath.releases.filter((x) => x.status === "released").reduce((n, x) => n + BigInt(x.amountNative ?? "0"), 0n);
+    assert.equal(BigInt(withApp.totals.outstandingNative), BigInt(withApp.totals.minted) + BigInt(withApp.totals.pending) - released);
+    // A history that says a recorded lock no mint step names was minted with another amount than
+    // deployments/v3-testnet.json holds: the records contradict each other, and the build fails.
+    // (This history's name sorts first, so its line for that lock is the one read.)
+    type Rec = { locks: { status: string; vaultNonce?: string; amountNative: string; recipient: string }[]; steps: { kind: string; ok?: boolean; status?: number; lock?: { nonce: number } }[] };
+    const v3 = JSON.parse(readFileSync(join(repo, "deployments", "v3-testnet.json"), "utf8")) as Pick<Rec, "locks">;
+    const stepped = new Set((JSON.parse(readFileSync(join(repo, "deployments", "sepolia-bridge.json"), "utf8")) as Pick<Rec, "steps">).steps.filter((s) => s.kind === "mint" && s.ok === true && s.status === 1).map((s) => s.lock?.nonce));
+    const target = v3.locks.find((l) => l.status === "locked" && l.vaultNonce !== undefined && !stepped.has(Number(l.vaultNonce)));
+    assert.ok(target, "a recorded lock no mint step names (lock 2, which auto-mint minted)");
+    const more = (BigInt(target.amountNative) + 1n).toString();
+    const wrong = [
+      { kind: "attempt", id: "w", lock: target.vaultNonce, recipient: target.recipient, amount: more, txNonce: 9, at },
+      { kind: "result", id: "w", lock: target.vaultNonce, txHash: `0x${"cc".repeat(32)}`, outcome: "minted", at },
+    ].map((l) => JSON.stringify(l));
+    writeFileSync(join(dir, `automint-sepolia-0x${"00".repeat(20)}.jsonl`), `${wrong.join("\n")}\n`);
+    assert.throws(
+      () => buildRecords(repo, undefined, dir),
+      new RegExp(`automint-sepolia-0x0{40}\\.jsonl: lock ${target.vaultNonce} was minted as ${more} for 0x[0-9a-f]{40}, and deployments/v3-testnet\\.json holds ${target.amountNative} for`),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the latest transfer the page shows is the newest mint of a lock the V3 record holds", () => {
+  const step = (nonce: number, block: number) => ({ kind: "mint", ok: true, status: 1, block, lock: { nonce, amountNative: "1" } });
+  // The mint tool minted lock 4 last, sent from the app: deployments/v3-testnet.json lacks it, so the page shows lock 1's run.
+  const mints = [step(0, 100), step(4, 300), step(1, 200)];
+  assert.equal(latestRecordedMint(mints, new Set([0, 1, 2, 3]))?.block, 200);
+  assert.equal(latestRecordedMint(mints, new Set([0, 1, 4]))?.block, 300);
+  assert.equal(latestRecordedMint(mints, new Set([7])), null);
+  assert.deepEqual(mints.map((s) => s.block), [100, 300, 200], "the steps are left in their order");
 });
 
 test("the latest transfer is lock 1, with its bundle, its mint and the measured steps", () => {
@@ -183,6 +293,38 @@ test("the way back's duration comes from the records' timestamps", () => {
   assert.equal(formatDuration(t.seconds), "20 min");
 });
 
+test("each release names its burn's chain: the return path counts Sepolia's releases, not the rollups'", () => {
+  // The section shows Sepolia's burns and counts a release as theirs when its record names Sepolia's
+  // chain id, or none, which the relayer reads as Sepolia's: exactly the releases whose burn id
+  // Sepolia's minter gives.
+  const sepolia = String(11155111n);
+  const released = r.returnPath.releases.filter((x) => x.status === "released");
+  for (const x of released) {
+    const counted = (x.chainId ?? sepolia) === sepolia;
+    const sepoliaBurn = x.burnNonce !== null && x.burnId === burnId(11155111n, r.sepolia.minter, BigInt(x.burnNonce));
+    assert.equal(counted, sepoliaBurn, `the release of burn ${x.burnNonce} on chain ${x.chainId}`);
+  }
+  // Burns 0 and 1 on Sepolia (rows 47 to 51 and 56 to 58), then burn 0 on Base Sepolia and on
+  // Arbitrum Sepolia (rows 110 to 113): run 2 times from Sepolia, not 4.
+  assert.deepEqual(
+    released.slice(0, 2).map((x) => [x.chainId, x.burnNonce, x.by]),
+    [
+      [sepolia, "0", null],
+      [sepolia, "1", "fast"],
+    ],
+  );
+  if (released.length === 4) {
+    assert.deepEqual(
+      released.slice(2).map((x) => [x.chainId, x.burnNonce, x.by]),
+      [
+        ["84532", "0", "finality"],
+        ["421614", "0", "finality"],
+      ],
+    );
+    assert.equal(released.filter((x) => (x.chainId ?? sepolia) === sepolia).length, 2);
+  }
+});
+
 test("the roadmap is the README's, with plans and no promises", () => {
   const rm = r.roadmap;
   assert.ok(rm);
@@ -277,7 +419,8 @@ test("amounts and numbers are formatted without rounding", () => {
   assert.equal(formatDuration(486 * 6), "49 min");
 });
 
-test("evidence rows: Sepolia links, the rollups' Basescan and Arbiscan links, and V3 rows with their extrinsics resolved", () => {
+test("evidence rows: Sepolia links, the rollups' Basescan and Arbiscan links, and V3 rows with their extrinsics resolved; a short hash only on a V3 row", () => {
+  const base = "0xaffaf9e0f464552686c3478cb4ffb3b822accb98b656cbd2053579de70eefd2e";
   const md = [
     "### A table",
     "| # | What | Transaction | Block | Result |",
@@ -286,9 +429,12 @@ test("evidence rows: Sepolia links, the rollups' Basescan and Arbiscan links, an
     "| 48 | Funded | `0xe1c37a36…30209617` | V3 [#117,514](https://node-console.portaldot.dev/?rpc=x#/explorer/query/117514) | final |",
     `| 61 | Base Sepolia: \`SCL_EIP6565\` created | [\`0x4ef76f6f…\`](https://sepolia.basescan.org/tx/0x${"4e".repeat(32)}) | Base 50,885,111 | success, 2,064,643 gas |`,
     `| 81 | Arbitrum Sepolia: set change 59 → 60 | [\`0xe4d14094…\`](https://sepolia.arbiscan.io/tx/0x${"e4".repeat(32)}) | Arbitrum 323,331,271 | success |`,
+    `| 108 | Base Sepolia: burn 0 | [\`0xaffaf9e0…70eefd2e\`](https://sepolia.basescan.org/tx/${base}) | Base 51,177,673 | success |`,
+    `| 120 | A rollup row without its explorer link | \`0xaffaf9e0…70eefd2e\` | Base 51,177,673 | success |`,
   ].join("\n");
-  const rows = parseEvidence(md, ["0xe1c37a368392d3d1bbbffba8d9cbab36e96303bc93e201746d69b2d930209617"]);
-  assert.equal(rows.length, 4);
+  // The V3 record holds the rollup burn's hash too, in the release that names the burn.
+  const rows = parseEvidence(md, ["0xe1c37a368392d3d1bbbffba8d9cbab36e96303bc93e201746d69b2d930209617", base]);
+  assert.equal(rows.length, 6);
   assert.equal(rows[0]?.chain, "sepolia");
   assert.equal(rows[0]?.block, 11955414);
   assert.equal(rows[0]?.what, "Burn: `a | b`");
@@ -297,12 +443,23 @@ test("evidence rows: Sepolia links, the rollups' Basescan and Arbiscan links, an
   assert.equal(rows[1]?.tx, "0xe1c37a368392d3d1bbbffba8d9cbab36e96303bc93e201746d69b2d930209617");
   assert.ok(rows[1]?.blockUrl?.endsWith("/117514"));
   assert.deepEqual(
-    rows.slice(2).map((x) => [x.n, x.chain, x.tx, x.txText, x.block]),
+    rows.slice(2, 5).map((x) => [x.n, x.chain, x.tx, x.txText, x.block]),
     [
       [61, "base-sepolia", `0x${"4e".repeat(32)}`, "0x4ef76f6f…", 50885111],
       [81, "arbitrum-sepolia", `0x${"e4".repeat(32)}`, "0xe4d14094…", 323331271],
+      [108, "base-sepolia", base, "0xaffaf9e0…70eefd2e", 51177673],
     ],
   );
+  // Only a V3 row's short hash is resolved: a row with neither an explorer link nor a V3 block
+  // keeps its hash as printed, though the V3 record holds that hash too.
+  assert.equal(rows[5]?.n, 120);
+  assert.equal(rows[5]?.tx, null);
+  assert.equal(rows[5]?.txText, "0xaffaf9e0…70eefd2e");
+  // The repository's README: every row the page links on Sepolia's Etherscan links it there too.
+  const readme = readFileSync(join(repo, "README.md"), "utf8").toLowerCase();
+  for (const e of r.evidence.filter((x) => x.chain === "sepolia" && x.tx)) {
+    assert.ok(readme.includes(`(https://sepolia.etherscan.io/tx/${e.tx})`), `row ${e.n}: ${e.tx} is not linked on Sepolia's Etherscan in the README`);
+  }
 });
 
 test("the README's verify block: descriptions, commands and recorded outputs", () => {
