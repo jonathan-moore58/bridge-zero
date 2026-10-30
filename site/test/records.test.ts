@@ -75,10 +75,11 @@ test("totals follow the records: minted, pending, burned, released", () => {
   assert.ok(t.locks >= 2, "locks 0 and 1");
   assert.ok(BigInt(t.minted) >= 200000000000000n, "1 wtPOT each for locks 0 and 1");
   // Over the locks the records know: what the vault took (the V3 record's amount of each lock it
-  // holds) less what the committee released, which is what was minted plus the recorded locks not
-  // minted yet, less the same, only while the mint records agree with the V3 record on every lock.
+  // holds) less what the committee released, which is what was minted, on Sepolia and on the
+  // rollups, plus the recorded locks not minted yet, less the same, only while the mint records
+  // agree with the V3 record on every lock.
   const released = r.returnPath.releases.filter((x) => x.status === "released").reduce((n, x) => n + BigInt(x.amountNative ?? "0"), 0n);
-  assert.equal(BigInt(t.outstandingNative), BigInt(t.minted) + BigInt(t.pending) - released);
+  assert.equal(BigInt(t.outstandingNative), BigInt(t.minted) + BigInt(t.mintedRollups) + BigInt(t.pending) - released);
   assert.ok(BigInt(t.pending) >= 0n);
   // Lock 2 was minted by auto-mint, from its own key (deployments/automint-sepolia-*.jsonl).
   if (t.locks >= 3) assert.ok(BigInt(t.minted) >= 201000000000000n, "lock 2's 0.01 wtPOT, minted by auto-mint");
@@ -138,20 +139,22 @@ test("a recorded lock not minted yet is pending, and an auto-mint of a lock the 
     writeFileSync(join(dir, file), `${lines.join("\n")}\n{"kind":"res`);
     const read = readAutoMints(dir);
     assert.deepEqual([...read.keys()].sort(), [1000, 1001]);
-    assert.deepEqual(read.get(1000), { amountNative: "50000000000000", recipient: D, txHash: `0x${"aa".repeat(32)}`, file });
-    assert.deepEqual(read.get(1001), { amountNative: null, recipient: null, txHash: `0x${"bb".repeat(32)}`, file });
-    // The repository's records with the repository's histories and that one: lock 1000 counts (0.5
-    // wtPOT), lock 1001 has no amount anywhere and is left out with a warning, and the build does not fail.
-    for (const f of readdirSync(join(repo, "deployments")).filter((x) => /^automint-sepolia-0x[0-9a-f]{40}\.jsonl$/.test(x))) copyFileSync(join(repo, "deployments", f), join(dir, f));
+    assert.deepEqual(read.get(1000), { amountNative: "50000000000000", recipient: D, txHash: `0x${"aa".repeat(32)}`, network: "sepolia", file });
+    assert.deepEqual(read.get(1001), { amountNative: null, recipient: null, txHash: `0x${"bb".repeat(32)}`, network: "sepolia", file });
+    // The repository's records with the repository's histories (every chain's) and that one: lock 1000
+    // counts (0.5 wtPOT), lock 1001 has no amount anywhere and is left out with a warning, and the
+    // build does not fail.
+    for (const f of readdirSync(join(repo, "deployments")).filter((x) => /^automint-[a-z-]+-0x[0-9a-f]{40}\.jsonl$/.test(x))) copyFileSync(join(repo, "deployments", f), join(dir, f));
     const withApp = buildRecords(repo, undefined, dir);
     assert.equal(BigInt(withApp.totals.minted), BigInt(r.totals.minted) + 5n * 10n ** 13n);
     assert.equal(withApp.totals.pending, r.totals.pending);
     assert.equal(withApp.totals.locks, r.totals.locks + 1);
     const released = r.returnPath.releases.filter((x) => x.status === "released").reduce((n, x) => n + BigInt(x.amountNative ?? "0"), 0n);
-    assert.equal(BigInt(withApp.totals.outstandingNative), BigInt(withApp.totals.minted) + BigInt(withApp.totals.pending) - released);
+    assert.equal(BigInt(withApp.totals.outstandingNative), BigInt(withApp.totals.minted) + BigInt(withApp.totals.mintedRollups) + BigInt(withApp.totals.pending) - released);
     // A history that says a recorded lock no mint step names was minted with another amount than
     // deployments/v3-testnet.json holds: the records contradict each other, and the build fails.
-    // (This history's name sorts first, so its line for that lock is the one read.)
+    // (This history's name sorts before the repository's Sepolia history, the only other one that
+    // names that lock, so its line is the one read.)
     type Rec = { locks: { status: string; vaultNonce?: string; amountNative: string; recipient: string }[]; steps: { kind: string; ok?: boolean; status?: number; lock?: { nonce: number } }[] };
     const v3 = JSON.parse(readFileSync(join(repo, "deployments", "v3-testnet.json"), "utf8")) as Pick<Rec, "locks">;
     const stepped = new Set((JSON.parse(readFileSync(join(repo, "deployments", "sepolia-bridge.json"), "utf8")) as Pick<Rec, "steps">).steps.filter((s) => s.kind === "mint" && s.ok === true && s.status === 1).map((s) => s.lock?.nonce));
@@ -166,6 +169,76 @@ test("a recorded lock not minted yet is pending, and an auto-mint of a lock the 
     assert.throws(
       () => buildRecords(repo, undefined, dir),
       new RegExp(`automint-sepolia-0x0{40}\\.jsonl: lock ${target.vaultNonce} was minted as ${more} for 0x[0-9a-f]{40}, and deployments/v3-testnet\\.json holds ${target.amountNative} for`),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("the rollups' auto-mint histories count for the vault, and only Sepolia's for Sepolia's wtPOT", () => {
+  // One vault backs wtPOT on Sepolia, Base Sepolia and Arbitrum Sepolia, and auto-mint keeps a history
+  // for each chain (automint-<network>-<sender>.jsonl). A lock the app sent for a rollup is in no
+  // other record: locks 6 and 7 (rows 117 to 120) count only through the rollups' histories, and
+  // without them the vault's outstanding would fall below what was released for their burns.
+  const D = "0xd9838a86cf83c28ee486544060d1ca4ca2971071" as const;
+  const O = "0xc6e997a757f0be410714ed04b869efa1aee32011" as const;
+  const onRollups = [...readAutoMints(join(repo, "deployments"))].filter(([, m]) => m.network !== "sepolia");
+  assert.equal(BigInt(r.totals.mintedRollups), onRollups.reduce((n, [, m]) => n + BigInt(m.amountNative ?? "0"), 0n));
+  if (r.totals.locks === 8) {
+    assert.deepEqual(
+      onRollups.map(([n, m]) => [n, m.network, m.amountNative, m.recipient]).sort((a, b) => Number(a[0]) - Number(b[0])),
+      [
+        [4, "base-sepolia", "100000000000", D],
+        [5, "arbitrum-sepolia", "100000000000", D],
+        [6, "base-sepolia", "100000000000000", O],
+        [7, "arbitrum-sepolia", "100000000000000", O],
+      ],
+    );
+    // Locks 0 to 7, 4.013 tPOT, less 2.602 released: nothing pending, and the vault's outstanding is
+    // the wtPOT supply, all of it on Sepolia.
+    assert.deepEqual([r.totals.mintedRollups, r.totals.pending, r.totals.outstandingNative, r.totals.supply], ["200200000000000", "0", "141100000000000", "141100000000000"]);
+  }
+
+  const dir = mkdtempSync(join(tmpdir(), "bz-site-automint-rollups-"));
+  try {
+    const at = "2026-10-28T00:00:00.000Z";
+    const history = (id: string, lock: string, amount: string, recipient: string) =>
+      [
+        { kind: "attempt", id, lock, recipient, amount, txNonce: 1, at },
+        { kind: "result", id, lock, txHash: `0x${id.repeat(32)}`, outcome: "minted", at },
+      ]
+        .map((l) => `${JSON.stringify(l)}\n`)
+        .join("");
+    for (const f of readdirSync(join(repo, "deployments")).filter((x) => /^automint-[a-z-]+-0x[0-9a-f]{40}\.jsonl$/.test(x))) copyFileSync(join(repo, "deployments", f), join(dir, f));
+    // Two more locks the V3 record lacks, sent from the app: 1000 minted on Base Sepolia (1 wtPOT) and
+    // 1001 on Arbitrum Sepolia (0.5). Each history's name sorts before the repository's history for
+    // its chain, so its lines are the ones read.
+    const arb = `automint-arbitrum-sepolia-0x${"00".repeat(20)}.jsonl`;
+    writeFileSync(join(dir, `automint-base-sepolia-0x${"00".repeat(20)}.jsonl`), history("dd", "1000", "100000000000000", O));
+    writeFileSync(join(dir, arb), history("ee", "1001", "50000000000000", O));
+    const read = readAutoMints(dir);
+    assert.deepEqual([read.get(1000)?.network, read.get(1001)?.network], ["base-sepolia", "arbitrum-sepolia"]);
+    const f = buildRecords(repo, undefined, dir);
+    const more = 15n * 10n ** 13n;
+    assert.equal(f.totals.locks, r.totals.locks + 2);
+    assert.equal(BigInt(f.totals.mintedRollups), BigInt(r.totals.mintedRollups) + more);
+    assert.equal(BigInt(f.totals.outstandingNative), BigInt(r.totals.outstandingNative) + more);
+    // Sepolia's wtPOT is as before: no rollup's mint is in its supply or in the recipient's balance.
+    assert.deepEqual(
+      [f.totals.minted, f.totals.burned, f.totals.supply, f.totals.recipientBalance, f.totals.pending],
+      [r.totals.minted, r.totals.burned, r.totals.supply, r.totals.recipientBalance, r.totals.pending],
+    );
+    // A rollup's history that says a recorded lock was minted with another amount than
+    // deployments/v3-testnet.json holds fails the build, as Sepolia's does.
+    type V3Lock = { status: string; vaultNonce?: string; dstChainId: string; amountNative: string; recipient: string };
+    const v3 = JSON.parse(readFileSync(join(repo, "deployments", "v3-testnet.json"), "utf8")) as { locks: V3Lock[] };
+    const target = v3.locks.find((l) => l.status === "locked" && l.dstChainId === "421614" && l.vaultNonce !== undefined);
+    assert.ok(target?.vaultNonce, "a recorded lock for Arbitrum Sepolia (lock 5)");
+    const wrong = (BigInt(target.amountNative) + 1n).toString();
+    writeFileSync(join(dir, arb), history("ff", target.vaultNonce, wrong, target.recipient));
+    assert.throws(
+      () => buildRecords(repo, undefined, dir),
+      new RegExp(`automint-arbitrum-sepolia-0x0{40}\\.jsonl: lock ${target.vaultNonce} was minted as ${wrong} for 0x[0-9a-f]{40}, and deployments/v3-testnet\\.json holds ${target.amountNative} for`),
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -305,7 +378,8 @@ test("each release names its burn's chain: the return path counts Sepolia's rele
     assert.equal(counted, sepoliaBurn, `the release of burn ${x.burnNonce} on chain ${x.chainId}`);
   }
   // Burns 0 and 1 on Sepolia (rows 47 to 51 and 56 to 58), then burn 0 on Base Sepolia and on
-  // Arbitrum Sepolia (rows 110 to 113): run 2 times from Sepolia, not 4.
+  // Arbitrum Sepolia (rows 110 to 113), then burn 1 on Arbitrum Sepolia and on Base Sepolia, in fast
+  // mode (rows 121 to 126): run 2 times from Sepolia, not 6.
   assert.deepEqual(
     released.slice(0, 2).map((x) => [x.chainId, x.burnNonce, x.by]),
     [
@@ -313,12 +387,14 @@ test("each release names its burn's chain: the return path counts Sepolia's rele
       [sepolia, "1", "fast"],
     ],
   );
-  if (released.length === 4) {
+  if (released.length === 6) {
     assert.deepEqual(
       released.slice(2).map((x) => [x.chainId, x.burnNonce, x.by]),
       [
         ["84532", "0", "finality"],
         ["421614", "0", "finality"],
+        ["421614", "1", "fast"],
+        ["84532", "1", "fast"],
       ],
     );
     assert.equal(released.filter((x) => (x.chainId ?? sepolia) === sepolia).length, 2);
