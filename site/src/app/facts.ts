@@ -1,5 +1,5 @@
 // What the app states as fact: the chains, and the times and costs measured on the recorded runs
-// (README rows 24 to 58, and 98 to 113 for the rollups). Each number names the run it comes from.
+// (README rows 24 to 58, and 98 to 126 for the rollups). Each number names the run it comes from.
 // The destinations, Sepolia and the rollups, are configured in ./dests.ts.
 
 import { V3_CHAIN_ID } from "../lib/endpoints.ts";
@@ -63,28 +63,63 @@ export const TIME: Record<"in" | Speed, readonly [string, string]> = {
  */
 export const AUTO_TIME = ["≈ 2½ min", "auto-mint, measured Oct 27"] as const;
 
+/** A rollup: a destination other than Sepolia. */
+export type RollupKey = Exclude<DestKey, "sepolia">;
+
 /**
- * The rollups' times. None was measured there end to end: locks 4 and 5 waited for auto-mint to
- * start serving the rollups, and both burns 0 for the watcher (README rows 98 to 113), so each is
- * Sepolia's measured part where the chain does not matter, and an estimate where it does. The mint
- * yourself is lock 1's 48 s (its V3 steps, and a mint a rollup takes in under a second rather than
- * Sepolia's 15 s). Auto-mint is the same process, its 0.001 tPOT minimum and 90 s grace (handoff.ts).
- * Fast reads 180 or 144 blocks, the 36 s Sepolia's 3 take, then the watcher and the two approvals
- * as on burn 1. Standard waits for the batch's finality on Sepolia, the chain's own as measured on
- * Oct 28 (./dests.ts, finality: about 20 minutes of Base Sepolia, 17.5 of Arbitrum Sepolia), then
- * about a minute of the watcher's round and the approvals: about 21 and 19 minutes.
+ * The rollups' runs, in seconds by the block timestamps: the owner's wallet in the app on Oct 28
+ * (README rows 114 to 126, "The app: the first transfers from the owner's own wallet"). Auto-mint
+ * minted lock 6 on Base Sepolia 139 s after its V3 block (rows 117 and 118) and lock 7 on Arbitrum
+ * Sepolia 133 s after its (rows 119 and 120), 90 s of each auto-mint's grace (handoff.ts). The
+ * watcher released Arbitrum Sepolia's burn 1 in fast mode 105 s after the burn's block (rows 121
+ * to 123).
+ * Base Sepolia's burn 1 took 905 s (rows 124 to 126): it waited while Arbitrum Sepolia's release
+ * held the watcher's fast budget (README, after row 126), so it times that wait, not the chain:
+ * `fast` is null there.
  */
-const ROLLUP_TIME: Record<"in" | "auto" | "fast", readonly [string, string]> = {
-  in: ["≈ 48 s", "as measured on Sepolia, Oct 20"],
-  auto: ["≈ 2½ min", "est., as measured on Sepolia"],
-  fast: ["≈ 1½ min", "est., 36 s of blocks, then the watcher"],
-};
+export const ROLLUP_RUNS = {
+  "base-sepolia": { auto: 139, fast: null },
+  "arbitrum-sepolia": { auto: 133, fast: 105 },
+} as const satisfies Record<RollupKey, { auto: number; fast: number | null }>;
+
+/** Fast on a rollup while the budget is free: the one run that timed it, Arbitrum Sepolia's burn 1. */
+const ROLLUP_FAST = { seconds: ROLLUP_RUNS["arbitrum-sepolia"].fast, on: "arbitrum-sepolia" } as const;
+
+/** V3's block time (fixtures/probe, about 6 s): a lock's own block, before the runs' clocks start. */
+const V3_BLOCK_S = 6;
+
+const QUARTERS = ["", "¼", "½", "¾"] as const;
+
+/** Seconds as the card states a few minutes: to the nearest quarter of a minute, "≈ 2¼ min". */
+export function aboutMinutes(seconds: number): string {
+  const q = Math.round(seconds / 15);
+  return `≈ ${Math.floor(q / 4)}${QUARTERS[q % 4] ?? ""} min`;
+}
+
+/**
+ * The rollups' times. Auto-mint's is each chain's run (ROLLUP_RUNS) and the lock's own block, as
+ * Sepolia's is (AUTO_TIME): about 2½ minutes on Base Sepolia and 2¼ on Arbitrum Sepolia. Fast reads
+ * 36 s of either chain's blocks (180 or 144), then the watcher's round and the two approvals on V3:
+ * Arbitrum Sepolia's run, which Base Sepolia's would take too while the budget is free. The mint
+ * yourself is lock 1's 48 s (its V3 steps, and a mint a rollup takes in under a second rather than
+ * Sepolia's 15 s): no rollup has run it yet. Standard waits for the batch's finality on Sepolia, the
+ * chain's own as measured on Oct 28 (./dests.ts, finality: about 20 minutes of Base Sepolia, 17.5 of
+ * Arbitrum Sepolia), then about a minute of the watcher's round and the approvals: about 21 and 19
+ * minutes.
+ */
+function rollupTime(dest: RollupKey, mode: "in" | "auto" | "fast"): readonly [string, string] {
+  if (mode === "in") return ["≈ 48 s", "as measured on Sepolia, Oct 20"];
+  const run = ROLLUP_RUNS[dest];
+  if (mode === "auto") return [aboutMinutes(run.auto + V3_BLOCK_S), "auto-mint, measured Oct 28"];
+  if (run.fast !== null) return [`≈ ${run.fast} s`, "measured Oct 28"];
+  return [`≈ ${ROLLUP_FAST.seconds} s`, `est., as measured on ${destOf(ROLLUP_FAST.on).short}`];
+}
 
 /** How long a transfer to or from `dest` usually takes, and where that comes from: the way in sent by its locker or by auto-mint, or a burn's release speed. */
 export function timeOf(dest: DestKey, mode: "in" | "auto" | Speed): readonly [string, string] {
   if (dest === "sepolia") return mode === "auto" ? AUTO_TIME : TIME[mode];
   if (mode === "std") return [`≈ ${Math.round(destOf(dest).finality.seconds / 60 + 1)} min`, "est., its batch final on Sepolia"];
-  return ROLLUP_TIME[mode];
+  return rollupTime(dest, mode);
 }
 
 /**

@@ -75,6 +75,9 @@ const setForm = (p: Partial<Form>) => {
 
 export const useCardDest = (): DestKey => useBox(cardDest);
 
+/** "≈ 2¼ min" in running text: "about 2¼ minutes". */
+const inWords = (t: string): string => t.replace(/^≈ /, "about ").replace(/ min$/, " minutes").replace(/ s$/, " seconds");
+
 /** "≈ 84 s" as the card's big figures set it: the number, and its unit apart. */
 function timeParts(t: string): [string, string] {
   const i = t.lastIndexOf(" ");
@@ -1661,8 +1664,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               {d.short} checks 2 of 2 V3 validator signatures, a storage proof of your lock and its nonce. It still trusts V3's validator set (2 keys on the testnet),
               V3's sudo key and the light client's admin.{" "}
               {d.key === "sepolia"
-                ? `Auto-mint is the operator's process: about 2½ minutes after your lock it sends the mint from its own key and pays the gas, at most ${AUTO_MINT.dailyEth} ETH a day, on one machine.`
-                : `Auto-mint is the operator's process, one for Sepolia and the two rollups: about 2½ minutes after your lock it sends the mint on ${d.short} from its own key and pays the gas, at most ${AUTO_MINT.rollupDailyEth} ETH a day there, on one machine. After V3 changes validator set (${CHANGES}), it waits for the relayer to bring this client to the new set, about ${RELAY_AFTER_CHANGE_MS / 60_000} minutes later.`}{" "}
+                ? `Auto-mint is the operator's process: ${inWords(timeOf(d.key, "auto")[0])} after your lock it sends the mint from its own key and pays the gas, at most ${AUTO_MINT.dailyEth} ETH a day, on one machine.`
+                : `Auto-mint is the operator's process, one for Sepolia and the two rollups: ${inWords(timeOf(d.key, "auto")[0])} after your lock it sends the mint on ${d.short} from its own key and pays the gas, at most ${AUTO_MINT.rollupDailyEth} ETH a day there, on one machine. After V3 changes validator set (${CHANGES}), it waits for the relayer to bring this client to the new set, about ${RELAY_AFTER_CHANGE_MS / 60_000} minutes later.`}{" "}
               It can only mint what your lock commits to. Anyone can still send the mint: if auto-mint has not minted it within 5 minutes, this page offers it to
               you.{" "}
               {AUTO_MINT.substrate

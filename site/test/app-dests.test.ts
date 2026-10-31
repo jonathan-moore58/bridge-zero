@@ -34,7 +34,24 @@ import {
   type Dest,
   type DestKey,
 } from "../src/app/dests.ts";
-import { AUTO_TIME, BURN_GAS, BURN_GAS_FULL, CH, LATER_CHAINS, MINT_GAS, MINT_GAS_FULL, SEPOLIA_FINALITY, TIME, chainById, fromOf, sendChain, timeOf, toOf } from "../src/app/facts.ts";
+import {
+  AUTO_TIME,
+  BURN_GAS,
+  BURN_GAS_FULL,
+  CH,
+  LATER_CHAINS,
+  MINT_GAS,
+  MINT_GAS_FULL,
+  ROLLUP_RUNS,
+  SEPOLIA_FINALITY,
+  TIME,
+  aboutMinutes,
+  chainById,
+  fromOf,
+  sendChain,
+  timeOf,
+  toOf,
+} from "../src/app/facts.ts";
 import { SEPOLIA, SEPOLIA_HISTORY, SEPOLIA_LOGS } from "../src/lib/endpoints.ts";
 import type { Hex } from "../src/lib/hex.ts";
 
@@ -412,16 +429,37 @@ test("each destination's explorer links its transactions and blocks", () => {
   assert.equal(explorerTx(destOf("sepolia"), h), `https://sepolia.etherscan.io/tx/${h}`);
 });
 
-test("the times the card states: Sepolia's as measured, unchanged; a rollup's as estimated, and said so", () => {
+test("the times the card states: Sepolia's as measured, unchanged; a rollup's as measured on Oct 28 where it ran, and an estimate said so where it did not", () => {
   assert.deepEqual(timeOf("sepolia", "in"), TIME.in);
   assert.deepEqual(timeOf("sepolia", "fast"), ["≈ 84 s", "measured Oct 24"]);
   assert.deepEqual(timeOf("sepolia", "std"), ["≈ 17 min", "est., with the watcher"]);
   assert.deepEqual(timeOf("sepolia", "auto"), AUTO_TIME);
+  // Auto-mint: each rollup's own run, 139 s and 133 s from the lock's V3 block, with the lock's own block (about 6 s), as Sepolia's 144 s is.
+  assert.deepEqual(timeOf("base-sepolia", "auto"), ["≈ 2½ min", "auto-mint, measured Oct 28"]);
+  assert.deepEqual(timeOf("arbitrum-sepolia", "auto"), ["≈ 2¼ min", "auto-mint, measured Oct 28"]);
+  assert.equal(aboutMinutes(144 + 6), AUTO_TIME[0], "the same rounding gives Sepolia's");
+  // Fast: Arbitrum Sepolia's burn 1, 105 s; Base Sepolia's burn 1 waited for the fast budget, so its time is Arbitrum Sepolia's, said to be.
+  assert.deepEqual(timeOf("arbitrum-sepolia", "fast"), ["≈ 105 s", "measured Oct 28"]);
+  assert.deepEqual(timeOf("base-sepolia", "fast"), ["≈ 105 s", "est., as measured on Arbitrum Sepolia"]);
   for (const d of ROLLUPS) {
-    for (const mode of ["in", "auto", "fast", "std"] as const) assert.match(timeOf(d.key, mode)[1], /^(est\.|as measured on Sepolia)/, `${d.key} ${mode}`);
-    assert.equal(timeOf(d.key, "auto")[0], AUTO_TIME[0]);
+    // No rollup has timed a mint sent by its locker, nor a release after finality.
+    assert.match(timeOf(d.key, "in")[1], /^as measured on Sepolia/, d.key);
+    assert.match(timeOf(d.key, "std")[1], /^est\./, d.key);
   }
   // Standard: the chain's own finality, then about a minute of the watcher's round and the approvals.
   assert.equal(timeOf("base-sepolia", "std")[0], "≈ 21 min");
   assert.equal(timeOf("arbitrum-sepolia", "std")[0], "≈ 19 min");
+});
+
+test("the rollups' runs are the README's: lock 6 and lock 7 minted 139 s and 133 s after their V3 blocks, Arbitrum Sepolia's burn 1 released 105 s after its block", () => {
+  const readme = readFileSync(join(repo, "README.md"), "utf8").replace(/\s+/g, " ");
+  const app = readme.slice(readme.indexOf("### The app: the first transfers from the owner's own wallet"));
+  assert.ok(app.length > 0 && app.length < readme.length, "the README's section on the app's first transfers");
+  const run = (re: RegExp) => Number(re.exec(app)?.[1]);
+  assert.equal(run(/lock 6's V3 block is stamped \d\d:\d\d:\d\d and its mint's Base Sepolia block \d\d:\d\d:\d\d, (\d+) seconds/), ROLLUP_RUNS["base-sepolia"].auto);
+  assert.equal(run(/lock 7's V3 block \d\d:\d\d:\d\d and its mint's Arbitrum Sepolia block \d\d:\d\d:\d\d, (\d+) seconds/), ROLLUP_RUNS["arbitrum-sepolia"].auto);
+  assert.equal(run(/\| \*\*123\*\* \|[^|]*; (\d+) seconds after the burn's block\*\* \|/), ROLLUP_RUNS["arbitrum-sepolia"].fast);
+  // Base Sepolia's burn 1 waited for the fast budget: its 905 s are not a chain's time.
+  assert.match(app, /From Base Sepolia it took 905 seconds, .* because the fast budget was full/);
+  assert.equal(ROLLUP_RUNS["base-sepolia"].fast, null);
 });
