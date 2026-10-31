@@ -5,8 +5,9 @@
 // from the current sources, the light client's storage after initialize (for a simulation), the
 // errors a revert names, the offline checks of a mint bundle, the demo's tampered and replayed
 // calls with the reverts they have to get, the guard that keeps a dry run from sending (on fetch,
-// on the WebSocket client and on a polkadot-js provider), and the windows a log search asks. No
-// network access: mint.ts, release.ts and bridge.test.ts use it.
+// on the WebSocket client and on a polkadot-js provider), a polkadot-js connection given up after
+// its timeout, and the windows a log search asks. No network access: mint.ts, release.ts,
+// v3-vault.ts and bridge.test.ts use it.
 
 import { keccak_256 } from "@noble/hashes/sha3.js";
 import { bytesToHex, concatBytes, equalBytes, flipByte, hexToBytes, shortHex, type Hex } from "./bytes.js";
@@ -811,6 +812,44 @@ export function guardProvider<P extends JsonRpcProvider>(provider: P, where: str
   provider.send = guarded.send as P["send"];
   provider.subscribe = guarded.subscribe as P["subscribe"];
   return provider;
+}
+
+// ---------------------------------------------------------------------------------------
+// The V3 node's connection through polkadot-js
+
+/** What connectWithin calls on a polkadot-js provider (WsProvider) and on the API made on it (ApiPromise). */
+export interface Disconnects {
+  disconnect(): Promise<void>;
+}
+
+/**
+ * The API `create` makes on `provider` (ApiPromise.create), or an error once `ms` have passed without
+ * one: "no connection after <s> s". After a timeout or a failure of `create` the provider is
+ * disconnected, so that it stops trying again. Nothing that settles after the timeout is left
+ * behind: an API is disconnected as it comes, as no caller holds it, and a failure is caught.
+ * (ApiPromise.create resolves once the API is ready and never rejects, and once its provider is
+ * disconnected it does not settle at all; the late cases are covered all the same.) release.ts and
+ * v3-vault.ts connect to the V3 node with it.
+ */
+export async function connectWithin<A extends Disconnects>(create: () => Promise<A>, provider: Disconnects, ms: number): Promise<A> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let late = false;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      late = true;
+      reject(new Error(`no connection after ${ms / 1000} s`));
+    }, ms);
+  });
+  try {
+    const created = create();
+    created.then((api) => (late ? api.disconnect() : undefined)).catch(() => undefined);
+    return await Promise.race([created, timeout]);
+  } catch (error) {
+    await provider.disconnect().catch(() => undefined);
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // ---------------------------------------------------------------------------------------

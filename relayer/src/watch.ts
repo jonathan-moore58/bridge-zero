@@ -2,8 +2,9 @@
 // when a burn on Sepolia qualifies for its release (Sepolia's finality, or --confirmations n blocks
 // on top of it up to --fast-cap), what the committee does next for it (open the operation, run it,
 // nothing, or leave it to the members), one round of the watcher over the burns through ports
-// release.ts fills with the chains, the lock that lets one watcher run per committee, and the wait
-// between rounds. A burn on a rollup (Base Sepolia, Arbitrum Sepolia) qualifies the same way, by
+// release.ts fills with the chains, the lock that lets one watcher run per committee, the wait
+// between rounds, and the last resort that keeps the watcher running through an error no round
+// handles. A burn on a rollup (Base Sepolia, Arbitrum Sepolia) qualifies the same way, by
 // that chain's finality and confirmations (wayback.ts has each chain's rule), and a round reads one
 // chain's burns. release.ts and watch.test.ts use it.
 
@@ -1074,3 +1075,49 @@ function heldLock(path: string, content: string): Lock {
     },
   };
 }
+
+// ---------------------------------------------------------------------------------------
+// The last resort: an error no round handles
+
+/** How many errors lastResort has written (outsideErrors). */
+let outside = 0;
+
+/**
+ * Keeps a watcher running through an error that reaches the process outside every round, and writes
+ * it with the time through `write` (release.ts: to stderr): an uncaught exception, thrown from a
+ * timer or a socket's event, or an unhandled rejection, a promise nothing waits for. The V3 node's
+ * connection throws one that way: polkadot-js subscribes to the runtime version at the end of its
+ * init (and again after each reconnection) with no error handler, and RxJS throws that
+ * subscription's error from a timer. On Oct 30 its request had no answer after the laptop slept, the
+ * provider gave it up after its request timeout ("No response received from RPC endpoint in 60s")
+ * while a round waited on the EVM RPC, and Node ended the watcher. Going on is safe: each round
+ * reconnects and re-reads its state from the chains and the records, and the connection that threw
+ * is a round's, which the round disconnects when it ends; that round signs nothing more
+ * (outsideErrors), as the error may have left its connection half updated. An error a round throws
+ * never comes here: a round is an async function, so it rejects the round's promise, which the
+ * watcher waits for and handles as before (a fatal stop leaves the halt file and ends it with exit
+ * code 4); and every signing comes after its checks, the lock and the halt file, inside a round.
+ */
+export function lastResort(write: (line: string) => void): void {
+  const report = (what: string) => (error: unknown) => {
+    outside += 1;
+    try {
+      write(`${new Date().toISOString()}: ${what} that no round handles; the watcher goes on: ${error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error)}`);
+    } catch {
+      // nowhere to write it: the watcher goes on all the same
+    }
+  };
+  process.on("uncaughtException", report("an uncaught exception"));
+  process.on("unhandledRejection", report("an unhandled rejection"));
+}
+
+/**
+ * How many errors no round handles lastResort has written so far. A round of the watcher reads it as
+ * it connects to V3, then before each signing and once signed (release.ts approveFor): once it has
+ * changed, nothing more is signed in that round, and the next round connects again. The error may
+ * have come from the round's connection, and polkadot-js may then have left it half updated: the
+ * subscription that throws it also applies a runtime upgrade, taking the new runtime version before
+ * the new metadata, so an upgrade it fails to apply would sign for the new runtime a call encoded
+ * with the old metadata.
+ */
+export const outsideErrors = (): number => outside;

@@ -107,6 +107,7 @@ import type {} from "@polkadot/api/augment";
 import type { SubmittableExtrinsic } from "@polkadot/api/types";
 import type { KeyringPair$Json } from "@polkadot/keyring/types";
 import type { EventRecord } from "@polkadot/types/interfaces";
+import { connectWithin } from "./bridge.js";
 import { bytesToHex, equalBytes, hexToBytes, shortHex, type Hex } from "./bytes.js";
 import { blake2_256, systemAccountKey } from "./hash.js";
 import { reviveOriginalAccountKey } from "./revive.js";
@@ -666,30 +667,28 @@ class EvmRpc {
   }
 }
 
-/** Connects to the V3 node, or throws Unreachable after CONNECT_TIMEOUT. */
+/**
+ * Connects to the V3 node, or throws Unreachable after CONNECT_TIMEOUT (bridge.ts connectWithin:
+ * the provider is disconnected then, and so is a connection made later).
+ */
 async function connectV3(url: string): Promise<ApiPromise> {
   const { ApiPromise, WsProvider } = await polkadot();
   const provider = new WsProvider(url, 2_500, {}, 60_000);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`no connection after ${CONNECT_TIMEOUT / 1000} s`)), CONNECT_TIMEOUT);
-  });
   try {
-    return await Promise.race([
-      ApiPromise.create({
-        provider,
-        noInitWarn: true,
-        // Two transaction extensions polkadot-js does not know; in V3's metadata both are empty
-        // structs with no implicit data, so they add nothing to the extrinsic or what it signs.
-        signedExtensions: { AuthorizeCall: { extrinsic: {}, payload: {} }, EthSetOrigin: { extrinsic: {}, payload: {} } },
-      }),
-      timeout,
-    ]);
+    return await connectWithin(
+      () =>
+        ApiPromise.create({
+          provider,
+          noInitWarn: true,
+          // Two transaction extensions polkadot-js does not know; in V3's metadata both are empty
+          // structs with no implicit data, so they add nothing to the extrinsic or what it signs.
+          signedExtensions: { AuthorizeCall: { extrinsic: {}, payload: {} }, EthSetOrigin: { extrinsic: {}, payload: {} } },
+        }),
+      provider,
+      CONNECT_TIMEOUT,
+    );
   } catch (error) {
-    await provider.disconnect().catch(() => undefined);
     throw new Unreachable(`the V3 node ${new URL(url).host} is unreachable (${errorText(error)})`);
-  } finally {
-    clearTimeout(timer);
   }
 }
 

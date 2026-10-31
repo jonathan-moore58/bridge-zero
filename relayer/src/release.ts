@@ -184,7 +184,13 @@
 // it signs: a halt file another process left meanwhile (a dry run's settling, say) stops it with
 // exit code 4, and the file keeps its reason. Otherwise a round ends 0 when nothing was
 // refused, 1 when a burn was refused or left to the members, 2 when a node could not be reached, 3
-// when something sent is not final yet.
+// when something sent is not final yet. An error no round handles (an uncaught exception or an
+// unhandled rejection: polkadot-js throws one when its subscription to the runtime version fails,
+// and on Oct 30 one ended the watcher) is written to stderr with the time, and the watcher goes on:
+// each round reconnects and reads its state from the chains and the records again. With --send the
+// round that saw it signs nothing more (a burn it would approve is refused, and the next round tries
+// it on a new connection): the error may come from that round's V3 connection, which polkadot-js may
+// then have left half updated (a runtime upgrade it failed to apply).
 //
 // fund dry-runs balances.transferKeepAlive of --amount tPOT from --from (by default the testnet
 // account 5ERJ…) to member k or to the multisig account, with its fee and what the member needs for
@@ -265,6 +271,7 @@ import {
   BRIDGE_ERRORS,
   BURN_REQUESTED_TOPIC,
   callData,
+  connectWithin,
   decodeBurnRequested,
   decodeTransfer,
   DryRunViolation,
@@ -394,9 +401,11 @@ import {
   FINALITY,
   haltedOrRecorded,
   haltRefusal,
+  lastResort,
   MAX_WATCH_SECONDS,
   MIN_WATCH_SECONDS,
   missingBurnVerdict,
+  outsideErrors,
   parseMemberKeys,
   readBurnCache,
   readHalt,
@@ -651,7 +660,11 @@ interface ReleaseRun {
   rule: Rule;
   /** The member's key, which the watcher loads once. */
   pair?: Pair;
-  /** Throws when the watcher's lock is not its own any more; called before signing. */
+  /**
+   * Throws when the watcher's lock is not its own any more (and in a round of the watcher, after an
+   * error no round handles: watch.ts outsideErrors); called before signing, and again once signed,
+   * before anything is recorded or submitted.
+   */
   guard?: () => void;
   /** The watcher runs it: it prints its own next steps. */
   watcher?: boolean;
@@ -1442,33 +1455,29 @@ class EvmRpc {
 }
 
 /**
- * Connects to the V3 node, or throws Unreachable after CONNECT_TIMEOUT. Unless `signs`, the
+ * Connects to the V3 node, or throws Unreachable after CONNECT_TIMEOUT (bridge.ts connectWithin:
+ * the provider is disconnected then, and so is a connection made later). Unless `signs`, the
  * provider refuses author_submit* (and every other write method) before it reaches the socket.
  */
 async function connectV3(url: string, signs: boolean): Promise<ApiPromise> {
   const { ApiPromise, WsProvider } = await polkadot();
   const provider = new WsProvider(url, 2_500, {}, 60_000);
   if (!signs) guardProvider(provider, new URL(url).host);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`no connection after ${CONNECT_TIMEOUT / 1000} s`)), CONNECT_TIMEOUT);
-  });
   try {
-    return await Promise.race([
-      ApiPromise.create({
-        provider,
-        noInitWarn: true,
-        // Two transaction extensions polkadot-js does not know; in V3's metadata both are empty
-        // structs with no implicit data, so they add nothing to the extrinsic or what it signs.
-        signedExtensions: { AuthorizeCall: { extrinsic: {}, payload: {} }, EthSetOrigin: { extrinsic: {}, payload: {} } },
-      }),
-      timeout,
-    ]);
+    return await connectWithin(
+      () =>
+        ApiPromise.create({
+          provider,
+          noInitWarn: true,
+          // Two transaction extensions polkadot-js does not know; in V3's metadata both are empty
+          // structs with no implicit data, so they add nothing to the extrinsic or what it signs.
+          signedExtensions: { AuthorizeCall: { extrinsic: {}, payload: {} }, EthSetOrigin: { extrinsic: {}, payload: {} } },
+        }),
+      provider,
+      CONNECT_TIMEOUT,
+    );
   } catch (error) {
-    await provider.disconnect().catch(() => undefined);
     throw new Unreachable(`the V3 node ${new URL(url).host} is unreachable (${errorText(error)})`);
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -2906,6 +2915,10 @@ async function releaseOnV3(d: Deployed, api: ApiPromise, evm: EvmRpc, o: Release
     o.guard?.();
     const nonce = (await api.rpc.system.accountNextIndex(account)).toNumber();
     const signed = await tx.signAsync(pair, { nonce });
+    // Again once signed, before anything is recorded or submitted: the signer took the runtime
+    // version after reads of its own, and the lock, the halt file and the errors no round handles
+    // may have changed in between.
+    o.guard?.();
     const round = roundOf(record, hash as Hex, () => ({
       status: "open",
       trust: TRUST,
@@ -3221,12 +3234,12 @@ async function openerBusyOf(api: ApiPromise, head: V3Head, d: Deployed, ops: Ope
  * node refused and from one that ran on chain and failed its checks.
  */
 async function approveFor(
-  ctx: { d: Deployed; api: ApiPromise; evm: EvmRpc; o: WatchOptions; keys: Map<number, Pair> | null; lock: Lock | null },
+  ctx: { d: Deployed; api: ApiPromise; evm: EvmRpc; o: WatchOptions; keys: Map<number, Pair> | null; lock: Lock | null; outside: number },
   burn: WatchedBurn,
   by: "finality" | "fast",
   step: { kind: "open" | "execute"; member: number },
 ): Promise<Outcome> {
-  const { d, api, evm, o, keys, lock } = ctx;
+  const { d, api, evm, o, keys, lock, outside } = ctx;
   failures = 0;
   // The record as it is now: another tool may have saved it since the round read it.
   d.record = readV3Record();
@@ -3250,6 +3263,9 @@ async function approveFor(
           if (!lock.held()) throw new LockLost(`${lock.path} no longer holds this watcher's token: another watcher took the lock over, and nothing more is signed`);
           const halted = haltedBy(d.v.multisig);
           if (halted) throw new Halted(halted);
+          // An error no round handles since the round connected to V3 (watch.ts outsideErrors): a
+          // refusal, as nothing is recorded yet, and the next round tries the burn on a new connection.
+          if (outsideErrors() !== outside) throw new Stop("an error no round handles came since this round connected to V3 (stderr has it): the connection may be half updated, and nothing more is signed on it; the next round connects again");
         }
       : undefined,
     watcher: true,
@@ -3383,6 +3399,9 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
   const cache: BurnCache = { path: cachePath, burns: readBurnCache(cachePath, d.b.minter), write: o.send };
   await checkSepolia();
   const evm = new EvmRpc(o.evm);
+  // The errors no round handles so far: one more from here on, from this round's V3 connection or
+  // not, and the round signs nothing more (approveFor; watch.ts outsideErrors).
+  const outside = outsideErrors();
   const api = await connectV3(o.rpc, o.send);
   try {
     await checkV3(api, evm);
@@ -3455,7 +3474,7 @@ async function watchOnce(o: WatchOptions, keyring: Keyring, keys: { pairs: Map<n
       reconcile: (h) => reconcileFast(d, h, o.send),
       // The member who would open a release: nextStep's first key.
       state: (burn) => burnStateOf(api, d, burn, o.memberKeys[0]?.member),
-      approve: (burn, by, step) => approveFor({ d, api, evm, o, keys: keys.pairs, lock }, burn, by, step),
+      approve: (burn, by, step) => approveFor({ d, api, evm, o, keys: keys.pairs, lock, outside }, burn, by, step),
       log,
     };
     // Sepolia alone: its words as before. Several chains, or a rollup: the round names its chain, and the budget every chain's.
@@ -3545,9 +3564,14 @@ function leaveHalt(multisig: string, f: FatalStop): void {
  * A chain whose minter has a record here and that the watcher does not serve is named in a warning
  * at the start (its burns wait); with --send it does not start (exit code 4, no halt file) while the
  * record holds a release of such a chain that only a watcher serving it finishes (unservedRounds),
- * and its dry run warns of one.
+ * and its dry run warns of one. An error no round handles (an uncaught exception or an unhandled
+ * rejection: polkadot-js throws one when its subscription to the runtime version fails) is written to
+ * stderr with the time, and the watcher goes on (watch.ts lastResort); the round that saw it signs
+ * nothing more (watch.ts outsideErrors).
  */
 async function watchCommand(o: WatchOptions): Promise<number> {
+  // Before the first round: an error that no round handles goes to stderr, and the process goes on.
+  lastResort((line) => console.error(redact(line)));
   const keyed = o.memberKeys.map((k) => k.member).join(" and ");
   const several = o.networks.length > 1;
   if (!several && o.networks[0] === "sepolia") {

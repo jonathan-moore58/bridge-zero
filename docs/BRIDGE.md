@@ -605,7 +605,11 @@ burn already released is left alone; a burn whose log the RPC refuses or does no
   0's); so does `release --burn-nonce <n>` by hand for such a burn.
 - **RPC trouble.** A round in which an RPC cannot be reached or answers with an error is retried
   after `--watch` seconds, then twice that, up to an hour; other errors are retried after
-  `--watch` seconds.
+  `--watch` seconds. An error no round handles (polkadot-js throws one when its subscription to the
+  runtime version fails, as on Oct 30) is written to stderr with the time, and the watcher goes on;
+  the next round connects again. With `--send` the round that saw it signs nothing more, as its V3
+  connection may be half updated: a burn it would approve then is refused, and the next round
+  tries it.
 - **Fatal stops.** A sent approval that fails its checks on chain, an approval the record holds
   as submitted that the settling finds on chain and failing its checks, one that is in none of the
   blocks searched though its sender's nonce is used, a fast release that does not stand on the

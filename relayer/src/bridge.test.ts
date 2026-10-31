@@ -3,7 +3,7 @@
 // events and errors, the check of deployed code, the signers hint and the offline checks on the
 // mint bundle captured from the V3 testnet (fixtures/v3-testnet-mint), the demo's tampered and
 // replayed calls on that bundle, the dry-run guard (fetch, the WebSocket client, a polkadot-js
-// provider), and the windows a log search asks.
+// provider), a polkadot-js connection within its timeout, and the windows a log search asks.
 //
 //   npm test
 
@@ -20,6 +20,7 @@ import {
   bundleCalldata,
   bundleProof,
   checkBundle,
+  connectWithin,
   decodeBurnRequested,
   decodeHeaderImported,
   decodeMinted,
@@ -548,6 +549,71 @@ describe("the dry-run guard", () => {
     await assert.rejects(provider.send("author_submitExtrinsic", ["0x00"]), DryRunViolation);
     await assert.rejects(provider.subscribe("author_extrinsicUpdate", "author_submitAndWatchExtrinsic", ["0x00"], () => undefined), DryRunViolation);
     await assert.rejects(provider.send("chain_getHeader", []), (error: unknown) => !(error instanceof DryRunViolation));
+  });
+});
+
+describe("a polkadot-js connection within its timeout", () => {
+  /** A provider or an API that counts its disconnect() calls. */
+  const stand = () => ({
+    disconnected: 0,
+    async disconnect() {
+      this.disconnected += 1;
+    },
+  });
+  /** A create() that settles after `ms` with `settle`: an API it resolves with, or an error it rejects with. */
+  const after = <T>(ms: number, settle: T | Error) =>
+    new Promise<T>((resolve, reject) => setTimeout(() => (settle instanceof Error ? reject(settle) : resolve(settle)), ms));
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("returns the API made in time, and leaves its provider to the caller", async () => {
+    const provider = stand();
+    const api = stand();
+    assert.equal(await connectWithin(() => after(20, api), provider, 1_000), api);
+    await pause(50);
+    assert.equal(provider.disconnected, 0);
+    assert.equal(api.disconnected, 0);
+  });
+
+  it("disconnects the provider when create() fails, throws, or makes no API in time", async () => {
+    const failed = stand();
+    await assert.rejects(connectWithin(() => after<never>(20, new Error("FATAL: Unable to initialize the API")), failed, 1_000), /FATAL: Unable to initialize the API/);
+    assert.equal(failed.disconnected, 1);
+    const thrown = stand();
+    await assert.rejects(
+      connectWithin(() => {
+        throw new Error("Expected Provider to API create");
+      }, thrown, 1_000),
+      /Expected Provider to API create/,
+    );
+    assert.equal(thrown.disconnected, 1);
+    const silent = stand();
+    await assert.rejects(connectWithin(() => new Promise<never>(() => undefined), silent, 50), /^Error: no connection after 0\.05 s$/);
+    assert.equal(silent.disconnected, 1);
+  });
+
+  it("disconnects an API made after the timeout as it comes: no caller holds it", async () => {
+    const provider = stand();
+    const api = stand();
+    await assert.rejects(connectWithin(() => after(150, api), provider, 50), /no connection after 0\.05 s/);
+    assert.equal(provider.disconnected, 1);
+    assert.equal(api.disconnected, 0, "not made yet");
+    await pause(250);
+    assert.equal(api.disconnected, 1);
+  });
+
+  it("catches a failure after the timeout: no unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const listen = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listen);
+    try {
+      const provider = stand();
+      await assert.rejects(connectWithin(() => after<never>(150, new Error("FATAL: Unable to initialize the API (late)")), provider, 50), /no connection after 0\.05 s/);
+      assert.equal(provider.disconnected, 1);
+      await pause(250);
+      assert.deepEqual(unhandled, []);
+    } finally {
+      process.off("unhandledRejection", listen);
+    }
   });
 });
 
