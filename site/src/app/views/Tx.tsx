@@ -1266,13 +1266,16 @@ function liveBack(x: BurnTransfer, now: number): TxState {
     if (after !== null) R.time = secs(after);
     else if (!fast && depth.qualifiedAt !== null && release.at !== null) R.time = span(depth.qualifiedAt, release.at);
   } else if (burned && qualified) {
-    activeFrom(R, depth.qualifiedAt ?? now, fast ? FAST_RUN.ran - FAST_RUN.mined - 3 * BLOCK_S : 60, now);
+    // A burn the watcher has not picked up after a few minutes says so, rather than look under way: the
+    // watcher runs on one machine, and a fast burn not final yet can also wait for the shared budget
+    // (late: the card's note says why). Its segment stays empty, not drawn almost full while the
+    // release can be minutes away.
+    const unseen = a === 0 && now - (depth.qualifiedAt ?? now) > SLOW_RELEASE;
+    activeFrom(R, depth.qualifiedAt ?? now, unseen ? undefined : fast ? FAST_RUN.ran - FAST_RUN.mined - 3 * BLOCK_S : 60, now);
     R.approvals = a;
-    // The watcher runs on one machine: a burn it has not picked up after a few minutes says so, rather than look under way.
-    // Fast and not final yet, the shared budget can hold it too: the card's note says why (late).
     R.sub = late
       ? "0 of 2 approvals · past Fast's usual time"
-      : a === 0 && now - (depth.qualifiedAt ?? now) > SLOW_RELEASE
+      : unseen
         ? "0 of 2 approvals · not picked up yet: the committee's watcher runs on one machine, and releases wait while it is off"
         : approvalLine(a, release.open?.block ?? null);
   } else R.sub = releaseAhead(fast, d);

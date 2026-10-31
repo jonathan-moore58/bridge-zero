@@ -178,7 +178,9 @@ export function fastWait(d: Dest, at: { qualifiedAt: number | null; final: boole
   if (at.released || at.final || (at.approvals ?? 0) > 0 || at.qualifiedAt === null || now - at.qualifiedAt <= SLOW_RELEASE_MS) return null;
   // A time keeps to one line: "≈ 19 min", not "≈ 19" over "min".
   const t = (mode: Speed) => timeOf(d.key, mode)[0].replace(/ /g, "\u00a0");
-  return `Fast usually takes ${t("fast")}. Fast mode shares one ${FAST_CAP} tPOT budget across all chains: while another fast release holds it, your burn waits until that release's burn is final, or yours is (${t("std")}, as Standard). Releases also wait while the committee's watcher, on one machine, is off.`;
+  // Base Sepolia's Fast is Arbitrum Sepolia's run (rollupTime): an estimate there, and said to be.
+  const est = timeOf(d.key, "fast")[1].startsWith("est.") ? " (est.)" : "";
+  return `Fast usually takes ${t("fast")}${est}. Fast mode shares one ${FAST_CAP} tPOT budget across all chains: while another fast release holds it, your burn waits until that release's burn is final, or yours is (${t("std")}, as Standard). Releases also wait while the committee's watcher, on one machine, is off.`;
 }
 
 /**

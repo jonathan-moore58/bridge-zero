@@ -492,6 +492,8 @@ test("the fast budget: before a burn that goes Fast is signed, one line that it 
   // A burn read from the chains, whose approvals the page does not read, is said the same way.
   assert.equal(fastWait(arb, { ...waiting, approvals: null }, t0 + 10 * 60_000), late);
   assert.match(fastWait(destOf("sepolia"), waiting, t0 + 10 * 60_000)?.replace(/\u00a0/g, " ") ?? "", /^Fast usually takes ≈ 84 s\. .* \(≈ 17 min, as Standard\)\./);
+  // Base Sepolia's Fast is Arbitrum Sepolia's run, which its card calls an estimate: so does the note.
+  assert.match(fastWait(destOf("base-sepolia"), waiting, t0 + 10 * 60_000)?.replace(/\u00a0/g, " ") ?? "", /^Fast usually takes ≈ 105 s \(est\.\)\. .* \(≈ 21 min, as Standard\)\./);
   // Not late: released, a member has approved, not qualified yet, or final on its chain, where the budget no longer holds it.
   for (const done of [{ released: true }, { approvals: 1 }, { qualifiedAt: null }, { final: true }]) assert.equal(fastWait(arb, { ...waiting, ...done }, t0 + 10 * 60_000), null, JSON.stringify(done));
 });
