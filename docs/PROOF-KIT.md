@@ -20,14 +20,17 @@ its owner and admin, who can mint, burn and freeze it; the vendored ed25519, BLA
 code, which is treated as unaudited ([GAS.md](GAS.md#decision); listed in
 [NOTICE.md](../NOTICE.md)); and the kit's own decoders, which are new.
 
-**Testnet limits.** The V3 testnet's public nodes have had no new block since the afternoon of
-Oct 31 (PKT): read that evening, their newest block was #265,334, stamped 4:01 PM PKT, the
-finalized one #265,321, and they reported no peers; from 9:17 PM PKT the node
-`wss://test-node-v3.portaldot.dev` answered HTTP 502. The newest block GrandpaLightClient #2 on
-Sepolia held that evening was #264,729: every example here reads at that block. The decoders
-follow the V3 testnet's runtime (portaldot-v3 3002, trie V1); a runtime upgrade that changes a
-layout needs new decoders and a new Reader. A V3 node keeps old state only as long as it chooses
-to; the fixture keeps #264,729's proofs for when it does not.
+**Testnet limits.** On Oct 31 the V3 testnet finalized no block from 3:58 PM to 9:14 PM PKT: its
+finalized #265,321 is stamped 3:58:48 PM and the next, #265,322, 9:14:48 PM. The #265,334 stamped
+4:01 PM that its node showed as the newest block that evening was never finalized and is no longer
+in the chain. From about 9:17 PM PKT the node `wss://test-node-v3.portaldot.dev` answered HTTP 502
+for a while, and at about 10:05 PM it briefly served another chain, PortaldotV3 Live (genesis
+`0x6e7f1f24…`); `npm run kit` refuses a node whose genesis is not the light client's. By 10:32 PM
+the testnet was finalizing again (#266,098). When the kit was deployed (9:13 PM PKT) the newest
+block GrandpaLightClient #2 on Sepolia held was #264,729, and every example here reads at that
+block. The decoders follow the V3 testnet's runtime (portaldot-v3 3002, trie V1); a runtime
+upgrade that changes a layout needs new decoders and a new Reader. A V3 node keeps old state only
+as long as it chooses to; the fixture keeps #264,729's proofs for when it does not.
 
 ## Addresses
 
@@ -40,7 +43,7 @@ to; the fixture keeps #264,729's proofs for when it does not.
 | `ProvenBalance` #2, the first example: an account's balance at an imported block, or a header imported and a balance proven in one transaction | [`0x5b41…ad3c`](https://sepolia.etherscan.io/address/0x5b41d227248dc4775ef1061f2dfbf7136ccead3c) |
 
 Base Sepolia and Arbitrum Sepolia have V3 light clients of their own (`GrandpaLightClient` #2 at
-`0x3897…0ab6` on each, both at V3 #265,122 on the evening of Oct 31), but in v0.1 the Reader is
+`0x3897…0ab6` on each, both of which imported V3 #265,122 on Oct 31), but in v0.1 the Reader is
 for Sepolia only. On a rollup it would be the same contract, bound to that rollup's client and
 linked to `StorageProofs`, which is at the same address there; its examples would read at a block
 that client holds (#265,122).
@@ -338,7 +341,8 @@ It runs on Node.js 24, from `relayer/`. The Sepolia RPC is `SEPOLIA_RPC_URL`, or
 unless `--rpc` names another.
 
 A read takes B, the V3 block it is at: the light client's latest block, or `--at`. It checks that
-the V3 node's header of B hashes to B and names the client's state root, fetches the proof
+the V3 node serves the chain the light client follows (the client's genesis hash) and that its
+header of B hashes to B and names the client's state root, fetches the proof
 (`--from-fixture <file>` takes it from a fixture instead, for when the node no longer has the
 state), walks it off chain, then has the Reader make the same read on a Sepolia node and requires
 the same answer. It signs and sends nothing.
@@ -438,9 +442,11 @@ the 16,777,216 cap per transaction) and 2,989,057 for the gate (rows 127 and 128
   and B's proofs at another block each revert with the expected error; a key that holds an empty
   value reverts `EmptyValue` (a one-leaf trie under a stand-in light client); extra proof items
   are accepted; `PinnedSlotOrZero` follows [Absent values](#absent-values).
-- `relayer/src/state.test.ts` (28 tests): the TypeScript keys, decoders, walks and tampers against
-  the same fixture, lock 1's `LockProof` for `BridgeMinter.mint`, and the Reader's and the gate's
-  calldata against values from `cast`.
+- `relayer/src/state.test.ts` (30 tests): the TypeScript keys, decoders, walks and tampers against
+  the same fixture, lock 1's `LockProof` for `BridgeMinter.mint`, the Reader's and the gate's
+  calldata against values from `cast`, a V3 node on another chain or without B refused with the
+  `--from-fixture` hint, and `eth_estimateGas` asked again only while the Sepolia RPC has not seen
+  the block.
 
 ## Not in v0.1
 

@@ -293,8 +293,8 @@ npm run kit -- check --dir ../fixtures/v3-testnet-kit
 # ...
 # All checks passed: 41 passed, 0 failed.
 npm test
-# ℹ tests 380
-# ℹ pass 380
+# ℹ tests 382
+# ℹ pass 382
 # ℹ fail 0
 
 cd ../contracts
@@ -365,11 +365,12 @@ never from the caller, and the contract walks the storage proof from it. Everyth
 
 Proven: a value under the state root of a V3 block the light client imported. Trusted: V3's 2
 validators, the light client's admin and checkpoint, V3's sudo key and runtime upgrades, and the
-vendored ed25519, BLAKE2b and trie code, treated as unaudited. Testnet limits: the V3 testnet's
-public nodes have had no new block since the afternoon of Oct 31 (PKT), and from 9:17 PM PKT that
-day the node answered HTTP 502, so the reads take their proofs from the fixture
-(`--from-fixture`); the newest block the light client on Sepolia held that evening was #264,729;
-the decoders are for V3's runtime 3002.
+vendored ed25519, BLAKE2b and trie code, treated as unaudited. Testnet limits: on Oct 31 the V3
+testnet finalized no block from 3:58 PM to 9:14 PM PKT, and its node answered HTTP 502 from about
+9:17 PM for a while (by 10:32 PM it was finalizing again), so the examples took their proofs from
+the fixture (`--from-fixture`); when the kit was deployed (9:13 PM PKT) the newest block the light
+client on Sepolia held was #264,729, and every example reads at that block; the decoders are for
+V3's runtime 3002.
 Not in v0.1: an npm package or a packaged command line; the TypeScript is in `relayer/` and runs
 with `npm run kit`.
 
@@ -477,7 +478,7 @@ with `npm run kit`.
   fetches, walks and checks the proofs ([For builders](#for-builders)). The Reader and the gate are
   on Sepolia, source-verified (rows 127 and 128): the Reader, bound to `GrandpaLightClient` #2 and
   linked to the deployed `StorageProofs`, returns the same values as the off-chain walk.
-- Tests: 370 forge tests, 380 relayer tests and 384 fixture checks (343 with `npm run check`, 41
+- Tests: 370 forge tests, 382 relayer tests and 384 fixture checks (343 with `npm run check`, 41
   with `npm run kit -- check`) pass ([Verify it yourself](#verify-it-yourself)).
 
 **Known limits**
@@ -530,9 +531,10 @@ with `npm run kit`.
   Sepolia a rollup's sequencer alone orders its latest blocks, and a restart or a failover that
   drops them could undo a burn released fast. The fast budget, 1 tPOT, counts every chain's fast
   releases.
-- The proof kit reads only blocks the light client imported: the newest on Sepolia on Oct 31 was
-  #264,729, and the V3 testnet's public nodes have had no new block since that afternoon. An absent
-  key reverts `KeyNotPresent`, a proof that it holds nothing, which a consumer may treat as zero
+- The proof kit reads only blocks the light client imported: when the kit was deployed on Oct 31
+  (9:13 PM PKT) the newest on Sepolia was #264,729, and the V3 testnet had finalized no block since
+  3:58 PM that day (it was finalizing again by 10:32 PM). An absent key reverts `KeyNotPresent`, a
+  proof that it holds nothing, which a consumer may treat as zero
   (for a contract's slot, only after pinning the contract:
   [Absent values](docs/PROOF-KIT.md#absent-values)). The Reader is on Sepolia only, and the
   TypeScript is not an npm package.

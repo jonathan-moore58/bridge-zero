@@ -94,8 +94,8 @@ Until then the work is paid for by grants, prizes and the light-client service.
 
 - A v2 vault and minter: the fee the user allows, in the lock's commitment (fast-fill for the way
   in); a bridge fee in bps, paid to a treasury; a network fee.
-- The first L2 mainnet, Base. Base Sepolia has run the V3 light client and the way in since Oct 27,
-  and the way back since Oct 28 ([Status](../README.md#status)).
+- The first L2 mainnet, Base. Base Sepolia has run the V3 light client since Oct 27, and the way in
+  and the way back since Oct 28, the day of its first mint (row 106; [Status](../README.md#status)).
 - A BEEFY verifier prototype, to cut the gas of each import.
 - A light client for Portaldot's V3 mainnet, from its own checkpoint.
 
@@ -114,7 +114,7 @@ What the testnets already show:
 - The relayer has run in watch mode since Oct 23, one process per light client, each with its own
   key; the auto-release watcher has run since Oct 24 ([README](../README.md#status)).
 - 128 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
-  hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 370 forge tests, 380 relayer
+  hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 370 forge tests, 382 relayer
   tests and 384 fixture checks pass.
 - The limits are written down, including a six-hour gap while the machine slept on Oct 24
   ([Known limits](../README.md#status), [what the minter trusts](BRIDGE.md#what-the-minter-trusts),
