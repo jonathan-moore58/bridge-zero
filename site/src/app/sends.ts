@@ -117,9 +117,9 @@ const planEnvs = new Map<DestKey, ProofEnv>();
 /**
  * The proof core's contracts and endpoints for a destination: Sepolia's from the build's records
  * (../lib/proof/env.ts), as before; a rollup's its own RPCs, V3 light client, minter, chain id and
- * L1 rule, with the same vault, V3 node and Multicall3.
+ * L1 rule, with the same vault, V3 node and Multicall3. The Verify page's dry runs use the same.
  */
-function planEnv(key: DestKey): ProofEnv {
+export function planEnv(key: DestKey): ProofEnv {
   if (key === "sepolia") return proofEnv();
   let e = planEnvs.get(key);
   if (!e) {

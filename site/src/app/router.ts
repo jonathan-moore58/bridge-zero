@@ -1,9 +1,10 @@
-// Hash routes: #/bridge, #/bridge/back, #/tx/<id>, #/receipt/<id>, #/activity, #/network, #/lab.
-// A query after the route (#/bridge/back?amount=0.5) carries a view's own state.
+// Hash routes: #/bridge, #/bridge/back, #/tx/<id>, #/receipt/<id>, #/activity, #/verify,
+// #/verify/<id>, #/network, #/lab. A query after the route (#/bridge/back?amount=0.5) carries a
+// view's own state.
 
 import { useEffect, useState } from "preact/hooks";
 
-export const ROUTES = ["bridge", "tx", "receipt", "activity", "network", "lab"] as const;
+export const ROUTES = ["bridge", "tx", "receipt", "activity", "verify", "network", "lab"] as const;
 export type RouteName = (typeof ROUTES)[number];
 
 export interface Route {

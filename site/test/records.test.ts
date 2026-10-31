@@ -357,6 +357,53 @@ test("the rollups' runs, which the app serves without searching their logs: auto
   }
 });
 
+test("every recorded lock with its mint, which the Verify page lists and checks: six locks, lock 3 held at #222,687, locks 4 and 5 on the rollups", () => {
+  const v3 = JSON.parse(readFileSync(join(repo, "deployments", "v3-testnet.json"), "utf8"));
+  const locked = (v3.locks as { status: string }[]).filter((l) => l.status === "locked");
+  assert.equal(r.locks.length, locked.length);
+  assert.deepEqual(
+    r.locks.map((l) => l.nonce),
+    [0, 1, 2, 3, 4, 5],
+  );
+  const SEP = 11155111;
+  assert.deepEqual(
+    r.locks.map((l) => [l.nonce, l.via, l.dstChainId, l.mint?.chainId, l.mint?.tx, l.mint?.block, l.mint?.path, l.mint?.v3Block.number]),
+    [
+      [0, "evm", SEP, SEP, "0x91714c8422a7058c161f5592ff7c59eb62399bc99d5f02d6a9ebc1506c955cba", 11_950_902, "head", 108_424],
+      [1, "evm", SEP, SEP, "0xb9134dd793b84ff53375cd6b5ec8fb51940fea0a5cce2b5924f674b530d7f943", 11_955_981, "head", 118_637],
+      [2, "evm", SEP, SEP, "0xb616446586c8aa0b23658fa5c58694682734fc1b0d1237f0e4e7818d4b4787a3", 12_006_140, "head", 219_607],
+      [3, "substrate", SEP, SEP, "0xb6e2a07b2a60cde09552b347c47674ab1979429963f7fdeb659bc4eaacf36f56", 12_007_927, "held", 222_687],
+      [4, "evm", 84532, 84532, "0x0f300c8e34173d8d789605b3596cc7b3e9c869c3e2a7498114937bcf8769122e", 51_159_736, "head", 225_845],
+      [5, "evm", 421614, 421614, "0x4443486b03deaff4f8b232bce4bdd091a8f4accaa46b0d14a5f060b39f2aea7d", 323_534_868, "head", 225_852],
+    ],
+  );
+  // Locks 0 and 1 by the mint tool (sepolia-bridge.json), the rest by auto-mint's histories.
+  assert.deepEqual(
+    r.locks.map((l) => l.mint?.from.replace(/-0x[0-9a-f]{40}\.jsonl$/, "")),
+    ["deployments/sepolia-bridge.json", "deployments/sepolia-bridge.json", "deployments/automint-sepolia", "deployments/automint-sepolia", "deployments/automint-base-sepolia", "deployments/automint-arbitrum-sepolia"],
+  );
+  // Each against the V3 record and the auto-mint histories: the lock's fields, and its commitment recomputed for the chain it names.
+  for (const l of r.locks) {
+    const rec = (v3.locks as { vaultNonce?: string; txHash: string; commitment: string }[]).find((x) => x.vaultNonce === String(l.nonce));
+    assert.ok(rec, `lock ${l.nonce}`);
+    assert.equal(l.tx, rec.txHash.toLowerCase());
+    assert.equal(
+      lockCommitment({ v3ChainId: 420420777n, vault: r.bridge.vault.address, dstChainId: BigInt(l.dstChainId), minter: l.dstMinter, recipient: l.recipient, amountNative: BigInt(l.amountNative), nonce: BigInt(l.nonce) }),
+      l.commitment,
+      `lock ${l.nonce}'s commitment`,
+    );
+    const auto = l.dstChainId === 84532 ? r.rollupRuns["base-sepolia"]?.mints : l.dstChainId === 421614 ? r.rollupRuns["arbitrum-sepolia"]?.mints : null;
+    if (auto) assert.equal(auto.find((m) => m.nonce === l.nonce)?.txHash, l.mint?.tx, `lock ${l.nonce}: the auto-mint history`);
+  }
+  // The relayer's import that brought lock 3's block into Sepolia's client, which the page checks its mint(p) through.
+  const imp = r.relay.entries.find((e) => e.chain === "v3" && e.block.number === 222_687 && e.ok === true);
+  assert.deepEqual([imp?.method, imp?.txHash, imp?.sepoliaBlock], ["importFinalityProof", "0x91260f013b6bfbe75b239aa91f9886c31755d2092c21577c14726d76ee0d4962", 12_007_682]);
+  // Each client's checkpoint, installed by its admin's initialize: Sepolia's, and the rollups'.
+  assert.deepEqual([r.lightClients.v3.init?.tx, r.lightClients.v3.init?.block], ["0x076e061f78eff113c15f59c88ca0a7ef8a71de876e7a35f1f6c6e8e24bc2ecfb", 11_934_333]);
+  assert.equal(r.rollups["base-sepolia"]?.init?.block, 50_885_286);
+  assert.equal(r.rollups["arbitrum-sepolia"]?.init?.block, 323_330_044);
+});
+
 test("the roadmap is the README's, with plans and no promises", () => {
   const rm = r.roadmap;
   assert.ok(rm);

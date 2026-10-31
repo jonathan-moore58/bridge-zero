@@ -35,8 +35,31 @@ export interface DecodedImport {
 
 export class CallError extends Error {}
 
-/** Decodes a light-client import or an importAndMint from its calldata. */
-export function decodeImportCall(input: string): DecodedImport {
+/** A light-client import's or an importAndMint's arguments, as bytes: what decodeImportCall reads, and the Verify page's core with the strict decoders of ./proof/scale.ts. */
+export interface ImportArgs {
+  method: DecodedImport["method"];
+  header: Hex;
+  /** importHeader's justification, or the FinalityProof of importFinalityProof and importAndMint. */
+  proof: Hex;
+  signersHint: Hex;
+  lockProof: LockProofArg | null;
+}
+
+/** BridgeMinter's LockProof tuple, as ./abi.ts decodes it. */
+export function lockProofOf(t: AbiValue[]): LockProofArg {
+  return {
+    blockHash: t[0] as Hex,
+    accountProof: t[1] as Hex[],
+    childRootProof: t[2] as Hex[],
+    slotProof: t[3] as Hex[],
+    recipient: t[4] as Hex,
+    amount: t[5] as bigint,
+    nonce: t[6] as bigint,
+  };
+}
+
+/** The arguments of a light-client import or an importAndMint, from its calldata. */
+export function importArgs(input: string): ImportArgs {
   const sel = input.slice(0, 10).toLowerCase();
   const body = "0x" + input.slice(10);
   let method: DecodedImport["method"];
@@ -53,23 +76,19 @@ export function decodeImportCall(input: string): DecodedImport {
   } else {
     throw new CallError(`not a light-client import (selector ${sel})`);
   }
-  const header = values[0] as Hex;
-  const proof = values[1] as Hex;
-  const signersHint = values[2] as Hex;
+  return {
+    method,
+    header: values[0] as Hex,
+    proof: values[1] as Hex,
+    signersHint: values[2] as Hex,
+    lockProof: method === "importAndMint" ? lockProofOf(values[3] as AbiValue[]) : null,
+  };
+}
+
+/** Decodes a light-client import or an importAndMint from its calldata. */
+export function decodeImportCall(input: string): DecodedImport {
+  const { method, header, proof, signersHint, lockProof } = importArgs(input);
   const justification = method === "importHeader" ? decodeJustification(proof) : decodeFinalityProof(proof).justification;
-  let lockProof: LockProofArg | null = null;
-  if (method === "importAndMint") {
-    const t = values[3] as AbiValue[];
-    lockProof = {
-      blockHash: t[0] as Hex,
-      accountProof: t[1] as Hex[],
-      childRootProof: t[2] as Hex[],
-      slotProof: t[3] as Hex[],
-      recipient: t[4] as Hex,
-      amount: t[5] as bigint,
-      nonce: t[6] as bigint,
-    };
-  }
   return {
     method,
     header,

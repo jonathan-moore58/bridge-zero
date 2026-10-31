@@ -134,6 +134,8 @@ export interface LightClientFacts {
   /** The set and keys of a captured fixture: the recorded fallback of authorities(setId). */
   fixtureSet: { setId: number; keys: Hex[]; from: string };
   checkpointRow: number | null;
+  /** The admin's initialize, which installed the checkpoint: its transaction and Sepolia block (deployments/sepolia.json). */
+  init: { tx: Hex; block: number; from: string } | null;
   sudo: { id: Hex; ss58: string; from: string };
   /** The relayer's latest recorded import into this client. */
   latestRelay: RelayEntry | null;
@@ -299,13 +301,15 @@ export interface RollupClientFacts {
   provenBalance: Hex;
   /** The rollup block of the client's creation. */
   deployBlock: number;
+  /** The admin's initialize, which installed the checkpoint: its transaction and rollup block. */
+  init: { tx: Hex; block: number; from: string } | null;
   /** Every import the relayer recorded into it, oldest first: the block it imported, the sets before and after, its transaction and rollup block. */
   imports: { number: number; hash: Hex; setBefore: number; setAfter: number; txHash: Hex; block: number | null; settledAt: string | null; from: string }[];
   /** The newest of them: the recorded fallback of latestFinalized() and currentSetId(). */
   latestImport: { number: number; hash: Hex; setId: number; txHash: Hex; block: number | null; settledAt: string | null; from: string } | null;
 }
 
-/** A lock auto-mint minted on a rollup, by its history (deployments/automint-<network>-<sender>.jsonl). */
+/** A lock auto-mint minted on a destination, Sepolia or a rollup, by its history (deployments/automint-<network>-<sender>.jsonl). */
 export interface RollupMint {
   /** The lock's vault nonce. */
   nonce: number;
@@ -339,6 +343,47 @@ export interface RollupRuns {
   mints: RollupMint[];
 }
 
+/**
+ * A lock deployments/v3-testnet.json holds as locked, by its vault nonce, with its mint where the
+ * records name one: the Verify page lists these, and checks each one's mint from the chains.
+ */
+export interface RecordedLock {
+  nonce: number;
+  /** Sent through V3's EVM side (an Ethereum wallet), or as a revive.call extrinsic from a 5… account (a Polkadot wallet). */
+  via: "evm" | "substrate";
+  /** The lock's transaction hash, or its extrinsic's. */
+  tx: Hex;
+  /** Its V3 block as the record has it: the number, and the hash the record names (pallet-revive's EVM block hash for an EVM lock). */
+  block: { number: number; hash: Hex };
+  /** When it was signed (ISO, UTC). */
+  signedAt: string;
+  /** The destination it names: its chain id and its BridgeMinter. */
+  dstChainId: number;
+  dstMinter: Hex;
+  recipient: Hex;
+  amountNative: string;
+  commitment: Hex;
+  mint: RecordedLockMint | null;
+}
+
+/** A recorded lock's mint: a mint step of deployments/sepolia-bridge.json, or auto-mint's history on its destination. */
+export interface RecordedLockMint {
+  /** The chain it was minted on: the lock's destination. */
+  chainId: number;
+  tx: Hex;
+  /** The destination block it was mined in. */
+  block: number;
+  /** importAndMint at V3's finalized head, mint(p) at a block the light client held, importAndMint at a set change, or a self-relay through Multicall3. */
+  path: "head" | "held" | "change" | "selfRelay";
+  /** The V3 block it proved the lock at. */
+  v3Block: { number: number; hash: Hex };
+  gasUsed: number | null;
+  /** Who sent it: the mint tool's key, or auto-mint's. */
+  sender: Hex;
+  /** The record that holds it. */
+  from: string;
+}
+
 export interface Records {
   build: { commit: string | null; builtAt: string };
   verify: VerifyBlock | null;
@@ -362,6 +407,8 @@ export interface Records {
   rollupRuns: { "base-sepolia": RollupRuns | null; "arbitrum-sepolia": RollupRuns | null };
   /** Every sender's history in deployments/, merged: `files` are their paths, `entries` their transactions, each once. */
   relay: { files: string[]; entries: RelayEntry[] };
+  /** The locks deployments/v3-testnet.json holds as locked, by nonce, each with its mint where the records name one. */
+  locks: RecordedLock[];
   returnPath: ReturnPath;
   /**
    * Totals from the records: the recorded fallback of the vault's and the token's live state. Over

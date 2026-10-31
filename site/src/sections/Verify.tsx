@@ -1,5 +1,5 @@
 import { useState } from "preact/hooks";
-import { Chevron, Doc, GitHub, Terminal } from "../components/icons.tsx";
+import { Chevron, Doc, GitHub, Shield, Terminal } from "../components/icons.tsx";
 import { CopyButton, ExtLink, Md, SectionHead } from "../components/ui.tsx";
 import { etherscanTx, records, REPO, repoFile, repoTree } from "../lib/chains.ts";
 import { shortHex } from "../lib/hex.ts";
@@ -122,6 +122,15 @@ export function Verify() {
             )}
           </div>
           <nav class="vlinks" aria-label="Sources">
+            <a class="vlink card spot" href="app/#/verify">
+              <span class="vlink__icon">
+                <Shield />
+              </span>
+              <span class="vlink__text">
+                <span class="vlink__label">Check a transfer in your browser</span>
+                <span class="small dim">the bridge app</span>
+              </span>
+            </a>
             {LINKS.map((l) => (
               <a class="vlink card spot" href={l.href} target="_blank" rel="noopener noreferrer" key={l.href}>
                 <span class="vlink__icon">{l.icon}</span>

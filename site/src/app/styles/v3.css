@@ -941,3 +941,47 @@
 .rc__route .pairmark--sm .mark + .mark {
   margin-left: -5px;
 }
+
+/* ------------------------------------------------------------------ 12. Verify
+   The owner's convention: the main card answers the pointer as the bridge card does (its edge
+   brightens, its shadow deepens, it lifts 2px), the panels below it brighten their edge as the
+   Network cards do, the picker's rows tint as Activity's, and a fold (a step's evidence, its raw
+   data, a panel) tints its summary. */
+
+.vcard {
+  transition: transform 0.22s var(--ease-out), box-shadow 0.22s var(--ease-out);
+}
+
+.vcard:hover {
+  transform: translateY(-2px);
+  box-shadow:
+    inset 0 0 0 1px rgb(177 151 255 / 0.24),
+    var(--hi-strong),
+    0 36px 90px -30px rgb(0 0 0 / 0.9),
+    0 0 150px -40px rgb(108 39 226 / 0.7);
+}
+
+.vpanel {
+  transition: box-shadow 0.22s var(--ease-out);
+}
+
+.vpanel:hover {
+  box-shadow: inset 0 0 0 1px rgb(177 151 255 / 0.2), var(--hi-strong), var(--shadow-3);
+}
+
+.vev__sum:hover,
+.vraw__sum:hover,
+.vfold__sum:hover {
+  color: var(--text-1);
+  background: rgb(255 255 255 / 0.04);
+}
+
+.vev__sum:hover .vev__chev {
+  color: var(--text-1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vcard:hover {
+    transform: none;
+  }
+}

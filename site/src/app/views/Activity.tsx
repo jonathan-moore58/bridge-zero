@@ -952,6 +952,10 @@ export function ActivityView({ route }: { route: Route }) {
             </p>
           )}
         </div>
+        <a class="text-link page__aside" href="#/verify">
+          <Icon id="i-shield-check" cls="i--14" />
+          Verify a transfer
+        </a>
       </header>
       {mine ? <ReadNotice mine={mine} /> : null}
       {mine ? <ReachNotice mine={mine} /> : null}

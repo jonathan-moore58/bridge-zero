@@ -259,6 +259,15 @@ export class V3Reader {
     return out;
   }
 
+  /**
+   * The set change at block `n`, the block a light client's authoritySetAt names as the start of
+   * set `setId` + 1: grandpa_proveFinality(n), its header hashing to its block, its justification
+   * signed by set `setId` under `keys`, and its ScheduledChange one the client can follow (`next`).
+   */
+  changeAt(n: number, setId: bigint, keys: Uint8Array[], crypto: ClientCrypto): Promise<SetChange> {
+    return this.setChangeAt(n, n - 1, setId, keys, crypto);
+  }
+
   /** The change grandpa_proveFinality(ask) proves, if it is the change that ends set `setId` after block `after`. */
   private async setChangeAt(ask: number, after: number, setId: bigint, keys: Uint8Array[], crypto: ClientCrypto): Promise<SetChange> {
     const p = await this.proveFinality(ask);

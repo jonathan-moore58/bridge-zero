@@ -4543,3 +4543,796 @@ body.has-sheet .dev {
 .segkeys__pre dd {
   white-space: nowrap;
 }
+
+/* ================================================================== verify */
+
+/* The pick page's lead sits under its title, in the head's own order (stage--tx places by order). */
+.stage--tx .vf__lead {
+  order: 1;
+  max-width: 540px;
+  margin: -8px 0 0;
+  text-align: center;
+  text-wrap: balance;
+}
+
+.vcard--pick {
+  display: grid;
+  padding: 8px;
+}
+
+.vpick {
+  display: grid;
+}
+
+.vrow .arow__meta {
+  white-space: normal;
+}
+
+/* The transfer on screen, when the list opens in the sheet: marked as the nav marks its page. */
+.vrow.is-current {
+  background: rgb(177 151 255 / 0.07);
+  box-shadow: inset 0 0 0 1px var(--line-brand);
+}
+
+/* "A lock, a burn or a transaction hash": the list's search row, first, as the recipient's field on the bridge card. */
+.vfield {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 4px;
+  padding: 10px 14px 14px;
+  border-bottom: 1px solid var(--line-1);
+}
+
+.vfield__label {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  font-weight: 500;
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.vfield__row {
+  display: flex;
+  gap: 8px;
+}
+
+.vfield__row .recip__input {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+}
+
+.vfield__row .btn {
+  flex: none;
+}
+
+.vfield .btn .tl__spin {
+  border-color: currentColor;
+  border-right-color: transparent;
+}
+
+/* The card's head: the route, coloured by the verdict (green only when verified, red when it did not check out); the verdict chip, then Change. */
+.vcard[data-verdict] .txcard__sub {
+  color: var(--text-3);
+}
+
+.vcard[data-verdict="verified"] .txcard__sub {
+  color: var(--verify);
+}
+
+.vcard[data-verdict="failed"] .txcard__sub {
+  color: var(--revert);
+}
+
+.vchange {
+  flex: none;
+  gap: 6px;
+}
+
+/* The verdict: the receipt's hero, compact, and under it what it rests on. */
+.vhero {
+  gap: 6px;
+  padding: 6px 8px 2px;
+}
+
+.vhero__foot {
+  max-width: 440px;
+  margin-top: 4px;
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+  color: var(--text-3);
+  text-wrap: balance;
+}
+
+.vhero__foot .i {
+  margin-right: 5px;
+  vertical-align: -2px;
+}
+
+.vhero__more {
+  font-size: var(--fs-caption);
+  white-space: nowrap;
+}
+
+/* The panels below the card clear the top bar when a button brings them into view. */
+.stage--verify .side > .rail-card {
+  scroll-margin-top: calc(var(--topbar-h) + 16px);
+}
+
+/* The line under the title wraps evenly in its pill. */
+.stage--verify .replay-note {
+  text-wrap: balance;
+}
+
+.vhero .tick {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 2px;
+}
+
+.vhero__title {
+  font-size: var(--fs-h2);
+  letter-spacing: var(--tracking-tight);
+}
+
+.vhero__sub {
+  font-variant-numeric: tabular-nums;
+}
+
+.vmark {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 2px;
+  border-radius: 50%;
+  color: var(--text-2);
+  background: rgb(255 255 255 / 0.04);
+  box-shadow: inset 0 0 0 2px var(--line-3);
+}
+
+.vmark .i {
+  width: 22px;
+  height: 22px;
+}
+
+.vmark--failed {
+  color: var(--revert);
+  background: var(--revert-wash);
+  box-shadow: inset 0 0 0 2px var(--revert-line), 0 0 40px -6px rgb(255 138 120 / 0.4);
+}
+
+.vmark--unminted,
+.vmark--disagree {
+  color: var(--trust);
+  background: var(--trust-wash);
+  box-shadow: inset 0 0 0 2px var(--trust-line);
+}
+
+.vmark--checking {
+  box-shadow: inset 0 0 0 2px var(--accent), 0 0 0 6px rgb(177 151 255 / 0.1);
+}
+
+.vmark .tl__spin {
+  width: 18px;
+  height: 18px;
+}
+
+/* The steps: the transfer screen's timeline, each with its evidence, cross-checks and raw data. A long
+   title wraps in its own column; the state stays at the top right. */
+.vtl .tl__top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  column-gap: 12px;
+}
+
+.vtl .tl__title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.vstep__n {
+  font-size: var(--fs-micro);
+  color: var(--text-3);
+}
+
+.vtl .tl__time {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.vtl .tl__step.is-done .tl__time { color: var(--verify); }
+.vtl .tl__step.is-done.is-trusted .tl__time { color: var(--trust); }
+.vtl .tl__step.is-active .tl__time { color: var(--lilac); }
+.vtl .tl__step.is-failed .tl__time { color: var(--revert); }
+
+/* Not checked, not reached, not yet: neutral, never green. */
+.tl__step.is-skipped .tl__node {
+  color: var(--text-3);
+  background: var(--surface-2-solid);
+  box-shadow: inset 0 0 0 1.5px var(--line-3);
+}
+
+.tl__step.is-skipped .tl__node .i {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+
+.tl__step.is-skipped .tl__sub {
+  color: var(--text-2);
+}
+
+.tl__step.is-unreached .tl__title,
+.tl__step.is-unreached .tl__sub {
+  color: var(--text-3);
+}
+
+/* A step's one-line result opens its evidence: a native fold, the raw data's pattern, closed when the
+   step passed with every cross-check agreeing, open otherwise. */
+.vev {
+  margin-top: 2px;
+}
+
+.vev__sum {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0 -6px;
+  padding: 2px 6px;
+  border-radius: var(--radius-2);
+  font-size: var(--fs-small);
+  line-height: 1.5;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+  list-style: none;
+  cursor: pointer;
+  transition: color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+
+.vev__sum::-webkit-details-marker {
+  display: none;
+}
+
+.vev__chev {
+  flex: none;
+  margin-top: 4px;
+  color: var(--text-3);
+  transform: rotate(-90deg);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.vev[open] > .vev__sum .vev__chev {
+  transform: none;
+}
+
+.tl__step.is-failed .vev__sum {
+  color: var(--revert-soft);
+}
+
+.tl__step.is-unreached .vev__sum {
+  color: var(--text-3);
+}
+
+.vev__body {
+  padding-bottom: 2px;
+}
+
+.vfrom {
+  display: flex;
+  margin-top: 8px;
+}
+
+/* A small tag in a value: auto-mint, beside the key that sent the mint. */
+.vtag {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  color: var(--text-2);
+  background: rgb(255 255 255 / 0.06);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+}
+
+/* Evidence: label left, value right; a long value under its label on a phone. */
+.vk {
+  display: grid;
+  margin: 8px 0 0;
+  padding: 2px 10px;
+  border-radius: var(--radius-3);
+  background: rgb(255 255 255 / 0.02);
+  box-shadow: inset 0 0 0 1px var(--line-1);
+}
+
+.vk .kv {
+  min-height: 32px;
+  font-size: var(--fs-caption);
+}
+
+.vk .kv + .kv {
+  border-top: 1px solid var(--line-1);
+}
+
+.vk .kv__v {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px 6px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.vk .kv__v .mono {
+  font-size: var(--fs-caption);
+}
+
+.vaddr {
+  height: 24px;
+}
+
+.vaddr .addr__btn {
+  width: 22px;
+  height: 22px;
+}
+
+.vsrc {
+  max-width: 100%;
+  height: auto;
+  min-height: 20px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  line-height: 1.3;
+  text-align: left;
+  white-space: normal;
+}
+
+/* Cross-checks: a tick, a red alert, or a neutral note. */
+.vchecks {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.vcheck {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: var(--fs-caption);
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+.vcheck .i {
+  flex: none;
+  margin-top: 1px;
+}
+
+.vcheck.is-ok .i { color: var(--verify); }
+.vcheck.is-bad { color: var(--revert-soft); }
+.vcheck.is-bad .i { color: var(--revert); }
+.vcheck.is-na { color: var(--text-3); }
+.vcheck.is-na .i { color: var(--text-3); }
+
+.vchecks--list {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 8px 2px 2px;
+}
+
+.vdiff {
+  margin-top: 8px;
+}
+
+.vretry {
+  margin-top: 8px;
+}
+
+/* Raw data: a native fold, each block with its call and a copy button, scrolling inside. */
+.vraw {
+  margin-top: 8px;
+}
+
+.vraw__sum {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 6px;
+  border-radius: var(--radius-2);
+  font-size: var(--fs-caption);
+  font-weight: 500;
+  color: var(--text-3);
+  list-style: none;
+  cursor: pointer;
+  transition: color var(--dur-1) var(--ease-out), background-color var(--dur-1) var(--ease-out);
+}
+
+.vraw__sum::-webkit-details-marker {
+  display: none;
+}
+
+.vraw__chev {
+  transform: rotate(-90deg);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.vraw[open] > .vraw__sum .vraw__chev {
+  transform: none;
+}
+
+.vraw__n {
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  color: var(--text-4);
+}
+
+.vraw__item {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 8px 10px 10px;
+  border-radius: var(--radius-3);
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--line-1);
+}
+
+.vraw__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.vraw__label {
+  min-width: 0;
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.vraw__call {
+  font-size: var(--fs-micro);
+  line-height: 1.45;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+.vraw__pre {
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-micro);
+  line-height: 1.5;
+  color: var(--text-value);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The foot: Check again, the raw data, the link, then the endpoints the run read. */
+.vfoot__btns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.vfoot__btns .btn {
+  height: 44px;
+  border-radius: var(--radius-3);
+}
+
+.vfoot__btns .btn--icon {
+  width: 44px;
+}
+
+/* The link's copy button says what it copies, as the raw data's does. */
+.vfoot__link {
+  gap: 6px;
+  padding: 0 14px;
+}
+
+.vfoot__short {
+  display: none;
+}
+
+/* Below the card: the panels. */
+.stage--verify .side {
+  display: grid;
+  gap: 16px;
+}
+
+.vlist {
+  display: grid;
+  gap: 10px;
+  padding-left: 18px;
+  font-size: var(--fs-small);
+  line-height: 1.55;
+  color: var(--text-2);
+  list-style: disc;
+}
+
+.vlist li::marker {
+  color: var(--trust);
+}
+
+.vlist strong {
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* A receipt's checks and committee panels: "Check it in your browser" beside their count. */
+.rail-card__end {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.rail-card__go {
+  flex: none;
+}
+
+.vkeys__bar {
+  display: flex;
+  gap: 2px;
+  height: 4px;
+  margin-top: 8px;
+}
+
+.vkeys__seg {
+  flex: 1;
+  border-radius: 1px;
+  background: rgb(255 255 255 / 0.08);
+  transition: background-color var(--dur-2) var(--ease-out);
+}
+
+.vkeys__seg.is-checking { background: var(--accent); }
+.vkeys__seg.is-passed { background: var(--verify); }
+.vkeys__seg.is-failed { background: var(--revert); }
+/* Not checked (the node gave no proof there): neutral, and told apart from a change still waiting. */
+.vkeys__seg.is-skipped { background: rgb(255 255 255 / 0.28); }
+
+.vkeys__out {
+  display: grid;
+  gap: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-1);
+}
+
+.vkeys__sum {
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* The checkpoint: installed by the client's admin, so in the trust colour, as the committee's rail is. */
+.vkeys .rail__item.is-trusted::before {
+  background: repeating-linear-gradient(180deg, var(--trust) 0 4px, transparent 4px 8px);
+}
+
+.vkeys .rail__item.is-trusted .rail__node {
+  color: #1d1406;
+  background: var(--trust);
+  box-shadow: 0 0 0 4px rgb(242 185 91 / 0.12), 0 0 18px -2px rgb(242 185 91 / 0.55);
+}
+
+.vkeys .rail__item.is-trusted .rail__title {
+  color: var(--text-1);
+}
+
+.vkeys .rail__item.is-trusted .rail__state {
+  color: var(--trust);
+}
+
+.vkeys > .btn {
+  justify-self: start;
+}
+
+.vkeys > .btn .tl__spin {
+  border-color: currentColor;
+  border-right-color: transparent;
+}
+
+/* "Check it without this page": a fold, its summary drawn as a panel's head. */
+.vfold {
+  gap: 0;
+}
+
+.vfold[open] {
+  gap: 14px;
+}
+
+.vfold__sum {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 14px;
+  margin: -4px;
+  padding: 4px;
+  border-radius: var(--radius-3);
+  list-style: none;
+  cursor: pointer;
+  transition: background-color var(--dur-1) var(--ease-out);
+}
+
+.vfold__sum::-webkit-details-marker {
+  display: none;
+}
+
+.vfold__title {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.vfold__title .rail-card__sub {
+  margin-top: 0;
+}
+
+.vfold__chev {
+  margin-top: 10px;
+  color: var(--text-3);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+
+.vfold[open] .vfold__chev {
+  transform: rotate(180deg);
+}
+
+.vcmds {
+  display: grid;
+  gap: 12px;
+}
+
+.vcmds__what {
+  margin-bottom: 4px;
+  font-size: var(--fs-caption);
+  color: var(--text-3);
+}
+
+.vcmds__cmd {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 8px 6px 8px 10px;
+  border-radius: var(--radius-3);
+  background: var(--surface-sunken);
+  box-shadow: inset 0 0 0 1px var(--line-1);
+}
+
+/* A mint sent through Multicall3 is replayed with its own calldata, several KB: it scrolls inside. */
+.vcmds__cmd code {
+  flex: 1;
+  min-width: 0;
+  max-height: 160px;
+  overflow-y: auto;
+  font-size: var(--fs-micro);
+  line-height: 1.55;
+  color: var(--text-value);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The Lab's base line and Activity's head link into Verify. */
+.labdetail__verify {
+  margin-left: auto;
+}
+
+.page__aside.text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: var(--fs-small);
+  white-space: nowrap;
+}
+
+/* The picker in the sheet. */
+.vsheet {
+  width: min(560px, 100%);
+}
+
+@media (max-width: 640px) {
+  /* A page's aside goes on a phone, as before: the tab bar has Verify. */
+  .page__aside.text-link {
+    display: none;
+  }
+
+  /* The panel's count goes on a phone (as before); its button goes under the title. */
+  .rail-card__end {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .vfoot__long {
+    display: none;
+  }
+
+  .vfoot__short {
+    display: inline;
+  }
+
+  .vchange {
+    width: 36px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .vchange__text {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/* Small phones: the head is one row, as the transfer screen's: the verdict chip goes (the hero under it
+   says the verdict) and Change stays at its right, an icon. Finished steps fold as the transfer
+   screen's do; a step's result line stays, and opens its evidence, trust line included. A long value
+   goes under its label. */
+@media (max-width: 480px) {
+  .vcard .txcard__head > .badge {
+    display: none;
+  }
+
+  .vcard .vev .tl__trust {
+    display: flex;
+  }
+
+  .vk .kv--full {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 6px 0;
+  }
+
+  .vk .kv--full .kv__v {
+    justify-content: flex-start;
+    text-align: left;
+  }
+
+  .stage--tx .vf__lead {
+    font-size: var(--fs-small);
+  }
+
+  /* The foot's three buttons on one row: the link's is its own icon (not the copy icon) and its title. */
+  .vfoot__btns {
+    gap: 6px;
+  }
+
+  .vfoot__btns .btn {
+    gap: 6px;
+    padding: 0 10px;
+  }
+
+  .vfoot__btns .vfoot__link {
+    width: 44px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .vfoot__link > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
+/* The narrowest phones: the two worded buttons keep their words, without their icons. */
+@media (max-width: 340px) {
+  .vfoot__btns .btn:not(.vfoot__link) > .i {
+    display: none;
+  }
+}

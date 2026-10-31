@@ -20,7 +20,10 @@ import { BridgeView, useCardDest } from "./views/Bridge.tsx";
 import { LabView } from "./views/Lab.tsx";
 import { NetworkView } from "./views/Network.tsx";
 import { ReceiptView } from "./views/Receipt.tsx";
-import { TxView } from "./views/Tx.tsx";
+import { EmptyCard, TxView } from "./views/Tx.tsx";
+import type { VerifyView } from "./views/Verify.tsx";
+import { verifyDest } from "./verify-model.ts";
+import { headOf, runs, type VerifyState } from "./verify-runs.ts";
 import { addV3, disconnect, wallet, walletCode, type Balances } from "./wallet.ts";
 
 // ---------------------------------------------------------------------------------------------
@@ -411,25 +414,51 @@ function WalletButton({ needs, polkaFirst, net }: { needs: ChainInfo | null; pol
 // ---------------------------------------------------------------------------------------------
 // The shell
 
+/**
+ * The Verify page, loaded with its first visit, as its checks load with its first run
+ * (./verify-runs.ts): the app's first load carries neither.
+ */
+function VerifyPage({ route }: { route: Route }) {
+  const [page, setPage] = useState<{ View: typeof VerifyView } | "failed" | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void import("./views/Verify.tsx").then(
+      (m) => alive && setPage({ View: m.VerifyView }),
+      () => alive && setPage("failed"),
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
+  if (page === "failed") {
+    return (
+      <EmptyCard title="Verify did not load">The page's code for the checks could not be fetched: reload the page to try again. Nothing was read or sent.</EmptyCard>
+    );
+  }
+  return page ? <page.View route={route} /> : null;
+}
+
 const NAV = [
   ["bridge", "Bridge", "i-swap-h"],
   ["activity", "Activity", "i-activity"],
+  ["verify", "Verify", "i-shield-check"],
   ["network", "Network", "i-network"],
   ["lab", "Attack lab", "i-flask"],
 ] as const;
 
 /**
  * The destination a page is about, whose light client the top bar's status and the wallet button's
- * dot show: the bridge card's; on a transfer's screen or its receipt, that transfer's (this
- * browser's, a burn's by its id, a lock's once its Locked log is read); else none, and the status
- * is Sepolia's, as on Activity and Network.
+ * dot show: the bridge card's; on a transfer's screen, its receipt or its checks, that transfer's
+ * (this browser's, a burn's by its id, a lock's once its Locked log is read or the records name its
+ * chain); else none, and the status is Sepolia's, as on Activity and Network.
  */
-function routeDest(route: Route, card: DestKey, live: ReadonlyMap<string, LiveTransfer>, reads: ReadonlyMap<string, ChainRead>): DestKey | null {
+function routeDest(route: Route, card: DestKey, live: ReadonlyMap<string, LiveTransfer>, reads: ReadonlyMap<string, ChainRead>, checks: ReadonlyMap<string, VerifyState>): DestKey | null {
   if (route.name === "bridge") return card;
-  if (route.name !== "tx" && route.name !== "receipt") return null;
+  if (route.name !== "tx" && route.name !== "receipt" && route.name !== "verify") return null;
   const id = route.parts[1] ?? "";
   const t = live.get(id) ?? followerOf(id);
   if (t) return t.dest;
+  if (route.name === "verify") return verifyDest(id, checks.get(id), headOf(id));
   const k = refOf(id);
   if (k?.dir === "back") return k.dest;
   const r = reads.get(id);
@@ -463,7 +492,7 @@ export function App() {
   const w = useBox(wallet);
   // The bridge card's destination, or the transfer's on its screen and receipt: the status and the wallet button are its chain's.
   const dest = useCardDest();
-  const shown = routeDest(route, dest, useBox(transfers), useBox(chainReads));
+  const shown = routeDest(route, dest, useBox(transfers), useBox(chainReads), useBox(runs));
   const sepoliaNet = useNet();
   const net = useNet(shown ?? "sepolia");
   const dir = dirOf(route);
@@ -501,6 +530,7 @@ export function App() {
     tx: () => <TxView route={route} net={net} />,
     receipt: () => <ReceiptView route={route} />,
     activity: () => <ActivityView route={route} />,
+    verify: () => <VerifyPage route={route} />,
     network: () => <NetworkView net={sepoliaNet} />,
     lab: () => <LabView route={route} />,
   }[route.name]();

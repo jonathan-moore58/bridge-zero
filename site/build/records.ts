@@ -22,6 +22,8 @@ import type {
   LatestRun,
   LightClientFacts,
   Precommit,
+  RecordedLock,
+  RecordedLockMint,
   Records,
   RecordedTx,
   RelayEntry,
@@ -92,6 +94,14 @@ function optStr(v: unknown): string | null {
 
 function optHex(v: unknown): Hex | null {
   return typeof v === "string" && /^0x([0-9a-fA-F]{2})*$/.test(v) ? (v.toLowerCase() as Hex) : null;
+}
+
+/** A client's initialize step in a deployment record, which installed its checkpoint: its transaction and block, when it ran. */
+function initOf(steps: Json[], name: string, file: string): { tx: Hex; block: number; from: string } | null {
+  const s = steps.find((x) => x.name === name && x.ok === true);
+  const tx = s ? optHex(s.txHash) : null;
+  const block = s ? optNum(s.block) : null;
+  return tx && tx.length === 66 && block !== null ? { tx, block, from: file } : null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -767,6 +777,7 @@ function readRollup(root: string, dir: string, network: keyof typeof ROLLUPS): R
     lightClient,
     provenBalance,
     deployBlock: num(deploy.block, file, "GrandpaLightClient #2 block"),
+    init: initOf(steps, "#2 initialize", file),
     imports,
     latestImport: last ? { number: last.number, hash: last.hash, setId: last.setAfter, txHash: last.txHash, block: last.block, settledAt: last.settledAt, from: last.from } : null,
   };
@@ -805,6 +816,16 @@ function readRollupRuns(root: string, dir: string, network: keyof typeof ROLLUPS
   if (chainId !== ROLLUPS[network]) fail(file, `chainId ${chainId}, not ${ROLLUPS[network]}`);
   const minter = hex(obj(b.contracts, file, "contracts").BridgeMinter, file, "contracts.BridgeMinter", 20);
   const steps = arr(b.steps, file, "steps").map((s, i) => obj(s, file, `step ${i}`));
+  return { network, from: file, minter, burns: steps.filter((s) => s.kind === "burn").map((s) => burnRecordOf(s, file)), mints: autoMintsOf(root, dir, network) };
+}
+
+/**
+ * The locks auto-mint minted on `network` (Sepolia or a rollup), by nonce, from its histories
+ * automint-<network>-<sender>.jsonl in `dir`: the mint's transaction, its destination block (the
+ * result line's `sepoliaBlock`, as auto-mint names the destination's block on every network), its
+ * gas and time, and from the attempt line what the mint pays, the V3 block it proved and its path.
+ */
+function autoMintsOf(root: string, dir: string, network: "sepolia" | keyof typeof ROLLUPS): RollupMint[] {
   const pattern = new RegExp(`^automint-${network}-(0x[0-9a-f]{40})\\.jsonl$`);
   const names = existsSync(dir) ? readdirSync(dir).filter((f) => pattern.test(f)).sort() : [];
   const mints: RollupMint[] = [];
@@ -833,8 +854,64 @@ function readRollupRuns(root: string, dir: string, network: keyof typeof ROLLUPS
       });
     }
   }
-  mints.sort((x, y) => x.nonce - y.nonce);
-  return { network, from: file, minter, burns: steps.filter((s) => s.kind === "burn").map((s) => burnRecordOf(s, file)), mints };
+  return mints.sort((x, y) => x.nonce - y.nonce);
+}
+
+const MINT_PATHS = ["head", "held", "change", "selfRelay"] as const;
+
+/**
+ * The locks deployments/v3-testnet.json holds as locked, by vault nonce, each with its mint where
+ * the records name one on the chain the lock names: a mint step of sepolia-bridge.json (the mint
+ * tool's importAndMint at its bundle's block), else auto-mint's history on that chain (`autoMints`,
+ * by chain id). A lock sent as revive.call from a 5… account is a Substrate extrinsic ("substrate").
+ */
+export function recordedLocks(locks: Json[], mintSteps: Json[], autoMints: ReadonlyMap<number, { mints: RollupMint[] }>): RecordedLock[] {
+  const V3F = "deployments/v3-testnet.json";
+  const BR = "deployments/sepolia-bridge.json";
+  const out: RecordedLock[] = [];
+  for (const [i, l] of locks.entries()) {
+    if (l.status !== "locked") continue;
+    const nonce = vaultNonceOf(l) ?? fail(V3F, `locked lock ${i} has no vaultNonce`);
+    const what = `lock ${nonce}`;
+    const blk = obj(l.block, V3F, `${what} block`);
+    const dstChainId = Number(str(l.dstChainId, V3F, `${what} dstChainId`));
+    let mint: RecordedLockMint | null = null;
+    const step = dstChainId === 11155111 ? mintSteps.find((s) => num(obj(s.lock, BR, "mint.lock").nonce, BR, "mint.lock.nonce") === nonce) : undefined;
+    if (step) {
+      const bb = obj(obj(step.bundle, BR, `${what} mint.bundle`).block, BR, `${what} mint.bundle.block`);
+      mint = {
+        chainId: dstChainId,
+        tx: hex(step.txHash, BR, `${what} mint.txHash`, 32),
+        block: num(step.block, BR, `${what} mint.block`),
+        path: "head",
+        v3Block: { number: num(bb.number, BR, `${what} mint.bundle.block.number`), hash: hex(bb.hash, BR, `${what} mint.bundle.block.hash`, 32) },
+        gasUsed: optNum(step.gasUsed),
+        sender: hex(step.sender, BR, `${what} mint.sender`, 20),
+        from: BR,
+      };
+    } else {
+      const m = autoMints.get(dstChainId)?.mints.find((x) => x.nonce === nonce);
+      if (m) {
+        if (!m.v3Block) fail(m.from, `${what}'s mint names no V3 block`);
+        const path = (MINT_PATHS as readonly string[]).includes(m.path ?? "") ? (m.path as RecordedLockMint["path"]) : fail(m.from, `${what}'s mint has the path ${String(m.path)}`);
+        mint = { chainId: dstChainId, tx: m.txHash, block: m.block, path, v3Block: m.v3Block, gasUsed: m.gasUsed, sender: m.sender, from: m.from };
+      }
+    }
+    out.push({
+      nonce,
+      via: l.via === "substrate" ? "substrate" : "evm",
+      tx: hex(l.txHash, V3F, `${what} txHash`, 32),
+      block: { number: num(blk.number, V3F, `${what} block.number`), hash: hex(blk.hash, V3F, `${what} block.hash`, 32) },
+      signedAt: str(l.signedAt, V3F, `${what} signedAt`),
+      dstChainId,
+      dstMinter: hex(l.dstMinter, V3F, `${what} dstMinter`, 20),
+      recipient: hex(l.recipient, V3F, `${what} recipient`, 20),
+      amountNative: str(l.amountNative, V3F, `${what} amountNative`),
+      commitment: hex(l.commitment, V3F, `${what} commitment`, 32),
+      mint,
+    });
+  }
+  return out.sort((a, b) => a.nonce - b.nonce);
 }
 
 function signingSetKeys(fixture: Json, file: string): { setId: number; keys: Hex[] } {
@@ -1156,6 +1233,7 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
       tokenSymbol: mainProbe.tokenSymbol,
       fixtureSet: { ...mainSet, from: MAIN_FIX },
       checkpointRow: initRow("#1"),
+      init: initOf(sepSteps, "#1 initialize", SEP),
       sudo: mainProbe.sudo,
       latestRelay: latestMainnet,
       latestImport: latestImportOf(latestMainnet, relayFileOf(latestMainnet), [], "mainnet"),
@@ -1174,6 +1252,7 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
       tokenSymbol: v3Probe.tokenSymbol,
       fixtureSet: latestSigningSet,
       checkpointRow: initRow("#2"),
+      init: initOf(sepSteps, "#2 initialize", SEP),
       sudo: v3Probe.sudo,
       latestRelay: latestV3,
       latestImport: latestImportOf(latestV3, relayFileOf(latestV3), okMints, "v3"),
@@ -1328,6 +1407,13 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
   const abi = parseAbi(join(root, "contracts", "src"));
   if (abi.errors.length < 20 || abi.events.length < 8) fail("contracts/src", "fewer errors or events than expected");
 
+  // The bridge on the rollups, and every lock with its mint: Sepolia's mint steps, else auto-mint's history on the lock's chain.
+  const rollupRuns: Records["rollupRuns"] = { "base-sepolia": readRollupRuns(root, automintDir, "base-sepolia"), "arbitrum-sepolia": readRollupRuns(root, automintDir, "arbitrum-sepolia") };
+  const autoMintsByChain = new Map<number, { mints: RollupMint[] }>([
+    [11155111, { mints: autoMintsOf(root, automintDir, "sepolia") }],
+    ...(Object.keys(ROLLUPS) as (keyof typeof ROLLUPS)[]).map((k): [number, { mints: RollupMint[] }] => [ROLLUPS[k], { mints: rollupRuns[k]?.mints ?? [] }]),
+  ]);
+
   // The README's recorded outputs against deployments/ at this build: wtPOT, the vault, the burns.
   const verify = parseVerify(readme);
   if (verify) {
@@ -1354,8 +1440,9 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
     attacks,
     lightClients,
     rollups: { "base-sepolia": readRollup(root, relayDir, "base-sepolia"), "arbitrum-sepolia": readRollup(root, relayDir, "arbitrum-sepolia") },
-    rollupRuns: { "base-sepolia": readRollupRuns(root, automintDir, "base-sepolia"), "arbitrum-sepolia": readRollupRuns(root, automintDir, "arbitrum-sepolia") },
+    rollupRuns,
     relay: { files: relay.files, entries: relayEntries },
+    locks: recordedLocks(locks, okMints, autoMintsByChain),
     returnPath,
     totals,
     abi,

@@ -558,6 +558,9 @@ function Detail({ r, live }: { r: Row; live: Live | undefined }) {
       <p class="labdetail__base">
         Base: the real mint of lock {LOCK} · V3 block #{num(BASE.finality.block.number)}, set {BASE.finality.setId}{" "}
         <Addr full={BASE.mint.txHash} href={etherscanTx(BASE.mint.txHash)} label="the real mint's transaction" cls="addr--tx" />
+        <a class="text-link labdetail__verify" href={`#/verify/lock-${LOCK}`}>
+          Verify lock {LOCK}
+        </a>
       </p>
     </section>
   );

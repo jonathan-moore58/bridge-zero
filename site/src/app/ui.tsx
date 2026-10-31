@@ -84,7 +84,8 @@ export function Announcer() {
 // ---------------------------------------------------------------------------------------------
 // Copy
 
-export function CopyButton({ value, label, cls = "addr__btn" }: { value: string; label: string; cls?: string }) {
+/** A copy button: an icon, or with `text` an icon and a word that says what it copies (`icon` for it, the copy icon unless given). */
+export function CopyButton({ value, label, cls = "addr__btn", icon = "i-copy", text }: { value: string; label: string; cls?: string; icon?: string; text?: string }) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return;
@@ -98,8 +99,9 @@ export function CopyButton({ value, label, cls = "addr__btn" }: { value: string;
     announce("Copied");
   };
   return (
-    <button class={`${cls}${copied ? " is-copied" : ""}`} type="button" aria-label={`Copy ${label}`} onClick={onClick}>
-      <Icon id={copied ? "i-check" : "i-copy"} />
+    <button class={`${cls}${copied ? " is-copied" : ""}`} type="button" aria-label={`Copy ${label}`} title={text ? `Copy ${label}` : undefined} onClick={onClick}>
+      <Icon id={copied ? "i-check" : icon} />
+      {text ? <span>{text}</span> : null}
     </button>
   );
 }

@@ -31,6 +31,7 @@ import {
   type RollupSupply,
 } from "../rollups.ts";
 import { Addr, Chip, Icon, fmt, num, short } from "../ui.tsx";
+import { keysHref } from "../verify-runs.ts";
 import { RUNS, clockUtc, dayTime, qty, runTitle, sepoliaTime, tok, type RawLog, type Run } from "./Activity.tsx";
 
 type ClientKey = "v3" | "mainnet";
@@ -578,6 +579,16 @@ function LcCard({ which, quiet = false }: { which: ClientKey; quiet?: boolean })
           </div>
         ) : null}
       </dl>
+      {quiet ? null : (
+        <p class="ncard__note">
+          <span>
+            The keys it checks mints against come from its admin's checkpoint, each set since imported with the signatures of the set before.{" "}
+            <a class="text-link" href={keysHref("sepolia")}>
+              Where its keys come from
+            </a>
+          </span>
+        </p>
+      )}
     </article>
   );
 }
@@ -828,7 +839,10 @@ function RollupLcCard({ d }: { d: Dest & { key: RollupKey } }) {
       <p class="ncard__note">
         <span>
           Kept at V3's validator set by one relayer run about {RELAY_AFTER_CHANGE_MS / 60_000} minutes after each set change ({SET_CHANGES_TEXT}); between runs, mints
-          import V3's head themselves, so the head lag grows to hours. Its address is also the old mainnet's client's on Sepolia: another chain, another contract.
+          import V3's head themselves, so the head lag grows to hours. Its address is also the old mainnet's client's on Sepolia: another chain, another contract.{" "}
+          <a class="text-link" href={keysHref(d.key)}>
+            Where its keys come from
+          </a>
         </span>
       </p>
     </article>

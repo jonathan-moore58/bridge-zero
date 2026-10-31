@@ -8,7 +8,7 @@ import { checksum } from "../../lib/display.ts";
 import { useField } from "../../lib/live.ts";
 import type { Hex } from "../../lib/records-types.ts";
 import { addWtpotToWallet } from "../connect.tsx";
-import { deployed, destOf, explorerAddress, explorerTx, type Dest, type DestKey } from "../dests.ts";
+import { burnKey, deployed, destOf, explorerAddress, explorerTx, lockKey, type Dest, type DestKey } from "../dests.ts";
 import { FAST_CAP, fromOf, toOf, type Speed } from "../facts.ts";
 import { ChainMark } from "../marks.tsx";
 import type { Route } from "../router.ts";
@@ -16,6 +16,7 @@ import { useBox } from "../store.ts";
 import {
   FAST_RUN,
   STD_RUN,
+  chainIdOf,
   followerOf,
   isDone,
   nonceOf,
@@ -163,6 +164,16 @@ function burnReceipt(b: BurnRun, label: string): BackReceipt {
           }
         : null,
   };
+}
+
+/** The id the Verify page checks a recorded receipt by: its own, or for a replay the recorded run's. */
+function verifyIdOf(id: string, speedQ: string | null): string | null {
+  if (id === "replay-in") return lockKey(timedRun().nonce);
+  if (id === "replay-back") {
+    const b = recordedBurn(speedQ === "std" ? "std" : "fast");
+    return b ? burnKey(b.dest, b.n) : null;
+  }
+  return nonceOf(id) ? id : null;
 }
 
 /** #/receipt/lock-<n> and burn-<n> from the records, and the replays' (replay-in, replay-back?speed=). */
@@ -326,7 +337,7 @@ function chainBurnReceipt(x: ChainBurn): BackReceipt {
 // ---------------------------------------------------------------------------------------------
 // The page
 
-const Tick = ({ trust = false }: { trust?: boolean }) => (
+export const Tick = ({ trust = false }: { trust?: boolean }) => (
   <span class={`tick${trust ? " tick--trust" : ""}`} aria-hidden="true">
     <svg viewBox="0 0 52 52">
       <circle class="tick__ring" cx="26" cy="26" r="24" />
@@ -664,7 +675,8 @@ function BackMain({ m, whose }: { m: BackReceipt; whose: string }) {
   );
 }
 
-function ReceiptScreen({ m, me }: { m: Receipt; me: string | null }) {
+/** `verify`: the id the Verify page checks this transfer by (lock-<n>, a burn's id), when it has one on chain. */
+function ReceiptScreen({ m, me, verify = null }: { m: Receipt; me: string | null; verify?: string | null }) {
   const d = destOf(m.dest);
   const from = fromOf(m.dir, m.dest);
   const to = toOf(m.dir, m.dest);
@@ -702,7 +714,7 @@ function ReceiptScreen({ m, me }: { m: Receipt; me: string | null }) {
           {m.dir === "in" ? (
             <ChecksPanel states={ALL_PASSED} receipt facts={m.facts} held={m.held} chain={d.short} />
           ) : (
-            <TrustPanel speed={m.speed} fallback={m.fallback} members={null} d={d} />
+            <TrustPanel speed={m.speed} fallback={m.fallback} members={null} d={d} verify={verify} />
           )}
         </div>
       </section>
@@ -753,7 +765,7 @@ function ChainReceipt({ id, me }: { id: string; me: string | null }) {
   const x = read.value;
   // Not minted or not released, or not known to be: its page is the transfer, which says which.
   if (x.dir === "in" ? x.minted !== true : x.released !== true) return <Redirect to={`#/tx/${id}`} />;
-  if (x.dir === "back") return <ReceiptScreen m={chainBurnReceipt(x)} me={me} />;
+  if (x.dir === "back") return <ReceiptScreen m={chainBurnReceipt(x)} me={me} verify={id} />;
   // How many keys the signing set has: the light client's set read, when it is the set that signed.
   const setId = x.mint?.final.setId ?? null;
   const keys = setId !== null && set.value?.setId === BigInt(setId) ? set.value.keys.length : null;
@@ -768,13 +780,14 @@ export function ReceiptView({ route }: { route: Route }) {
     // Not done yet: its page is the transfer.
     if (!isDone(live)) return <Redirect to={`#/tx/${id}`} />;
     const m = liveReceipt(live);
-    return m ? <ReceiptScreen m={m} me={me} /> : <NotFound what="receipt" id={id} />;
+    return m ? <ReceiptScreen m={m} me={me} verify={chainIdOf(live)} /> : <NotFound what="receipt" id={id} />;
   }
   // A lock or a burn this browser followed: its receipt is the live one, with its own times.
   const follower = followerOf(id);
   if (follower) return <Redirect to={`#/receipt/${follower.id}`} />;
-  const m = recordedReceipt(id, route.q.get("speed"));
-  if (m) return <ReceiptScreen m={m} me={me} />;
+  const speed = route.q.get("speed");
+  const m = recordedReceipt(id, speed);
+  if (m) return <ReceiptScreen m={m} me={me} verify={verifyIdOf(id, speed)} />;
   // Any other lock or burn is read from its chain: Activity lists a connected wallet's own.
   if (nonceOf(id)) return <ChainReceipt key={id} id={id} me={me} />;
   return <NotFound what="receipt" id={id} />;

@@ -39,15 +39,15 @@ const qty = (n: number): Hex => `0x${Math.max(0, n).toString(16)}`;
  * The logs of `filter` from block `from` to `head`, searched in windows: back from `head` (newest
  * first), or with `order: "oldest"` on from `from`, for a log that follows a block the caller knows
  * (a lock's mint, a burn sent after the wallet was asked). `first`: stop at the first window that
- * holds any, the newest or the oldest, as a lookup by an indexed nonce does. Throws when no node
- * answers a window.
+ * holds any, the newest or the oldest, as a lookup by an indexed nonce does. `onCall`: told of each
+ * eth_getLogs call, for a caller that counts its reads. Throws when no node answers a window.
  */
 export async function searchLogs<T extends FoundLog = FoundLog>(
   endpoints: Endpoint[],
-  filter: { address: string; topics: (string | null)[] },
+  filter: { address: string; topics: (string | string[] | null)[] },
   from: number,
   head: number,
-  opts: { maxCalls?: number; first?: boolean; order?: "newest" | "oldest" } = {},
+  opts: { maxCalls?: number; first?: boolean; order?: "newest" | "oldest"; onCall?: () => void } = {},
 ): Promise<LogSearch<T>> {
   const nodes = endpoints.filter((e) => (e.logRange ?? Number.POSITIVE_INFINITY) >= MIN_LOG_RANGE);
   const maxCalls = opts.maxCalls ?? MAX_LOG_WINDOWS;
@@ -66,6 +66,7 @@ export async function searchLogs<T extends FoundLog = FoundLog>(
     const a = back ? Math.max(lo, hi - span + 1) : lo;
     const b = back ? hi : Math.min(hi, lo + span - 1);
     calls++;
+    opts.onCall?.();
     let logs: T[];
     try {
       logs = (await request<T[]>([ep], "eth_getLogs", [{ ...filter, fromBlock: qty(a), toBlock: qty(b) }], { accept: (r) => Array.isArray(r), timeoutMs: 12_000, retries: 0 })).result;

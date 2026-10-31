@@ -346,8 +346,18 @@ export function Redirect({ to }: { to: string }) {
   return null;
 }
 
-/** A page with nothing to show yet, or nothing at all: Activity's empty state, as a page. */
-function EmptyCard({ title, status = false, children }: { title: string; status?: boolean; children: ComponentChildren }) {
+/** A page with nothing to show yet, or nothing at all: Activity's empty state, as a page. `action`: where its button leads, Activity unless given. */
+export function EmptyCard({
+  title,
+  status = false,
+  action = { href: "#/activity", text: "Go to Activity" },
+  children,
+}: {
+  title: string;
+  status?: boolean;
+  action?: { href: string; text: string };
+  children: ComponentChildren;
+}) {
   return (
     <div class="page page--narrow">
       <div class="card acard">
@@ -362,8 +372,8 @@ function EmptyCard({ title, status = false, children }: { title: string; status?
           <p class="empty__text" role={status ? "status" : undefined}>
             {children}
           </p>
-          <a class="btn btn--primary btn--lg" href="#/activity">
-            Go to Activity
+          <a class="btn btn--primary btn--lg" href={action.href}>
+            {action.text}
           </a>
         </div>
       </div>
@@ -479,9 +489,17 @@ export function ChecksPanel({
                   : `importAndMint verified all five on ${chain} before it minted.`}
           </p>
         </div>
-        <span class="rail-card__count">
-          <span class="mono">{passed}</span>/{CHECKS.length}
-        </span>
+        <div class="rail-card__end">
+          {receipt && facts.nonce !== null ? (
+            <a class="btn btn--secondary btn--sm rail-card__go" href={`#/verify/lock-${facts.nonce}`}>
+              <Icon id="i-shield-check" />
+              Check it in your browser
+            </a>
+          ) : null}
+          <span class="rail-card__count">
+            <span class="mono">{passed}</span>/{CHECKS.length}
+          </span>
+        </div>
       </div>
       <ol class="rail">
         {CHECKS.map((c) => {
@@ -514,9 +532,22 @@ const ROLES = ["opens the release", "runs it", "a spare key"];
 /**
  * The committee: who approves the release, from the records. `members` is null on a receipt;
  * `speed` is null on the receipt of a burn read from the chains, which do not say how it was
- * released. `d`: the chain the burn is on.
+ * released. `d`: the chain the burn is on. `verify`: on a receipt, the burn's id, whose checks the
+ * Verify page runs.
  */
-export function TrustPanel({ speed, fallback, members, d = SEP }: { speed: Speed | null; fallback: boolean; members: readonly MemberState[] | null; d?: Dest }) {
+export function TrustPanel({
+  speed,
+  fallback,
+  members,
+  d = SEP,
+  verify = null,
+}: {
+  speed: Speed | null;
+  fallback: boolean;
+  members: readonly MemberState[] | null;
+  d?: Dest;
+  verify?: string | null;
+}) {
   const C = records.returnPath.committee;
   const sep = d.key === "sepolia";
   const mem = members ?? ["approved", "approved", "idle"];
@@ -531,9 +562,17 @@ export function TrustPanel({ speed, fallback, members, d = SEP }: { speed: Speed
           <h2 class="rail-card__title">{members ? "What you trust" : "What was trusted"}</h2>
           <p class="rail-card__sub">The burn is on {d.short}. The release is the committee's: 2 of 3 members must approve it on V3.</p>
         </div>
-        <span class="rail-card__count">
-          <span class="mono">{approved}</span>/{C.threshold}
-        </span>
+        <div class="rail-card__end">
+          {members === null && verify ? (
+            <a class="btn btn--secondary btn--sm rail-card__go" href={`#/verify/${verify}`}>
+              <Icon id="i-shield-check" />
+              Check it in your browser
+            </a>
+          ) : null}
+          <span class="rail-card__count">
+            <span class="mono">{approved}</span>/{C.threshold}
+          </span>
+        </div>
       </div>
       <ol class="rail rail--trust">
         {C.members.map((ss58, i) => {
