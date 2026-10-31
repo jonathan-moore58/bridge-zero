@@ -65,9 +65,11 @@ needs, and the tools check balances against the gas limit at their maximum fee.
 | Member 2 | 0.134 tPOT for each release |
 | A locker | 11.5245 tPOT of storage deposit for the vault's first lock, 3.8415 for each later one, and a fee of about 0.023 tPOT |
 
-V3's tPOT comes from Portaldot: this deployment's 500 tPOT came to the account registered for the
-Hacker House, `5ERJ…gPJ7`, which funded the other accounts. A locker that signs with an Ethereum
-key holds its tPOT on that key's account on V3 (`5ERJ…` sent 200 tPOT to the deployer's on Oct 18);
+A copy of one's own needs about 130 tPOT on V3: 86 for the vault's deployment, 20 for the multisig,
+10 and 1 for members 1 and 2, and about 11.6 for a first lock of 0.001 tPOT. V3's tPOT comes from
+Portaldot: this deployment's 500 tPOT came to the account registered for the Hacker House,
+`5ERJ…gPJ7`, which funded the other accounts. A locker that signs with an Ethereum key holds its
+tPOT on that key's account on V3 (`5ERJ…` sent 200 tPOT to the deployer's on Oct 18);
 `lock --from <ss58>` locks from a Substrate account instead. Sepolia ETH comes from a faucet; the
 rollups' ETH was bridged from Sepolia through their canonical bridges (the README's rows 59 and 60).
 
