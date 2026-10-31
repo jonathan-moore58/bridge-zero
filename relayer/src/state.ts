@@ -711,7 +711,7 @@ function flipsFail(nodes: Uint8Array[], read: (nodes: Uint8Array[]) => unknown):
 }
 
 /**
- * Verifies a state-reads fixture offline, as the light client and the Reader will: B's header and
+ * Verifies a state-reads fixture offline, as the light client and the Reader do: B's header and
  * its parent hash to their hashes; the signing set is the one its runtime call and set id storage
  * hold at B's parent; B carries the set change to the next set, which Grandpa.CurrentSetId at B
  * names; the finality proof is for B, without unknown headers, every precommit verifies under the
