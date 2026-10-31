@@ -31,7 +31,7 @@ import { accountInfoKey, childItems, childRootKey, commitmentKey, decodeContract
 import { decodeAuthorityList, decodeFinalityProof, decodeGrandpaLog, decodeHeader, decodeJustification, decodeU64, encodeRpcHeader, ScaleError, type Header, type Justification, type RpcHeader } from "./scale.ts";
 import { revertOf, TX_GAS_CAP, type Revert } from "./sepolia.ts";
 import { provenValue, readProof, TrieProofError } from "./trie.ts";
-import { GRANDPA_SET_ID_KEY, V3Error, V3Reader, type SetChange } from "./v3.ts";
+import { GRANDPA_SET_ID_KEY, HeaderMismatch, V3Error, V3Reader, type SetChange } from "./v3.ts";
 import { noFacts, stepTitles, waitingStep, type Ev, type Facts, type Line, type Raw, type Run, type Step, type StepKey, type StepState, type Val } from "./verdict.ts";
 
 export type { Ev, Facts, Line, Raw, Run, Step, StepKey, StepState, Val } from "./verdict.ts";
@@ -987,8 +987,12 @@ async function sigsStep(
 /** A read proof's items, as state_getReadProof and state_getChildReadProof answer them; null for any other answer. */
 const proofOf = (g: Got<{ proof: Hex[] }>): Hex[] | null => (g.ok && g.value && Array.isArray(g.value.proof) && g.value.proof.every((x) => typeof x === "string") ? g.value.proof : null);
 
-/** The lock's two proofs as the V3 node serves them at a block, walked from its state root: the cross-check of step 4. */
-async function nodeWord(reads: Reads, at: Hex, stateRoot: Uint8Array, trieId: Uint8Array, key: Uint8Array): Promise<{ value: Uint8Array | null; why: string | null; raw: Raw[]; from: string[] }> {
+/**
+ * The lock's two proofs as the V3 node serves them at a block, walked from its state root: the
+ * cross-check of step 4. Without a word, `why`; `walked` when the node answered with proofs that do
+ * not walk to one, which disagrees with the mint's, as opposed to no answer or no proof.
+ */
+async function nodeWord(reads: Reads, at: Hex, stateRoot: Uint8Array, trieId: Uint8Array, key: Uint8Array): Promise<{ value: Uint8Array | null; why: string | null; walked: boolean; raw: Raw[]; from: string[] }> {
   const rootKey = childRootKey(trieId);
   const [rp, cp] = await Promise.all([
     reads.v3<{ proof: Hex[] }>("state_getReadProof", [[bytesToHex(rootKey)], at]),
@@ -1001,15 +1005,14 @@ async function nodeWord(reads: Reads, at: Hex, stateRoot: Uint8Array, trieId: Ui
     { label: "the V3 node's child-root proof", call: callText("state_getReadProof", [[bytesToHex(rootKey)], at], rp.ep), value: rootItems ? rootItems.join("\n") : rp.ok ? "no proof" : rp.why },
     { label: "the V3 node's child proof", call: callText("state_getChildReadProof", [bytesToHex(rootKey), [bytesToHex(key)], at], cp.ep), value: served ? served.join("\n") : cp.ok ? "no proof" : cp.why },
   ];
-  if (!rootItems || !served) return { value: null, why: !rp.ok ? rp.why : !cp.ok ? cp.why : "no proof", raw, from };
+  if (!rootItems || !served) return { value: null, why: !rp.ok ? rp.why : !cp.ok ? cp.why : "no proof", walked: false, raw, from };
   try {
     const rootNodes = rootItems.map(hexToBytes);
     const childRoot = provenValue(stateRoot, rootNodes, rootKey, "child-root");
-    const items = childItems(served.map(hexToBytes), rootNodes);
-    const read = items.length ? provenValue(childRoot, items, key, "slot") : null;
-    return { value: read, why: null, raw, from };
+    const read = provenValue(childRoot, childItems(served.map(hexToBytes), rootNodes), key, "slot");
+    return { value: read, why: null, walked: false, raw, from };
   } catch (e) {
-    return { value: null, why: `its proof does not walk: ${errorText(e)}`, raw, from };
+    return { value: null, why: errorText(e), walked: true, raw, from };
   }
 }
 
@@ -1160,6 +1163,8 @@ export async function verifyMinted(env: VerifyEnv, x: MintedLock, out: Out): Pro
     let imp = call.imported;
     let impTx: RawTx | null = null;
     let impSrc = `${call.method} calldata${call.multicall ? ", inside Multicall3's aggregate3" : ""}`;
+    // The client's record of the block, asked at once: a mint(p) whose import is not found still fails at a block the client does not hold.
+    const heldP = readHeld(reads, d, block);
     if (!imp) {
       // mint(p): the block came in with an earlier import.
       const found = await findImport(reads, env, block, mintBlock);
@@ -1178,6 +1183,13 @@ export async function verifyMinted(env: VerifyEnv, x: MintedLock, out: Out): Pro
         }
       }
       if (!imp) {
+        // Without its import the header is not checked, unless the client holds no such block: then the minter's UnknownBlock fails it here.
+        const held = await heldP;
+        if (held.unknown && !held.value) {
+          const raw = held.answers.map((a) => ({ label: `headerOf(${sh(block)})`, call: callText("eth_call", [{ to: d.lightClient, data: encodeCall("headerOf(bytes32)", [block]) }, "latest"], a.ep), value: a.ok ? a.value : a.why }));
+          b.settle("header", { state: "failed", sub: `the light client on ${d.name} holds no block ${sh(block)}`, raw, from: fromOf(...read1, ...held.answers) });
+          return done(b);
+        }
         b.settle("header", { state: "skipped", sub: `Not checked: the import that brought ${sh(block)} into the client was found neither in the records nor in its logs`, retry: true });
         for (const k of ["keys", "sigs", "proof", "commit"] as const) b.settle(k, { state: "skipped", sub: "Not checked: needs the header" });
       }
@@ -1190,11 +1202,10 @@ export async function verifyMinted(env: VerifyEnv, x: MintedLock, out: Out): Pro
       b.run.facts.block = { number: header.number, hash: block };
       b.run.facts.header = bytesToHex(imp.header);
     }
-    // What needs the block: the client's record of it, V3's view of it, the replays. The mint goes
+    // What needs the block besides the client's record: V3's view of it, the replays. The mint goes
     // again to the minter itself (from Multicall3 its own call); the import, to the light client; the
     // re-run before it was mined is the transaction as it was sent, the set changes it imported first
     // included.
-    const heldP = readHeld(reads, d, block);
     const v3HeaderP = reads.v3<RpcHeader | null>("chain_getHeader", [block]);
     const v3KeysP = reads.v3<Hex>("state_call", ["GrandpaApi_grandpa_authorities", "0x", block]);
     const v3SetP = reads.v3<Hex | null>("state_getStorage", [GRANDPA_SET_ID_KEY, block]);
@@ -1318,10 +1329,16 @@ export async function verifyMinted(env: VerifyEnv, x: MintedLock, out: Out): Pro
         if (nw.value) {
           const same = equalBytes(nw.value, value);
           plines.push(same ? { ok: true, text: `The V3 node's own proof at #${n(header.number)} gives the same word` } : { ok: false, text: `the V3 node's proof at #${n(header.number)} gives another word, ${sh(bytesToHex(nw.value))}` });
+        } else if (nw.walked) {
+          // The node answered, and its proof does not walk to the word the mint's did: it disagrees.
+          plines.push({ ok: false, text: `the V3 node's proof at #${n(header.number)} does not walk: ${nw.why ?? ""}` });
         } else
           plines.push({
             ok: null,
-            text: nw.why && pruned(nw.why) ? `Not served · the V3 node no longer has state at #${n(header.number)} (pruned): the proof checked is the one the mint carried` : "The V3 node's proof: not answered",
+            text:
+              nw.why && pruned(nw.why)
+                ? `Not served · the V3 node no longer has state at #${n(header.number)} (pruned): the proof checked is the one the mint carried`
+                : `The V3 node's proof: ${nw.why === "no proof" ? "not served" : "not answered"}`,
           });
       }
       const items = `${call.p.childRootProof.length} + ${call.p.slotProof.length}${binds === true ? `, ${call.p.accountProof.length} more for the bind` : ""}`;
@@ -1600,6 +1617,21 @@ interface HeadProof {
   setId: bigint;
 }
 
+/**
+ * The step that reads V3's head, when the header the node serves for it does not hash to its block:
+ * failed, as step 1 fails on a mint's header, the two hashes short (in full in the diff). Null for
+ * any other miss, which leaves the step not checked.
+ */
+function badHead(e: unknown): Patch | null {
+  if (!(e instanceof HeaderMismatch)) return null;
+  return {
+    state: "failed",
+    sub: `V3's finalized head: the header the V3 node serves for ${sh(e.hash)} hashes to ${sh(e.computed)}`,
+    diff: { expected: e.hash, found: e.computed },
+    raw: [{ label: "the V3 node's answer", call: "chain_getFinalizedHead, chain_getHeader", value: errorText(e) }],
+  };
+}
+
 async function headProof(v3r: V3Reader): Promise<HeadProof> {
   const head = await v3r.finalizedHead();
   const p = await v3r.cleanProof(head.number);
@@ -1722,6 +1754,11 @@ export async function verifyUnminted(env: VerifyEnv, x: UnmintedLock, out: Out):
     try {
       hp = await headProof(v3r);
     } catch (e) {
+      const bad = badHead(e);
+      if (bad) {
+        b.settle("header", { ...bad, from: [node] });
+        return done(b);
+      }
       b.settle("header", {
         state: "skipped",
         sub: `Not checked: the V3 node did not give its finalized head's proof (${plainWhy(e)})`,
@@ -2049,6 +2086,11 @@ export async function verifyBurn(env: VerifyEnv, x: BurnTarget, out: Out): Promi
     const head = await headP;
     const admin = adminRead(d, await adminP);
     b.run.facts.admin = admin.admin;
+    const bad = head.ok ? null : badHead(head.e);
+    if (bad) {
+      b.settle("released", { ...bad, from: [node] });
+      return release();
+    }
     if (!head.ok) {
       b.settle("released", {
         state: "skipped",

@@ -1,6 +1,7 @@
 // The Verify page's lists and words, apart from the checks themselves (proof-verify.test.ts): the
-// picker's transfers from the records (six locks and four burns, each group newest first), what the
-// "Another lock or burn" field takes, the ids the page goes by and the destination the top bar shows
+// picker's transfers from the records (six locks and four burns, each group newest first), a lock
+// past them as read from V3 (its log not read, none, or minted by used(n)), what the "Another lock
+// or burn" field takes, the ids the page goes by and the destination the top bar shows
 // on it, each step's title, the verdict of a run (Verified only when every check passed on the mint
 // itself; the way back always Trusted), and the commands that check the same without the page.
 // Offline.
@@ -11,7 +12,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { buildRecords } from "../build/records.ts";
 import { destOf, refOf } from "../src/app/dests.ts";
-import { burnRows, commandsOf, dayTime, lockRows, readField, verifyDest, type VerifyHead } from "../src/app/verify-model.ts";
+import { bareMeta, beyondLock, burnRows, commandsOf, dayTime, lockRows, readField, verifyDest, type VerifyHead } from "../src/app/verify-model.ts";
 import { signedChecked, stepTitles, verdictOf, waitingRun, type Facts, type Run, type StepState } from "../src/lib/proof/verdict.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -50,6 +51,27 @@ test("the picker lists the recorded locks and burns from the records, each group
   assert.ok(burns.every((r) => r.dir === "back"));
   // Every row's id is one the page and the routes take.
   for (const r of [...locks, ...burns]) assert.deepEqual(refOf(r.id)?.dir, r.dir, r.id);
+});
+
+test("a lock past the records: a Locked log not read says so, never that there is none; one read is Minted or Locked by used(n), with no chip when that was not answered", () => {
+  const failed = beyondLock(7, "failed");
+  assert.deepEqual(failed, { n: 7, read: "failed", row: null });
+  assert.equal(bareMeta(failed.read), "Its Locked log could not be read: V3's EVM RPC did not answer");
+  assert.doesNotMatch(bareMeta(failed.read), /No Locked log/);
+  assert.equal(bareMeta("reading"), "Reading its Locked log on V3…");
+  // Read, and none: a lock from a Polkadot wallet, which its mint names.
+  const none = beyondLock(7, null);
+  assert.deepEqual(none, { n: 7, read: "read", row: null });
+  assert.match(bareMeta(none.read), /^No Locked log through V3's EVM RPC: a lock from a Polkadot wallet/);
+  // Read, with its log: its row, done by used(7) on the chain it names.
+  const log = { dest: "sepolia" as const, amount: 100_000_000_000n, at: Date.UTC(2026, 9, 28, 9, 30), minted: true };
+  const minted = beyondLock(7, log);
+  assert.equal(minted.read, "read");
+  assert.deepEqual(minted.row, { id: "lock-7", dir: "in", dest: "sepolia", n: 7, amount: 100_000_000_000n, at: log.at, label: "Lock 7", substrate: false, done: true });
+  assert.equal(refOf(minted.row!.id)?.dir, "in");
+  assert.equal(beyondLock(7, { ...log, minted: false }).row?.done, false);
+  assert.equal(beyondLock(7, { ...log, minted: null }).row?.done, null);
+  assert.ok(Number.isNaN(beyondLock(7, { ...log, at: null }).row?.at));
 });
 
 test("the field takes lock-7, a bare 7, burn-base-sepolia-0 and a transaction hash, and says what it does not take", () => {

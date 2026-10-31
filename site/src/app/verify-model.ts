@@ -59,15 +59,37 @@ export interface PickRow {
   label: string;
   /** A lock from a Polkadot wallet: a Substrate extrinsic. */
   substrate: boolean;
-  /** Minted, or released, by the records. */
-  done: boolean;
+  /** Minted, or released, by the records; for a lock read from V3, by used(n) on the chain it names, null when that was not answered. */
+  done: boolean | null;
 }
 
-/** A lock past the records, read from V3 for the picker: its nonce, and its row once its Locked log is read (null for one with none, a Substrate extrinsic's). */
+/**
+ * A lock past the records, read from V3 for the picker: its nonce; its Locked log being read, read,
+ * or not read (V3's EVM RPC did not answer); and its row once read (null for one with none, a
+ * Substrate extrinsic's).
+ */
 export interface BeyondLock {
   n: number;
+  read: "reading" | "read" | "failed";
   row: PickRow | null;
-  read: boolean;
+}
+
+/**
+ * A lock past the records once its Locked log was asked for: "failed" when V3's EVM RPC did not
+ * answer, never taken for a lock with no log; else its row when the log names a destination, minted
+ * by used(n) there (null when that was not answered), or none.
+ */
+export function beyondLock(n: number, log: { dest: DestKey; amount: bigint; at: number | null; minted: boolean | null } | "failed" | null): BeyondLock {
+  if (log === "failed") return { n, read: "failed", row: null };
+  const row: PickRow | null = log ? { id: lockKey(n), dir: "in", dest: log.dest, n, amount: log.amount, at: log.at ?? Number.NaN, label: `Lock ${n}`, substrate: false, done: log.minted } : null;
+  return { n, read: "read", row };
+}
+
+/** What the picker says of a lock past the records that has no row: its log being read, not read, or none (a Substrate extrinsic's). */
+export function bareMeta(read: BeyondLock["read"]): string {
+  if (read === "reading") return "Reading its Locked log on V3…";
+  if (read === "failed") return "Its Locked log could not be read: V3's EVM RPC did not answer";
+  return "No Locked log through V3's EVM RPC: a lock from a Polkadot wallet, which its mint names · read from V3";
 }
 
 /** The records the picker reads: the recorded locks, Sepolia's return path and the rollups' runs. */

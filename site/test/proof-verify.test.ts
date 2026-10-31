@@ -10,8 +10,10 @@
 // step 2's and step 6's failures; two RPCs' headerOf compared; a red cross-check reaches the
 // verdict; a mint through Multicall3 after a set change; route B's verdict by its step 6; the keys
 // carried through a set change; the way back's title by what B1 and B3 found, its failures, and B4
-// trusted whatever they found. Offline: the fakes answer from the fixtures
-// (test/fixtures/verify-locks.json was captured read-only from the public nodes).
+// trusted whatever they found; the V3 node's proof that does not walk, a red line; a mint(p) at a
+// block the client does not hold; a V3 head header that does not hash to its block. Offline: the
+// fakes answer from the fixtures (test/fixtures/verify-locks.json was captured read-only from the
+// public nodes).
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -355,6 +357,8 @@ interface Fakes {
   otherHeld?: Hex;
   /** headerOf of other blocks: a self-relay's set changes. */
   held?: Record<string, Hex>;
+  /** headerOf of this block reverts UnknownBlock on every RPC: the client does not hold it. */
+  unknownBlock?: Hex;
   /** BridgeMinter.lightClient(), the client's genesisHash(), admin() and its set's list hash, when the fake says otherwise. */
   lightClient?: Hex;
   genesis?: Hex;
@@ -368,6 +372,10 @@ interface Fakes {
   replay?: Hex;
   /** The planner's answer, for a run from V3 now. */
   plan?: MintPlan;
+  /** The V3 node's child read proof of the lock's slot, as the fake changes it; "down": the node does not answer it; "pruned": it no longer has the block's state. */
+  nodeChild?: ((proof: Hex[]) => Hex[] | null) | "down" | "pruned";
+  /** The V3 node's header of the lock's block, when the fake serves another. */
+  v3Header?: RpcHeader;
 }
 
 /** The key that deployed the contracts, and the light clients' admin. */
@@ -418,6 +426,7 @@ function destNode(L: LockFix, f: Fakes, second: boolean) {
           if (is("admin()")) return enc("address", [f.admin ?? DEPLOYER]);
           if (is("headerOf(bytes32)")) {
             const b = (decode("bytes32", `0x${tx.data.slice(10)}`)[0] as string).toLowerCase();
+            if (b === f.unknownBlock) throw new RpcFail(3, "execution reverted", revertData("UnknownBlock(bytes32)", "bytes32", [b]));
             return f.held?.[b] ?? (second && f.otherHeld ? f.otherHeld : L.headerOf);
           }
           if (is("authorities(uint64)")) {
@@ -461,16 +470,20 @@ function v3Node(L: LockFix, f: Fakes = {}) {
       case "grandpa_proveFinality":
         return params[0] === 108_424 ? heroBundle.finalityProof.scale : null;
       case "chain_getHeader":
-        return params[0] === L.block ? L.v3Header : params[0] === B0 ? LOCKS["0"]!.v3Header : null;
+        return params[0] === L.block ? (f.v3Header ?? L.v3Header) : params[0] === B0 ? LOCKS["0"]!.v3Header : null;
       case "state_call":
         return authorityList(f.runtimeKeys ?? (decode("bytes32[]", L.authorities)[0] as Hex[]));
       case "state_getStorage":
         return bytesToHex(u64le(L.setId));
       case "state_getReadProof":
         return { at: L.block, proof: root };
-      case "state_getChildReadProof":
+      case "state_getChildReadProof": {
         // As the node serves it: the main-trie items that lead to the child root, then the child trie's.
-        return { at: L.block, proof: [...root, ...slot] };
+        if (f.nodeChild === "down") throw new RpcFail(-32000, "node down");
+        if (f.nodeChild === "pruned") throw new RpcFail(4003, "State already discarded for block");
+        const proof = [...root, ...slot];
+        return { at: L.block, proof: f.nodeChild ? f.nodeChild(proof) : proof };
+      }
       default:
         throw new RpcFail(-32601, `the fake V3 node has no ${method}`);
     }
@@ -788,6 +801,8 @@ interface BurnFakes {
   /** The head's finality proof, and released[burnId]'s child proof, as the node gives them. */
   proof?: Hex;
   childProof?: Hex[];
+  /** The head's header as the node serves it, when it serves another. */
+  headHeader?: RpcHeader;
   /** released(burnId) on V3's EVM RPC. */
   released?: boolean;
 }
@@ -829,7 +844,7 @@ function burnEnv(o: BurnFakes = {}): VerifyEnv {
       case "chain_getFinalizedHead":
         return R.head.hash;
       case "chain_getHeader":
-        return params[0] === R.head.hash ? R.head.header : null;
+        return params[0] === R.head.hash ? (o.headHeader ?? R.head.header) : null;
       case "state_getStorage":
         return bytesToHex(u64le(BigInt(R.head.setId)));
       case "grandpa_proveFinality":
@@ -1296,4 +1311,79 @@ test("a failed read reads in plain words: each endpoint's failure, its raw messa
     "chain_getHeader: test-node-v3.portaldot.dev: unreachable",
   ]);
   assert.equal(plainWhy(e), "drpc refused: its free plan does not serve this chain; publicnode did not answer in time; tenderly refused: too many requests; test-node-v3 did not answer");
+});
+
+test("step 4's cross-check: the V3 node's proof that does not walk disagrees, a red line that reaches the verdict; not answered, not served or pruned stays neutral", async () => {
+  // The last byte of the node's last child item: its hash no longer matches the reference to it.
+  const flipLast = (proof: Hex[]): Hex[] => {
+    const last = proof.at(-1)!.slice(2);
+    return [...proof.slice(0, -1), `0x${flipByte(last, last.length / 2 - 1)}` as Hex];
+  };
+  const bad = await runHero({ nodeChild: flipLast });
+  assert.deepEqual(states(bad), ["passed", "passed", "passed", "passed", "passed", "passed"]);
+  const red = step(bad, "proof").lines.filter((l) => l.ok === false);
+  assert.equal(red.length, 1);
+  assert.match(red[0]!.text, /^the V3 node's proof at #108,424 does not walk: .*is not in the proof$/);
+  assert.equal(bad.disagree, true);
+  const v = verdictOf(bad, "Sepolia");
+  assert.deepEqual([v.kind, v.chip, v.title], ["disagree", "Cross-check differs", "Verified · a cross-check disagrees"]);
+  assert.match(v.sub, /^The V3 node's proof at #108,424 does not walk: /);
+  // No answer, an answer with no proof, or state the node no longer has: neutral, and the mint's own proof stands.
+  const cases: [Fakes["nodeChild"], string][] = [
+    ["down", "null The V3 node's proof: not answered"],
+    [() => null, "null The V3 node's proof: not served"],
+    ["pruned", "null Not served · the V3 node no longer has state at #108,424 (pruned): the proof checked is the one the mint carried"],
+  ];
+  for (const [nodeChild, line] of cases) {
+    const run = await runHero({ nodeChild });
+    assert.ok(linesOf(run).includes(line), line);
+    assert.equal(run.disagree, false, line);
+    assert.equal(verdictOf(run, "Sepolia").kind, "verified", line);
+  }
+});
+
+test("a mint(p) at a block the client does not hold fails step 1 with UnknownBlock's words, its import not found; one it holds is not checked without the import", async () => {
+  const L = LOCKS["3"]!;
+  const other = `0x${flipByte(L.block.slice(2), 0)}` as Hex;
+  const input = tamper(L.mint.input, L.block.slice(2), (h) => flipByte(h, 0));
+  const run = await runLock("3", { input, unknownBlock: other });
+  assert.deepEqual(states(run), ["failed", "unreached", "unreached", "unreached", "unreached", "unreached"]);
+  assert.equal(step(run, "header").sub, "the light client on Sepolia holds no block 0xbc6b…ccdc");
+  assert.equal(step(run, "header").raw.length, 2, "both RPCs' answers to headerOf");
+  assert.deepEqual(step(run, "header").from, ["dest-a.fake", "dest-b.fake"]);
+  const v = verdictOf(run, "Sepolia");
+  assert.deepEqual([v.kind, v.title], ["failed", "Did not check out at step 1 · Header hash"]);
+  // The same block, which the client holds, without its import: not checked, as before.
+  const held = await runLock("3", { input });
+  assert.equal(step(held, "header").state, "skipped");
+  assert.equal(step(held, "header").sub, "Not checked: the import that brought 0xbc6b…ccdc into the client was found neither in the records nor in its logs");
+});
+
+test("a V3 head header that does not hash to its block fails the step that reads it, in short hashes: B3 on the way back, B4 still Trusted; step 1 from V3 now; on a mint's run, a red line", async () => {
+  const run = await runBurn({ headHeader: { ...R.head.header, stateRoot: `0x${"11".repeat(32)}` } });
+  assert.deepEqual(states(run), ["passed", "passed", "failed", "trusted"]);
+  const b3 = step(run, "released");
+  assert.match(b3.sub, /^V3's finalized head: the header the V3 node serves for 0x8b38…91ec hashes to 0x\w{4}…\w{4}$/);
+  assert.doesNotMatch(b3.sub, /0x[0-9a-f]{64}/);
+  assert.equal(b3.diff?.expected, R.head.hash);
+  assert.equal(step(run, "release").sub, "Trusted, not checked: the committee's release");
+  let v = verdictOf(run, "Sepolia");
+  assert.deepEqual([v.kind, v.title], ["failed", "Did not check out at step 3 · Released on V3"]);
+  // From V3 now, the same fault fails step 1.
+  const other: RpcHeader = { ...LOCKS["0"]!.v3Header, stateRoot: `0x${"11".repeat(32)}` };
+  const env = lockEnv(LOCKS["0"]!, { plan: planOf("ready", ""), v3Header: other });
+  try {
+    const now = await verifyUnminted(env, { nonce: 0n, fields: FIELDS0, lock: null, why: "Not minted yet." }, { emit: () => undefined, stopped: () => false });
+    assert.deepEqual(states(now), ["failed", "unreached", "unreached", "unreached", "unreached", "unreached"]);
+    assert.match(step(now, "header").sub, /^V3's finalized head: the header the V3 node serves for 0xc89b…4e6d hashes to 0x\w{4}…\w{4}$/);
+    v = verdictOf(now, "Sepolia");
+    assert.deepEqual([v.kind, v.title], ["failed", "Did not check out at step 1 · Header hash"]);
+  } finally {
+    restoreFetch();
+  }
+  // On a mint's run the header checked is the mint's own: the node's other header is a red cross-check under step 1.
+  const minted = await runHero({ v3Header: other });
+  assert.equal(step(minted, "header").state, "passed");
+  assert.ok(linesOf(minted).includes("false the V3 node serves another header for #108,424"));
+  assert.equal(verdictOf(minted, "Sepolia").kind, "disagree");
 });

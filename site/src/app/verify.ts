@@ -16,7 +16,7 @@ import { DESTS, burnKey, deployed, destByChainId, destOf, explorerAddress, explo
 import { planEnv } from "./sends.ts";
 import { findBurn, findLock, findMint, v3BlockTime, type ChainLock } from "./transfers.ts";
 import { headOf, histories, setRun, type VerifyHead } from "./verify-runs.ts";
-import { burnLabel, type BeyondLock } from "./verify-model.ts";
+import { beyondLock, burnLabel, type BeyondLock } from "./verify-model.ts";
 
 // ---------------------------------------------------------------------------------------------
 // Each destination, as the checks read it
@@ -99,7 +99,9 @@ type Target =
   | { kind: "minted"; dest: DestKey; head: VerifyHead; input: MintedLock }
   | { kind: "unminted"; dest: DestKey; head: VerifyHead; input: UnmintedLock }
   | { kind: "burn"; dest: DestKey; head: VerifyHead; input: BurnTarget }
-  | { kind: "none"; why: string };
+  | { kind: "none"; why: string }
+  /** Its chain did not answer what it is: the page says so, and the next visit reads it again. */
+  | { kind: "unread"; why: string };
 
 const nonNull = { accept: (r: unknown) => r !== null };
 
@@ -118,11 +120,14 @@ async function usedOn(key: DestKey, nonce: number, looked: Looked): Promise<bool
   }
 }
 
-/** A lock's Locked log on V3 (one eth_getLogs), and its block's time when the log has none. */
-async function lockOf(n: number, looked: Looked): Promise<{ log: ChainLock; at: number | null } | null> {
+/**
+ * A lock's Locked log on V3 (one eth_getLogs), and its block's time when the log has none: null when
+ * V3 has no Locked log of it, "failed" when V3's EVM RPC did not answer.
+ */
+async function lockOf(n: number, looked: Looked): Promise<{ log: ChainLock; at: number | null } | "failed" | null> {
   looked.reads++;
-  const log = await findLock(n).catch(() => null);
-  if (!log) return null;
+  const log = await findLock(n).catch(() => "failed" as const);
+  if (log === "failed" || !log) return log;
   if (log.at !== null) return { log, at: log.at };
   looked.reads++;
   return { log, at: await v3BlockTime(log.block).catch(() => null) };
@@ -157,19 +162,21 @@ async function resolveLock(n: number): Promise<Target> {
   }
   // Beyond the records: the vault's Locked log names the destination.
   const found = await lockOf(n, looked);
-  if (found) {
+  if (found && found !== "failed") {
     const { log, at } = found;
     const head: VerifyHead = { dir: "in", dest: log.dest, label: `Lock ${n}`, at, amount: log.amount, substrate: false };
     return mintedOrNot(log.dest, n, head, { tx: log.tx, block: log.block, via: "evm" }, { recipient: log.recipient, amount: log.amount, block: log.block, commitment: log.commitment }, at, looked);
   }
   // A Substrate extrinsic has no Locked log through eth_getLogs: the minter that counts it as used names it.
+  // When V3's EVM RPC did not answer, a minter names a minted lock just the same, but not whose wallet sent it.
   for (const d of DESTS.filter((x) => selectable(x))) {
     if ((await usedOn(d.key, n, looked)) !== true) continue;
-    const head: VerifyHead = { dir: "in", dest: d.key, label: `Lock ${n}`, at: null, amount: null, substrate: true };
+    const head: VerifyHead = { dir: "in", dest: d.key, label: `Lock ${n}`, at: null, amount: null, substrate: found === null };
     const m = await mintOn(d.key, n, null, looked);
     if (m && m !== "beyond") return { kind: "minted", dest: d.key, head, input: { nonce: BigInt(n), mintTx: m.tx, recorded: null, lock: null, autoMint: AUTO_MINT, fields: null, looked } };
     return { kind: "none", why: `Lock ${n} is minted on ${d.short}, by a transaction older than its nodes search: its page cannot name the mint.` };
   }
+  if (found === "failed") return { kind: "unread", why: `Lock ${n}'s Locked log could not be read: V3's EVM RPC did not answer, and no minter named it as minted.` };
   return { kind: "none", why: "The vault's Locked logs on V3 have none, and no minter counts it. A lock from a Polkadot wallet shows here once it is minted." };
 }
 
@@ -270,6 +277,10 @@ export async function runVerify(id: string, ctl: { stopped(): boolean }): Promis
     setRun(id, { status: "none", why: t.why });
     return;
   }
+  if (t.kind === "unread") {
+    setRun(id, { status: "error", head: headOf(id), why: t.why });
+    return;
+  }
   const { head } = t;
   const env = verifyEnv(t.dest);
   const out = { emit: (run: Run) => setRun(id, { status: "run", head, run }), stopped: ctl.stopped };
@@ -299,21 +310,32 @@ const BEYOND_MAX = 8;
 
 /**
  * The locks the vault holds past the records (its nextNonce, the word at slot 1), newest first,
- * each filled in once its Locked log is read: a lock sent as a Substrate extrinsic has none through
- * eth_getLogs, and stays a bare nonce. Read once per page load, reported as each one is read.
+ * each filled in once its Locked log is read, and its chip once used(n) answers on the chain it
+ * names: a lock sent as a Substrate extrinsic has no log through eth_getLogs, and stays a bare nonce;
+ * one whose log was not read says so. Reported as each one is read. `before`: the last read's list,
+ * whose rows are kept, so that only the logs it did not read are asked for again.
  */
-export async function readBeyond(report: (locks: readonly BeyondLock[]) => void): Promise<void> {
+export async function readBeyond(report: (locks: readonly BeyondLock[]) => void, before: readonly BeyondLock[] = []): Promise<void> {
   const next = Number(BigInt((await request<Hex>(V3_EVM, "eth_getStorageAt", [VAULT, "0x1", "latest"])).result));
   const from = records.locks.reduce((m, l) => Math.max(m, l.nonce + 1), 0);
   const ns = Array.from({ length: Math.max(0, Math.min(next - from, BEYOND_MAX)) }, (_, i) => next - 1 - i);
-  let list: BeyondLock[] = ns.map((n) => ({ n, row: null, read: false }));
+  const kept = (n: number) => before.find((x) => x.n === n && x.read === "read");
+  let list: BeyondLock[] = ns.map((n) => kept(n) ?? { n, read: "reading", row: null });
   report(list);
+  const ask = ns.filter((n) => !kept(n));
   await Promise.all(
-    ns.map(async (n) => {
-      const found = await lockOf(n, { reads: 0, floor: false }).catch(() => null);
-      const row = found ? { id: lockKey(n), dir: "in" as const, dest: found.log.dest, n, amount: found.log.amount, at: found.at ?? Number.NaN, label: `Lock ${n}`, substrate: false, done: false } : null;
-      list = list.map((x) => (x.n === n ? { n, row, read: true } : x));
-      report(list);
+    ask.map(async (n) => {
+      const set = (x: BeyondLock) => {
+        list = list.map((y) => (y.n === n ? x : y));
+        report(list);
+      };
+      const looked = { reads: 0, floor: false };
+      const found = await lockOf(n, looked);
+      if (found === "failed" || !found) return set(beyondLock(n, found));
+      // The row as soon as its log is read, without a chip until used(n) answers.
+      const log = { dest: found.log.dest, amount: found.log.amount, at: found.at, minted: null };
+      set(beyondLock(n, log));
+      set(beyondLock(n, { ...log, minted: await usedOn(found.log.dest, n, looked) }));
     }),
   );
 }

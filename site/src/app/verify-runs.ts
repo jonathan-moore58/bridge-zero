@@ -116,12 +116,18 @@ export function lookupHash(hash: string): Promise<string | null> {
 export const beyond = new Box<readonly BeyondLock[]>([]);
 let beyondRead = false;
 
-/** Reads the locks the vault holds past the records, once: the picker lists them, marked as read from V3. */
+/**
+ * Reads the locks the vault holds past the records, once: the picker lists them, marked as read
+ * from V3. A lock whose Locked log was not read is asked for again when the picker next opens.
+ */
 export function startBeyond(): void {
   if (beyondRead) return;
   beyondRead = true;
   void import("./verify.ts")
-    .then((m) => m.readBeyond((list) => beyond.set(list)))
+    .then((m) => m.readBeyond((list) => beyond.set(list), beyond.get()))
+    .then(() => {
+      if (beyond.get().some((x) => x.read === "failed")) beyondRead = false;
+    })
     .catch(() => {
       // Not read: the picker lists the records' locks, and the field takes any other.
       beyondRead = false;

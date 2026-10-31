@@ -453,6 +453,25 @@ function checkValue(key: CheckKey, f: CheckFacts): string | null {
 }
 
 /**
+ * A panel head's count, with "Check it in your browser" beside it on a receipt (`href`). Without the
+ * button the count stands alone, as on the transfer screen: on a phone the count goes, and a wrapper
+ * left empty would still take a row of the head's grid.
+ */
+function HeadEnd({ href, children }: { href: string | null; children: ComponentChildren }) {
+  const count = <span class="rail-card__count">{children}</span>;
+  if (href === null) return count;
+  return (
+    <div class="rail-card__end">
+      <a class="btn btn--secondary btn--sm rail-card__go" href={href}>
+        <Icon id="i-shield-check" />
+        Check it in your browser
+      </a>
+      {count}
+    </div>
+  );
+}
+
+/**
  * The five checks, as a lit rail: the project's signature. `held`, on a receipt: the mint was mint(p)
  * at a block the light client held already, whose header and signatures it checked when it took the
  * block in (null: not known which). `chain`: where the mint is checked, the destination's name.
@@ -489,17 +508,9 @@ export function ChecksPanel({
                   : `importAndMint verified all five on ${chain} before it minted.`}
           </p>
         </div>
-        <div class="rail-card__end">
-          {receipt && facts.nonce !== null ? (
-            <a class="btn btn--secondary btn--sm rail-card__go" href={`#/verify/lock-${facts.nonce}`}>
-              <Icon id="i-shield-check" />
-              Check it in your browser
-            </a>
-          ) : null}
-          <span class="rail-card__count">
-            <span class="mono">{passed}</span>/{CHECKS.length}
-          </span>
-        </div>
+        <HeadEnd href={receipt && facts.nonce !== null ? `#/verify/lock-${facts.nonce}` : null}>
+          <span class="mono">{passed}</span>/{CHECKS.length}
+        </HeadEnd>
       </div>
       <ol class="rail">
         {CHECKS.map((c) => {
@@ -562,17 +573,9 @@ export function TrustPanel({
           <h2 class="rail-card__title">{members ? "What you trust" : "What was trusted"}</h2>
           <p class="rail-card__sub">The burn is on {d.short}. The release is the committee's: 2 of 3 members must approve it on V3.</p>
         </div>
-        <div class="rail-card__end">
-          {members === null && verify ? (
-            <a class="btn btn--secondary btn--sm rail-card__go" href={`#/verify/${verify}`}>
-              <Icon id="i-shield-check" />
-              Check it in your browser
-            </a>
-          ) : null}
-          <span class="rail-card__count">
-            <span class="mono">{approved}</span>/{C.threshold}
-          </span>
-        </div>
+        <HeadEnd href={members === null && verify ? `#/verify/${verify}` : null}>
+          <span class="mono">{approved}</span>/{C.threshold}
+        </HeadEnd>
       </div>
       <ol class="rail rail--trust">
         {C.members.map((ss58, i) => {

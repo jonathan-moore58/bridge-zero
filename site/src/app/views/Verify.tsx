@@ -18,7 +18,7 @@ import type { Route } from "../router.ts";
 import { useBox } from "../store.ts";
 import { chainIdOf, isDone, toTokens, transfers, type LiveTransfer } from "../transfers.ts";
 import { Addr, Chip, CopyButton, Icon, Nb, announce, closeSheet, fmt, num, openSheet, short, toast } from "../ui.tsx";
-import { commandsOf, dayTime, readField, type PickRow } from "../verify-model.ts";
+import { bareMeta, commandsOf, dayTime, readField, type BeyondLock, type PickRow } from "../verify-model.ts";
 import { BURNS, LOCKS, beyond, headOf, histories, leaveHistory, leaveVerify, lookupHash, runs, startBeyond, startHistory, startVerify, type VerifyHead } from "../verify-runs.ts";
 import { Tick } from "./Receipt.tsx";
 import { CssSpan, EmptyCard, Redirect } from "./Tx.tsx";
@@ -81,11 +81,14 @@ function PickRowView({ r, whence, current }: { r: PickRow; whence: Whence; curre
             {r.substrate ? " · from a Polkadot wallet" : ""} · {whence}
           </span>
         </span>
+        {/* A lock read from V3 whose used(n) was not answered gets no chip, rather than one that may be wrong. */}
         <span class="arow__status">
           {r.dir === "in" ? (
-            <Chip kind="verified badge--sm" icon="i-shield-check">
-              {r.done ? "Minted" : "Locked"}
-            </Chip>
+            r.done === null ? null : (
+              <Chip kind="verified badge--sm" icon="i-shield-check">
+                {r.done ? "Minted" : "Locked"}
+              </Chip>
+            )
           ) : (
             <Chip kind="trusted badge--sm" icon="i-users">
               {r.done ? "Released" : "Burned"}
@@ -100,8 +103,8 @@ function PickRowView({ r, whence, current }: { r: PickRow; whence: Whence; curre
   );
 }
 
-/** A lock past the records whose Locked log is not read yet, or has none (a Substrate extrinsic's): its nonce only. */
-function BareRow({ n, read, current }: { n: number; read: boolean; current: string | null }) {
+/** A lock past the records whose Locked log is not read yet, could not be read, or has none (a Substrate extrinsic's): its nonce only, and its check a click away. */
+function BareRow({ n, read, current }: { n: number; read: BeyondLock["read"]; current: string | null }) {
   const id = `lock-${n}`;
   const here = id === current;
   return (
@@ -112,7 +115,7 @@ function BareRow({ n, read, current }: { n: number; read: boolean; current: stri
         </span>
         <span class="arow__main">
           <span class="arow__title">Lock {n}</span>
-          <span class="arow__meta">{read ? "No Locked log through V3's EVM RPC: a lock from a Polkadot wallet, which its mint names · read from V3" : "Reading its Locked log on V3…"}</span>
+          <span class="arow__meta">{bareMeta(read)}</span>
         </span>
         <span class="arow__status" />
         <span class="arow__chev" aria-hidden="true">

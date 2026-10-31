@@ -47,6 +47,19 @@ export class V3Error extends Error {
   override name = "V3Error";
 }
 
+/** A header the V3 node served for block `hash` that hashes to `computed`: a V3Error, worded the same, that says which. */
+export class HeaderMismatch extends V3Error {
+  override name = "HeaderMismatch";
+  readonly hash: Hex;
+  readonly computed: Hex;
+
+  constructor(hash: Hex, computed: Hex) {
+    super(`the V3 node's header ${hash} hashes to ${computed}`);
+    this.hash = hash;
+    this.computed = computed;
+  }
+}
+
 /** V3 moved on while it was read (finality kept moving, the node is behind the light client): read again in a few seconds. */
 export class V3Moved extends Error {
   override name = "V3Moved";
@@ -126,7 +139,7 @@ export class V3Reader {
     if (!json) throw new V3Error(`the V3 node has no header ${hash}`);
     const header = decodeHeader(encodeRpcHeader(json));
     const computed = bytesToHex(blake2b256(header.encoded));
-    if (computed !== hash.toLowerCase()) throw new V3Error(`the V3 node's header ${hash} hashes to ${computed}`);
+    if (computed !== hash.toLowerCase()) throw new HeaderMismatch(hash, computed);
     return header;
   }
 
