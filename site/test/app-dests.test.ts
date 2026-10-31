@@ -452,6 +452,14 @@ test("the times the card states: Sepolia's as measured, unchanged; a rollup's as
   // Standard: the chain's own finality, then about a minute of the watcher's round and the approvals.
   assert.equal(timeOf("base-sepolia", "std")[0], "≈ 21 min");
   assert.equal(timeOf("arbitrum-sepolia", "std")[0], "≈ 19 min");
+  // The strip under the card states auto-mint's time as the card does, from timeOf: each rollup's own run, not Sepolia's of Oct 27.
+  const bridge = readFileSync(join(here, "..", "src", "app", "views", "Bridge.tsx"), "utf8");
+  const from = bridge.indexOf("function ProofStrip(");
+  const to = bridge.indexOf("function ChainButton(");
+  assert.ok(from > 0 && to > from, "Bridge.tsx's ProofStrip");
+  const strip = bridge.slice(from, to);
+  assert.ok(strip.includes('timeOf(d.key, "auto")'), "the strip reads auto-mint's time from timeOf");
+  assert.ok(!strip.includes("2½") && !strip.includes("as measured on Sepolia, Oct 27"), "no time of Sepolia's run stands for a rollup's");
 });
 
 test("the rollups' runs are the README's: lock 6 and lock 7 minted 139 s and 133 s after their V3 blocks, Arbitrum Sepolia's burn 1 released 105 s after its block", () => {

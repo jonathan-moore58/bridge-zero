@@ -960,6 +960,8 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
   const back = dir === "back";
   const sep = d.key === "sepolia";
   const firsts = sep ? null : FIRSTS[d.key as Exclude<DestKey, "sepolia">];
+  // Auto-mint's time as the card states it: Sepolia's run of Oct 27, a rollup's own of Oct 28 (facts.ts, ROLLUP_RUNS).
+  const autoTime = timeParts(timeOf(d.key, "auto")[0].replace(/^≈ /, ""));
   return (
     <aside class="proof" aria-labelledby="proof-title" data-dir={dir}>
       <div class="proof__head">
@@ -1073,9 +1075,11 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
             {auto ? (
               <li class="fact">
                 <span class="fact__num">
-                  <span class="fact__approx">≈</span>2½<span class="unit">min</span>
+                  <span class="fact__approx">≈</span>
+                  {autoTime[0]}
+                  <span class="unit">{autoTime[1]}</span>
                 </span>
-                <span class="fact__text">{sep ? "lock to mint, sent by auto-mint · measured Oct 27" : "lock to mint, sent by auto-mint · as measured on Sepolia, Oct 27"}</span>
+                <span class="fact__text">{sep ? "lock to mint, sent by auto-mint · measured Oct 27" : `lock to mint, sent by auto-mint · measured on ${d.short}, Oct 28`}</span>
               </li>
             ) : (
               <li class="fact">
