@@ -30,8 +30,9 @@ your own trusts you where this one trusts its operator: the light clients' admin
 
 - Node.js 24 (the packages' `engines`; CI runs 24).
 - Foundry 1.8.5: `forge` builds and tests, and `cast` signs every EVM transaction the tools send,
-  so it has to be on `PATH`. `foundryup --install 1.8.5` installs it; forge fetches solc 0.8.27 on
-  first use.
+  so it has to be on `PATH`. `curl -L https://foundry.paradigm.xyz | bash`, then
+  `foundryup --install 1.8.5` installs it (with `--platform alpine` if `cast --version` then fails
+  on an old glibc); forge fetches solc 0.8.27 on first use.
 - git, for the four pinned libraries ([NOTICE.md](../NOTICE.md)).
 
 **Keys.** Each process has a key of its own, and the tools refuse some mixes.
@@ -64,6 +65,12 @@ needs, and the tools check balances against the gas limit at their maximum fee.
 | Member 2 | 0.134 tPOT for each release |
 | A locker | 11.5245 tPOT of storage deposit for the vault's first lock, 3.8415 for each later one, and a fee of about 0.023 tPOT |
 
+V3's tPOT comes from Portaldot: this deployment's 500 tPOT came to the account registered for the
+Hacker House, `5ERJ…gPJ7`, which funded the other accounts. A locker that signs with an Ethereum
+key holds its tPOT on that key's account on V3 (`5ERJ…` sent 200 tPOT to the deployer's on Oct 18);
+`lock --from <ss58>` locks from a Substrate account instead. Sepolia ETH comes from a faucet; the
+rollups' ETH was bridged from Sepolia through their canonical bridges (the README's rows 59 and 60).
+
 **RPCs.** The tools use public endpoints unless told otherwise: each EVM network's are in `NETWORKS`
 ([`contracts/script/lib/sepolia.mjs`](../contracts/script/lib/sepolia.mjs)), and V3's node and EVM
 RPC are `wss://test-node-v3.portaldot.dev` and `https://test-evm-rpc-v3.portaldot.dev`.
@@ -75,7 +82,8 @@ verification only.
 
 ## 1. Build and test
 
-No keys and no chain access. `.github/workflows/ci.yml` runs the same on every push.
+No keys and no chain access. `.github/workflows/ci.yml` runs the same on every push and pull
+request, but for the sepolia build and the site build (`pages.yml` builds the site on `main`).
 
 ```sh
 git clone https://github.com/jonathan-moore58/bridge-zero
@@ -144,7 +152,7 @@ way yet: each tool's dry run is the check.
 |---|---|---|
 | This deployment's records | `deployments/*.json` and `*.jsonl`: move them away | the tools read and write them; `deploy-sepolia.mjs --send` refuses over an existing `deployments/<network>.json`, and `v3-vault deploy --send` while `deployments/v3-testnet.json` holds a vault |
 | The deployer | `DEPLOYER` in `contracts/script/deploy-sepolia.mjs` (and in `deploy-kit.mjs`) | the plan's sender; the records it writes name it for the other tools |
-| The libraries' addresses | `[profile.sepolia]` `libraries` in `contracts/foundry.toml`: `cast compute-address <deployer> --nonce 0`, then `--nonce 1`, `2` and `3` | the deployment build links them at compile time, so that a source verification compiles the same bytes; the deployer's first four transactions on each chain create them |
+| The libraries' addresses | `[profile.sepolia]` `libraries` in `contracts/foundry.toml`: `cast compute-address <deployer> --nonce 0`, then `--nonce 1`, `2` and `3`, then `FOUNDRY_PROFILE=sepolia forge build --skip test --skip script` again | the deployment build links them at compile time, so that a source verification compiles the same bytes; the deployer's first four transactions on each chain create them |
 | The minter's and wtPOT's nonces | `PAIR_NONCES` in `relayer/src/mint.ts` | the deployer's nonces that create them: here 31 and 32 on Sepolia, 9 and 10 on the rollups |
 | The checkpoint | `PLANS` in `deploy-sepolia.mjs`, the fixture directory each network's light client starts from | from an old checkpoint the relayer has every set change since to import (V3 changes its set about every 6 hours), and it stops past `--scan-limit` (100,800 V3 blocks, about a week) |
 | The V3 accounts | `--from` of `v3-vault deploy` and `lock`, and of `release -- fund` and `burn`; `--committee` and `--threshold` of `v3-vault deploy` | the defaults name this deployment's (`DEFAULT_DEPLOYER`, `DEFAULT_LOCKER` and `COMMITTEE` in `v3-vault.ts`, `DEFAULT_FUNDER` and `DEFAULT_SENDER` in `release.ts`) |
@@ -188,10 +196,13 @@ mainnet's client #1, and on each client a set change imported and a tampered imp
 failed transaction. The tools' exit codes: 0 done, 1 a check failed or the tool refused, 2 a node
 could not be reached, 3 a sent transaction is still pending.
 
-Then a relayer brings the client to V3's current set, with a key of its own (here the deployer
-funded it at its nonce 8 on each rollup), from `relayer/`:
+Then a relayer brings the client to V3's current set, with a key of its own. Here the deployer
+funded that key with 0.008 ETH at its nonce 8 on each rollup (the README's rows 77 and 78), the one
+transaction between the light client's 8 and the nonces 9 and 10 that `PAIR_NONCES` names (the
+first line below); then, from `relayer/`:
 
 ```sh
+cast send <relayer address> --value 0.008ether --account <deployer keystore> --password-file <file> --rpc-url https://base-sepolia-rpc.publicnode.com
 npm run relay -- --network base-sepolia --chain v3 --from <relayer address>
 npm run relay -- --network base-sepolia --chain v3 --send --account <relayer keystore> --password-file <file>
 ```
@@ -209,12 +220,14 @@ npm run v3-vault -- deploy --committee <member 1>,<member 2>,<member 3> --thresh
 
 The dry run derives the multisig from the members and the threshold, and refuses a
 `--committee-multisig` or a `--releaser` that is not that account and its address, naming the right
-one. It has V3's EVM RPC run the constructor, dry-runs the deployment from `--from`, and prints the
-vault's address, the deposit and the fee. `--send` signs `revive.instantiateWithCode`, waits for
-finality, checks the deployed code and writes the vault and its committee to
-`deployments/v3-testnet.json`, where the release tool reads the committee. Then fund the multisig,
-which pays each release's storage deposit, and members 1 and 2, which pay the fees and member 1's
-deposit (each line without `--send` first):
+one: a first dry run with member 1's address as `--committee-multisig` and
+`0x0000000000000000000000000000000000000001` as `--releaser` names the multisig, and a second, with
+it, names its address. It has V3's EVM RPC run the constructor, dry-runs the deployment from
+`--from`, and prints the vault's address, the deposit and the fee. `--send` signs
+`revive.instantiateWithCode`, waits for finality, checks the deployed code and writes the vault and
+its committee to `deployments/v3-testnet.json`, where the release tool reads the committee. Then
+fund the multisig, which pays each release's storage deposit, and members 1 and 2, which pay the
+fees and member 1's deposit (each line without `--send` first):
 
 ```sh
 npm run release -- fund --multisig --amount 20 --from <funder ss58> --send --key-file <file>
@@ -237,6 +250,8 @@ Sepolia it requires a lock that names the minter's address to be, as lock 0 name
 npm run mint -- deploy --network base-sepolia
 npm run mint -- deploy --network base-sepolia --send --account <deployer keystore> --password-file <file>
 npm run mint -- status --network base-sepolia
+npm run mint -- deploy --nonce <lock n>         # Sepolia, after the lock that names the minter
+npm run mint -- deploy --nonce <lock n> --send --account <deployer keystore> --password-file <file>
 ```
 
 The deployer has to be at the nonce `PAIR_NONCES` names. `--send` checks the code at each address
@@ -284,7 +299,7 @@ is enabled with GitHub Actions as its source. Each page's Content-Security-Polic
 
 A chain needs the BLAKE2F precompile, which the light client hashes headers with, and a
 per-transaction gas limit its deployments fit in: under Sepolia's rules, which price new code high,
-`GrandpaLightClient` took 15,039,331 gas of the 16,777,216 cap; on the rollups 2,136,019. Add it to
+`GrandpaLightClient` took 15,039,367 gas of the 16,777,216 cap; on the rollups 2,136,019. Add it to
 `NETWORKS` in `contracts/script/lib/sepolia.mjs` and its name to `NetworkName` in
 `contracts/script/lib/sepolia.d.mts`: `npm run typecheck` in `relayer/` then names each table that
 needs a row for it (`L1_KIND` in `l1.ts`, `PAIR_NONCES` in `mint.ts`, `WAYBACK` in `wayback.ts`,
@@ -306,12 +321,14 @@ npm run relay -- --chain v3 --send --watch 600 --account <relayer keystore> --pa
 npm run relay -- --chain mainnet --send --watch 600 --keep 0.02 --account <mainnet relayer keystore> --password-file <file>
 ```
 
-The rollups' clients, one run of each six minutes after each V3 set change (01:54, 07:54, 13:54 and
-19:54 UTC), and again 20 and 40 minutes later:
+The rollups' clients, one run of each every 20 minutes: a run imports a set change the client lacks
+at once and a head once the client is 1,800 V3 blocks (about 3 hours) behind, and sends nothing
+otherwise. V3 changes its set about every 6 hours, at times that moved each time it stopped making
+blocks (the README's [Known limits](../README.md#status)):
 
 ```sh
-npm run relay -- --network base-sepolia --chain v3 --send --account <relayer keystore> --password-file <file>
-npm run relay -- --network arbitrum-sepolia --chain v3 --send --account <relayer keystore> --password-file <file>
+npm run relay -- --network base-sepolia --chain v3 --send --head-every 1800 --account <relayer keystore> --password-file <file>
+npm run relay -- --network arbitrum-sepolia --chain v3 --send --head-every 1800 --account <relayer keystore> --password-file <file>
 ```
 
 Auto-mint, a round every 15 seconds: each new lock, once V3 has finalized it and 90 seconds more,
@@ -354,8 +371,9 @@ these processes since Oct 31, with how to install them, where the keys go, how t
 from one machine to another, and the standing procedures: health, an approval by hand, a code
 update, a halt. In short: a user `ubuntu`, the checkout in `/home/ubuntu/bridge-zero` with `npm ci`
 in `relayer/`, Node.js 24, `cast` in `~/.foundry/bin`, the keys in files of mode 600, and each
-process a service that starts at boot and restarts after a crash, except the watcher after exit
-code 4; a timer for the rollup runs, and a read-only health check every 15 minutes.
+process a service that starts at boot: auto-mint and the watcher restart a minute after a failure
+(the watcher not after exit code 4), the relayers only after a signal (an out-of-memory abort, a
+kill); a timer for the rollup runs every 20 minutes, and a read-only health check every 15 minutes.
 
 ## What a copy proves and trusts
 
