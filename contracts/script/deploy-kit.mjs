@@ -28,7 +28,8 @@
 // records its hash in deployments/sepolia-kit.json (repo root) and only then publishes it, and checks
 // its receipt and the code at its address; once both are mined, the deployed Reader makes the same
 // five reads by eth_call, with eth_estimateGas's gas for each, recorded too. --resume continues the
-// record from its first unmined step.
+// record from its first step not yet mined and checked: a mined step whose checks failed is checked
+// again from its receipt, and one whose checks fail again stops the run.
 // --verify submits both contracts to Etherscan with forge verify-contract (forge reads the key from
 // ETHERSCAN_API_KEY); a dry run prints the same commands.
 // Fees: a priority fee of 1,000 wei and a max fee of ten times the next base fee plus it, at least
@@ -408,7 +409,7 @@ async function dryRun(plan, steps, ctx) {
   const { views, reads } = checksOf(plan);
   const checks = [...views, ...reads];
   console.log(
-    `\nPlan: ${steps.length} creations from nonce ${steps[0].nonce}, then ${views.length} views and ${reads.length} reads through the new` +
+    `\nPlan: ${steps.length === 1 ? "1 creation" : `${steps.length} creations`} from nonce ${steps[0].nonce}, then ${views.length} views and ${reads.length} reads through the new` +
       ` contracts, in one simulated block: eth_simulateV1 with validation on, the creations from the deployer at its nonce` +
       ` and with its balance on chain (no balance is added), first with gas limit ${fmt(CAP)}, then with the gas limit below.`,
   );
@@ -442,7 +443,7 @@ async function dryRun(plan, steps, ctx) {
 
   // 3. Gas and cost. Before each transaction the deployer must hold its gas limit at the max fee;
   // at most, every earlier one paid the max fee too.
-  console.log(`\n     ${steps.length} transactions: ${fmt(total)} gas`);
+  console.log(`\n     ${steps.length === 1 ? "1 transaction" : `${steps.length} transactions`}: ${fmt(total)} gas`);
   const top = Math.max(...limits.values());
   check(top <= CAP, `every gas limit is within the ${fmt(CAP)} cap (the largest ${fmt(top)})`);
   const peak = Math.max(first.peak, run.peak);
@@ -523,7 +524,8 @@ function save(record) {
 }
 
 // The record against the plan rebuilt from its start nonce: same names, nonces, addresses and
-// transaction data, from the same build. Returns the index of its first step not yet mined.
+// transaction data, from the same build. Returns the index of its first step not yet mined and
+// checked: a mined step whose checks failed is checked again from its receipt (reconcile).
 function matchRecord(record, steps) {
   const fail = (why) => {
     console.log(`FAIL ${RECORD} does not match this plan: ${why}`);
@@ -536,9 +538,9 @@ function matchRecord(record, steps) {
   record.steps.forEach((r, i) => {
     const s = steps[i];
     if (r.name !== s.name || r.nonce !== s.nonce || r.address !== s.address || r.dataHash !== dataHash(s)) fail(`step ${i} (${r.name})`);
-    if (r.block !== null && !r.ok) fail(`step ${i} (${r.name}) was mined but failed its checks; see tx ${r.txHash}`);
+    if (r.block !== null && !r.ok && !r.txHash) fail(`step ${i} (${r.name}) was mined but has no transaction hash`);
   });
-  const next = record.steps.findIndex((r) => r.block === null);
+  const next = record.steps.findIndex((r) => !r.ok);
   return next < 0 ? steps.length : next;
 }
 
@@ -558,7 +560,16 @@ async function recordReceipt(record, s, receipt) {
     ],
     [receipt.contractAddress?.toLowerCase() === s.address, `     created at ${s.address}`],
   ];
-  const code = await retry("code", () => rpc("eth_getCode", [s.address, "latest"]));
+  // The code at the receipt's block. A node behind a load balancer can answer for a block it has
+  // not seen yet with no code (it did on Oct 31): that answer is asked again.
+  const code =
+    status !== 1
+      ? "0x"
+      : await retry("code", async () => {
+          const c = await rpc("eth_getCode", [s.address, receipt.blockNumber]);
+          if (c === "0x") throw new Error(`no code at ${s.address} at block ${fmt(Number(BigInt(receipt.blockNumber)))} on this node yet`);
+          return c;
+        }).catch(() => "0x");
   lines.push([hex(keccak256(bytes(code))) === entry.codeHash, "     with the code the dry run left there"]);
   let ok = true;
   for (const [k, what] of lines) ok = check(k, what) && ok;
