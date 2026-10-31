@@ -15,6 +15,7 @@ import { openWalletPicker } from "../connect.tsx";
 import { SENDS, burnKey, deployed, destOf, destState, lockKey, pickRows, type Dest, type DestKey, type PickRow } from "../dests.ts";
 import {
   CH,
+  FAST_BUDGET_LINE,
   FAST_CAP,
   IMPORT_GAS,
   LATER_CHAINS,
@@ -894,8 +895,8 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
             <p class="rnote">
               <Icon id="i-info" cls="i--14" />
               <span>
-                Fast takes up to 1 tPOT per burn, and up to 1 tPOT in all across fast releases not yet final, on every chain the committee serves. If other fast
-                burns are in flight, yours is released the standard way ({timeOf(d.key, "std")[0]}).
+                Fast takes up to {FAST_CAP} tPOT per burn, and shares one {FAST_CAP} tPOT budget across all chains: while another fast release is in flight,
+                your burn can wait for finality, as Standard does (<Nb>{timeOf(d.key, "std")[0]}</Nb>).
               </span>
             </p>
           ) : null}
@@ -1758,6 +1759,10 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               >
                 Send 1 for Fast
               </button>
+            </p>
+            {/* The watcher publishes no budget: the card says that it can be in use, not whether it is. */}
+            <p class="speed__note" hidden={!k.fastOK || dir !== "back"}>
+              {FAST_BUDGET_LINE}
             </p>
           </div>
 

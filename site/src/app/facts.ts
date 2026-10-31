@@ -153,6 +153,35 @@ export const SPEED_NAME: Record<Speed, string> = { fast: "Fast", std: "Standard"
 export const FAST_CAP = 1;
 
 /**
+ * The fast budget, as the release watcher keeps it (relayer/src/watch.ts, qualification; README,
+ * after row 126): the fast releases whose burns are not final on their chain yet stay within
+ * FAST_CAP in all, across every chain it serves. A burn that would take them above it waits, round
+ * after round, until those burns are final or its own is, whichever comes first: Base Sepolia's
+ * burn 1 waited 905 s on Oct 28 while Arbitrum Sepolia's release held the budget. The watcher
+ * publishes no budget, so the page cannot tell when it is in use: it says that it can be, before a
+ * burn that goes Fast is signed, and why when one waits.
+ */
+export const FAST_BUDGET_LINE = `Fast mode shares one ${FAST_CAP} tPOT budget across all chains: while another fast release is in flight, your burn can wait for finality.`;
+
+/** A qualified burn with no approval this long is late: the watcher's rounds take about 20 s, its checks under a minute. */
+export const SLOW_RELEASE_MS = 3 * 60_000;
+
+/**
+ * Why a burn that goes Fast on `d` has no release past Fast's usual time, in plain words, for the
+ * transfer screen: the budget another fast release can hold until its burn or this one is final,
+ * and the watcher's one machine. Null while nothing is late: not qualified yet (`qualifiedAt`, when
+ * its confirmations were reached), released, approved by a member (`approvals`; null when the page
+ * does not read them), qualified SLOW_RELEASE_MS ago or less, or final on its chain, where the
+ * budget no longer holds it and only the watcher can.
+ */
+export function fastWait(d: Dest, at: { qualifiedAt: number | null; final: boolean; approvals: number | null; released: boolean }, now: number): string | null {
+  if (at.released || at.final || (at.approvals ?? 0) > 0 || at.qualifiedAt === null || now - at.qualifiedAt <= SLOW_RELEASE_MS) return null;
+  // A time keeps to one line: "≈ 19 min", not "≈ 19" over "min".
+  const t = (mode: Speed) => timeOf(d.key, mode)[0].replace(/ /g, "\u00a0");
+  return `Fast usually takes ${t("fast")}. Fast mode shares one ${FAST_CAP} tPOT budget across all chains: while another fast release holds it, your burn waits until that release's burn is final, or yours is (${t("std")}, as Standard). Releases also wait while the committee's watcher, on one machine, is off.`;
+}
+
+/**
  * What the wallet checks up front for a lock, beyond the amount: on V3, eth_estimateGas includes the
  * storage deposit, and the wallet checks gas limit × max fee before it sends (about 4.9 tPOT).
  */

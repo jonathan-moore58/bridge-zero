@@ -4193,6 +4193,20 @@ body.has-sheet .dev {
   white-space: nowrap;
 }
 
+/* Way back, Fast: one quiet line under the tiles, before the burn is signed, that the fast budget is shared. */
+.speed__note {
+  grid-column: 1 / -1;
+  margin-top: -2px;
+  font-size: var(--fs-caption);
+  line-height: 1.45;
+  color: var(--text-3);
+  text-wrap: pretty;
+}
+
+.speed__note[hidden] {
+  display: none;
+}
+
 .text-link:active {
   color: var(--lilac-2);
 }

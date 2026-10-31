@@ -10,7 +10,7 @@ import { nodeConsoleBlock, records } from "../../lib/chains.ts";
 import { checksum } from "../../lib/display.ts";
 import type { Hex } from "../../lib/records-types.ts";
 import { deployed, destOf, explorerAddress, explorerBlock, explorerTx, type Dest, type DestKey } from "../dests.ts";
-import { FAST_CAP, IMPORT_GAS, SPEED_NAME, fromOf, mintGasText, timeOf, toOf, type ChainInfo, type Dir, type Speed } from "../facts.ts";
+import { FAST_CAP, IMPORT_GAS, SLOW_RELEASE_MS, SPEED_NAME, fastWait, fromOf, mintGasText, timeOf, toOf, type ChainInfo, type Dir, type Speed } from "../facts.ts";
 import { AUTO_MINT, autoMints, handoffOf, handoffProgress, mintDueAt, relayWait, utcClock, type RelayWait } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
@@ -101,6 +101,8 @@ interface TxState {
   offer: { title: string; text: string } | null;
   checks: Record<CheckKey, CheckState>;
   members: readonly MemberState[];
+  /** A burn that goes Fast and has no release past Fast's usual time: why it can wait (facts.ts, fastWait). */
+  late?: string | null;
 }
 
 /** The values a passed check shows: the finalized block, its signatures, the lock's commitment and nonce. */
@@ -244,8 +246,8 @@ function failedOf(f: Failure, dir: Dir, onChain: boolean, d: Dest): NonNullable<
 
 /** A mint sent this long ago and still not mined is stuck: the prototype's "sent 5 min ago". */
 const STUCK_AFTER = 5 * 60_000;
-/** A qualified burn with no approval this long is not picked up yet: the watcher's rounds take about 20 s, its checks under a minute. */
-const SLOW_RELEASE = 3 * 60_000;
+/** A qualified burn with no approval this long is not picked up yet (facts.ts). */
+const SLOW_RELEASE = SLOW_RELEASE_MS;
 
 // The replays' pacing, not measurements: when each check lights inside the measured proof step
 // (seconds from its start), when the second signature is checked, Sepolia's 12 s a block for the
@@ -1250,6 +1252,8 @@ function liveBack(x: BurnTransfer, now: number): TxState {
   const R = step("release", "Committee release on V3", TRUST.release);
   const run = release.run;
   const a = release.released ? 2 : Math.min(2, Math.max(0, release.approvals));
+  // Fast and past its usual time with no approval, its burn not final yet: the shared budget can hold it.
+  const late = fast && burned && qualified ? fastWait(d, { qualifiedAt: depth.qualifiedAt, final: depth.final, approvals: a, released: release.released }, now) : null;
   if (release.released) {
     R.st = "done";
     R.approvals = 2;
@@ -1265,8 +1269,10 @@ function liveBack(x: BurnTransfer, now: number): TxState {
     activeFrom(R, depth.qualifiedAt ?? now, fast ? FAST_RUN.ran - FAST_RUN.mined - 3 * BLOCK_S : 60, now);
     R.approvals = a;
     // The watcher runs on one machine: a burn it has not picked up after a few minutes says so, rather than look under way.
-    R.sub =
-      a === 0 && now - (depth.qualifiedAt ?? now) > SLOW_RELEASE
+    // Fast and not final yet, the shared budget can hold it too: the card's note says why (late).
+    R.sub = late
+      ? "0 of 2 approvals · past Fast's usual time"
+      : a === 0 && now - (depth.qualifiedAt ?? now) > SLOW_RELEASE
         ? "0 of 2 approvals · not picked up yet: the committee's watcher runs on one machine, and releases wait while it is off"
         : approvalLine(a, release.open?.block ?? null);
   } else R.sub = releaseAhead(fast, d);
@@ -1283,6 +1289,7 @@ function liveBack(x: BurnTransfer, now: number): TxState {
     offer: null,
     checks: waitingChecks(),
     members,
+    late: failure ? null : late,
   };
 }
 
@@ -1416,13 +1423,16 @@ function chainBack(x: ChainBurn, now: number): TxState {
 
   // The approvals are the committee's multisig on V3, which this page does not read: no dots, no members.
   const R = step("release", "Committee release on V3", TRUST.release);
+  // Fast is due once its confirmations are on top: from the burn's block, about their time.
+  const due = x.at !== null ? x.at + d.fastConfirmations * d.blockSeconds * 1000 : null;
+  const late = fast && qualified && x.released === false ? fastWait(d, { qualifiedAt: due, final, approvals: null, released: false }, now) : null;
   if (x.released === null) R.sub = "Could not read whether it was released";
   else if (qualified) {
     R.st = "active";
-    R.sub = "Not released yet · nothing to sign";
+    R.sub = late ? "Not released yet · past Fast's usual time" : "Not released yet · nothing to sign";
   } else R.sub = releaseAhead(fast, d);
 
-  return { steps: [B, mid, R], t: elapsed(x.at, now), done: false, needs: null, failed: null, stuck: null, offer: null, checks: waitingChecks(), members: NO_MEMBERS };
+  return { steps: [B, mid, R], t: elapsed(x.at, now), done: false, needs: null, failed: null, stuck: null, offer: null, checks: waitingChecks(), members: NO_MEMBERS, late };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1729,6 +1739,12 @@ function TxScreen({ h, s, onAct }: { h: Head; s: TxState; onAct: (a: TransferAct
           <p class="notice notice--lilac txcard__note">
             <Icon id="i-info" />
             <span>{h.cardNote}</span>
+          </p>
+        ) : null}
+        {s.late ? (
+          <p class="notice notice--lilac txcard__note">
+            <Icon id="i-clock" />
+            <span>{s.late}</span>
           </p>
         ) : null}
         <div class="progress txprog" id="tx-prog" aria-hidden="true">

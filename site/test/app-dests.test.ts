@@ -39,14 +39,17 @@ import {
   BURN_GAS,
   BURN_GAS_FULL,
   CH,
+  FAST_BUDGET_LINE,
   LATER_CHAINS,
   MINT_GAS,
   MINT_GAS_FULL,
   ROLLUP_RUNS,
   SEPOLIA_FINALITY,
+  SLOW_RELEASE_MS,
   TIME,
   aboutMinutes,
   chainById,
+  fastWait,
   fromOf,
   sendChain,
   timeOf,
@@ -462,4 +465,25 @@ test("the rollups' runs are the README's: lock 6 and lock 7 minted 139 s and 133
   // Base Sepolia's burn 1 waited for the fast budget: its 905 s are not a chain's time.
   assert.match(app, /From Base Sepolia it took 905 seconds, .* because the fast budget was full/);
   assert.equal(ROLLUP_RUNS["base-sepolia"].fast, null);
+});
+
+test("the fast budget: before a burn that goes Fast is signed, one line that it is shared; on the transfer screen, why a fast burn waits past Fast's usual time", () => {
+  assert.equal(FAST_BUDGET_LINE, "Fast mode shares one 1 tPOT budget across all chains: while another fast release is in flight, your burn can wait for finality.");
+  const arb = destOf("arbitrum-sepolia");
+  const t0 = 1_793_186_433_000;
+  const waiting = { qualifiedAt: t0, final: false, approvals: 0, released: false };
+  // Within Fast's usual time and the watcher's rounds: nothing to say.
+  assert.equal(fastWait(arb, waiting, t0 + SLOW_RELEASE_MS), null);
+  const late = fastWait(arb, waiting, t0 + SLOW_RELEASE_MS + 1);
+  // Its times keep to one line: no-break spaces inside "≈ 105 s" and "≈ 19 min".
+  assert.equal(
+    late?.replace(/\u00a0/g, " "),
+    "Fast usually takes ≈ 105 s. Fast mode shares one 1 tPOT budget across all chains: while another fast release holds it, your burn waits until that release's burn is final, or yours is (≈ 19 min, as Standard). Releases also wait while the committee's watcher, on one machine, is off.",
+  );
+  assert.ok(late?.includes("≈\u00a019\u00a0min") && late.includes("≈\u00a0105\u00a0s"));
+  // A burn read from the chains, whose approvals the page does not read, is said the same way.
+  assert.equal(fastWait(arb, { ...waiting, approvals: null }, t0 + 10 * 60_000), late);
+  assert.match(fastWait(destOf("sepolia"), waiting, t0 + 10 * 60_000)?.replace(/\u00a0/g, " ") ?? "", /^Fast usually takes ≈ 84 s\. .* \(≈ 17 min, as Standard\)\./);
+  // Not late: released, a member has approved, not qualified yet, or final on its chain, where the budget no longer holds it.
+  for (const done of [{ released: true }, { approvals: 1 }, { qualifiedAt: null }, { final: true }]) assert.equal(fastWait(arb, { ...waiting, ...done }, t0 + 10 * 60_000), null, JSON.stringify(done));
 });
