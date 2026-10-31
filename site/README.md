@@ -78,8 +78,8 @@ the HTTP endpoints send `Access-Control-Allow-Origin` for any origin. The rollup
 2026; they are the ones `src/app/dests.ts` gives each destination. A Content-Security-Policy in
 each built page (`build/csp.ts`) allows connections to these endpoints only, the rollups' on the
 bridge app's page alone, and scripts, styles and fonts from the page itself. `sepolia.drpc.org` was
-a Sepolia fallback until Nov 1: its free plan refuses Sepolia since Oct 28, so neither page reads it
-and neither policy allows it.
+a Sepolia fallback: its free plan refuses Sepolia since Oct 28, so neither page reads it and
+neither policy allows it.
 
 Calls made to one endpoint within a few milliseconds of each other go out as one JSON-RPC batch
 (up to 8 calls; none for the V3 node's HTTP endpoint, which refuses batches), and the requests
