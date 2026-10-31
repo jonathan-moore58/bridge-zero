@@ -563,10 +563,11 @@ with `npm run kit`.
 - The operator's processes on a server since 17:45 UTC on Oct 31: both of Sepolia's relayers, the
   release watcher, auto-mint, the rollups' relay runs on a timer and a health check every 15
   minutes, as systemd services that start at boot. Auto-mint and the watcher restart a minute after
-  a failure, the watcher not after a halt (exit code 4); a relayer restarts only after a signal (an
-  out-of-memory abort, a kill), and one that stops on an error waits for the operator, with the
-  health check failing until then ([ops/server/](ops/server)). Its first rollup relay run imported
-  V3 #266,274 into Base Sepolia's client at 17:50:50 UTC
+  a failure, the watcher not after its stop for good (exit code 4: a halt, a key that does not
+  open); a relayer restarts only after a signal (an out-of-memory abort, a kill), and one that stops
+  on an error waits for the operator, with the health check failing until then
+  ([ops/server/](ops/server)). Its first rollup relay run imported V3 #266,274 into Base Sepolia's
+  client at 17:50:50 UTC
   ([`0x871a603d…`](https://sepolia.basescan.org/tx/0x871a603d7e6dbdfd1344d4e221771f9b9ea5690b5c81dfd9e63e7de073ab7016))
   and #266,278 into Arbitrum Sepolia's at 17:51:13
   ([`0xa40c202b…`](https://sepolia.arbiscan.io/tx/0xa40c202bf47994eda6eaaea46cdea5596b57085fe988956f5402a848c07d11b3)),
@@ -609,14 +610,14 @@ with `npm run kit`.
   Ethereum mainnet the same gas is paid at mainnet prices.
 - The relayer, auto-mint and the release watcher run on one machine: until Oct 31 a laptop that
   started them at logon, and since 17:45 UTC on Oct 31 a small cloud server that runs them as
-  services that start at boot and restart after most failures (a relayer that stops on an error and
-  the watcher at a halt wait for the operator) ([ops/server/](ops/server)). A light client is as
-  current as its last run. While that machine is off, no relay run, mint or release happens: a new
-  lock waits for auto-mint, though anyone can still send its mint
-  (`npm run mint`), and a burn waits until a member runs the release by hand or the watcher starts
-  again. The laptop's longest gaps, in UTC, by the relayer's histories (in `deployments/` to Oct 28)
-  and the laptop's power log: no import into any light client from 00:38 to 06:56 on Oct 24, while
-  it slept (00:45 to 06:52); from 21:04 on Oct 24 to 16:28 on Oct 26, while it was off after an
+  services that start at boot and restart after most failures (a relayer that stops on an error, and
+  the watcher after its stop for good, exit code 4, wait for the operator)
+  ([ops/server/](ops/server)). A light client is as current as its last run. While that machine is
+  off, no relay run, mint or release happens: a new lock waits for auto-mint, though anyone can
+  still send its mint (`npm run mint`), and a burn waits until a member runs the release by hand or
+  the watcher starts again. The laptop's longest gaps, in UTC, by the relayer's histories (in
+  `deployments/` to Oct 28) and the laptop's power log: no import into any light client from 00:38
+  to 06:56 on Oct 24, while it slept (00:45 to 06:52); from 21:04 on Oct 24 to 16:28 on Oct 26, while it was off after an
   unexpected shutdown (until 16:08); from 21:36 on Oct 26 to 07:08 on Oct 27, while it slept (22:25
   to 07:07); from 16:21 on Oct 28 to 20:05 on Oct 30, while it slept (17:13 on Oct 28 to 19:54 on
   Oct 30, but for 15 seconds at 17:51); and from 21:08 on Oct 30 to 06:36 on Oct 31, while it slept
