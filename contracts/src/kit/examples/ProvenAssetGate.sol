@@ -10,17 +10,20 @@ import {IPortaldotStateReader} from "../IPortaldotStateReader.sol";
 ///
 /// - The block is fixed at deployment, and the constructor requires that the light client imported
 ///   it (the Reader reverts UnknownBlock otherwise). A snapshot states a past fact, so its age is
-///   not checked; a gate that wants a recent balance takes a block and compares its number with the
-///   light client's latestFinalized() instead (docs/PROOF-KIT.md).
+///   not checked; a gate that wants a recent balance reads at the light client's latest block
+///   instead (docs/PROOF-KIT.md, "Blocks and freshness").
 /// - One claim per holder. The proof is checked before the replay guard, as BridgeMinter checks a
 ///   lock's: a tampered proof reverts with a proof error, and a valid one sent again with
 ///   AlreadyClaimed.
 /// - Anyone can send a claim, and the record names only the holder the proof names: nothing goes
-///   to msg.sender. Holders are Ethereum-key accounts, whose V3 id is the address ++ 0xEE x 12; a
-///   Substrate (5...) account cannot claim, and the address of a contract on V3 gets a record that
-///   nobody can use.
-/// - What counts is the balance, whatever its status: a frozen balance is still held, and the
-///   status is in the Claimed event.
+///   to msg.sender. A record is a proven fact about the holder, not the holder's consent. Holders
+///   are Ethereum-key accounts, whose V3 id is the address ++ 0xEE x 12; a Substrate (5...)
+///   account cannot claim, and the address of a contract on V3 gets a record that only whoever
+///   controls that address on Sepolia can use (pallet-revive derives contract addresses as
+///   Ethereum does).
+/// - What counts is the account's balance, whatever its status, Blocked included: a frozen balance
+///   is still held, and the status is in the Claimed event. The asset's own status (an asset frozen
+///   as a whole) is not read.
 ///
 /// What a claim trusts: the light client (V3's validator set and the admin's checkpoint), V3's
 /// rules (its sudo key, runtime upgrades, and the asset's owner and admin, who can mint, burn and

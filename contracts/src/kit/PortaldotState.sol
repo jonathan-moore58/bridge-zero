@@ -18,15 +18,17 @@ import {SubstrateProofs} from "../trie/SubstrateProofs.sol";
 /// for a header it stored as finalized: one imported with signatures from more than two thirds of
 /// the set that finalized it, or the checkpoint its admin installed (trusted). For any other hash
 /// it reverts UnknownBlock. No function here takes a state root from its caller; the helpers that
-/// take one are private.
+/// take one are private. Pass a light client fixed at deployment (an immutable), never one from
+/// calldata: whoever picks the light client picks the state root.
 ///
 /// The walk is the StorageProofs library, linked and reached with DELEGATECALL, with the checks and
 /// errors of SubstrateProofs.verifyMain: EmptyProof, EmptyKey, the walk's own reasons ("Incomplete
 /// Proof!", "Bad Format!", "Unallowed encoding"), KeyNotPresent for a complete walk that shows the
-/// key absent (a proof that it holds nothing), and EmptyValue for a key that ends on a branch
-/// without a value. A child-trie read is two main-trie walks, as BridgeMinter makes it: the child
-/// root under ":child_storage:default:" ++ trie id, exactly 32 bytes and not zero, then the key
-/// under that root. Proof items the walk does not need are accepted, as the walk accepts them.
+/// key absent (a proof that it holds nothing), and EmptyValue for a key that holds an empty value or
+/// ends on a branch without one (the walk reports both alike). A child-trie read is two main-trie
+/// walks, as BridgeMinter makes it: the child root under ":child_storage:default:" ++ trie id,
+/// exactly 32 bytes and not zero, then the key under that root. Proof items the walk does not need
+/// are accepted, as the walk accepts them.
 ///
 /// The decoders follow V3's layouts and revert with a named error for any other length or variant.
 /// A runtime upgrade that changes a layout needs new decoders, and a contract built on these is
@@ -166,8 +168,10 @@ library PortaldotState {
     /// Slot `slot` of the contract at `account` at the imported block `blockHash`, with the
     /// contract's code hash: the trie id from its AccountInfoOf entry (p.account), the root of its
     /// child trie (p.childRoot), then the slot under blake2_256(slot) in it (p.slot). An empty slot
-    /// is not stored: KeyNotPresent. The three proofs come in one struct: as three arrays they
-    /// would not fit the stack.
+    /// is not stored and reverts KeyNotPresent; so does an address with no Revive entry, or a
+    /// contract that has stored nothing, and then no code hash comes back: a consumer that treats
+    /// KeyNotPresent as zero pins the code with contractAt and reads with childSlotAt. The three
+    /// proofs come in one struct: as three arrays they would not fit the stack.
     function contractSlotAt(
         IFinalizedStateRoots lc,
         bytes32 blockHash,
@@ -183,7 +187,8 @@ library PortaldotState {
     }
 
     /// Slot `slot` of the child trie `trieId` at the imported block `blockHash`, for a trie id the
-    /// caller has bound to a contract already (as BridgeMinter binds the vault's).
+    /// caller has bound to a contract already (as BridgeMinter binds the vault's): a trie id with no
+    /// child trie reverts KeyNotPresent too.
     function childSlotAt(
         IFinalizedStateRoots lc,
         bytes32 blockHash,

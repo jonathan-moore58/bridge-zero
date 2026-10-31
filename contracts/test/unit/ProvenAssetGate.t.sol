@@ -10,10 +10,11 @@ import {ProvenAssetGate} from "../../src/kit/examples/ProvenAssetGate.sol";
 import {SubstrateProofs} from "../../src/trie/SubstrateProofs.sol";
 import {LightClientBase} from "./LightClient.t.sol";
 
-/// A stand-in for the Reader that answers one frozen balance, for the gate's rule that a frozen
-/// balance counts. No EVM account holds a frozen asset balance at B: the frozen one there (read 8,
-/// asset 4601) belongs to a Substrate account, which the gate cannot name, and the real Reader's
-/// answer for it is in PortaldotStateTest.test_assetAccount.
+/// A stand-in for the Reader that answers one frozen balance for any holder, for the gate's rule
+/// that a frozen balance counts. No EVM account holds a frozen asset balance at B: the frozen one
+/// there (read 8, asset 4601) belongs to a Substrate account, which the gate cannot name, and the
+/// real Reader's answer for it is in PortaldotStateTest.test_assetAccount. Its answer is no V3
+/// account's, so the test names a made-up holder.
 contract FrozenBalanceReader {
     function stateRootOf(bytes32) external pure returns (bytes32, uint32) {
         return (bytes32(uint256(1)), 264_729);
@@ -139,12 +140,26 @@ contract ProvenAssetGateTest is LightClientBase {
     /// A frozen balance counts and its status is in the event (with a stand-in reader: see
     /// FrozenBalanceReader).
     function test_frozenBalanceCounts() public {
+        address holder = address(0xF0F0);
         FrozenBalanceReader stub = new FrozenBalanceReader();
         ProvenAssetGate frozen = new ProvenAssetGate(IPortaldotStateReader(address(stub)), B, 4601, ONE_PUSD);
         vm.expectEmit(address(frozen));
-        emit ProvenAssetGate.Claimed(HOLDER, 20_000_000, PortaldotState.FROZEN, B, B_NUMBER);
-        frozen.claim(HOLDER, new bytes[](0));
-        assertTrue(frozen.claimed(HOLDER));
+        emit ProvenAssetGate.Claimed(holder, 20_000_000, PortaldotState.FROZEN, B, B_NUMBER);
+        frozen.claim(holder, new bytes[](0));
+        assertTrue(frozen.claimed(holder));
+    }
+
+    /// A balance equal to the minimum passes (60.5 pUSD at B, read 3); one base unit more does not.
+    function test_minimumBoundary() public {
+        IPortaldotStateReader r = IPortaldotStateReader(address(reader));
+        bytes[] memory proof = _proof(3);
+        ProvenAssetGate exact = new ProvenAssetGate(r, B, PUSD, 60_500_000);
+        exact.claim(HOLDER, proof);
+        assertTrue(exact.claimed(HOLDER));
+        ProvenAssetGate above = new ProvenAssetGate(r, B, PUSD, 60_500_001);
+        vm.expectRevert(abi.encodeWithSelector(ProvenAssetGate.BelowMinimum.selector, 60_500_000, 60_500_001));
+        above.claim(HOLDER, proof);
+        assertFalse(above.claimed(HOLDER));
     }
 
     /// A snapshot block the light client did not import, and zero arguments.

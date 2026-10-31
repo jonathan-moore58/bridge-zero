@@ -5,17 +5,18 @@ import {IFinalizedStateRoots} from "./IFinalizedStateRoots.sol";
 
 /// @title IPortaldotStateReader
 /// @notice What a contract calls to read proven Portaldot V3 state through PortaldotStateReader,
-/// deployed once on Sepolia: a consumer compiles only this file, with no trie code. Every read takes
-/// the hash of a V3 block that the Reader's light client imported, never a state root, and returns
-/// that block's number with the value.
+/// deployed once on Sepolia: a consumer compiles only this file and the IFinalizedStateRoots.sol it
+/// imports, with no trie code. Every read takes the hash of a V3 block that the Reader's light client
+/// imported, never a state root, and returns that block's number with the value.
 ///
 /// The errors a read can revert with are declared here so that a consumer can name them:
 ///   - the light client's UnknownBlock, for a block it did not import;
 ///   - the walk's (SubstrateProofs, through the linked StorageProofs): EmptyProof, EmptyKey,
 ///     KeyNotPresent (a complete walk that shows the key absent: a proof that it holds nothing),
-///     EmptyValue (a key that ends on a branch without a value), ChildRootLength and ZeroChildRoot,
-///     and the walk's own Error strings ("Incomplete Proof!", "Bad Format!", "Unallowed encoding")
-///     for a proof that does not lead from the root to the key;
+///     EmptyValue (the key holds an empty value, or ends on a branch without a value: the walk
+///     reports both alike), ChildRootLength and ZeroChildRoot, and the walk's own Error strings
+///     ("Incomplete Proof!", "Bad Format!", "Unallowed encoding") for a proof that does not lead
+///     from the root to the key;
 ///   - the decoders' (PortaldotState): AccountInfoLength, AssetAccountMalformed, NftItemMalformed,
 ///     NotAContract and SlotLength, for a value of another layout than V3's.
 interface IPortaldotStateReader {
@@ -60,7 +61,8 @@ interface IPortaldotStateReader {
     error EmptyKey();
     /// The proof shows that `key` is not in the trie under `root`.
     error KeyNotPresent(bytes32 root, bytes key);
-    /// `key` ends on a node without a value.
+    /// `key` holds an empty value, or ends on a branch without one (the walk does not tell them
+    /// apart).
     error EmptyValue(bytes32 root, bytes key);
     /// The value at a child-trie root key is not 32 bytes.
     error ChildRootLength(uint256 length);
@@ -108,13 +110,18 @@ interface IPortaldotStateReader {
         returns (bytes32 trieId, bytes32 codeHash, uint32 number);
 
     /// Slot `slot` of the contract at `account`, with the contract's code hash: its trie id is
-    /// proven from its address. An empty slot is not stored, and reverts KeyNotPresent.
+    /// proven from its address. An empty slot is not stored and reverts KeyNotPresent; so does an
+    /// address with no Revive entry, or a contract that has stored nothing, and then no code hash
+    /// comes back: a consumer that treats KeyNotPresent as zero pins the code with contractInfo and
+    /// reads with childSlot.
     function contractSlot(bytes32 blockHash, address account, bytes32 slot, ContractSlotProof calldata p)
         external
         view
         returns (bytes32 word, bytes32 codeHash, uint32 number);
 
-    /// Slot `slot` of the child trie `trieId`, a trie id the caller has already bound to a contract.
+    /// Slot `slot` of the child trie `trieId`, a trie id the caller has already bound to a contract
+    /// (from a contractInfo whose code hash it pinned): a trie id with no child trie reverts
+    /// KeyNotPresent too.
     function childSlot(
         bytes32 blockHash,
         bytes32 trieId,

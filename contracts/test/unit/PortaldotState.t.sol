@@ -70,6 +70,68 @@ contract PortaldotStateHarness {
     }
 }
 
+/// A light client that holds one block with a state root of the test's making, for the walk's cases
+/// that the fixture's proofs do not reach.
+contract OneBlockRoots is IFinalizedStateRoots {
+    error UnknownBlock(bytes32 blockHash);
+
+    bytes32 internal immutable blockHash_;
+    bytes32 internal immutable stateRoot_;
+
+    constructor(bytes32 blockHash, bytes32 stateRoot) {
+        blockHash_ = blockHash;
+        stateRoot_ = stateRoot;
+    }
+
+    function stateRootOf(bytes32 blockHash) external view returns (bytes32, uint32) {
+        if (blockHash != blockHash_) revert UnknownBlock(blockHash);
+        return (stateRoot_, 1);
+    }
+
+    function genesisHash() external pure returns (bytes32) {
+        return bytes32(0);
+    }
+}
+
+/// The consumer docs/PROOF-KIT.md ("Absent values") gives for a slot that may be empty: the
+/// contract's code pinned with contractInfo first, then the slot read with childSlot and that trie
+/// id, and only childSlot's KeyNotPresent read as zero. contractSlot cannot do this: its
+/// KeyNotPresent may also come from an address with no contract, or a contract that has stored
+/// nothing, and then it returns no code hash to pin.
+contract PinnedSlotOrZero {
+    IPortaldotStateReader internal immutable reader;
+    address internal immutable target;
+    bytes32 internal immutable codeHash;
+
+    error WrongCode(bytes32 found);
+
+    constructor(IPortaldotStateReader reader_, address target_, bytes32 codeHash_) {
+        reader = reader_;
+        target = target_;
+        codeHash = codeHash_;
+    }
+
+    function slotOrZero(
+        bytes32 blockHash,
+        bytes32 slot,
+        bytes[] calldata accountProof,
+        bytes[] calldata childRootProof,
+        bytes[] calldata slotProof
+    ) external view returns (bytes32 word) {
+        (bytes32 trieId, bytes32 code,) = reader.contractInfo(blockHash, target, accountProof);
+        if (code != codeHash) revert WrongCode(code);
+        try reader.childSlot(blockHash, trieId, slot, childRootProof, slotProof) returns (bytes32 w, uint32) {
+            word = w;
+        } catch (bytes memory reason) {
+            if (bytes4(reason) != IPortaldotStateReader.KeyNotPresent.selector) {
+                assembly ("memory-safe") {
+                    revert(add(reason, 32), mload(reason))
+                }
+            }
+        }
+    }
+}
+
 /// The proof kit's reads at V3 block B (#264,729) from fixtures/v3-testnet-kit, written by npm run
 /// kit -- capture and checked again offline by npm run kit -- check. The light client is a real
 /// GrandpaLightClient, initialized at set 73 with B's parent as the checkpoint, that imports B with
@@ -86,6 +148,9 @@ contract PortaldotStateTest is LightClientBase {
     address internal constant OWNER_WALLET = 0xc6e997A757F0be410714eD04B869EFA1aEE32011;
     address internal constant HOLDER = 0x3E79403610c21de20144960A0694b578EBc0dcDF;
     address internal constant VAULT = 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd;
+    /// An address with no Revive.AccountInfoOf entry at B: read 15's proof, of 0x0000...0001's entry,
+    /// holds every node on its key's path and shows the key absent.
+    address internal constant DEAD = 0x000000000000000000000000000000000000dEaD;
     bytes32 internal constant VAULT_CODE_HASH = 0xa72553f50cdf645fb343b2cf089e431a1b26fb07e80f4e2236d55bf9811c663f;
     bytes32 internal constant TRIE_ID = 0xbe307c2d11dbc9391cda93d17e9772542d1300c9af14e7431918fb49e2f47c3a;
     bytes32 internal constant CHILD_ROOT = 0x6d322d0f1a20b6bace63db43c37fcff7288c5c263d7d658990454bffe706db6f;
@@ -404,6 +469,114 @@ contract PortaldotStateTest is LightClientBase {
         );
     }
 
+    /// An address with no Revive.AccountInfoOf entry (0x...dEaD, read 15's proof): contractInfo and
+    /// contractSlot revert KeyNotPresent on its 52-byte AccountInfoOf key, and contractSlot returns
+    /// no code hash with it. A consumer that read every KeyNotPresent of contractSlot as a zero slot
+    /// would read a zero slot of a contract that is not there.
+    function test_keyNotPresent_noContract() public {
+        bytes memory key = PortaldotState.reviveAccountInfoKey(DEAD);
+        bytes memory reason = abi.encodeWithSelector(SubstrateProofs.KeyNotPresent.selector, STATE_ROOT, key);
+        _expectReaderFail(abi.encodeCall(PortaldotStateReader.contractInfo, (B, DEAD, _proof(15))), reason);
+        IPortaldotStateReader.ContractSlotProof memory p = _slotProof(1);
+        p.account = _proof(15);
+        _expectReaderFail(abi.encodeCall(PortaldotStateReader.contractSlot, (B, DEAD, PortaldotState.mappingSlot(1, 0), p)), reason);
+    }
+
+    /// A trie id with no child trie at B: the vault's child-root proof shows another trie id's
+    /// 55-byte child-root key absent, so childSlot reverts KeyNotPresent, as contractSlot does for a
+    /// contract that has stored nothing. childSlot's trie id comes from a pinned contractInfo.
+    function test_keyNotPresent_unboundTrieId() public {
+        bytes32 other = TRIE_ID ^ bytes32(uint256(1));
+        bytes memory key = SubstrateProofs.childRootKey(abi.encodePacked(other));
+        assertEq(key.length, 55);
+        _expectReaderFail(
+            abi.encodeCall(PortaldotStateReader.childSlot, (B, other, PortaldotState.mappingSlot(1, 0), _childRoot(), _slotItems(1))),
+            abi.encodeWithSelector(SubstrateProofs.KeyNotPresent.selector, STATE_ROOT, key)
+        );
+    }
+
+    /// PinnedSlotOrZero, the pattern of docs/PROOF-KIT.md: lock 1's commitment, and zero for the
+    /// absent commitments[8], from the vault pinned by its code hash. It never reads zero for other
+    /// code, an address with no contract or an externally owned account, nor for a walk error.
+    function test_pinnedSlotOrZero() public {
+        bytes32 slot = PortaldotState.mappingSlot(1, 0);
+        bytes[] memory vaultEntry = _proof(14);
+        bytes[] memory eoaEntry = _proof(15);
+        bytes[] memory childRoot = _childRoot();
+        bytes[] memory lock1 = _slotItems(1);
+        PinnedSlotOrZero vault = new PinnedSlotOrZero(reader, VAULT, VAULT_CODE_HASH);
+        assertEq(vault.slotOrZero(B, slot, vaultEntry, childRoot, lock1), LOCK1_COMMITMENT);
+        assertEq(vault.slotOrZero(B, PortaldotState.mappingSlot(8, 0), vaultEntry, childRoot, _slotItems(8)), bytes32(0), "no lock 8 at B");
+
+        PinnedSlotOrZero otherCode = new PinnedSlotOrZero(reader, VAULT, keccak256("another contract's code"));
+        vm.expectRevert(abi.encodeWithSelector(PinnedSlotOrZero.WrongCode.selector, VAULT_CODE_HASH));
+        otherCode.slotOrZero(B, slot, vaultEntry, childRoot, lock1);
+
+        // 0x...dEaD has no contract (read 15's proof shows it): KeyNotPresent from contractInfo, not a zero.
+        PinnedSlotOrZero none = new PinnedSlotOrZero(reader, DEAD, VAULT_CODE_HASH);
+        bytes memory deadKey = PortaldotState.reviveAccountInfoKey(DEAD);
+        vm.expectRevert(abi.encodeWithSelector(SubstrateProofs.KeyNotPresent.selector, STATE_ROOT, deadKey));
+        none.slotOrZero(B, slot, eoaEntry, childRoot, lock1);
+
+        PinnedSlotOrZero eoa = new PinnedSlotOrZero(reader, address(1), VAULT_CODE_HASH);
+        vm.expectRevert(abi.encodeWithSelector(PortaldotState.NotAContract.selector, 5, 1));
+        eoa.slotOrZero(B, slot, eoaEntry, childRoot, lock1);
+
+        bytes[] memory flipped = _copy(lock1);
+        flipped[0] = _flip(lock1[0], lock1[0].length / 2);
+        vm.expectRevert(_string(INCOMPLETE));
+        vault.slotOrZero(B, slot, vaultEntry, childRoot, flipped);
+    }
+
+    /// A key that holds an empty value reverts EmptyValue, as read 10's branch without a value does:
+    /// the walk reports both alike, so EmptyValue is neither presence nor absence to a consumer. On
+    /// V3, a map whose value is `()` (Nfts.Account, for one) stores each of its keys with an empty
+    /// value. Here, a trie of one leaf (the key 0x12, an empty value) under a stand-in light client.
+    function test_emptyValue_presentKey() public {
+        // A leaf: 2 nibbles (0x42), the nibbles 1 and 2 (0x12), an empty inline value (compact 0).
+        bytes memory leaf = hex"421200";
+        bytes32 root = SubstrateProofs.blake2_256(leaf);
+        bytes32 blockHash = keccak256("a block whose trie is one leaf");
+        PortaldotStateReader one = new PortaldotStateReader(new OneBlockRoots(blockHash, root));
+        bytes[] memory proof = new bytes[](1);
+        proof[0] = leaf;
+        bytes memory present = hex"12";
+        bytes memory absent = hex"13";
+        vm.expectRevert(abi.encodeWithSelector(SubstrateProofs.EmptyValue.selector, root, present));
+        one.readMain(blockHash, present, proof);
+        vm.expectRevert(abi.encodeWithSelector(SubstrateProofs.KeyNotPresent.selector, root, absent));
+        one.readMain(blockHash, absent, proof);
+    }
+
+    /// Proof items the walk does not need are accepted, as the walk accepts them: read 3's items and
+    /// an item that is no trie node, then read 1's proof, still prove the deployer's account.
+    function test_extraItemsAccepted() public view {
+        bytes[] memory one = _proof(1);
+        bytes[] memory three = _proof(3);
+        bytes[] memory items = new bytes[](three.length + 1 + one.length);
+        for (uint256 i = 0; i < three.length; i++) {
+            items[i] = three[i];
+        }
+        items[three.length] = hex"deadbeef";
+        for (uint256 i = 0; i < one.length; i++) {
+            items[three.length + 1 + i] = one[i];
+        }
+        (IPortaldotStateReader.AccountInfo memory a,) = reader.accountInfo(B, PortaldotState.ethAccountId(DEPLOYER), items);
+        assertEq(a.free, 15_947_352_201_127_852);
+    }
+
+    /// No proof items, or an empty key: EmptyProof and EmptyKey, before any walk.
+    function test_emptyProofAndKey() public {
+        bytes memory emptyProof = abi.encodeWithSelector(SubstrateProofs.EmptyProof.selector);
+        _expectReaderFail(abi.encodeCall(PortaldotStateReader.readMain, (B, _key(1), new bytes[](0))), emptyProof);
+        _expectReaderFail(
+            abi.encodeCall(PortaldotStateReader.accountInfo, (B, PortaldotState.ethAccountId(DEPLOYER), new bytes[](0))), emptyProof
+        );
+        _expectReaderFail(
+            abi.encodeCall(PortaldotStateReader.readMain, (B, "", _proof(1))), abi.encodeWithSelector(SubstrateProofs.EmptyKey.selector)
+        );
+    }
+
     /// Read 15: 0x0000...0001's entry is an externally owned account's, 5 bytes of variant 1.
     function test_notAContract_eoa() public {
         _expectReaderFail(
@@ -489,6 +662,31 @@ contract PortaldotStateTest is LightClientBase {
         vm.expectRevert(abi.encodeWithSelector(PortaldotState.SlotLength.selector, 31));
         kit.decodeSlot(_cut(abi.encodePacked(LOCK1_COMMITMENT), 1));
         assertEq(kit.decodeSlot(abi.encodePacked(LOCK1_COMMITMENT)), LOCK1_COMMITMENT);
+    }
+
+    /// ItemDetails with two approvals, one with a deadline, and with 64, the first count a compact
+    /// writes in two bytes: the owner, with exactly the 48 bytes of deposit after the approvals. A
+    /// count of 65 over the same 64 approvals does not parse.
+    function test_decodeNftOwner_approvals() public view {
+        bytes memory item = vm.parseJsonBytes(json, ".reads[10].value.scale"); // 81 bytes, no approvals
+        bytes32 owner = PortaldotState.ethAccountId(0x104EB403971709e4a13C4c9D9200CAEd2bd78161);
+        bytes memory two =
+            bytes.concat(_cut(item, 49), hex"08", bytes32(uint256(7)), hex"00", bytes32(uint256(8)), hex"0109000000", _tail(item, 48));
+        assertEq(kit.decodeNftOwner(two), owner);
+        bytes memory approvals;
+        for (uint256 i = 0; i < 64; i++) {
+            approvals = bytes.concat(approvals, bytes32(i + 1));
+            if (i % 2 == 0) approvals = bytes.concat(approvals, hex"00");
+            else approvals = bytes.concat(approvals, hex"0101000000");
+        }
+        assertEq(approvals.length, 64 * 33 + 32 * 4);
+        // Compact 64: (64 << 2) | 0b01, little-endian.
+        bytes memory many = bytes.concat(_cut(item, 49), hex"0101", approvals, _tail(item, 48));
+        assertEq(kit.decodeNftOwner(many), owner);
+        bytes memory overcounted = bytes.concat(_cut(item, 49), hex"0501", approvals, _tail(item, 48));
+        (bool ok, bytes memory ret) = address(kit).staticcall(abi.encodeCall(PortaldotStateHarness.decodeNftOwner, (overcounted)));
+        assertFalse(ok);
+        assertEq(ret, abi.encodeWithSelector(PortaldotState.NftItemMalformed.selector, overcounted.length));
     }
 
     // ------------------------------------------------------------------ gas
@@ -597,6 +795,10 @@ contract PortaldotStateTest is LightClientBase {
 
     function _slotItems(uint256 n) internal view returns (bytes[] memory) {
         return vm.parseJsonBytesArray(json, _at(".contract.slots", n, ".proof.nodes"));
+    }
+
+    function _childRoot() internal view returns (bytes[] memory) {
+        return vm.parseJsonBytesArray(json, ".contract.childRoot.proof.nodes");
     }
 
     /// The vault's three proofs for slot `n` of the fixture: read 14, the child root and the slot.
