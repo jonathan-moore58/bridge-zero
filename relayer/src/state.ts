@@ -9,7 +9,8 @@
 // What a read proves: a non-empty value under the state root of a block the light client imported
 // (GrandpaLightClient.stateRootOf). The walk here is the contracts' (the vendored PolkadotTrie
 // through SubstrateProofs.verifyMain), which differs from trie.ts readProof in two ways: a key that
-// ends on a branch without a value is present with an empty value (EmptyValue), not absent; and
+// ends on a branch without a value is present with an empty value, not absent, and the contracts
+// revert EmptyValue for it as for a key that holds an empty value (the walk reports both alike); and
 // proof items the walk does not need are accepted. A capture still refuses them (chain.ts
 // provenRead), and the checks below require every item to be used.
 
@@ -154,7 +155,8 @@ function walk(root: Uint8Array, proof: Uint8Array[], key: Uint8Array): { present
 /**
  * SubstrateProofs.verifyMain: the non-empty value of `key` under `root`. Throws StateProofError
  * with the contract's reason: EmptyProof, EmptyKey, the walk's, KeyNotPresent (the proof shows
- * the key absent) or EmptyValue (the key ends on a branch without a value).
+ * the key absent) or EmptyValue (the key holds an empty value, or ends on a branch without one:
+ * the walk reports both alike).
  */
 export function readMain(root: Uint8Array, proof: Uint8Array[], key: Uint8Array): Uint8Array {
   if (proof.length === 0) throw new StateProofError("EmptyProof");

@@ -83,7 +83,7 @@ export async function ethCall(to: Hex, data: Uint8Array, block: string, override
   return { ok: false, revert, message };
 }
 
-/** eth_estimateGas of a call (the 21,000 base and the calldata included), or the node's reason for not estimating it. */
+/** eth_estimateGas of a call (the whole transaction, base and calldata included), or the node's reason for not estimating it. */
 export async function estimateGas(to: Hex, data: Uint8Array, block: string, overrides?: CodeOverrides): Promise<{ gas: number } | { refused: string }> {
   const body = await rpcBody("eth_estimateGas", [{ to, data: bytesToHex(data) }, block, ...(overrides ? [overrides] : [])]);
   return body.error ? { refused: body.error.message ?? "error" } : { gas: Number(BigInt(String(body.result))) };
@@ -217,11 +217,12 @@ export async function fetchContractSlot(chain: Chain, b: { number: number; hash:
 }
 
 /**
- * Lock `nonce` of the vault as BridgeMinter.mint takes it (THREAT_MODEL's fetch.lockProof): the
- * proofs of commitments[nonce] at block `b`, which the light client must hold, and the lock's fields,
- * which the minter recomputes the commitment from. With `bind`, the vault's AccountInfoOf proof too,
- * for a minter that still has to bind the vault (importAndMint). Anyone can send the mint: about
- * 0.72M gas at a block the client holds, against 2.4M when the same transaction imports it.
+ * Lock `nonce` of the vault as BridgeMinter.mint takes it, for a user who relays a lock themselves:
+ * the proofs of commitments[nonce] at block `b`, which the light client must hold, and the lock's
+ * fields, which the minter recomputes the commitment from. With `bind`, the vault's AccountInfoOf
+ * proof too, for a minter that still has to bind the vault (importAndMint). Anyone can send the
+ * mint: lock 0's took 723,446 gas on a Sepolia node at a block the client held, and importing that
+ * block first 1,879,557 more (docs/BRIDGE.md, Costs).
  */
 export async function fetchLockProof(chain: Chain, b: { number: number; hash: Hex; stateRoot: Hex }, vault: Uint8Array, nonce: bigint, lock: { recipient: Uint8Array; amount: bigint }, o: { bind: boolean }): Promise<LockProof> {
   const s = await fetchContractSlot(chain, b, vault, commitmentSlot(nonce));

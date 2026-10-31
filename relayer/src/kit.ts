@@ -292,7 +292,9 @@ function readerTarget(r: KitRecords, given: Hex | undefined): ReaderTarget | nul
 
 /**
  * Makes `call` on the Reader at the Sepolia block B was read at and requires `same` to accept the
- * answer; prints the gas eth_estimateGas reports (the 21,000 base and the calldata included).
+ * answer; prints the gas eth_estimateGas reports for the whole transaction, under the rules Sepolia
+ * runs since Oct 6 (a plain call costs 15,000 gas there, not 21,000, and new storage far more:
+ * docs/GAS.md).
  */
 async function readerStep(r: KitRecords, given: Hex | undefined, b: ImportedBlock, call: ReaderCall, same: (result: ReaderResult) => string | null, what: string): Promise<void> {
   const target = readerTarget(r, given);
@@ -318,7 +320,7 @@ async function readerStep(r: KitRecords, given: Hex | undefined, b: ImportedBloc
     return;
   }
   const gas = await estimateGas(target.to, data, block, target.overrides);
-  ok(`${target.label}.${call.kind} returns ${what} at #${fmt(b.number)}: ${"gas" in gas ? `${fmt(gas.gas)} gas (eth_estimateGas, with the 21,000 base and the calldata)` : `gas not estimated (${gas.refused})`}, calldata ${fmt(data.length)} B`);
+  ok(`${target.label}.${call.kind} returns ${what} at #${fmt(b.number)}: ${"gas" in gas ? `${fmt(gas.gas)} gas (eth_estimateGas: the whole transaction, under Sepolia's current rules)` : `gas not estimated (${gas.refused})`}, calldata ${fmt(data.length)} B`);
 }
 
 /**
@@ -552,7 +554,9 @@ async function readLock(r: KitRecords, o: ReadOptions, nonce: number): Promise<v
       if (!mint.ok && name === `NonceAlreadyUsed(${nonce})`) ok(`BridgeMinter.mint(p) at #${fmt(b.number)} as an eth_call (${fmt(data.length)} B of calldata) reverts ${name}: the proofs pass, and lock ${nonce} was minted already`);
       else fail(`BridgeMinter.mint(p) as an eth_call: ${name}, not NonceAlreadyUsed(${nonce})`);
     } else if (mint.ok) {
-      ok(`BridgeMinter.mint(p) at #${fmt(b.number)} as an eth_call (${fmt(data.length)} B of calldata) succeeds: anyone can send it, about 0.72M gas, and it mints ${formatTpot(lock.amountNative).replace("tPOT", "wtPOT")} to ${checksumAddress(lock.recipient)}`);
+      const gas = await estimateGas(r.minter, data, block);
+      const cost = "gas" in gas ? `${fmt(gas.gas)} gas (eth_estimateGas)` : `gas not estimated (${gas.refused})`;
+      ok(`BridgeMinter.mint(p) at #${fmt(b.number)} as an eth_call (${fmt(data.length)} B of calldata) succeeds: anyone can send it, ${cost}, and it mints ${formatTpot(lock.amountNative).replace("tPOT", "wtPOT")} to ${checksumAddress(lock.recipient)}`);
     } else {
       fail(`BridgeMinter.mint(p) as an eth_call reverts ${revertText(mint.revert)}`);
     }
@@ -794,7 +798,7 @@ async function capture(o: { out?: string; at?: Hex; force: boolean; rpc: string 
       tampers,
       notes: [
         `B is V3 #${fmt(b.number)}, which carries the change from set ${setId} to set ${setId + 1n}: set ${setId} finalized it, and Grandpa.CurrentSetId is ${setId + 1n} at B. GrandpaLightClient #2 on Sepolia imported it${lightClient.importTx ? ` with ${lightClient.importTx.method} in ${lightClient.importTx.hash} (block ${fmt(lightClient.importTx.block)})` : ""}; a fresh client initialized at set ${setId} with B's parent as the checkpoint imports it with this finality proof.`,
-        "Every read is made the way PortaldotState makes it: the light client's state root of B, then the walk of StorageProofs.verifyMain, then the decoder. outcome is what the contracts do with it: value, or the error they revert with. KeyNotPresent is a proof that the key holds nothing; EmptyValue a key that ends on a branch without a value.",
+        "Every read is made the way PortaldotState makes it: the light client's state root of B, then the walk of StorageProofs.verifyMain, then the decoder. outcome is what the contracts do with it: value, or the error they revert with. KeyNotPresent is a proof that the key holds nothing; EmptyValue a key that holds an empty value or ends on a branch without one (the walk reports both alike).",
         "An EVM account's id on V3 is its 20-byte address followed by 12 bytes of 0xEE (pallet-revive's AccountId32Mapper); a Substrate account keeps its own 32-byte id.",
         "The asset holders and NFT owners other than the project's own accounts are public V3 chain data, read only: no transaction names them.",
         "state_getReadProof's items are kept in the order the node served them. Every item is used by the walk; any item flipped fails with \"Incomplete Proof!\". For each slot, served.mainTrieItems counts the items of state_getChildReadProof that are exactly the child-root proof's.",

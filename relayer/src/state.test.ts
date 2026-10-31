@@ -1,7 +1,8 @@
 // Unit tests of state.ts, offline, against the proof kit's fixture (fixtures/v3-testnet-kit, V3
 // #264,729): the keys of every read rebuilt from its arguments, every value decoded, every walk with
-// the contracts' outcome (KeyNotPresent for an absent key, EmptyValue for a branch without a value,
-// the child reads of the vault), the tampers mirrored (a flip in every item, other keys, another
+// the contracts' outcome (KeyNotPresent for an absent key or an address with no contract,
+// EmptyValue for a branch without a value or a key that holds an empty value, the child reads of
+// the vault, lock 1's LockProof), the tampers mirrored (a flip in every item, other keys, another
 // root, values of another length or variant, an externally owned account's entry), B's header and
 // finality against the light client's answer, the whole offline check, and the calldata of the
 // Reader and the example gate against what cast computes.
@@ -11,7 +12,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
-import { abiEncode, signersHint } from "./bridge.js";
+import { abiEncode, mintCalldata, signersHint } from "./bridge.js";
 import { bytesToHex, concatBytes, flipByte, hexToBytes, type Hex } from "./bytes.js";
 import { clientVerifies, verifyJustification } from "./grandpa.js";
 import { blake2_256 } from "./hash.js";
@@ -39,6 +40,7 @@ import {
   INCOMPLETE_PROOF,
   keyOfRead,
   KIT_ERRORS,
+  lockProofOf,
   mappingSlot,
   nftOwnerAt,
   nftsItemKey,
@@ -128,6 +130,23 @@ describe("the kit's decoders (portaldot-v3 3002)", () => {
     assert.deepEqual(decodeNftItem(withApproval).approvals, [{ account: new Uint8Array(32).fill(7), deadline: 9 }]);
   });
 
+  it("parses an NFT item with two approvals, and with 64 behind a two-byte compact count", () => {
+    const value = hexToBytes(read(11).value!.scale);
+    const owner = value.slice(0, 32);
+    const deposit = value.slice(33);
+    const two = concatBytes(owner, Uint8Array.of(8), new Uint8Array(32).fill(7), Uint8Array.of(0), new Uint8Array(32).fill(8), Uint8Array.of(1, 9, 0, 0, 0), deposit);
+    assert.deepEqual(decodeNftItem(two).approvals.map((a) => a.deadline), [null, 9]);
+    const approvals: Uint8Array[] = [];
+    for (let i = 0; i < 64; i++) approvals.push(new Uint8Array(32).fill(i + 1), i % 2 === 0 ? Uint8Array.of(0) : Uint8Array.of(1, 1, 0, 0, 0));
+    // Compact 64: (64 << 2) | 0b01, little-endian.
+    const many = decodeNftItem(concatBytes(owner, Uint8Array.of(0x01, 0x01), ...approvals, deposit));
+    assert.equal(many.approvals.length, 64);
+    assert.deepEqual(many.owner, owner);
+    assert.equal(many.deposit.amount, 10_000_000_000_000n);
+    const over = concatBytes(owner, Uint8Array.of(0x05, 0x01), ...approvals, deposit);
+    assert.throws(() => decodeNftItem(over), (error: unknown) => error instanceof StateProofError && error.message === `NftItemMalformed(${over.length})`);
+  });
+
   it("refuses values of another length or variant with the contracts' errors", () => {
     const info = hexToBytes(read(1).value!.scale);
     const asset = hexToBytes(read(3).value!.scale);
@@ -191,6 +210,31 @@ describe("the kit's walks, as the contracts make them", () => {
   it("refuses an empty proof and an empty key", () => {
     assert.equal(reasonOf(() => readMain(root, [], hexToBytes(read(1).key.hex))), "EmptyProof");
     assert.equal(reasonOf(() => readMain(root, proof(1), new Uint8Array(0))), "EmptyKey");
+  });
+
+  it("shows an address with no contract absent: read 15's proof holds 0x…dEaD's path, and the slot read gives KeyNotPresent with no code hash", () => {
+    const dead = hexToBytes("0x000000000000000000000000000000000000dead");
+    assert.equal(reasonOf(() => contractAt(root, dead, proof(15))), "KeyNotPresent");
+    const slot = { account: proof(15), childRoot: childRootProof, slot: nodes(f.contract.slots[1].proof.nodes) };
+    assert.equal(reasonOf(() => contractSlotAt(root, dead, mappingSlot(1n, 0n), slot)), "KeyNotPresent");
+  });
+
+  it("gives EmptyValue for a key that holds an empty value, as for read 10's branch without one", () => {
+    // A trie of one leaf: 2 nibbles (0x42), the nibbles 1 and 2, an empty inline value (compact 0).
+    const leaf = Uint8Array.of(0x42, 0x12, 0x00);
+    const leafRoot = blake2_256(leaf);
+    assert.equal(reasonOf(() => readMain(leafRoot, [leaf], Uint8Array.of(0x12))), "EmptyValue");
+    assert.equal(reasonOf(() => readMain(leafRoot, [leaf], Uint8Array.of(0x13))), "KeyNotPresent");
+    assert.equal(read(10).outcome, "EmptyValue");
+  });
+
+  it("builds lock 1's LockProof for BridgeMinter.mint from the vault's slot proofs: 3,460 bytes of calldata", () => {
+    const proofs = { account: proof(14), childRoot: childRootProof, slot: nodes(f.contract.slots[1].proof.nodes) };
+    const lock = { recipient: hexToBytes("0xD9838A86cF83C28Ee486544060D1cA4Ca2971071"), amount: 100_000_000_000_000n, nonce: 1n };
+    const p = lockProofOf(B, proofs, lock, false);
+    assert.deepEqual(p.accountProof, []);
+    assert.equal(mintCalldata(p).length, 3460);
+    assert.equal(lockProofOf(B, proofs, lock, true).accountProof.length, proof(14).length, "with the bind, the vault's entry too");
   });
 });
 
