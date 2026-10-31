@@ -987,10 +987,14 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
   const lock0 = locks.find((l) => vaultNonceOf(l) === 0 && l.status === "locked") ?? fail(V3F, "no lock 0");
   const committee = obj(vault.committee, V3F, "vault.committee");
 
-  // README evidence, with the V3 rows' extrinsic hashes resolved against the V3 record
+  // README evidence, with the V3 rows' hashes resolved against the V3 record, and against
+  // deployments/v3-app-transfers.json where the checkout has it: the V3 transactions no tool
+  // recorded when they were sent (rows 114, 117 and 119), read back from V3's EVM RPC
   if (!existsSync(join(root, "README.md"))) fail("README.md", "missing");
   const readme = readFileSync(join(root, "README.md"), "utf8");
-  const v3Hashes = [...JSON.stringify(v3).matchAll(/0x[0-9a-fA-F]{64}/g)].map((m) => m[0]);
+  const APP_TX = "deployments/v3-app-transfers.json";
+  const v3Records = existsSync(join(root, APP_TX)) ? [v3, readJson(root, APP_TX)] : [v3];
+  const v3Hashes = v3Records.flatMap((j) => [...JSON.stringify(j).matchAll(/0x[0-9a-fA-F]{64}/g)].map((m) => m[0]));
   const evidence = parseEvidence(readme, v3Hashes);
   const rowOf = (tx: string) => evidence.find((r) => r.tx === tx.toLowerCase())?.n ?? null;
 

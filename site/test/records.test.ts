@@ -665,7 +665,7 @@ test("the status page's evidence list: every row of the README from 1 to the las
   const count = (c: EvidenceChain) => rows.filter((x) => x.chain === c).length;
   assert.deepEqual(said.slice(1).map(Number), [rows.length, count("sepolia"), count("v3"), count("base-sepolia"), count("arbitrum-sepolia")]);
   assert.equal(perChain(rows), `${count("sepolia")} on Sepolia, ${count("v3")} on V3, ${count("base-sepolia")} on Base Sepolia and ${count("arbitrum-sepolia")} on Arbitrum Sepolia`);
-  // A V3 row's hash stays as the README prints it only when no record in deployments/ holds it in full.
+  // A V3 row's hash would stay as the README prints it only while no record in deployments/ holds it in full: none does.
   const held = new Set<string>();
   for (const f of readdirSync(join(repo, "deployments"))) for (const h of readFileSync(join(repo, "deployments", f), "utf8").matchAll(/0x[0-9a-fA-F]{64}/g)) held.add(h[0].toLowerCase());
   const open = rows.filter((x) => x.chain === "v3" && !x.tx);
@@ -675,7 +675,16 @@ test("the status page's evidence list: every row of the README from 1 to the las
     assert.ok(![...held].some((h) => h.startsWith(head) && h.endsWith(tail)), `row ${x.n}: deployments/ holds ${x.txText}, and the list does not resolve it`);
     assert.match(evidenceCell(x).hash.title, /No record in deployments\/ holds this hash in full/);
   }
-  assert.ok(open.length <= 3, `rows ${open.map((x) => x.n).join(", ")} have no full hash`);
+  assert.equal(open.length, 0, `rows ${open.map((x) => x.n).join(", ")} have no full hash`);
+  // Rows 114, 117 and 119, which no tool recorded when they were sent: deployments/v3-app-transfers.json, read back from V3's EVM RPC.
+  const app = JSON.parse(readFileSync(join(repo, "deployments", "v3-app-transfers.json"), "utf8"));
+  assert.deepEqual(
+    app.transactions.map((t: any) => [t.row, t.txHash, t.block.number]),
+    [114, 117, 119].map((n) => {
+      const x = rows.find((y) => y.n === n);
+      return [n, x?.tx, x?.block];
+    }),
+  );
 });
 
 test("the evidence chains link where the app links them: Etherscan, Basescan and Arbiscan, and V3's blocks on the Node Console", () => {

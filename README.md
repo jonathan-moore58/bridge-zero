@@ -1219,7 +1219,9 @@ these locks, which the app sent: auto-mint's histories
 and
 [`deployments/automint-arbitrum-sepolia-0x57cc….jsonl`](deployments/automint-arbitrum-sepolia-0x57cc2ba3b883339a9f32726e6d0d3a9ee861a113.jsonl)
 hold their mints, and [`deployments/v3-testnet.json`](deployments/v3-testnet.json) the releases,
-each with its burn.
+each with its burn. The funding and the two locks on V3 (rows 114, 117 and 119), which no tool
+recorded when they were sent, are in [`deployments/v3-app-transfers.json`](deployments/v3-app-transfers.json),
+read back from V3's EVM RPC: each one's full hash, sender, nonce and block.
 
 | # | What it shows | Transaction | Block | Result |
 |---|---|---|---|---|
