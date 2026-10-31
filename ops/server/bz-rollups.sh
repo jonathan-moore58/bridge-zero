@@ -9,12 +9,14 @@
 # transaction is still pending; 124 ended at 20 minutes (137 when SIGKILL was needed 30 s later), a
 # crash the next run reconciles from the record. It exits 1 (the service fails: systemctl --failed,
 # bz-health) when a run ended with anything but 0 or 3; the next slot runs both again either way.
+# The timer runs this every 20 minutes, so --head-every 1800 (about 3 hours of V3 blocks, against the
+# default hour) keeps the head imports at about 8 a day on each rollup; a set change goes at once.
 set -u
 cd /home/ubuntu/bridge-zero/relayer || exit 1
 failed=0
 for network in base-sepolia arbitrum-sepolia; do
   /usr/bin/timeout --kill-after=30s 20m /usr/local/bin/node --max-old-space-size=160 --import tsx src/relay-main.ts \
-    --network "$network" --chain v3 --send --account bz-relayer --password-file /home/ubuntu/.foundry/bz-relayer.pw
+    --network "$network" --chain v3 --send --head-every 1800 --account bz-relayer --password-file /home/ubuntu/.foundry/bz-relayer.pw
   code=$?
   echo "rollup run $network: exit $code"
   case "$code" in

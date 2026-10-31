@@ -1,11 +1,12 @@
 # The server
 
 Since 17:45 UTC on Oct 31, 2026, the operator's processes run on a small cloud server with 1 GB of
-RAM and a 4 GB swap file, as systemd services that restart after a crash and start at boot: the
-relayer of each light client on Sepolia, the release watcher, auto-mint, the rollup relay runs on a
-timer, and a health check. Until then a laptop ran them from scheduled tasks at logon; while it
-slept or was off no relay run, mint or release happened (its longest gaps, from Oct 24 to Oct 31,
-are in the README's [Known limits](../../README.md#status)). These are the files that run on the
+RAM and a 4 GB swap file, as systemd services that start at boot and restart as the table below
+says (a relayer that stops on an error waits for the operator): the relayer of each light client on
+Sepolia, the release watcher, auto-mint, the rollup relay runs on a timer, and a health check. Until
+then a laptop ran them from scheduled tasks at logon; while it slept or was off no relay run, mint
+or release happened (its longest gaps, from Oct 24 to Oct 31, are in the README's
+[Known limits](../../README.md#status)). These are the files that run on the
 server, without its address or account details. [docs/DEPLOY.md](../../docs/DEPLOY.md) has the commands they run and the keys
 they use.
 
@@ -24,7 +25,7 @@ both from the relayer's key `0xE94a…0257`.
 | `systemd/bz-relay-mainnet.service` | `/etc/systemd/system/` | the old mainnet's relayer: `--chain mainnet --send --watch 600 --keep 0.02`, key `bz-relayer-mainnet`, into #1 on Sepolia |
 | `systemd/bz-release.service` | `/etc/systemd/system/` | the release watcher for Sepolia, Base Sepolia and Arbitrum Sepolia, with members 1 and 2 |
 | `systemd/bz-automint.service` | `/etc/systemd/system/` | auto-mint for the three chains, key `bz-automint` |
-| `systemd/bz-rollups.service`, `systemd/bz-rollups.timer`, `bz-rollups.sh` | the units in `/etc/systemd/system/`, the script in `/home/ubuntu/bz-ops/` | one relayer run for Base Sepolia, then one for Arbitrum Sepolia (key `bz-relayer`), each ended at 20 minutes, at 02:00, 08:00, 14:00 and 20:00 UTC, six minutes after each V3 set change, and again 20 and 40 minutes later; a slot missed while the server was off runs when it is back |
+| `systemd/bz-rollups.service`, `systemd/bz-rollups.timer`, `bz-rollups.sh` | the units in `/etc/systemd/system/`, the script in `/home/ubuntu/bz-ops/` | every 20 minutes (:00, :20 and :40), one relayer run for Base Sepolia, then one for Arbitrum Sepolia (key `bz-relayer`, `--head-every 1800`), each ended at 20 minutes: a V3 set change reaches both clients within about 20 minutes, a head about every 3 hours; a slot missed while the server was off runs when it is back |
 | `systemd/bz-health.service`, `systemd/bz-health.timer`, `bz-health.sh` | the units in `/etc/systemd/system/`, the script in `/home/ubuntu/bz-ops/` | a read-only check every 15 minutes: the units running, no halt file, each unit's last "Next" line on time, the rollup runs, the clock, memory and disk; it fails while a check FAILs, and can ping a heartbeat URL |
 | `systemd/journald-bridge-zero.conf` | `/etc/systemd/journald.conf.d/bridge-zero.conf` | the journal on disk, at most 2 GB: about 12 days of these logs (about 213,000 lines a day) |
 | `systemd/rsyslog-30-bridge-zero.conf` | `/etc/rsyslog.d/30-bridge-zero.conf` | optional: no second copy of the `bz-*` lines in `/var/log/syslog` |
@@ -56,9 +57,16 @@ left by a process id that a reboot reused to go stale, 10 minutes) stays stopped
   `/home/ubuntu`, in the `systemd-journal` group: `bz-health.sh` and `journalctl` read every unit's
   journal. Another user or path means editing `User=`, `Group=` and the paths in the units and the
   scripts.
-- Node.js 24 at `/usr/local/bin/node`, and Foundry's `cast` in `/home/ubuntu/.foundry/bin`: every
-  process but the watcher signs with cast, and the units put that folder on `PATH`. No
-  `~/.foundry/foundry.toml`.
+- Node.js 24 at `/usr/local/bin/node`, the path the units start: the official build, as this server
+  has it (`curl -fsSLO https://nodejs.org/dist/v24.12.0/node-v24.12.0-linux-x64.tar.xz`, checked
+  against that release's `SHASUMS256.txt`, then
+  `sudo tar -xJf node-v24.12.0-linux-x64.tar.xz -C /opt` and
+  `sudo ln -sf /opt/node-v24.12.0-linux-x64/bin/{node,npm,npx} /usr/local/bin/`). A Node from apt is
+  `/usr/bin/node` until it is linked there.
+- Foundry 1.8.5's `cast` in `/home/ubuntu/.foundry/bin` (`foundryup --install 1.8.5`, with
+  `--platform alpine` if `cast --version` then fails on an old glibc): every process but the watcher
+  signs with cast, and the units put that folder on `PATH`. No `~/.foundry/foundry.toml`.
+- On a 1 GB machine, a swap file (4 GB here).
 - The checkout at `/home/ubuntu/bridge-zero`, owned by `ubuntu`, with `npm ci` run in `relayer/`.
 - The clock synchronized: auto-mint's grace and daily spend, and the relayers' replacements, compare
   times. `bz-health.sh` warns when it is not.
@@ -95,23 +103,36 @@ cp bz-rollups.sh bz-health.sh bz-stop-at-idle.sh bz-state-check.mjs ~/bz-ops/ &&
 sudo install -m 0644 systemd/bz-*.service systemd/bz-*.timer /etc/systemd/system/
 sudo install -D -m 0644 systemd/journald-bridge-zero.conf /etc/systemd/journald.conf.d/bridge-zero.conf
 sudo install -m 0644 systemd/rsyslog-30-bridge-zero.conf /etc/rsyslog.d/30-bridge-zero.conf   # optional, with rsyslog
-sudo systemctl daemon-reload && sudo systemctl restart systemd-journald rsyslog
+sudo systemctl daemon-reload && sudo systemctl restart systemd-journald
+sudo systemctl restart rsyslog                                                             # only with rsyslog installed
 systemd-analyze verify /etc/systemd/system/bz-*.service /etc/systemd/system/bz-*.timer
-systemd-analyze calendar --iterations=6 '*-*-* 02,08,14,20:00,20,40:00 UTC'
+systemd-analyze calendar --iterations=6 '*:00/20'
 ```
 
-`verify` prints nothing about a `bz-*` file, and the calendar lists the next six rollup slots. Then
-put the keys in place (above), and check them and the units' command lines with dry runs, from
-`~/bridge-zero/relayer`:
+`verify` prints nothing about a `bz-*` file, and the calendar lists the next six rollup slots, 20
+minutes apart. Then put the keys in place (above):
+
+```sh
+# where members 1 and 2 are now, from that checkout's relayer/ (after npm ci); both open with the one file
+# named here, and the new member-1.json, member-2.json and bz-committee-server.pw go to ~/.bridge-zero-server
+node ../ops/server/reencrypt-committee.mjs --password-file <the file that opens them now>
+# on the server
+mkdir -p ~/.foundry/keystores ~/.bridge-zero/committee && chmod 700 ~/.foundry ~/.foundry/keystores ~/.bridge-zero ~/.bridge-zero/committee
+# copy (scp) the three keystores to ~/.foundry/keystores/, their .pw files and bz-committee-server.pw to
+# ~/.foundry/, and member-1.json and member-2.json to ~/.bridge-zero/committee/; then
+chmod 600 ~/.foundry/keystores/bz-* ~/.foundry/*.pw ~/.bridge-zero/committee/member-*.json
+```
+
+Then check them and the units' command lines with dry runs, from `~/bridge-zero/relayer`:
 
 ```sh
 for a in bz-relayer bz-relayer-mainnet bz-automint; do cast wallet address --account $a --password-file ~/.foundry/$a.pw; done
 node --import tsx src/relay-main.ts --chain v3 --from <bz-relayer's address>
 node --import tsx src/relay-main.ts --chain mainnet --keep 0.02 --from <bz-relayer-mainnet's address>
-node --import tsx src/relay-main.ts --network base-sepolia --chain v3 --from <bz-relayer's address>
-node --import tsx src/relay-main.ts --network arbitrum-sepolia --chain v3 --from <bz-relayer's address>
+node --import tsx src/relay-main.ts --network base-sepolia --chain v3 --head-every 1800 --from <bz-relayer's address>
+node --import tsx src/relay-main.ts --network arbitrum-sepolia --chain v3 --head-every 1800 --from <bz-relayer's address>
 node --import tsx src/release.ts release --watch 15 --rounds 1 --network sepolia,base-sepolia,arbitrum-sepolia --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144
-node --import tsx src/automint-main.ts --network sepolia,base-sepolia,arbitrum-sepolia --sender <bz-automint's address>
+node --import tsx src/automint-main.ts --network sepolia,base-sepolia,arbitrum-sepolia --grace 90 --min-amount 0.001 --max-spend sepolia=0.02,base-sepolia=0.002,arbitrum-sepolia=0.002 --keep sepolia=0.01,base-sepolia=0.0002,arbitrum-sepolia=0.0002 --sender <bz-automint's address>
 ```
 
 Healthy is exit code 0, or 3 while something is not final yet: a relayer prints `... is up to
@@ -123,17 +144,20 @@ if one does not open.
 ## Moving the processes to the server
 
 Only one machine runs them with `--send` at a time, so the old one stops first and its state moves
-with them. While they move, no relay run, mint or release happens.
+with them. While they move, no relay run, mint or release happens. On a first install, with no
+machine to move from, skip steps 2 to 4.
 
-1. **When.** Both machines reach the V3 node, and the move is clear of V3's set changes (01:54,
-   07:54, 13:54 and 19:54 UTC) and of the rollup slots: it starts between 03:30 and 06:00 UTC, or
-   in the same window 6, 12 or 18 hours later.
+1. **When.** Both machines reach the V3 node, and no V3 set change is due within the hour: they come
+   about 6 hours apart, at times that move when V3 stops making blocks, and the relayer's log shows
+   the last one it imported (on the server,
+   `journalctl -u bz-relay-v3 -o short-iso --since=-7h | grep AuthoritySetChanged | tail -n 1`).
 2. **Same code.** Both checkouts at the same commit; `git status --porcelain -- deployments` prints
    nothing, or only ` M deployments/v3-testnet.json`, the watcher's live record.
 3. **Stop the old machine:** first whatever starts the processes there (a scheduled task, a
    service), then each process at an idle moment of its log, the watcher first. Nothing of them is
-   left running, and `node bz-state-check.mjs` there ends with `QUIET`. Rename the keys that go to
-   the server where they were, so that nothing signs with them there by mistake.
+   left running, and `node <checkout>/ops/server/bz-state-check.mjs --repo <checkout>` there ends
+   with `QUIET`. Rename the keys that go to the server where they were, so that nothing signs with
+   them there by mistake.
 4. **Copy the state** from the old `~/.bridge-zero/` to the server's, byte for byte: each sender's
    relay record and history (`relay-<network>-<address>.json` and `.jsonl`), auto-mint's state and
    history (`automint-<network>-<address>.json` and `.jsonl`), the watcher's burn caches
@@ -149,14 +173,16 @@ with them. While they move, no relay run, mint or release happens.
    sudo systemctl start bz-automint                   # a state line for each chain, then "Next rounds"
    sudo systemctl start bz-relay-v3 bz-relay-mainnet  # the sender and its nonce, "is up to date" or a plan sent, "Next run in 600 s"
    sudo systemctl enable --now bz-rollups.timer
-   sudo systemctl start bz-rollups.service            # optional: one run of each rollup now, "rollup run <network>: exit 0"
+   sudo systemctl start --no-block bz-rollups.service # optional: one run of each rollup now; then
+   journalctl -fu bz-rollups -o cat                   # "rollup run <network>: exit 0" for each (Ctrl-C to leave)
    sudo systemctl enable bz-release bz-automint bz-relay-v3 bz-relay-mainnet
    sudo systemctl enable --now bz-health.timer
    ~/bz-ops/bz-health.sh                              # "health: 0 FAIL"
    ```
 
-6. **After the next V3 set change**, the V3 relayer imports it, and each rollup's client gets it
-   within its three runs: `journalctl -u bz-relay-v3 -u bz-rollups --since=-10h -o cat`.
+6. **After the next V3 set change**, the V3 relayer imports it, and each rollup's client gets it at
+   the next rollup slot, within about 20 minutes:
+   `journalctl -u bz-relay-v3 -u bz-rollups --since=-10h -o cat`.
 
 To move back, stop the server's units at idle moments (`~/bz-ops/bz-stop-at-idle.sh <unit>`),
 disable them and both timers, and copy the state back the same way, never the server's locks or
@@ -182,16 +208,19 @@ nothing starts elsewhere: its units start at boot with `--send`.
 
   ```sh
   sudo systemctl stop bz-rollups.timer; while systemctl is-active --quiet bz-rollups.service; do sleep 10; done
-  ~/bz-ops/bz-stop-at-idle.sh bz-release && ~/bz-ops/bz-stop-at-idle.sh bz-automint && ~/bz-ops/bz-stop-at-idle.sh bz-relay-v3 && ~/bz-ops/bz-stop-at-idle.sh bz-relay-mainnet
+  ~/bz-ops/bz-stop-at-idle.sh bz-release && ~/bz-ops/bz-stop-at-idle.sh bz-automint && ~/bz-ops/bz-stop-at-idle.sh bz-relay-v3 && ~/bz-ops/bz-stop-at-idle.sh bz-relay-mainnet && echo "all four stopped"
   cd ~/bridge-zero && live=~/bz-ops/v3-testnet.live.$(date +%Y%m%d-%H%M).json && cp -p deployments/v3-testnet.json "$live"
   git pull --ff-only || { git checkout -- deployments/v3-testnet.json && git pull --ff-only; }
   cp "$live" deployments/v3-testnet.json
   git diff --quiet ORIG_HEAD HEAD -- relayer/package-lock.json || (cd relayer && npm ci)
+  git diff --quiet ORIG_HEAD HEAD -- ops/server || { cp ops/server/bz-rollups.sh ops/server/bz-health.sh ops/server/bz-stop-at-idle.sh ops/server/bz-state-check.mjs ~/bz-ops/ && chmod 755 ~/bz-ops/*.sh && sudo install -m 0644 ops/server/systemd/bz-*.service ops/server/systemd/bz-*.timer /etc/systemd/system/ && sudo systemctl daemon-reload; }
   ```
 
-  Then the dry runs above, `sudo systemctl start bz-release bz-automint bz-relay-v3
-  bz-relay-mainnet bz-rollups.timer`, and `~/bz-ops/bz-health.sh` about 15 minutes later. The
-  server's `deployments/v3-testnet.json` is the live record: it is never reset without the copy.
+  Run the first two lines, and the rest only after the second printed `all four stopped`; the last
+  line puts a changed script or unit of `ops/server/` in place. Then the dry runs above,
+  `sudo systemctl start bz-release bz-automint bz-relay-v3 bz-relay-mainnet bz-rollups.timer`, and
+  `~/bz-ops/bz-health.sh` about 15 minutes later. The server's `deployments/v3-testnet.json` is the
+  live record: it is never reset without the copy.
 - **A halt.** `cat ~/.bridge-zero/release-watch-<multisig>.halt` and
   `journalctl -u bz-release -n 200 -o cat` say why; the members decide. Where the halt names a burn
   whose approval or final check the record holds as failed, a member adds `"acknowledged": "<who,
