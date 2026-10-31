@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import { REPO, repoFile } from "../lib/chains.ts";
-import { Cross, Doc, GitHub, Menu } from "../components/icons.tsx";
+import { ArrowRight, Cross, Doc, GitHub, Menu } from "../components/icons.tsx";
 import { ZeroMark } from "../components/marks.tsx";
 
 export const NAV = [
@@ -78,6 +78,9 @@ export function Header() {
           ))}
         </nav>
         <div class="hdr__actions">
+          <a class="btn btn--primary btn--sm" href="app/">
+            Open the app
+          </a>
           <a class="btn btn--ghost btn--sm hdr__docs" href={repoFile("docs/BRIDGE.md")} target="_blank" rel="noopener noreferrer">
             <Doc />
             Docs
@@ -92,6 +95,12 @@ export function Header() {
       </div>
       <nav id="mobile-nav" class="mnav" aria-label="Sections" hidden={!open}>
         <div class="container mnav__inner">
+          <a href="app/" onClick={() => setOpen(false)}>
+            <span class="mnav__n">
+              <ArrowRight />
+            </span>
+            Open the bridge app
+          </a>
           {NAV.map((n, i) => (
             <a key={n.id} href={`#${n.id}`} onClick={() => setOpen(false)}>
               <span class="mnav__n">{String(i + 1).padStart(2, "0")}</span>

@@ -5,10 +5,16 @@ finality (the validators' signatures) and Substrate storage proofs, so an EVM
 contract can use Portaldot state without a trusted relayer: trust rests on the
 Portaldot validator set.
 
-**Live page: [jonathan-moore58.github.io/bridge-zero](https://jonathan-moore58.github.io/bridge-zero/)**. It reads both light clients, the
-vault and the bridge from the chains as you watch, and its "Check it live" buttons send the
-tampered mints to BridgeMinter as read-only calls, which it refuses. It has no wallet and signs
-nothing.
+**The bridge app: [jonathan-moore58.github.io/bridge-zero/app](https://jonathan-moore58.github.io/bridge-zero/app/)**. Lock
+tPOT on the Portaldot V3 testnet and receive wtPOT on Sepolia, Base Sepolia or Arbitrum Sepolia,
+and burn it back, from MetaMask or a Polkadot wallet. Its Verify tab checks any transfer in your
+browser: V3's validator signatures, the lock's storage proof, and the destination contract's
+verdict.
+
+**The status page: [jonathan-moore58.github.io/bridge-zero](https://jonathan-moore58.github.io/bridge-zero/)**. It reads the light
+clients, the vault and the bridge from the chains as you watch, and its "Check it live" buttons
+send the tampered mints to BridgeMinter as read-only calls, which it refuses. It has no wallet
+and signs nothing.
 
 Built for the Portaldot Hacker House 2026, Multi-Chain & Cross-Chain Infra track.
 Development runs from Oct 14 to Nov 6, 2026; this repository starts on Oct 14.
@@ -397,12 +403,16 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   owner's own MetaMask wallet locked 1 tPOT for Base Sepolia and 1 for Arbitrum Sepolia from the
   app, auto-mint minted both, the wallet burned both from the app, and the watcher released both on
   V3 in fast mode (rows 114 to 126,
-  [the app's first transfers](#the-app-the-first-transfers-from-the-owners-own-wallet)). The app is
-  on the branch `app`, not yet published.
-- The live page, [jonathan-moore58.github.io/bridge-zero](https://jonathan-moore58.github.io/bridge-zero/) (`site/`), built and deployed
-  by `.github/workflows/pages.yml` on every change to the records: both light clients, the vault
-  and the bridge read live, the recorded runs as the fallback when an RPC is down, and the six
-  tampered mints checked live against BridgeMinter.
+  [the app's first transfers](#the-app-the-first-transfers-from-the-owners-own-wallet)). The app has
+  been public since Oct 31.
+- The bridge app, [jonathan-moore58.github.io/bridge-zero/app](https://jonathan-moore58.github.io/bridge-zero/app/) (`site/app/`), since Oct 31:
+  lock and burn on the three chains from MetaMask or a Polkadot wallet, auto-mint's handoff with a
+  mint built in the browser as the fallback, each transfer followed to its receipt, and a Verify
+  tab that checks any transfer's signatures and proofs in the browser.
+- The status page, [jonathan-moore58.github.io/bridge-zero](https://jonathan-moore58.github.io/bridge-zero/) (`site/`): both light
+  clients, the vault and the bridge read live, the recorded runs as the fallback when an RPC is
+  down, and the six tampered mints checked live against BridgeMinter. `.github/workflows/pages.yml`
+  builds and deploys both pages on every change to the records.
 - Tests: 327 forge tests, 346 relayer tests and 343 fixture checks pass
   ([Verify it yourself](#verify-it-yourself)).
 
@@ -465,8 +475,6 @@ event are in [docs/BUSINESS.md](docs/BUSINESS.md).
 
 **Next, before Nov 6**
 
-- **A web app for the bridge.** Lock, mint and burn from a wallet, with the mint's proofs built in
-  the browser.
 - The proof kit, packaged for other builders: the light client, the proof libraries and the
   capture and check tools, so another EVM contract can read proven Portaldot state.
 
@@ -1192,7 +1200,7 @@ each with its burn.
 | `contracts/` | Foundry project: light client, proof verification, bridge contracts |
 | `relayer/` | TypeScript tools: fetch finality and storage proofs from Portaldot nodes, relay finality to the light clients on Sepolia, Base Sepolia and Arbitrum Sepolia, deploy and use the vault on V3, mint wtPOT, auto-mint each new lock, and run the return path |
 | `fixtures/` | Captured chain data used by the tests, each file with its source |
-| `site/` | The live page (Vite, TypeScript, Preact): reads the chains, with the records as the fallback; deployed to GitHub Pages by `.github/workflows/pages.yml` |
+| `site/` | The status page and the bridge app (`site/app/`), in Vite, TypeScript and Preact: they read the chains, with the records as the fallback; deployed to GitHub Pages by `.github/workflows/pages.yml` |
 | `deployments/` | Records of every transaction on Sepolia, Base Sepolia and Arbitrum Sepolia (with the rollups' funding from Sepolia), and on the V3 testnet of the vault's deployment, lock 0 and the return path: addresses, hashes, blocks, gas and fees |
 | `docs/` | Gas measurements, deployment notes, decisions, the business model |
 

@@ -661,10 +661,14 @@ export function Hero() {
             </h1>
             <p class="hero__claim">No trusted relayer. Trust rests on the Portaldot validator set.</p>
             <p class="hero__lead">
-              Contracts on Sepolia check Portaldot's GRANDPA finality and storage proofs. The light client's first app is a token bridge, tPOT to wtPOT.
+              Contracts on Sepolia, Base Sepolia and Arbitrum Sepolia check Portaldot's GRANDPA finality and storage proofs. The light client's first app is a token bridge, tPOT to wtPOT and back.
             </p>
             <div class="hero__ctas">
-              <a class="btn btn--primary" href="#bridge">
+              <a class="btn btn--primary" href="app/">
+                Open the bridge app
+                <ArrowRight />
+              </a>
+              <a class="btn btn--ghost" href="#bridge">
                 See the proof
                 <ArrowDown />
               </a>
