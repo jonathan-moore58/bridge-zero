@@ -1,0 +1,38 @@
+# /etc/systemd/system/bz-relay-v3.service
+[Unit]
+Description=Bridge Zero relayer: Portaldot V3 testnet to GrandpaLightClient #2 on Sepolia (key bz-relayer)
+Wants=network-online.target
+After=network-online.target time-sync.target
+# A crash loop stops after 5 starts in an hour; "systemctl reset-failed bz-relay-v3" clears it.
+StartLimitIntervalSec=1h
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/bridge-zero/relayer
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.foundry/bin:/usr/local/bin:/usr/bin:/bin
+Environment=ESBUILD_WORKER_THREADS=0
+ExecStart=/usr/local/bin/node --max-old-space-size=160 --import tsx src/relay-main.ts --chain v3 --send --watch 600 --account bz-relayer --password-file /home/ubuntu/.foundry/bz-relayer.pw
+# Exit 1 is the relayer's own stop (Fatal: a sent transaction that failed its checks, a signing or
+# record problem), a refusal at start, or an uncaught JavaScript error: the unit stays stopped for the
+# operator (on the laptop, until the next logon), and bz-health reports it. Only a signal restarts it
+# (an out-of-memory abort, a kill); each run settles the record before it plans.
+Restart=on-abnormal
+RestartSec=60
+# No signal handler: SIGTERM ends node, and any cast it runs, at once; the next run reconciles.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+# No core file: an abort would write the process's memory into the working directory, the checkout.
+LimitCORE=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bz-relay-v3
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

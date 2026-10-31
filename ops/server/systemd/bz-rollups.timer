@@ -1,0 +1,19 @@
+# /etc/systemd/system/bz-rollups.timer
+[Unit]
+Description=Bridge Zero rollup relays six minutes after each V3 set change (7:00 AM, 1:00 PM, 7:00 PM and 1:00 AM PKT), again 20 and 40 minutes later
+
+[Timer]
+# V3 changes its validator set at 1:54 and 7:54 AM and PM UTC (6:54 AM, 12:54 PM, 6:54 PM and
+# 12:54 AM PKT). The slots below are 2:00 and 8:00 AM and PM UTC, the laptop's triggers too,
+# written in UTC so that they hold whatever the host's time zone is.
+OnCalendar=*-*-* 02,08,14,20:00,20,40:00 UTC
+AccuracySec=1s
+# A slot missed while the server was off runs once when it is back (StartWhenAvailable on the laptop).
+# A slot that comes while a run still goes runs once, right after that run ends (the laptop skipped
+# it): runs never overlap, and each one reconciles first. Re-enabling this timer later (its stamp in
+# /var/lib/systemd/timers is kept) runs a missed slot at once.
+Persistent=true
+Unit=bz-rollups.service
+
+[Install]
+WantedBy=timers.target

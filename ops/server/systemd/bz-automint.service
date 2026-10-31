@@ -1,0 +1,38 @@
+# /etc/systemd/system/bz-automint.service
+[Unit]
+Description=Bridge Zero auto-mint: wtPOT on Sepolia, Base Sepolia and Arbitrum Sepolia for locks on V3 (key bz-automint)
+Wants=network-online.target
+After=network-online.target time-sync.target
+# A crash or stop loop ends after 5 starts in an hour; "systemctl reset-failed bz-automint" clears it.
+StartLimitIntervalSec=1h
+StartLimitBurst=5
+
+[Service]
+Type=exec
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/bridge-zero/relayer
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.foundry/bin:/usr/local/bin:/usr/bin:/bin
+Environment=ESBUILD_WORKER_THREADS=0
+ExecStart=/usr/local/bin/node --max-old-space-size=256 --import tsx src/automint-main.ts --network sepolia,base-sepolia,arbitrum-sepolia --send --watch 15 --grace 90 --min-amount 0.001 --max-spend sepolia=0.02,base-sepolia=0.002,arbitrum-sepolia=0.002 --keep sepolia=0.01,base-sepolia=0.0002,arbitrum-sepolia=0.0002 --account bz-automint --password-file /home/ubuntu/.foundry/bz-automint.pw
+# Its exits are its own stops (a lost lock, a record it cannot write, a refused key, cast unable to
+# sign), refusals at start and uncaught errors; each is checked again before anything is signed,
+# used(nonce) stops a second mint, and the history keeps the day's spend and failed sends. So any
+# failure restarts.
+Restart=on-failure
+RestartSec=60
+# No signal handler: SIGTERM ends node and any cast at once; the history's attempt is settled next start.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+# No core file: an abort would write the process's memory into the working directory, the checkout.
+LimitCORE=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bz-automint
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
