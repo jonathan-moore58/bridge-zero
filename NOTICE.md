@@ -33,7 +33,8 @@ Installed from npm at the exact versions in `relayer/package.json` (resolved in
 |---|---|---|---|---|---|
 | @noble/hashes | https://github.com/paulmillr/noble-hashes | 2.4.0 | MIT | BLAKE2b, keccak-256 and SHA-512 hashing | none |
 | @noble/curves | https://github.com/paulmillr/noble-curves | 2.4.0 | MIT | ed25519 signature checks | none |
-| @polkadot/api | https://github.com/polkadot-js/api | 17.0.2 | Apache-2.0 | the V3 vault tool (`relayer/src/v3-vault.ts`): reviveApi dry runs, the sr25519 key and signing of `revive.instantiateWithCode`, extrinsic status and events | none |
+| @polkadot/api | https://github.com/polkadot-js/api | 17.0.2 | Apache-2.0 | the V3 vault tool (`relayer/src/v3-vault.ts`): reviveApi dry runs, the sr25519 key and signing of `revive.instantiateWithCode` and `revive.call`, extrinsic status and events; and the release tool (`relayer/src/release.ts`): the committee's `multisig.asMulti` calls on V3 | none |
+| @polkadot/types | https://github.com/polkadot-js/api | 17.0.2 | Apache-2.0 | V3's `System.Events` decoded with the chain's metadata, to find locks sent as Substrate extrinsics (`relayer/src/substrate-locks.ts`) | none |
 | tsx (dev) | https://github.com/privatenumber/tsx | 4.23.15 | MIT | runs the TypeScript sources | none |
 | typescript (dev) | https://github.com/microsoft/TypeScript | 6.0.3 | Apache-2.0 | type checking | none |
 | @types/node (dev) | https://github.com/DefinitelyTyped/DefinitelyTyped | 24.19.0 | MIT | Node.js type definitions | none |
@@ -41,9 +42,60 @@ Installed from npm at the exact versions in `relayer/package.json` (resolved in
 @polkadot/api brings the rest of polkadot-js with it (`@polkadot/*`, Apache-2.0) and their own
 dependencies (rxjs, Apache-2.0; tslib, 0BSD; bn.js, ws, @scure/*, @noble/* 1.x and others, MIT), at
 the versions `relayer/package-lock.json` resolves. `@polkadot/rpc-provider` also lists
-`@substrate/connect` 0.8.11 as an optional dependency, which npm installs with two packages of its
-own (GPL-3.0-only): it serves only `ScProvider`, a light client the caller has to pass it to, and no
-code here loads it.
+`@substrate/connect` 0.8.11 as an optional dependency, which npm installs with what it brings: two
+packages of its own (GPL-3.0-only), smoldot 2.0.26 (GPL-3.0-or-later WITH Classpath-exception-2.0),
+and `@substrate/light-client-extension-helpers`, scale-ts and seven `@polkadot-api/*` packages (MIT).
+They serve only `ScProvider`, a light client the caller has to pass `@substrate/connect` to, and no
+code here loads them.
+
+## npm packages (site)
+
+The status page and the bridge app (`site/`) are built from npm packages at the exact versions in
+`site/package.json` (resolved in `site/package-lock.json`); nothing is copied into the repository.
+The build (`npm run build`) bundles their code, minified, into the files of the pages, which GitHub
+Pages serves.
+
+| Package | Source | Version | Licence | Use | Changes |
+|---|---|---|---|---|---|
+| preact | https://github.com/preactjs/preact | 10.29.8 | MIT | both pages' components, rendering and hooks | none |
+| @noble/hashes | https://github.com/paulmillr/noble-hashes | 2.4.0 | MIT | BLAKE2b, keccak-256 and SHA-512 hashing in the checks the pages run | none |
+| @noble/curves | https://github.com/paulmillr/noble-curves | 2.4.0 | MIT | ed25519 checks of GRANDPA signatures in the browser (the status page's signature check and the app's Verify page), loaded on first use | none |
+| viem | https://github.com/wevm/viem | 2.57.4 | MIT | the app's chains and their transports for the wallet layer (`site/src/app/chains.ts`), and adding a chain to a wallet | none |
+| @wagmi/core | https://github.com/wevm/wagmi (`packages/core`) | 3.6.5 | MIT | the app's Ethereum wallets (`site/src/app/wallet.ts`): EIP-6963 discovery, connecting, switching chains, sending the bridge's transactions and reading their receipts | none |
+| @polkadot/api | https://github.com/polkadot-js/api | 17.0.2 | Apache-2.0 | a lock from a Polkadot wallet (`site/src/app/substrate/`), in a chunk the app loads only when a visitor picks one: the dry run, the fee, `revive.call`, the wallet's signature, the extrinsic's status and events | none; one of its dependencies is left out (below) |
+| @fontsource-variable/sora | https://github.com/fontsource/font-files (`fonts/variable/sora`) | 5.3.0 | OFL-1.1 | the Sora font file ([Fonts](#fonts-the-site)) | none |
+| @fontsource-variable/geist-mono | https://github.com/fontsource/font-files (`fonts/variable/geist-mono`) | 5.3.0 | OFL-1.1 | the Geist Mono font file ([Fonts](#fonts-the-site)) | none |
+| vite (dev) | https://github.com/vitejs/vite | 8.3.3 | MIT | builds the pages, with Rolldown 1.2.12 (https://github.com/rolldown/rolldown, MIT), which `overrides` pins; Vite's module preload helpers and Rolldown's runtime, a few kilobytes, ship in them | none |
+| typescript (dev) | https://github.com/microsoft/TypeScript | 6.0.3 | Apache-2.0 | type checking | none |
+| @types/node (dev) | https://github.com/DefinitelyTyped/DefinitelyTyped | 24.19.0 | MIT | Node.js type definitions | none |
+
+The pages also carry the packages these bring with them, as far as the build keeps their code (it
+drops what the pages never reach). With @polkadot/api, and only in the app's chunk for a Polkadot
+wallet: @polkadot/api-derive, rpc-core, rpc-provider, types, types-codec, types-create and
+types-known 17.0.2, @polkadot/util, util-crypto, networks, x-bigint, x-global, x-textdecoder,
+x-textencoder and x-ws 14.0.3, rxjs 7.8.2 and @substrate/ss58-registry 1.51.0 (all Apache-2.0);
+tslib 2.8.1 (0BSD); bn.js 5.2.5, @scure/base 1.2.6, eventemitter3 5.0.1, @noble/curves 1.9.7 and
+@noble/hashes 1.8.0 (MIT). With @wagmi/core: mipd 0.0.7, zustand 5.0.0 and eventemitter3 (MIT). With
+viem: its own @noble/curves 1.9.1 and @noble/hashes 1.8.0 (MIT). In place of `@polkadot/wasm-crypto`
+(Apache-2.0) the build bundles a stub that is never ready (`site/src/app/substrate/wasm-crypto-stub.ts`,
+aliased in `site/vite.config.ts`): the page's Content-Security-Policy lets no WebAssembly start, and
+`@polkadot/util-crypto` takes its JavaScript paths, so none of that WebAssembly ships. No other
+package that `site/package-lock.json` resolves ships, apart from the build's helpers named above:
+`@substrate/connect` and the packages it brings (GPL among them, as for the relayer) are installed,
+but no code of the site imports them. The list is read from the build itself: the modules in each
+file that `npm run build` emitted on Nov 1, 2026.
+
+## Fonts (the site)
+
+Both pages are set in two variable fonts, one file each, which the build copies as it is (it inlines
+no asset) and GitHub Pages serves with the pages. Each file keeps its copyright line and the
+licence's address in its name table; the licence's full text is the `LICENSE` file of its package.
+Neither font has a Reserved Font Name. The SHA-256 is of the file as it is served.
+
+| Font | Copyright | File | Source | Licence | Changes | SHA-256 |
+|---|---|---|---|---|---|---|
+| Sora | Copyright 2019 The Sora Project Authors (https://github.com/sora-xor/sora-font) | `sora-latin-wght-normal.woff2`, the Latin subset | @fontsource-variable/sora 5.3.0, from Google Fonts (https://github.com/google/fonts) | SIL Open Font License 1.1 (OFL-1.1), https://openfontlicense.org | none | `fa26406eeda9a3c6ec3d9ea8813c3045d6dc755e30c716d5c094e8ef43be5a7f` |
+| Geist Mono | Copyright 2024 The Geist Project Authors (https://github.com/vercel/geist-font.git) | `geist-mono-latin-wght-normal.woff2`, the Latin subset | @fontsource-variable/geist-mono 5.3.0, from Google Fonts (https://github.com/google/fonts) | SIL Open Font License 1.1 (OFL-1.1), https://openfontlicense.org | none | `684ad5b531f81d43c1e8c7038262d5db7cdc1f68006e04d6c7769efa8d33c8cc` |
 
 ## Logos (the bridge app)
 
