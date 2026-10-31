@@ -143,7 +143,9 @@ Foundry project:
 forge install jonathan-moore58/bridge-zero
 ```
 
-with these remappings (the kit is Solidity 0.8.27, exact):
+(the repository's own libraries are git submodules of it: `git submodule update --init --recursive`
+fetches them where an install did not), with these remappings (the kit is Solidity 0.8.27,
+exact):
 
 ```
 bridge-zero/=lib/bridge-zero/contracts/src/
