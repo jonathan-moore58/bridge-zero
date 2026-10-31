@@ -457,34 +457,41 @@ function readRelayHistories(root: string, dir: string): { files: string[]; entri
   return { files, entries };
 }
 
-/** An auto-mint history: one file per sender, automint-sepolia-<sender>.jsonl, the sender in lowercase. */
-const AUTOMINT_FILE = /^automint-sepolia-(0x[0-9a-f]{40})\.jsonl$/;
+/**
+ * An auto-mint history: one file per chain and sender, automint-<network>-<sender>.jsonl, the network
+ * the chain its mints are on (sepolia, base-sepolia or arbitrum-sepolia), the sender in lowercase.
+ */
+const AUTOMINT_FILE = /^automint-(sepolia|base-sepolia|arbitrum-sepolia)-(0x[0-9a-f]{40})\.jsonl$/;
 
-/** A lock auto-mint minted: the amount and recipient its attempt line gives (null when the history lacks that line), the mint's transaction, and the history's file name. */
+/** A lock auto-mint minted: the amount and recipient its attempt line gives (null when the history lacks that line), the mint's transaction, the chain it was minted on (the history's network) and the history's file name. */
 export interface AutoMint {
   amountNative: string | null;
   recipient: Hex | null;
   txHash: Hex | null;
+  network: string;
   file: string;
 }
 
 /**
- * The locks auto-mint minted, by nonce, from every auto-mint history in `dir`: a "result" line with
- * the outcome "minted" names its lock, and the "attempt" line of the same id (written before the
- * mint was signed, with what the mint pays) gives its amount and recipient, so a lock the V3
- * record does not hold (one sent from the app) counts too. A line cut short by a crash is skipped,
- * as the tool itself skips it.
+ * The locks auto-mint minted, by nonce, from every auto-mint history in `dir`, every chain's (a lock
+ * names one chain, so its nonce is minted on one): a "result" line with the outcome "minted" names
+ * its lock, and the "attempt" line of the same id (written before the mint was signed, with what
+ * the mint pays) gives its amount and recipient, so a lock the V3 record does not hold (one sent
+ * from the app) counts too. A line cut short by a crash is skipped, as the tool itself skips it.
  */
 export function readAutoMints(dir: string): Map<number, AutoMint> {
   const minted = new Map<number, AutoMint>();
   const names = existsSync(dir) ? readdirSync(dir).filter((f) => AUTOMINT_FILE.test(f)).sort() : [];
   for (const name of names) {
+    const network = AUTOMINT_FILE.exec(name)?.[1] ?? fail(name, "no network in the file name");
+    // mintedLines gives a mint's attempt line only when it names the same lock.
     for (const { lock, result: e, attempt: a } of mintedLines(join(dir, name))) {
       if (minted.has(lock)) continue;
       minted.set(lock, {
         amountNative: a && typeof a.amount === "string" && /^\d+$/.test(a.amount) ? a.amount : null,
         recipient: a ? optHex(a.recipient) : null,
         txHash: optHex(e.txHash),
+        network,
         file: name,
       });
     }
@@ -1342,12 +1349,14 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
 
   const releasedAmounts = releases.filter((r) => r.status === "released").map((r) => BigInt(r.amountNative ?? "0"));
   // The locks the V3 record holds, by vault nonce, and the mints: the mint steps, then the locks
-  // auto-mint minted from its own key (deployments/automint-sepolia-<sender>.jsonl), each nonce once,
-  // with the amount and recipient its history's attempt line gives (the V3 record's when that line
-  // is missing). A lock recorded and not minted yet is pending, and a mint of a lock the V3 record
-  // does not hold (one sent from the app) counts with what was minted: neither fails the build. A
-  // nonce recorded as locked twice, minted twice, or minted with another amount or recipient than the
-  // V3 record holds does: the records then contradict each other and the chain.
+  // auto-mint minted from its own key (deployments/automint-<network>-<sender>.jsonl, a history for
+  // each chain), each nonce once, with the amount and recipient its history's attempt line gives
+  // (the V3 record's when that line is missing). A lock recorded and not minted yet is pending, and a
+  // mint of a lock the V3 record does not hold (one sent from the app) counts with what was minted:
+  // neither fails the build. A nonce recorded as locked twice, minted twice, or minted with another
+  // amount or recipient than the V3 record holds does: the records then contradict each other and
+  // the chain. The vault backs every chain's wtPOT, so its totals count the mints on Base Sepolia
+  // and Arbitrum Sepolia too (rollupMints); the token's totals are Sepolia's.
   const recorded: KnownLock[] = locks
     .filter((l) => l.status === "locked")
     .map((l, i) => ({
@@ -1370,6 +1379,7 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
   if (lockedTwice) fail(V3F, `lock ${lockedTwice.nonce} is recorded as locked twice`);
   const mintedTwice = twice(mints);
   if (mintedTwice) fail(BR, `two successful mints of lock ${mintedTwice.nonce}`);
+  const rollupMints: KnownLock[] = [];
   for (const [nonce, m] of readAutoMints(automintDir)) {
     if (mints.some((x) => x.nonce === nonce)) continue;
     const r = recorded.find((x) => x.nonce === nonce);
@@ -1378,26 +1388,29 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
       console.warn(`deployments/: auto-mint minted lock ${nonce}${m.txHash ? ` (${m.txHash})` : ""}, and neither its history's attempt line nor ${V3F} gives its amount: left out of the totals`);
       continue;
     }
-    mints.push({ nonce, amountNative, recipient: m.recipient ?? r?.recipient ?? null, from: `deployments/${m.file}` });
+    (m.network === "sepolia" ? mints : rollupMints).push({ nonce, amountNative, recipient: m.recipient ?? r?.recipient ?? null, from: `deployments/${m.file}` });
   }
-  const known = lockTotals(recorded, mints);
+  const known = lockTotals(recorded, [...mints, ...rollupMints]);
   const contradiction = known.disagree[0];
   if (contradiction) {
     const { recorded: r, minted: m } = contradiction;
     fail(m.from ?? "deployments/", `lock ${m.nonce} was minted as ${m.amountNative} for ${m.recipient}, and ${V3F} holds ${r.amountNative} for ${r.recipient}`);
   }
-  const minted = known.minted;
+  // Sepolia's wtPOT: the mints on Sepolia.
+  const onSepolia = lockTotals(recorded, mints);
+  const minted = onSepolia.minted;
   const okBurns = burns.filter((b) => b.ok === true && b.status === 1);
   const burned = okBurns.reduce((n, b) => n + BigInt(b.amount), 0n);
   const burnedByRecipient = steps
     .filter((s) => s.kind === "burn" && s.ok === true && s.status === 1 && String(s.sender).toLowerCase() === bridge.lock.recipient)
     .reduce((n, s) => n + BigInt(str(obj(s.burn, BR, "burn").amount, BR, "burn.amount")), 0n);
-  const mintedToRecipient = known.mintedTo(bridge.lock.recipient);
+  const mintedToRecipient = onSepolia.mintedTo(bridge.lock.recipient);
   const totals = {
     locks: known.locks,
     // What the vault took for the known locks, less what the committee released.
     outstandingNative: (known.locked - releasedAmounts.reduce((a, b) => a + b, 0n)).toString(),
     minted: minted.toString(),
+    mintedRollups: (known.minted - minted).toString(),
     pending: known.pending.toString(),
     burned: burned.toString(),
     supply: (minted - burned).toString(),

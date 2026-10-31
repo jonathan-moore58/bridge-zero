@@ -414,13 +414,16 @@ export interface Records {
    * Totals from the records: the recorded fallback of the vault's and the token's live state. Over
    * the locks the records know (the V3 record's, and any a mint names): outstandingNative is what
    * the vault took for them (the V3 record's amounts, and what was minted for a lock it lacks) less
-   * what was released, which is minted + pending - released, pending being the recorded locks no
-   * mint names yet (the build refuses records that disagree on a lock's amount).
+   * what was released, which is minted + mintedRollups + pending - released, pending being the
+   * recorded locks no mint names yet (the build refuses records that disagree on a lock's amount).
+   * minted, burned, supply and recipientBalance are Sepolia's wtPOT; mintedRollups is what auto-mint
+   * minted on Base Sepolia and Arbitrum Sepolia, by its histories there.
    */
   totals: {
     locks: number;
     outstandingNative: string;
     minted: string;
+    mintedRollups: string;
     pending: string;
     burned: string;
     supply: string;

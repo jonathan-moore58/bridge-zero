@@ -52,8 +52,9 @@ same contracts on more EVM chains that have the BLAKE2F precompile.
 | **The way back in 84 seconds** (rows 56 to 58, trusted, fast mode) | Sepolia burn [`0x4e5f4c6e…`](https://sepolia.etherscan.io/tx/0x4e5f4c6e6f8fe2e85cf3bf146aaffa6d12d5eccb5d032db8d0989d66b886c262); the release in V3 block [#173,062](https://scanner-testnet-v3.portaldot.dev/#/extrinsics/173062-1) | Burn 1, Oct 24: 0.1 wtPOT burned on Sepolia for `0xD983…1071` on V3, and released to it by the auto-release watcher with 3 confirmations instead of Sepolia's finality; the release's block 84 seconds after the burn's by the block timestamps. The same trusted committee, for burns of up to 1 tPOT; a reorg deeper than 3 blocks could undo a burn after its release. |
 | **Old mainnet, 7 of 10** (row 3) | Sepolia transaction [`0x8ddd807e…`](https://sepolia.etherscan.io/tx/0x8ddd807e2880b51b397cfac898b857740f7bfd081cddd32dcc71d405ea980696) | The same light client code verified old-mainnet block #2,726,202 with 7 of its 10 validators' signatures and proved an account balance from that block's state root (Logs: `HeaderImported` with `signatures` 7, then `BalanceProven`). The old mainnet's explorer shows the same block hash and state root: [#2,726,202](https://portalscan.portaldot.io/#/blocks/2726202). |
 
-The [evidence tables](#evidence) number 113 transactions: 56 on Sepolia, 15 on V3 (locks 1 to 5
-and the trusted return path's 10), 21 on Base Sepolia and 21 on Arbitrum Sepolia.
+The [evidence tables](#evidence) number 126 transactions: 56 on Sepolia, 22 on V3 (locks 1 to 7,
+the trusted return path's 14 and the transfer that funded the owner's wallet), 24 on Base Sepolia
+and 24 on Arbitrum Sepolia.
 
 ## How it works
 
@@ -160,9 +161,9 @@ the 3 committee members release tPOT through pallet-multisig and nothing on V3 c
 
 These read the chains and need nothing but [Foundry](https://getfoundry.sh)'s `cast`; none of them
 signs or sends anything. They are written for bash or zsh, and the outputs are what cast 1.8.5
-printed on Oct 24, 2026, after burn 1 and its fast release. The two marked as growing grow with each
-relayer run, and the wtPOT and way-back outputs change with any later mint, burn or release. Any
-Sepolia RPC works in place of the public one.
+printed on Oct 30, 2026 (UTC), after the releases of rows 121 to 126. The two marked as growing grow
+with each relayer run, and the wtPOT and way-back outputs change with any later mint, burn or
+release. Any Sepolia RPC works in place of the public one.
 
 ```sh
 SEPOLIA=https://ethereum-sepolia-rpc.publicnode.com
@@ -234,7 +235,7 @@ cast logs --from-block 101009 --to-block 101009 --address 0xa02EE16EB03d2cf1aeF1
 
 # The way back (trusted, rows 47 to 51 and 56 to 58): burns 0 and 1 on Sepolia and their burn ids,
 # then on V3 the vault's released flag for each id, and what it still holds for wtPOT on the three
-# chains (2.013 tPOT locked, 0.602 released)
+# chains (4.013 tPOT locked, 2.602 released)
 cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "burnCount()(uint256)" --rpc-url $SEPOLIA
 # 2
 cast call 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E "burnIdOf(uint256)(bytes32)" 0 --rpc-url $SEPOLIA
@@ -392,6 +393,12 @@ it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, whic
   `--network sepolia,base-sepolia,arbitrum-sepolia` since 05:28 UTC, released both on V3, each burn
   final on its rollup: 0.001 tPOT each to the address the burn named (rows 110 to 113,
   [the way back](#more-chains-the-way-back-from-base-sepolia-and-arbitrum-sepolia)).
+- The app's first transfers from an outside wallet, on Oct 28 (UTC), both ways on both rollups: the
+  owner's own MetaMask wallet locked 1 tPOT for Base Sepolia and 1 for Arbitrum Sepolia from the
+  app, auto-mint minted both, the wallet burned both from the app, and the watcher released both on
+  V3 in fast mode (rows 114 to 126,
+  [the app's first transfers](#the-app-the-first-transfers-from-the-owners-own-wallet)). The app is
+  on the branch `app`, not yet published.
 - The live page, [jonathan-moore58.github.io/bridge-zero](https://jonathan-moore58.github.io/bridge-zero/) (`site/`), built and deployed
   by `.github/workflows/pages.yml` on every change to the records: both light clients, the vault
   and the bridge read live, the recorded runs as the fallback when an RPC is down, and the six
@@ -1108,6 +1115,75 @@ per burn id, and nothing on V3 checks the burn.
   tPOT) equals the wtPOT supply on the three chains (1.411 wtPOT, all of it on Sepolia), with no burn
   waiting for a release: 0.602 tPOT released on V3 in all, 0.5 and 0.1 for Sepolia's burns and 0.001
   for each rollup's.
+
+### The app: the first transfers from the owner's own wallet
+
+Oct 28 (UTC), the first transfers through the bridge app (on the branch `app`, run locally, not yet
+published) from a wallet outside the bridge's own keys: the owner's own MetaMask wallet,
+`0xc6e9…2011`. The deployer funded it on the three chains (rows 114 to 116). In the app the wallet
+then signed four transactions, the two locks on V3 and the two burns on the rollups; auto-mint
+minted each lock on the chain it names (rows 117 to 120), and the auto-release watcher released
+each burn on V3 to the same wallet, in fast mode (rows 121 to 126). The V3 record does not hold
+these locks, which the app sent: auto-mint's histories
+[`deployments/automint-base-sepolia-0x57cc….jsonl`](deployments/automint-base-sepolia-0x57cc2ba3b883339a9f32726e6d0d3a9ee861a113.jsonl)
+and
+[`deployments/automint-arbitrum-sepolia-0x57cc….jsonl`](deployments/automint-arbitrum-sepolia-0x57cc2ba3b883339a9f32726e6d0d3a9ee861a113.jsonl)
+hold their mints, and [`deployments/v3-testnet.json`](deployments/v3-testnet.json) the releases,
+each with its burn.
+
+| # | What it shows | Transaction | Block | Result |
+|---|---|---|---|---|
+| 114 | The owner's wallet `0xc6e9…2011` funded on V3: 12 tPOT from the deployer's EVM account `0xD983…1071` (nonce 5), enough for two locks of 1 tPOT and their costs | `0x6b06421f…dd04ba45` | V3 [#231,112](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/231112) | success, cost 0.113 tPOT, 0.1 of it the new account's existential deposit |
+| 115 | Base Sepolia: the owner's wallet `0xc6e9…2011` funded with 0.0001 ETH by the deployer (nonce 13) | [`0x3c891df3…`](https://sepolia.basescan.org/tx/0x3c891df36a82e81fb811083971d77ae1489fe7808666a927302261158a21e4cc) | Base 51,318,352 | success, 21,000 gas |
+| 116 | Arbitrum Sepolia: the owner's wallet `0xc6e9…2011` funded with 0.0001 ETH by the deployer (nonce 13) | [`0xbfa5d236…`](https://sepolia.arbiscan.io/tx/0xbfa5d23617e22c0177be8cb46f1c104565e8ec3c6b3e7ec6806d23fb0c8e6129) | Arbitrum 323,659,996 | success, 21,000 gas |
+| 117 | Lock 6 on V3: 1 tPOT locked for `0xc6e9…2011` on Base Sepolia (chain 84532, minter `0xdc31…2348`), from the same wallet in the app (its nonce 0); the vault stores the commitment `0x37ab67ca…d2531f1d` in `commitments[6]` | `0x6b31b8a9…186d5455` | V3 [#231,125](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/231125) | success, cost 3.864 tPOT, almost all storage deposit |
+| **118** | **Lock 6 minted on Base Sepolia by auto-mint: `importAndMint` at V3 block #231,144 (2 of 2, set 64), `commitments[6]` proven, 1 wtPOT to `0xc6e9…2011`, sent and paid by `0x57cc…A113`** | [`0x7d9e535d…`](https://sepolia.basescan.org/tx/0x7d9e535d7f32073f6a6c732a029ab93a86f66b0d14709b58fdc70602db88bf45) | Base 51,319,421 | **success, 2,249,855 gas** |
+| 119 | Lock 7 on V3: 1 tPOT locked for `0xc6e9…2011` on Arbitrum Sepolia (chain 421614, the same minter address), from the same wallet in the app (nonce 1); the vault stores the commitment `0xbe308b6f…4803061a` in `commitments[7]` | `0xd125ef44…4277224b` | V3 [#231,170](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/231170) | success, cost 3.864 tPOT, almost all storage deposit |
+| **120** | **Lock 7 minted on Arbitrum Sepolia by auto-mint: `importAndMint` at V3 block #231,188 (2 of 2, set 64), `commitments[7]` proven, 1 wtPOT to `0xc6e9…2011`, sent and paid by `0x57cc…A113`** | [`0xb351c94b…`](https://sepolia.arbiscan.io/tx/0xb351c94bec2f70343aba90344b73a766fc68a26a475d6814feaaed7cff57e5fa) | Arbitrum 323,661,852 | **success, 2,253,034 gas** |
+| 121 | Arbitrum Sepolia: burn 1, 1 wtPOT burned for `0xc6e9…2011` on V3, burn id `0x4cc24e88…a133861e` (`Transfer` to the zero address, then `BurnRequested`), from the same wallet in the app (its nonce 0 there) | [`0x99eb6d4a…d6132e76`](https://sepolia.arbiscan.io/tx/0x99eb6d4ae473671b251939ee7a00af337f136fc899462c57415d6715d6132e76) | Arbitrum 323,663,335 | success, 36,268 gas |
+| 122 | Arbitrum Sepolia's burn 1, by the auto-release watcher in fast mode: member 1 opens the release with the burn at least 144 blocks deep, before Arbitrum Sepolia finalized it: `multisig.asMulti` without a timepoint, with the call in full (`NewMultisig`; 9.27 tPOT reserved until it runs) | `0xf81b5402…29116f74` | V3 [#231,268](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/231268) | final, fee 0.033 tPOT |
+| **123** | **Member 2 runs it: `asMulti` at timepoint #231,268 → `MultisigExecuted` Ok, the vault's `Released`, 1 tPOT to `0xc6e9…2011`; `released[burnId]` true, `outstanding` 3.411 → 2.411 tPOT; 105 seconds after the burn's block** | `0x7edcc840…c73e6cff` | V3 [#231,273](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/231273) | **final, fee 0.034 tPOT** |
+| 124 | Base Sepolia: burn 1, 1 wtPOT burned for `0xc6e9…2011` on V3, burn id `0x4f3ae47f…674f689d` (`Transfer` to the zero address, then `BurnRequested`), from the same wallet in the app (its nonce 0 there) | [`0x7a36d5d3…95cf6ad9`](https://sepolia.basescan.org/tx/0x7a36d5d32b6a07d9c9f3ac0e003604fe609d0eed958da12f9fc90e3095cf6ad9) | Base 51,324,284 | success, 36,268 gas |
+| 125 | Base Sepolia's burn 1, by the auto-release watcher in fast mode, once the fast budget had room again: member 1 opens the release with the burn at least 180 blocks deep, before Base Sepolia finalized it: `multisig.asMulti` without a timepoint, with the call in full (`NewMultisig`; 9.27 tPOT reserved until it runs) | `0x0e6680f1…d1873ab7` | V3 [#231,457](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/231457) | final, fee 0.033 tPOT |
+| **126** | **Member 2 runs it: `asMulti` at timepoint #231,457 → `MultisigExecuted` Ok, the vault's `Released`, 1 tPOT to `0xc6e9…2011`; `released[burnId]` true, `outstanding` 2.411 → 1.411 tPOT; 905 seconds after the burn's block** | `0xcc9209a0…abf90ca0` | V3 [#231,461](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/231461) | **final, fee 0.034 tPOT** |
+
+- Lock to mint, by the block timestamps: lock 6's V3 block is stamped 11:06:54 and its mint's Base
+  Sepolia block 11:09:13, 139 seconds; lock 7's V3 block 11:11:24 and its mint's Arbitrum Sepolia
+  block 11:13:37, 133 seconds. 90 seconds of each are auto-mint's grace after V3's finality, so that
+  a mint from the app is not raced. Both mints took the head path, `importAndMint` at V3's finalized
+  head: each rollup's client was at V3's set 64, its latest header below the lock's block.
+- Burn to release, from Arbitrum Sepolia: the burn's block is stamped 11:19:57 and its release's V3
+  block 11:21:42, 105 seconds. The watcher took the burn in fast mode, with at least 144 of Arbitrum
+  Sepolia's blocks on top of it, instead of waiting about 20 minutes for that chain's finality;
+  member 1 signed the opening at 11:21:11 and member 2 the run at 11:21:40, by the record. Both
+  releases were sent by the watcher that released rows 110 to 113, still running the same line;
+  their records name git `8995a94`, a later commit with the same relayer code.
+- From Base Sepolia it took 905 seconds, the burn's block stamped 11:25:25 and its release's V3
+  block 11:40:30, because the fast budget was full. The fast releases whose burns are not final on
+  their own chain yet stay within 1 tPOT in all, across the three chains, and row 123's 1 tPOT held
+  that budget until the watcher had checked Arbitrum Sepolia's burn against that chain's finalized
+  block (#323,664,378, at 11:39:34 by the record). Until then each round on Base Sepolia logged that
+  the burn waits: the burns released fast and not final yet hold 1 tPOT, and with its own 1 tPOT
+  that is above the budget. The next round, at 11:39:42, found it 4,336 blocks deep and released it,
+  still in fast mode, before Base Sepolia finalized it (the watcher checked it against Base
+  Sepolia's finalized block #51,324,490 at 11:43:16, by the record). That wait is the safety rule
+  working: at no time did more than 1 tPOT of releases rest on burns that were not final on their
+  chain.
+- What the wallet paid: on V3, 3.864 tPOT for each lock, 3.8415 of it the storage deposit of the
+  vault's new `commitments` entry and 0.023 the fee, 7.728 tPOT for the two; the 2 tPOT it locked
+  came back with the releases. On the rollups, only its burns: 0.000000218 ETH on Base Sepolia
+  (36,268 gas, and an L1 data fee of 92 wei) and 0.000000725 ETH on Arbitrum Sepolia (36,268 gas;
+  L1 gas 0). Auto-mint's key paid the mints, 0.0000113 ETH on Base Sepolia and 0.0000451 ETH on
+  Arbitrum Sepolia; members 1 and 2 paid the releases' fees, and the multisig each release's
+  storage deposit, 3.8415 tPOT for `released[burnId]`; member 1's 9.27 tPOT deposit came back when
+  each release ran.
+- After row 126 the wallet holds 4.2716 tPOT on V3 (its `eth_getBalance`: the 12 less the two
+  locks' costs, without the 0.1 tPOT existential deposit that row 114 paid), no wtPOT, and 0.0000998
+  ETH on Base Sepolia and 0.0000993 ETH on Arbitrum Sepolia. The vault's `outstanding` (1.411 tPOT)
+  equals the wtPOT supply on the three chains (1.411 wtPOT, all of it on Sepolia; 0 on both
+  rollups), with no burn waiting for a release: 4.013 tPOT locked in all (locks 0 to 7), less 2.602
+  released on V3, 0.5 and 0.1 for Sepolia's burns, 0.001 for each rollup's burn 0 and 1 for each
+  rollup's burn 1.
 
 ## Layout
 
