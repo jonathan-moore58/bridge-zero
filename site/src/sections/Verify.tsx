@@ -1,8 +1,8 @@
 import { useState } from "preact/hooks";
 import { Chevron, Doc, GitHub, Shield, Terminal } from "../components/icons.tsx";
 import { CopyButton, ExtLink, Md, SectionHead } from "../components/ui.tsx";
-import { etherscanTx, records, REPO, repoFile, repoTree } from "../lib/chains.ts";
-import { shortHex } from "../lib/hex.ts";
+import { records, REPO, repoFile, repoTree } from "../lib/chains.ts";
+import { evidenceCell, perChain } from "../lib/evidence.ts";
 
 const V = records.verify;
 
@@ -18,8 +18,8 @@ const LINKS = [
 /** The groups shown before "show all": the light clients, the thresholds, the state roots, the minter. */
 const FIRST_GROUPS = 4;
 
-/** The explorers the README links the rollups' evidence rows to. */
-const ROLLUP_SCAN = { "base-sepolia": "https://sepolia.basescan.org", "arbitrum-sepolia": "https://sepolia.arbiscan.io" } as const;
+/** How many of the evidence rows are on each chain: "58 on Sepolia, 22 on V3, …". */
+const PER_CHAIN = perChain(records.evidence);
 
 /**
  * A command, wrapped only between its words: a flag such as --rpc-url or a variable stays whole on
@@ -150,32 +150,41 @@ export function Verify() {
           </button>
           <div id="evidence-list" hidden={!showAll}>
             {showAll && (
-              <ol class="evlist">
-                {records.evidence.map((r) => (
-                  <li class={`evrow ${/revert/.test(r.result) ? "is-revert" : ""} ${r.n === records.bridge.row ? "is-hero" : ""}`} key={r.n}>
-                    <span class="evrow__n num">{r.n}</span>
-                    <span class="evrow__what small">
-                      <Md text={r.what} />
-                    </span>
-                    <span class="evrow__tx">
-                      {r.chain !== "v3" && r.tx ? (
-                        <ExtLink href={r.chain === "sepolia" ? etherscanTx(r.tx) : `${ROLLUP_SCAN[r.chain]}/tx/${r.tx}`} class="mono small">
-                          {shortHex(r.tx, 6, 4)}
-                        </ExtLink>
-                      ) : r.blockUrl ? (
-                        <ExtLink href={r.blockUrl} class="mono small" title="We found no indexed explorer for the V3 testnet: the Node Console shows the block">
-                          V3 #{r.block.toLocaleString("en-US")}
-                        </ExtLink>
-                      ) : (
-                        <span class="mono small">{r.txText}</span>
-                      )}
-                    </span>
-                    <span class="evrow__res small">
-                      <Md text={r.result} />
-                    </span>
-                  </li>
-                ))}
-              </ol>
+              <>
+                <p class="evlist__lead small dim">
+                  {PER_CHAIN}. Each row names its chain and block, and links its transaction on that chain's explorer; a V3 row links its block on the Node Console.
+                </p>
+                <ol class="evlist">
+                  {records.evidence.map((r) => {
+                    const c = evidenceCell(r);
+                    return (
+                      <li class={`evrow ${/revert/.test(r.result) ? "is-revert" : ""} ${r.n === records.bridge.row ? "is-hero" : ""}`} key={r.n} data-chain={r.chain}>
+                        <span class="evrow__n num">{r.n}</span>
+                        <span class="evrow__what small">
+                          <Md text={r.what} />
+                        </span>
+                        <span class="evrow__tx">
+                          <span class="evrow__where" title={c.chain}>
+                            {c.where}
+                          </span>
+                          {c.href ? (
+                            <ExtLink href={c.href} class="mono small" title={c.title}>
+                              {c.text}
+                            </ExtLink>
+                          ) : (
+                            <span class="mono small" title={c.title}>
+                              {c.text}
+                            </span>
+                          )}
+                        </span>
+                        <span class="evrow__res small">
+                          <Md text={r.result} />
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </>
             )}
           </div>
         </div>

@@ -19,6 +19,8 @@ import {
   readAutoMints,
   readmeTimingSection,
 } from "../build/records.ts";
+import { DESTS } from "../src/app/dests.ts";
+import { EVIDENCE_CHAINS, chainOfWord, evidenceCell, perChain, type EvidenceChain } from "../src/lib/evidence.ts";
 import { formatDuration, formatInt, formatUnits } from "../src/lib/format.ts";
 import { checksumAddress } from "../src/lib/hex.ts";
 import { keccak256 } from "../src/lib/hashes.ts";
@@ -606,15 +608,92 @@ test("evidence rows: Sepolia links, the rollups' Basescan and Arbiscan links, an
     ],
   );
   // Only a V3 row's short hash is resolved: a row with neither an explorer link nor a V3 block
-  // keeps its hash as printed, though the V3 record holds that hash too.
+  // keeps its hash as printed, though the V3 record holds that hash too. Its Block cell names its chain.
   assert.equal(rows[5]?.n, 120);
   assert.equal(rows[5]?.tx, null);
   assert.equal(rows[5]?.txText, "0xaffaf9e0…70eefd2e");
+  assert.equal(rows[5]?.chain, "base-sepolia");
   // The repository's README: every row the page links on Sepolia's Etherscan links it there too.
   const readme = readFileSync(join(repo, "README.md"), "utf8").toLowerCase();
   for (const e of r.evidence.filter((x) => x.chain === "sepolia" && x.tx)) {
     assert.ok(readme.includes(`(https://sepolia.etherscan.io/tx/${e.tx})`), `row ${e.n}: ${e.tx} is not linked on Sepolia's Etherscan in the README`);
   }
+  // A row that links its transaction on one chain's explorer and puts its block on another fails the build.
+  const twoChains = `| 9 | Mixed | [\`0x4ef76f6f…\`](https://sepolia.basescan.org/tx/0x${"4e".repeat(32)}) | Arbitrum 323,329,901 | success |`;
+  assert.throws(() => parseEvidence(twoChains), /evidence row 9 links its transaction on Base Sepolia's explorer and puts its block on Arbitrum Sepolia/);
+});
+
+test("the status page's evidence list: every row of the README from 1 to the last, on the chain its link names, linked on that chain's explorer, as many on each chain as the README counts", () => {
+  const md = readFileSync(join(repo, "README.md"), "utf8");
+  const rows = r.evidence;
+  const last = rows.at(-1)?.n ?? 0;
+  assert.ok(last >= 128, `the README's last row is ${last}`);
+  assert.deepEqual(
+    rows.map((x) => x.n),
+    Array.from({ length: last }, (_, i) => i + 1),
+    "no row is missing, none is there twice",
+  );
+  // Each row's chain is the one its own line in the README links or names, and the list links it there.
+  const lines = new Map(md.split(/\r?\n/).flatMap((l) => {
+    const n = /^\|\s*\**(\d+)\**\s*\|/.exec(l)?.[1];
+    return n ? [[Number(n), l] as const] : [];
+  }));
+  for (const x of rows) {
+    const line = lines.get(x.n) ?? "";
+    const c = evidenceCell(x);
+    if (x.chain === "v3") {
+      assert.match(line, /\| V3 \[#[\d,]+\]\(https:\/\/node-console\.portaldot\.dev\//, `row ${x.n} is a V3 row in the README`);
+      assert.equal(c.href, x.blockUrl, `row ${x.n}: its block on the Node Console`);
+      assert.ok(c.href?.startsWith(`${EVIDENCE_CHAINS.v3.explorer}/`), `row ${x.n}`);
+      assert.equal(c.where, `V3 #${x.block.toLocaleString("en-US")}`);
+    } else {
+      const explorer = EVIDENCE_CHAINS[x.chain].explorer;
+      assert.ok(x.tx && x.tx.length === 66, `row ${x.n}: a full transaction hash`);
+      assert.ok(line.toLowerCase().includes(`(${explorer}/tx/${x.tx})`), `row ${x.n}: the README links it on ${explorer}`);
+      assert.equal(c.href, `${explorer}/tx/${x.tx}`, `row ${x.n}`);
+      assert.equal(c.where, `${EVIDENCE_CHAINS[x.chain].word} ${x.block.toLocaleString("en-US")}`);
+    }
+  }
+  // The rollups' rows are all there: their deployments, relays, mints, burns and fundings.
+  for (const n of [61, 68, 76, 82, 88, 97, 100, 107, 115, 116, 118, 120, 121, 124]) assert.notEqual(rows.find((x) => x.n === n)?.chain, "sepolia", `row ${n}`);
+  // The README's own count, "The evidence tables number 128 transactions: 58 on Sepolia, 22 on V3 (…), 24 on Base Sepolia and 24 on Arbitrum Sepolia."
+  const said = /The \[evidence tables\]\(#evidence\) number (\d+) transactions: (\d+) on Sepolia, (\d+) on V3 \([^)]*\), (\d+) on Base Sepolia and (\d+) on Arbitrum Sepolia/.exec(md.replace(/\s+/g, " "));
+  assert.ok(said, "the README counts its rows");
+  const count = (c: EvidenceChain) => rows.filter((x) => x.chain === c).length;
+  assert.deepEqual(said.slice(1).map(Number), [rows.length, count("sepolia"), count("v3"), count("base-sepolia"), count("arbitrum-sepolia")]);
+  assert.equal(perChain(rows), `${count("sepolia")} on Sepolia, ${count("v3")} on V3, ${count("base-sepolia")} on Base Sepolia and ${count("arbitrum-sepolia")} on Arbitrum Sepolia`);
+  // A V3 row's hash stays as the README prints it only when no record in deployments/ holds it in full.
+  const held = new Set<string>();
+  for (const f of readdirSync(join(repo, "deployments"))) for (const h of readFileSync(join(repo, "deployments", f), "utf8").matchAll(/0x[0-9a-fA-F]{64}/g)) held.add(h[0].toLowerCase());
+  const open = rows.filter((x) => x.chain === "v3" && !x.tx);
+  for (const x of open) {
+    const [head, tail] = x.txText.toLowerCase().split("…");
+    assert.ok(head && tail, `row ${x.n}: ${x.txText}`);
+    assert.ok(![...held].some((h) => h.startsWith(head) && h.endsWith(tail)), `row ${x.n}: deployments/ holds ${x.txText}, and the list does not resolve it`);
+    assert.match(evidenceCell(x).title, /No record in deployments\/ holds this hash in full/);
+  }
+  assert.ok(open.length <= 3, `rows ${open.map((x) => x.n).join(", ")} have no full hash`);
+});
+
+test("the evidence chains link where the app links them: Etherscan, Basescan and Arbiscan, and V3's blocks on the Node Console", () => {
+  for (const d of DESTS) assert.equal(EVIDENCE_CHAINS[d.key].explorer, d.explorer.url, d.full);
+  assert.equal(chainOfWord("Base 51,177,673"), "base-sepolia");
+  assert.equal(chainOfWord("Arbitrum 323,663,335"), "arbitrum-sepolia");
+  assert.equal(chainOfWord("Sepolia 12,034,957"), "sepolia");
+  assert.equal(chainOfWord("V3 [#231,112]"), "v3");
+  assert.equal(chainOfWord("11,934,329"), null);
+  const tx = `0x${"ab".repeat(32)}` as const;
+  assert.deepEqual(evidenceCell({ chain: "arbitrum-sepolia", tx, txText: "0xabababab…", block: 323_663_335, blockUrl: null }), {
+    chain: "Arbitrum Sepolia",
+    where: "Arbitrum 323,663,335",
+    text: "0xababab…abab",
+    href: `https://sepolia.arbiscan.io/tx/${tx}`,
+    title: "Arbitrum Sepolia, block 323,663,335",
+  });
+  const v3 = evidenceCell({ chain: "v3", tx: null, txText: "0x6b06421f…dd04ba45", block: 231_112, blockUrl: "https://node-console.portaldot.dev/?rpc=x#/explorer/query/231112" });
+  assert.equal(v3.text, "0x6b0642…ba45");
+  assert.equal(v3.where, "V3 #231,112");
+  assert.equal(v3.href, "https://node-console.portaldot.dev/?rpc=x#/explorer/query/231112");
 });
 
 test("the README's verify block: descriptions, commands and recorded outputs", () => {
