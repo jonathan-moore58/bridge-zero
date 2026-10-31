@@ -97,10 +97,11 @@ export function timeOf(dest: DestKey, mode: "in" | "auto" | Speed): readonly [st
 export const SUBSTRATE_ROOM = 3.95;
 
 /**
- * Sepolia's finality, from a block's arrival to the block final: 12.5 to 19.4 min, median 16, over
- * the 1,594 blocks the watcher's logged heads show on Oct 24. About 80 blocks of 12 s.
+ * Sepolia's finality, from a block's arrival to the block final: 12.5 to 19.9 min, median 16, over
+ * the 2,221 blocks the watcher's 15-second rounds saw arrive and become final on Oct 24 (its logs;
+ * the chain's own floor is two epochs, 12.8 min). About 80 blocks of 12 s.
  */
-export const SEPOLIA_FINALITY = { median: 960, blocks: 80, range: "12.5 to 19.4 min" } as const;
+export const SEPOLIA_FINALITY = { median: 960, blocks: 80, range: "12.5 to 19.9 min" } as const;
 
 /** What one V3 validator-set change adds to a mint that imports it first: an importHeader, about 2.4 M gas (README: "a V3 set change about 2.39M"). */
 export const IMPORT_GAS = 2.4;

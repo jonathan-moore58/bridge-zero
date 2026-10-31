@@ -83,7 +83,7 @@ aliased in `site/vite.config.ts`): the page's Content-Security-Policy lets no We
 package that `site/package-lock.json` resolves ships, apart from the build's helpers named above:
 `@substrate/connect` and the packages it brings (GPL among them, as for the relayer) are installed,
 but no code of the site imports them. The list is read from the build itself: the modules in each
-file that `npm run build` emitted on Nov 1, 2026.
+file that `npm run build` emitted on Oct 31, 2026 (UTC).
 
 ## Fonts (the site)
 

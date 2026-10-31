@@ -104,7 +104,7 @@ export const DESTS: readonly Dest[] = [
     minterFrom: 11_950_851,
     fastConfirmations: 3,
     // The watcher's logged heads on Oct 24: median 16 min, about 80 blocks (./facts.ts, SEPOLIA_FINALITY).
-    finality: { seconds: 960, blocks: 80, range: "12.5 to 19.4 min" },
+    finality: { seconds: 960, blocks: 80, range: "12.5 to 19.9 min" },
     // Rows 55 and 56.
     mintGas: { gas: "2.39", full: "2,391,069", run: "Lock 1's mint" },
     burnGas: { gas: "61", full: "61,434", run: "Burn 1" },
