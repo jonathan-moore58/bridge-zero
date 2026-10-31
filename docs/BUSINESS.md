@@ -112,12 +112,14 @@ Until then the work is paid for by grants, prizes and the light-client service.
 What the testnets already show:
 
 - The relayer has run in watch mode since Oct 23, one process per light client, each with its own
-  key; the auto-release watcher has run since Oct 24 ([README](../README.md#status)).
+  key; the auto-release watcher has run since Oct 24; both have run on a cloud server since Oct 31
+  ([README](../README.md#status)).
 - 128 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
   hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 370 forge tests, 382 relayer
-  tests and 384 fixture checks pass.
-- The limits are written down, including a six-hour gap while the machine slept on Oct 24
-  ([Known limits](../README.md#status), [what the minter trusts](BRIDGE.md#what-the-minter-trusts),
+  tests, 288 site tests and 384 fixture checks pass, in CI on every push.
+- The limits are written down, including the gaps while the laptop that ran them slept or was off,
+  from Oct 24 to Oct 31 ([Known limits](../README.md#status),
+  [what the minter trusts](BRIDGE.md#what-the-minter-trusts),
   [the trusted return path](BRIDGE.md#the-trusted-return-path)).
 
 What has to change before real value: committee members who are independent of each other, an

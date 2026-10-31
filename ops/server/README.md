@@ -4,9 +4,9 @@ Since 17:45 UTC on Oct 31, 2026, the operator's processes run on a small cloud s
 RAM and a 4 GB swap file, as systemd services that restart after a crash and start at boot: the
 relayer of each light client on Sepolia, the release watcher, auto-mint, the rollup relay runs on a
 timer, and a health check. Until then a laptop ran them from scheduled tasks at logon; while it
-slept no relay run, mint or release happened (on Oct 24 from 00:45 to 06:52 UTC, and from 17:13 UTC
-on Oct 28 to 17:51 UTC on Oct 30). These are the files that run on the server, without its address
-or account details. [docs/DEPLOY.md](../../docs/DEPLOY.md) has the commands they run and the keys
+slept or was off no relay run, mint or release happened (its longest gaps, from Oct 24 to Oct 31,
+are in the README's [Known limits](../../README.md#status)). These are the files that run on the
+server, without its address or account details. [docs/DEPLOY.md](../../docs/DEPLOY.md) has the commands they run and the keys
 they use.
 
 The server's first runs: its rollup relay run imported V3 block #266,274 into Base Sepolia's
