@@ -21,10 +21,8 @@ import { beyondLock, burnLabel, type BeyondLock } from "./verify-model.ts";
 // ---------------------------------------------------------------------------------------------
 // Each destination, as the checks read it
 
-/** Sepolia's nodes for the checks: drpc refuses Sepolia on its free plan (Oct 28), so it is left out. */
-const SEP = SEPOLIA.filter((e) => e.id !== "drpc");
-const SEP_LOGS = SEPOLIA_LOGS.filter((e) => e.id !== "drpc");
-const TENDERLY = SEP.filter((e) => e.id === "tenderly");
+/** Sepolia's nodes for the checks are its endpoints (../lib/endpoints.ts): the public node, and tenderly, which keeps old state. */
+const TENDERLY = SEPOLIA.filter((e) => e.id === "tenderly");
 
 /** Auto-mint's key, from its histories' names: the page calls it auto-mint. */
 const AUTO_MINT = ((): Hex | null => {
@@ -45,15 +43,15 @@ export function verifyEnv(key: DestKey): VerifyEnv {
   if (cached) return cached;
   const d = destOf(key);
   const sep = key === "sepolia";
-  const rpcs: Endpoint[] = sep ? SEP : [...d.rpcs];
+  const rpcs: Endpoint[] = sep ? SEPOLIA : [...d.rpcs];
   const dest: DestEnv = {
     key,
     name: d.short,
     chainId: BigInt(d.chainId),
     rpcs,
     history: rpcs,
-    archive: sep ? [...TENDERLY, ...SEP.filter((e) => e.id !== "tenderly")] : key === "base-sepolia" ? [...d.rpcs] : [],
-    logs: sep ? SEP_LOGS : [...d.rpcs],
+    archive: sep ? [...TENDERLY, ...SEPOLIA.filter((e) => e.id !== "tenderly")] : key === "base-sepolia" ? [...d.rpcs] : [],
+    logs: sep ? SEPOLIA_LOGS : [...d.rpcs],
     lightClient: d.lightClient,
     minter: deployed(d).minter,
     clientFrom: sep ? LC.v3.deployBlock : (records.rollups[key]?.deployBlock ?? d.minterFrom),

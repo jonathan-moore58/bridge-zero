@@ -238,7 +238,7 @@ const BURN_REQUESTED = eventTopic("BurnRequested(uint256,address,address,uint256
 const VAULT_FROM = records.bridge.vault.deployBlock.number;
 /** BridgeMinter's deployment block on Sepolia (deployments/sepolia-bridge.json, "deploy BridgeMinter"; README row 24); a rollup's in ../dests.ts. */
 const MINTER_FROM = destOf("sepolia").minterFrom;
-/** Blocks per eth_getLogs window when no endpoint takes the whole range: drpc's cap, as the relayer reads. */
+/** Blocks per eth_getLogs window when no endpoint takes the whole range: the relayer's window (relayer/src/bridge.ts, LOG_WINDOW). */
 const LOG_WINDOW = 10_000;
 /** Past this many windows the read stops rather than send hundreds of requests. */
 const MAX_WINDOWS = 60;

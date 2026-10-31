@@ -35,6 +35,7 @@ import {
   type DestKey,
 } from "../src/app/dests.ts";
 import { AUTO_TIME, BURN_GAS, BURN_GAS_FULL, CH, LATER_CHAINS, MINT_GAS, MINT_GAS_FULL, SEPOLIA_FINALITY, TIME, chainById, fromOf, sendChain, timeOf, toOf } from "../src/app/facts.ts";
+import { SEPOLIA, SEPOLIA_HISTORY, SEPOLIA_LOGS } from "../src/lib/endpoints.ts";
 import type { Hex } from "../src/lib/hex.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -137,7 +138,6 @@ test("two or more public RPCs each, over https and distinct; the CSP adds exactl
   assert.deepEqual(connectOf(false), BRIDGE_NODES);
   assert.deepEqual(BRIDGE_NODES, [
     "https://ethereum-sepolia-rpc.publicnode.com",
-    "https://sepolia.drpc.org",
     "https://sepolia.gateway.tenderly.co",
     "https://test-evm-rpc-v3.portaldot.dev",
     "https://test-node-v3.portaldot.dev",
@@ -147,6 +147,9 @@ test("two or more public RPCs each, over https and distinct; the CSP adds exactl
   const connect = (p: string) => (p.split("; ").find((x) => x.startsWith("connect-src ")) ?? "").split(" ").slice(1);
   assert.deepEqual(connect(cspPolicy(true)), connectOf(true));
   assert.deepEqual(connect(cspPolicy(false)), BRIDGE_NODES);
+  // sepolia.drpc.org's free plan refuses Sepolia since Oct 28: no list reads it, and neither page's policy lets it connect.
+  for (const list of [SEPOLIA, SEPOLIA_HISTORY, SEPOLIA_LOGS]) assert.ok(!list.some((e) => /drpc/.test(e.url)), list.map((e) => e.url).join(", "));
+  for (const app of [true, false]) assert.ok(!cspPolicy(app).includes("drpc"), `the ${app ? "app's" : "status page's"} policy`);
   assert.ok(cspPolicy(true).includes("img-src 'self' data:"), "the marks are served with the page");
 });
 

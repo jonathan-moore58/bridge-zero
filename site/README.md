@@ -65,7 +65,7 @@ from the block (`chain_getBlock`), Sepolia's from the mint receipt's logs.
 | Chain | Endpoint | Used for |
 |---|---|---|
 | Sepolia | `https://ethereum-sepolia-rpc.publicnode.com` | every state read, `eth_call` of the reverted mints |
-| Sepolia | `https://sepolia.drpc.org`, `https://sepolia.gateway.tenderly.co` | fallbacks; old receipts and transactions (the public node keeps about a day); `eth_getLogs` for the old-mainnet client's latest import, from the relayer's latest recorded one on (tenderly first) |
+| Sepolia | `https://sepolia.gateway.tenderly.co` | the fallback; old receipts and transactions (the public node keeps about a day); `eth_getLogs` for the old-mainnet client's latest import, from the relayer's latest recorded one on (tenderly first) |
 | V3 testnet | `https://test-evm-rpc-v3.portaldot.dev` | the vault: `outstanding`, `commitments(n)`, slot 1, the `Locked` logs (each in the one block the records put it in), `released(burnId)` |
 | V3 testnet | `https://test-node-v3.portaldot.dev`, then `wss://` | the finalized head, `Grandpa.CurrentSetId`, and lock 1's block |
 | Old mainnet | `wss://mainnet.portaldot.io` | the head and set, over WebSocket: the node serves no HTTP |
@@ -77,13 +77,15 @@ the HTTP endpoints send `Access-Control-Allow-Origin` for any origin. The rollup
 `eth_chainId` (84532 and 421614), a batch of eight `eth_call`s and a CORS preflight on Oct 28,
 2026; they are the ones `src/app/dests.ts` gives each destination. A Content-Security-Policy in
 each built page (`build/csp.ts`) allows connections to these endpoints only, the rollups' on the
-bridge app's page alone, and scripts, styles and fonts from the page itself.
+bridge app's page alone, and scripts, styles and fonts from the page itself. `sepolia.drpc.org` was
+a Sepolia fallback until Nov 1: its free plan refuses Sepolia since Oct 28, so neither page reads it
+and neither policy allows it.
 
 Calls made to one endpoint within a few milliseconds of each other go out as one JSON-RPC batch
-(up to 8 calls; 3 for drpc's free plan; none for the V3 node's HTTP endpoint, which refuses
-batches), and the requests leave the browser's CORS preflight cache alone, so a page load costs a
-few requests per node. An endpoint that answers a batch with anything but a batch answer gets its
-calls one by one from then on.
+(up to 8 calls; none for the V3 node's HTTP endpoint, which refuses batches), and the requests
+leave the browser's CORS preflight cache alone, so a page load costs a few requests per node. An
+endpoint that answers a batch with anything but a batch answer gets its calls one by one from then
+on.
 
 ## Design
 
