@@ -56,13 +56,14 @@ BLAKE2F precompile.
 | **Auto-mint for a lock from a Portaldot account** (rows 86 and 87) | Sepolia transaction [`0xb6e2a07b…`](https://sepolia.etherscan.io/tx/0xb6e2a07b2a60cde09552b347c47674ab1979429963f7fdeb659bc4eaacf36f56); the lock in V3 block [#222,024](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/222024) | Lock 3, Oct 27: 0.001 tPOT locked by a `revive.call` signed by a `5…` account, the way the app's Portaldot Wallet path sends a lock. Its `Locked` event is only in V3's `System.Events`, not in `eth_getLogs`; auto-mint found it there and minted it on Sepolia from its own key. |
 | `BridgeMinter` | Sepolia [`0x8287…cB9E`](https://sepolia.etherscan.io/address/0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E) | The minter, source-verified, with no owner and no admin. Rows 32 to 38, 47 and 56 are sent to it: the mint, then five tampered copies, each reverted with the error that names what was changed, a replay, reverted with `NonceAlreadyUsed(0)`, and burns 0 and 1, the trusted way back. |
 | The V3 light client | Sepolia [`0x4471…dcb0`](https://sepolia.etherscan.io/address/0x447171c4885ad725ee4772e8e3c228adee50dcb0) (`GrandpaLightClient` #2) | Follows the V3 testnet's finality from a checkpoint at validator set 19: every set change from 19 to 48, imported in order, each with both validators' signatures (rows 5, 6, 18 to 23, 26 to 31, 44 to 46 and 52; the later runs are in [`deployments/relay-sepolia-0xd983….jsonl`](deployments/relay-sepolia-0xd9838a86cf83c28ee486544060d1ca4ca2971071.jsonl) and, since Oct 23, [`deployments/relay-sepolia-0xe94a….jsonl`](deployments/relay-sepolia-0xe94a82e2c7f38f777e8845a9d8c36b6be6a30257.jsonl)). It is as current as the relayer's last run (see Known limits). |
+| **The proof kit** (rows 127 and 128) | Sepolia [`0x2ea6…1fA9`](https://sepolia.etherscan.io/address/0x2ea65F28Df54b66Beb4c23498a35457382ea1fA9) (`PortaldotStateReader`) and [`0x24aB…8d23`](https://sepolia.etherscan.io/address/0x24aB41ed794eB788B434485BA12fcAB441508d23) (`ProvenAssetGate`) | Oct 31: a stateless contract through which any contract reads V3 state that the light client finalized, at a block it imported: an account's balance, an asset balance, an NFT's owner, a contract's code hash and its slots. Source-verified, with no owner and no admin. Asked by `eth_call`, it returned the deployer's V3 account at #264,729 (159.47 tPOT free) for 452,621 gas, and the vault's `commitments[1]`, lock 1's commitment, for 877,450. The example gate records holders of a V3 asset on top of it ([For builders](#for-builders)). |
 | **The V3 light client and the bridge on Base Sepolia and Arbitrum Sepolia** (rows 59 to 82 and 88 to 113) | Base Sepolia [`0x3897…0ab6`](https://sepolia.basescan.org/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) and Arbitrum Sepolia [`0x3897…0ab6`](https://sepolia.arbiscan.io/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) (`GrandpaLightClient` #2 on each) | Oct 27: the same contracts, from the same build as on Sepolia, on two rollups that settle on Sepolia. On each, the client verified V3 block #214,510 with both V3 validators' signatures and proved an account balance from its state root (rows 68 and 76), then the relayer imported V3's validator-set change 59 → 60 and a newer head (rows 79 to 82). Later the same day the relayer brought both clients to V3's set 62, and `BridgeMinter` and wtPOT were deployed on both, at `0xdc31…2348` and `0xE113…A95e`, bound to the same V3 vault (rows 88 to 97); on Oct 28 one auto-mint process minted lock 4 on Base Sepolia and lock 5 on Arbitrum Sepolia, each first mint binding the vault (rows 98 to 107, [the way in](#more-chains-the-way-in-to-base-sepolia-and-arbitrum-sepolia)): one V3 vault now backs wtPOT on three chains. The same day the release tool and its watcher took the rollups' burns too: 0.001 wtPOT was burned on each (rows 108 and 109), and the watcher released both on V3, each burn final on its rollup (rows 110 to 113, [the way back](#more-chains-the-way-back-from-base-sepolia-and-arbitrum-sepolia)). On Sepolia, `0x3897…0ab6` is the old-mainnet client. |
 | The vault and lock 0 | V3 testnet: vault `0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd`, lock transaction `0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051` (block #101,009) | 1 tPOT locked for Sepolia; the vault stores the commitment `0x9eba08c9…41e23435` that the mint proved. The official V3 testnet explorer shows the [deployment](https://scanner-testnet-v3.portaldot.dev/#/extrinsics/100955-1) and [lock 0's event](https://scanner-testnet-v3.portaldot.dev/#/events/101009-4); the Portaldot Node Console shows the [deployment block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/100955) and the [lock's block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/101009), and [cast](#verify-it-yourself) reads the vault. |
 | **The way back** (rows 47 to 51, trusted) | Sepolia burn [`0x42d70ae9…`](https://sepolia.etherscan.io/tx/0x42d70ae96cd010ed114a62178b88bf2cfcfe85933448aa6010c4f0d1b22dc1d7); the release in V3 block [#117,701](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117701) | 0.5 wtPOT burned on Sepolia for `0xD983…1071` on V3; 2 of the 3 committee members approved the release through pallet-multisig, and the vault paid that address 0.5 tPOT once, for that burn id. No contract checks the release against the burn: the committee is trusted, and on the testnet one operator holds all three of its keys. |
 | **The way back in 84 seconds** (rows 56 to 58, trusted, fast mode) | Sepolia burn [`0x4e5f4c6e…`](https://sepolia.etherscan.io/tx/0x4e5f4c6e6f8fe2e85cf3bf146aaffa6d12d5eccb5d032db8d0989d66b886c262); the release in V3 block [#173,062](https://scanner-testnet-v3.portaldot.dev/#/extrinsics/173062-1) | Burn 1, Oct 24: 0.1 wtPOT burned on Sepolia for `0xD983…1071` on V3, and released to it by the auto-release watcher with 3 confirmations instead of Sepolia's finality; the release's block 84 seconds after the burn's by the block timestamps. The same trusted committee, for burns of up to 1 tPOT; a reorg deeper than 3 blocks could undo a burn after its release. |
 | **Old mainnet, 7 of 10** (row 3) | Sepolia transaction [`0x8ddd807e…`](https://sepolia.etherscan.io/tx/0x8ddd807e2880b51b397cfac898b857740f7bfd081cddd32dcc71d405ea980696) | The same light client code verified old-mainnet block #2,726,202 with 7 of its 10 validators' signatures and proved an account balance from that block's state root (Logs: `HeaderImported` with `signatures` 7, then `BalanceProven`). The old mainnet's explorer shows the same block hash and state root: [#2,726,202](https://portalscan.portaldot.io/#/blocks/2726202). |
 
-The [evidence tables](#evidence) number 126 transactions: 56 on Sepolia, 22 on V3 (locks 1 to 7,
+The [evidence tables](#evidence) number 128 transactions: 58 on Sepolia, 22 on V3 (locks 1 to 7,
 the trusted return path's 14 and the transfer that funded the owner's wallet), 24 on Base Sepolia
 and 24 on Arbitrum Sepolia.
 
@@ -333,36 +334,42 @@ by the hash of a V3 block the light client imported: the state root comes from t
 never from the caller, and the contract walks the storage proof from it. Everything is in
 [docs/PROOF-KIT.md](docs/PROOF-KIT.md).
 
-| Read | `PortaldotStateReader` function | Gas at V3 #264,729 (forge, a transaction) |
-|---|---|---|
-| An account's nonce and balances (`System.Account`) | `accountInfo` | 453,099 |
-| An asset balance and its status (`Assets.Account`) | `assetAccount` | 403,261 to 480,441 |
-| An NFT's owner (`Nfts.Item`) | `nftOwner` | 364,768 |
-| A contract's slot, with its code hash (`Revive.AccountInfoOf` and its child trie) | `contractSlot` | 874,583 |
+| Read | `PortaldotStateReader` function | Gas at V3 #264,729: on Sepolia (`eth_estimateGas`, the deployed Reader) | forge (a transaction) |
+|---|---|---|---|
+| An account's nonce and balances (`System.Account`) | `accountInfo` | 452,621 | 453,099 |
+| An asset balance and its status (`Assets.Account`) | `assetAccount` | 480,180 | 480,441 (403,261 to 480,441 for three accounts) |
+| An NFT's owner (`Nfts.Item`) | `nftOwner` | 363,589 | 364,768 |
+| A contract's slot, with its code hash (`Revive.AccountInfoOf` and its child trie) | `contractSlot` | 877,450 | 874,583 |
 
 - **Through the Reader:** a contract compiles only
   [`contracts/src/kit/IPortaldotStateReader.sol`](contracts/src/kit/IPortaldotStateReader.sol) and
   the `IFinalizedStateRoots.sol` it imports (both Solidity 0.8.27, exact), and calls
-  `PortaldotStateReader`, a stateless contract with no owner, bound to `GrandpaLightClient` #2 and
-  linked to the deployed `StorageProofs`. It is built and tested, and not deployed on Sepolia yet;
-  until it is, `npm run kit -- read` runs its build at a stand-in address through `eth_call`'s
-  state override, against the deployed light client and `StorageProofs`.
+  `PortaldotStateReader` on Sepolia,
+  [`0x2ea6…1fA9`](https://sepolia.etherscan.io/address/0x2ea65F28Df54b66Beb4c23498a35457382ea1fA9)
+  (row 127): a stateless contract with no owner, bound to `GrandpaLightClient` #2 and linked to the
+  deployed `StorageProofs`, source-verified.
 - **With the library:** [`PortaldotState`](contracts/src/kit/PortaldotState.sol) has the same
   reads as internal functions, the key builders and the decoders.
 - **The example:** [`ProvenAssetGate`](contracts/src/kit/examples/ProvenAssetGate.sol) records
-  the EVM addresses that held at least a minimum of a V3 asset at a snapshot block.
-- **The tools:** from `relayer/` (after `npm ci`, and `forge build --skip test --skip script` in
-  `contracts/` for the Reader step),
+  the EVM addresses that held at least a minimum of a V3 asset at a snapshot block. On Sepolia,
+  [`0x24aB…8d23`](https://sepolia.etherscan.io/address/0x24aB41ed794eB788B434485BA12fcAB441508d23)
+  (row 128) takes at least 1 pUSD (asset 7777) at V3 #264,729, source-verified. No claim has been
+  sent to it: no account of the project holds a V3 asset, so its claims are shown by its forge
+  tests.
+- **The tools:** from `relayer/` (after `npm ci`),
   `npm run kit -- read balance --account 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071` fetches a
-  proof from the V3 node, walks it off chain and has the Reader make the same read (`read asset`,
-  `read nft`, `read slot` and `read lock` likewise); `npm run kit -- check` checks the fixture
-  offline.
+  proof from the V3 node (or, with `--from-fixture ../fixtures/v3-testnet-kit/state-reads.json`,
+  from the fixture), walks it off chain and has the deployed Reader make the same read by
+  `eth_call` (`read asset`, `read nft`, `read slot` and `read lock` likewise);
+  `npm run kit -- check` checks the fixture offline.
 
 Proven: a value under the state root of a V3 block the light client imported. Trusted: V3's 2
 validators, the light client's admin and checkpoint, V3's sudo key and runtime upgrades, and the
 vendored ed25519, BLAKE2b and trie code, treated as unaudited. Testnet limits: the V3 testnet's
-public nodes have had no new block since the afternoon of Oct 31 (PKT), and the newest block the
-light client on Sepolia held that evening was #264,729; the decoders are for V3's runtime 3002.
+public nodes have had no new block since the afternoon of Oct 31 (PKT), and from 9:17 PM PKT that
+day the node answered HTTP 502, so the reads take their proofs from the fixture
+(`--from-fixture`); the newest block the light client on Sepolia held that evening was #264,729;
+the decoders are for V3's runtime 3002.
 Not in v0.1: an npm package or a packaged command line; the TypeScript is in `relayer/` and runs
 with `npm run kit`.
 
@@ -464,12 +471,12 @@ with `npm run kit`.
   clients, the vault and the bridge read live, the recorded runs as the fallback when an RPC is
   down, and the six tampered mints checked live against BridgeMinter. `.github/workflows/pages.yml`
   builds and deploys both pages on every change to the records.
-- The proof kit, in the repository since Oct 31: `PortaldotState`, `PortaldotStateReader` and the
-  example `ProvenAssetGate` read V3 balances, asset balances, NFT owners and contract slots at a
-  block the light client imported, tested on a real light client that imports V3 #264,729, and
-  `npm run kit` fetches, walks and checks the proofs ([For builders](#for-builders)). On a Sepolia
-  node the Reader's build returns the same values as the off-chain walk, against
-  `GrandpaLightClient` #2 and the deployed `StorageProofs`.
+- The proof kit, since Oct 31: `PortaldotState`, `PortaldotStateReader` and the example
+  `ProvenAssetGate` read V3 balances, asset balances, NFT owners and contract slots at a block the
+  light client imported, tested on a real light client that imports V3 #264,729, and `npm run kit`
+  fetches, walks and checks the proofs ([For builders](#for-builders)). The Reader and the gate are
+  on Sepolia, source-verified (rows 127 and 128): the Reader, bound to `GrandpaLightClient` #2 and
+  linked to the deployed `StorageProofs`, returns the same values as the off-chain walk.
 - Tests: 370 forge tests, 380 relayer tests and 384 fixture checks (343 with `npm run check`, 41
   with `npm run kit -- check`) pass ([Verify it yourself](#verify-it-yourself)).
 
@@ -527,8 +534,8 @@ with `npm run kit`.
   #264,729, and the V3 testnet's public nodes have had no new block since that afternoon. An absent
   key reverts `KeyNotPresent`, a proof that it holds nothing, which a consumer may treat as zero
   (for a contract's slot, only after pinning the contract:
-  [Absent values](docs/PROOF-KIT.md#absent-values)). `PortaldotStateReader` is not deployed yet,
-  and the TypeScript is not an npm package.
+  [Absent values](docs/PROOF-KIT.md#absent-values)). The Reader is on Sepolia only, and the
+  TypeScript is not an npm package.
 
 ## Roadmap
 
@@ -538,9 +545,8 @@ event are in [docs/BUSINESS.md](docs/BUSINESS.md).
 
 **Next, before Nov 6**
 
-- The proof kit on Sepolia. Its contracts, tools and fixture are in the repository and tested
-  ([For builders](#for-builders)); next, `PortaldotStateReader` and the example `ProvenAssetGate`
-  deployed on Sepolia and source-verified.
+- The BNB Smart Chain testnet as a fourth destination: the V3 light client, `BridgeMinter` and
+  wtPOT there, as on the two rollups, once the deployer holds test BNB.
 
 **Planned after the check-in: a liquidity engine and more chains**
 
@@ -596,6 +602,11 @@ event are in [docs/BUSINESS.md](docs/BUSINESS.md).
   Sepolia confirmations instead of Sepolia's finality, a trade-off it states, and the auto-release
   watcher, which runs both approvals as soon as a burn qualifies. On Oct 24 it released burn 1 on
   V3 84 seconds after the burn's Sepolia block (rows 56 to 58), instead of about 20 minutes.
+- **The proof kit, packaged for other builders.** The light client, the proof libraries and the
+  capture and check tools, gathered so that another EVM contract can read proven V3 state:
+  `PortaldotStateReader` and the example `ProvenAssetGate`, deployed on Sepolia on Oct 31 and
+  source-verified (rows 127 and 128), the `PortaldotState` library, and `npm run kit`
+  ([For builders](#for-builders)).
 
 ## Development log
 
@@ -1259,6 +1270,44 @@ each with its burn.
   rollups), with no burn waiting for a release: 4.013 tPOT locked in all (locks 0 to 7), less 2.602
   released on V3, 0.5 and 0.1 for Sepolia's burns, 0.001 for each rollup's burn 0 and 1 for each
   rollup's burn 1.
+
+### The proof kit on Sepolia
+
+Oct 31 (UTC), the proof kit's contracts ([For builders](#for-builders),
+[docs/PROOF-KIT.md](docs/PROOF-KIT.md)), from the deployer
+[`0xD983…1071`](https://sepolia.etherscan.io/address/0xD9838A86cF83C28Ee486544060D1cA4Ca2971071)
+at its nonces 87 and 88. `node contracts/script/deploy-kit.mjs` first had a Sepolia node run both
+creations with `eth_simulateV1` and, in the same simulated block, five reads through the new Reader
+from [`fixtures/v3-testnet-kit`](fixtures/v3-testnet-kit), each of which had to return the
+fixture's value; then it sent them, each hash recorded before it was published, and checked each
+receipt and the code at each address. The record is
+[`deployments/sepolia-kit.json`](deployments/sepolia-kit.json). Every read is against V3 #264,729,
+the set change 73 → 74 that `GrandpaLightClient` #2 imported on Oct 31 with both validators'
+signatures. Both contracts have their source on Etherscan as an Exact Match. No claim was sent to
+the gate: no account of the project holds a V3 asset, and a claim names its holder, so the gate's
+claims are shown by its forge tests.
+
+| Contract (Sepolia, source-verified) | Address |
+|---|---|
+| `PortaldotStateReader` | [`0x2ea6…1fA9`](https://sepolia.etherscan.io/address/0x2ea65F28Df54b66Beb4c23498a35457382ea1fA9) |
+| `ProvenAssetGate` (asset 7777, at least 1 pUSD, at V3 #264,729) | [`0x24aB…8d23`](https://sepolia.etherscan.io/address/0x24aB41ed794eB788B434485BA12fcAB441508d23) |
+
+Sepolia blocks 12,034,957 and 12,034,965, Oct 31 (UTC):
+
+| # | What it shows | Transaction | Block | Result |
+|---|---|---|---|---|
+| 127 | `PortaldotStateReader` created (the deployer's nonce 87), bound to `GrandpaLightClient` #2 and linked to `StorageProofs` | [`0x28908bfb…`](https://sepolia.etherscan.io/tx/0x28908bfbbd2558c057aefc3cb048f5d7e76639683f43a2b1c4ec6a0d530edb81) | Sepolia 12,034,957 | success, 12,050,460 gas |
+| 128 | `ProvenAssetGate` created (nonce 88): at least 1 pUSD (asset 7777) at V3 #264,729, the block its constructor found in the light client through the Reader | [`0x9a462c6f…`](https://sepolia.etherscan.io/tx/0x9a462c6f71f15f077b4d874e2026d43780070aafd11f8f3a1cf8300f43987384) | Sepolia 12,034,965 | success, 2,989,057 gas |
+
+- After both were mined, the Reader made the same five reads by `eth_call` at Sepolia block
+  12,034,965, each returning the fixture's value, with `eth_estimateGas`'s gas for the whole
+  transaction: the deployer's `System.Account` (nonce 6, 159.47352201127852 tPOT free), 452,621;
+  `0x3e79…dcdf`'s `Assets.Account` of pUSD (60.5, Liquid), 480,180; the owner of item 3,163,806,249
+  in NFT collection 10, 363,589; the vault's `Revive.AccountInfoOf` entry (its trie id and code
+  hash), 404,545; and the vault's `commitments[1]`, lock 1's commitment, with the vault's code hash,
+  877,450.
+- Creating the Reader took 71.8% of the 16,777,216 cap. Both creations cost the deployer
+  0.0000000152 ETH, at 1,013 wei per gas.
 
 ## Layout
 

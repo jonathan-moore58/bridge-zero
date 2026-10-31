@@ -22,7 +22,8 @@ code, which is treated as unaudited ([GAS.md](GAS.md#decision); listed in
 
 **Testnet limits.** The V3 testnet's public nodes have had no new block since the afternoon of
 Oct 31 (PKT): read that evening, their newest block was #265,334, stamped 4:01 PM PKT, the
-finalized one #265,321, and they reported no peers. The newest block GrandpaLightClient #2 on
+finalized one #265,321, and they reported no peers; from 9:17 PM PKT the node
+`wss://test-node-v3.portaldot.dev` answered HTTP 502. The newest block GrandpaLightClient #2 on
 Sepolia held that evening was #264,729: every example here reads at that block. The decoders
 follow the V3 testnet's runtime (portaldot-v3 3002, trie V1); a runtime upgrade that changes a
 layout needs new decoders and a new Reader. A V3 node keeps old state only as long as it chooses
@@ -34,8 +35,8 @@ to; the fixture keeps #264,729's proofs for when it does not.
 |---|---|
 | `GrandpaLightClient` #2, the V3 light client | [`0x4471…dcb0`](https://sepolia.etherscan.io/address/0x447171c4885ad725ee4772e8e3c228adee50dcb0) |
 | `StorageProofs`, the trie walk (a linked library) | [`0x5da0…f2a3`](https://sepolia.etherscan.io/address/0x5da053bc5659ba9f725e4b1b5083545b933ef2a3) |
-| `PortaldotStateReader` | not deployed yet: the deployment records it in `deployments/sepolia-kit.json` |
-| `ProvenAssetGate`, the example | not deployed yet |
+| `PortaldotStateReader` | [`0x2ea6…1fA9`](https://sepolia.etherscan.io/address/0x2ea65F28Df54b66Beb4c23498a35457382ea1fA9), source-verified |
+| `ProvenAssetGate`, the example: asset 7777 (pUSD), at least 1 pUSD, at V3 #264,729 | [`0x24aB…8d23`](https://sepolia.etherscan.io/address/0x24aB41ed794eB788B434485BA12fcAB441508d23), source-verified |
 | `ProvenBalance` #2, the first example: an account's balance at an imported block, or a header imported and a balance proven in one transaction | [`0x5b41…ad3c`](https://sepolia.etherscan.io/address/0x5b41d227248dc4775ef1061f2dfbf7136ccead3c) |
 
 Base Sepolia and Arbitrum Sepolia have V3 light clients of their own (`GrandpaLightClient` #2 at
@@ -44,9 +45,14 @@ for Sepolia only. On a rollup it would be the same contract, bound to that rollu
 linked to `StorageProofs`, which is at the same address there; its examples would read at a block
 that client holds (#265,122).
 
-Until the Reader is deployed, `npm run kit -- read` runs its local build (`forge build`) at a
-stand-in address through `eth_call`'s state override, on a Sepolia node, against the deployed
-light client and `StorageProofs`: the same source, the same light client, nothing sent.
+The Reader and the gate were created on Oct 31 (UTC) from the deployer `0xD983…1071`, at its
+nonces 87 and 88, by `contracts/script/deploy-kit.mjs`, which first ran both creations on a Sepolia
+node with `eth_simulateV1` and, in the same simulated block, five of the fixture's reads through the
+new Reader ([README](../README.md#the-proof-kit-on-sepolia), rows 127 and 128). Both are
+source-verified on Etherscan as an Exact Match, from the commit their record
+`deployments/sepolia-kit.json` names. `npm run kit -- read` calls this Reader (`--reader` names
+another); without a record and without `--reader`, it runs the local build (`forge build`) at a
+stand-in address through `eth_call`'s state override.
 
 ## How a read is checked
 
@@ -287,6 +293,13 @@ it for 512,204 gas in forge, a claim for `0x4f7d…df25` (0.1 pUSD) reverts
 `BelowMinimum(100000, 1000000)`, and the same claim twice reverts `AlreadyClaimed`
 (`contracts/test/unit/ProvenAssetGate.t.sol`). The holders are public V3 chain data, read only.
 
+The gate on Sepolia,
+[`0x24aB…8d23`](https://sepolia.etherscan.io/address/0x24aB41ed794eB788B434485BA12fcAB441508d23)
+(row 128), has these settings: its constructor found #264,729 in the light client through the
+Reader. No claim has been sent to it: no account of the project holds a V3 asset, and a claim
+names its holder. `eth_estimateGas` puts the claim for `0x3e79…dcdf` at 601,317 gas there; nothing
+was sent.
+
 The kit's first example is `ProvenBalance` (`contracts/src/kit/ProvenBalance.sol`; #2 on Sepolia,
 in the addresses above): it proves an account's `System.Account` entry at an imported block, or
 imports a header and proves the entry in the same transaction, and emits the free balance.
@@ -330,41 +343,44 @@ the V3 node's header of B hashes to B and names the client's state root, fetches
 state), walks it off chain, then has the Reader make the same read on a Sepolia node and requires
 the same answer. It signs and sends nothing.
 
-From `relayer/`, after `npm ci` there and, in `contracts/`, `git submodule update --init` and
-`forge build --skip test --skip script` (the Reader step runs that build until the Reader is
-deployed; without it the step is skipped with a note), on Oct 31, when #264,729 was the client's
-latest block (once it holds a newer one,
+From `relayer/`, after `npm ci` there, on Oct 31 after the deployment, when #264,729 was the
+client's latest block (once it holds a newer one,
 `--at 0x6dc44fe16f3e36c49978c422cc11550971f4b3234f9ca23dbac9b99bb0556f50` reads at #264,729
-again):
+again). By then the V3 node no longer answered (HTTP 502 from 9:17 PM PKT), so these runs take the
+proofs from the fixture, which the node served when it was captured, and check the fixture's
+header of B against the light client instead of the node's:
 
 ```
-$ npm run kit -- read balance --account 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071
+$ npm run kit -- read balance --account 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 --from-fixture ../fixtures/v3-testnet-kit/state-reads.json
 System.Account(0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 ++ 0xEE x 12) on the Portaldot V3 testnet, proven on Sepolia
-  B: V3 #264,729 0x6dc44fe1…b0556f50, imported by GrandpaLightClient #2 0x447171c4…ee50dcb0 on Sepolia (read at block 12,034,534): the client's latest block; state root 0x9b0ab2c3…c8695aaa, finalized by set 73
-  ok    the V3 node's header of B hashes to B and names the same state root
-  the read: System.Account, key 80 B; proof 8 items, 2,396 B, from the V3 node test-node-v3.portaldot.dev
+  B: V3 #264,729 0x6dc44fe1…b0556f50, imported by GrandpaLightClient #2 0x447171c4…ee50dcb0 on Sepolia (read at block 12,034,974): the client's latest block; state root 0x9b0ab2c3…c8695aaa, finalized by set 73
+  ok    the fixture's header of B hashes to B and names the client's state root
+  the read: System.Account, key 80 B; proof 8 items, 2,396 B, from the fixture ../fixtures/v3-testnet-kit/state-reads.json
   ok    off chain, with the contracts' checks: nonce 6, consumers 0, providers 1, sufficients 0, free 159.47352201127852 tPOT (15947352201127852), reserved 0, frozen 0, flags 2^127
-  ok    PortaldotStateReader (not deployed yet: the local build at a stand-in address, by eth_call's state override).accountInfo returns the same AccountInfo at #264,729: 452,621 gas (eth_estimateGas: the whole transaction, under Sepolia's current rules), calldata 3,204 B
+  ok    PortaldotStateReader 0x2ea65f28…82ea1fa9.accountInfo returns the same AccountInfo at #264,729: 452,621 gas (eth_estimateGas: the whole transaction, under Sepolia's current rules), calldata 3,204 B
 Nothing was signed or sent.
 ```
 
 ```
-$ npm run kit -- read lock --nonce 1
+$ npm run kit -- read lock --nonce 1 --from-fixture ../fixtures/v3-testnet-kit/state-reads.json
 Lock 1 of the vault 0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd: commitments[1] on the Portaldot V3 testnet, proven on Sepolia
-  B: V3 #264,729 0x6dc44fe1…b0556f50, imported by GrandpaLightClient #2 0x447171c4…ee50dcb0 on Sepolia (read at block 12,034,538): the client's latest block; state root 0x9b0ab2c3…c8695aaa, finalized by set 73
-  ok    the V3 node's header of B hashes to B and names the same state root
-  the read: Revive.AccountInfoOf(0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd), the root of its child trie, and slot 0xada50131…52a59e7d under blake2_256(slot); proofs of 9 + 8 + 3 items (20 items, 4,018 B), from the V3 node test-node-v3.portaldot.dev
+  B: V3 #264,729 0x6dc44fe1…b0556f50, imported by GrandpaLightClient #2 0x447171c4…ee50dcb0 on Sepolia (read at block 12,034,974): the client's latest block; state root 0x9b0ab2c3…c8695aaa, finalized by set 73
+  ok    the fixture's header of B hashes to B and names the client's state root
+  the read: Revive.AccountInfoOf(0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd), the root of its child trie, and slot 0xada50131…52a59e7d under blake2_256(slot); proofs of 9 + 8 + 3 items (20 items, 4,018 B), from the fixture ../fixtures/v3-testnet-kit/state-reads.json
   ok    the contract: code hash 0xa72553f5…811c663f, trie id 0xbe307c2d…e2f47c3a, child root 0x6d322d0f…e706db6f
   ok    off chain, with the contracts' checks: commitments[1] = 0x2d1ab009f006fd70b9653d09a56a3b4927775d6251c4879df9c7a1364b0ad0a7
   ok    the commitment of the lock deployments/v3-testnet.json locks[1] records: 1 tPOT to 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 on chain 11155111, minter 0x8287B3Baf205CA8456f98346F13064AA7fCDcB9E
-  ok    PortaldotStateReader (not deployed yet: the local build at a stand-in address, by eth_call's state override).contractSlot returns the same word and code hash at #264,729: 877,450 gas (eth_estimateGas: the whole transaction, under Sepolia's current rules), calldata 6,052 B
+  ok    PortaldotStateReader 0x2ea65f28…82ea1fa9.contractSlot returns the same word and code hash at #264,729: 877,450 gas (eth_estimateGas: the whole transaction, under Sepolia's current rules), calldata 6,052 B
   ok    BridgeMinter 0x8287b3ba…7fcdcb9e.commitmentOf(0xD9838A86cF83C28Ee486544060D1cA4Ca2971071, 100000000000000, 1) on Sepolia returns the same word
   ok    BridgeMinter.mint(p) at #264,729 as an eth_call (3,460 B of calldata) reverts NonceAlreadyUsed(1): the proofs pass, and lock 1 was minted already
 Nothing was signed or sent.
 ```
 
 The mint's `eth_call` shows that the proofs pass the deployed minter: it gets as far as the replay
-guard, since lock 1 was minted in row 55.
+guard, since lock 1 was minted in row 55. Without `--from-fixture`, the same commands fetch the
+proofs from the V3 node and check that its header of B hashes to B and names the client's state
+root; run that way earlier that evening, against the Reader's build before the deployment, they
+printed the same values and gas.
 
 Without network access, `check` verifies the fixture again: every header hash, the 2-of-2
 signatures under set 73 with the light client's own check, every walk and value, and every tamper:
@@ -379,27 +395,30 @@ All checks passed: 41 passed, 0 failed.
 
 Each read as its own transaction at #264,729: in forge (`test_gas_reads` in
 `contracts/test/unit/PortaldotState.t.sol`, Osaka rules, with the 21,000 base and the calldata)
-and on a Sepolia node (`eth_estimateGas` on the local build through the state override, Oct 31,
-under the rules Sepolia runs since Oct 6, which price a call's base, its calldata and new state
-differently: [GAS.md](GAS.md#measured-light-client)).
+and on Sepolia (`eth_estimateGas` on the deployed Reader and gate, Oct 31, Sepolia blocks
+12,034,965 and 12,034,992, under the rules Sepolia runs since Oct 6, which price a call's base, its
+calldata and new state differently: [GAS.md](GAS.md#measured-light-client)).
 
-| Read | Proof | forge | Sepolia node |
+| Read | Proof | forge | Sepolia |
 |---|---|---|---|
 | `accountInfo` (the deployer) | 8 items, 2,396 B | 453,099 | 452,621 |
 | `assetAccount`, 18-byte value (`0x3e79…dcdf`) | 9 items, 2,110 B | 480,441 | 480,180 |
-| `assetAccount`, 66-byte value behind its hash | 9 items, 2,219 B | 455,188 | |
-| `assetAccount`, Frozen | 8 items, 1,546 B | 403,261 | |
+| `assetAccount`, 66-byte value behind its hash | 9 items, 2,219 B | 455,188 | 454,727 |
+| `assetAccount`, Frozen | 8 items, 1,546 B | 403,261 | 402,387 |
 | `nftOwner` | 8 items, 1,600 B | 364,768 | 363,589 |
-| `contractInfo` (the vault) | 9 items, 1,893 B | 405,402 | |
+| `contractInfo` (the vault) | 9 items, 1,893 B | 405,402 | 404,545 |
 | `contractSlot` (`commitments[1]`) | 9 + 8 + 3 items | 874,583 | 877,450 |
-| `childSlot` (`commitments[1]`, trie id bound) | 8 + 3 items | 502,305 | |
-| `readMain` (the deployer's `System.Account`) | 8 items | 423,692 | |
-| `ProvenAssetGate.claim` (a new record) | 9 items | 512,204 | |
+| `childSlot` (`commitments[1]`, trie id bound) | 8 + 3 items | 502,305 | 502,218 |
+| `readMain` (the deployer's `System.Account`) | 8 items | 423,692 | 427,471 |
+| `ProvenAssetGate.claim` (a new record) | 9 items | 512,204 | 601,317, estimated: no claim was sent |
 
 The walk is most of it, and it grows with the key's depth in the trie. Reading from a block the
 client holds already costs no signature check; a consumer that imports its own header first pays
 about 1.7M to 1.9M more. The forge figures do not include Sepolia's newer pricing of new state,
-which a claim's new record pays ([GAS.md](GAS.md)).
+which a claim's new record pays ([GAS.md](GAS.md)): about 89,000 more on Sepolia.
+
+Creating the contracts on Sepolia took 12,050,460 gas for the Reader (7,658 bytes of code, 71.8% of
+the 16,777,216 cap per transaction) and 2,989,057 for the gate (rows 127 and 128).
 
 ## Tests and fixtures
 

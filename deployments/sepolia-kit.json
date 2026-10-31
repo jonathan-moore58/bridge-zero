@@ -1,0 +1,125 @@
+{
+  "network": "sepolia",
+  "chainId": 11155111,
+  "deployer": "0xD9838A86CF83C28Ee486544060D1cA4Ca2971071",
+  "commit": "259f32f7f6a3fda562717e7cbac4fe5c5d3ef834",
+  "dirty": false,
+  "startNonce": 87,
+  "artifacts": {
+    "PortaldotStateReader": "0xf4c7bc5b222508eb652b359fa45b851b63e9b1a7a2d69539bb2ad38167cbf9f2",
+    "ProvenAssetGate": "0xd83d09fb2be4077bc683c1bbb79aa4269413d8b51a0588ef51a4331342d0f695"
+  },
+  "lightClient": {
+    "name": "GrandpaLightClient #2",
+    "address": "0x447171c4885ad725ee4772e8e3c228adee50dcb0"
+  },
+  "storageProofs": "0x5da053bc5659ba9f725e4b1b5083545b933ef2a3",
+  "block": {
+    "network": "portaldot-v3-testnet",
+    "number": 264729,
+    "hash": "0x6dc44fe16f3e36c49978c422cc11550971f4b3234f9ca23dbac9b99bb0556f50",
+    "stateRoot": "0x9b0ab2c32f5a4f7aa22c50788457b17b1ed262e51e0714f243b220f0c8695aaa",
+    "fixture": "fixtures/v3-testnet-kit/state-reads.json"
+  },
+  "contracts": {
+    "PortaldotStateReader": "0x2ea65f28df54b66beb4c23498a35457382ea1fa9",
+    "ProvenAssetGate": "0x24ab41ed794eb788b434485ba12fcab441508d23"
+  },
+  "steps": [
+    {
+      "name": "PortaldotStateReader",
+      "kind": "deploy",
+      "nonce": 87,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/kit/PortaldotStateReader.sol:PortaldotStateReader",
+      "address": "0x2ea65f28df54b66beb4c23498a35457382ea1fa9",
+      "libraries": {
+        "src/trie/StorageProofs.sol:StorageProofs": "0x5da053bc5659ba9f725e4b1b5083545b933ef2a3"
+      },
+      "constructorArgs": "0x000000000000000000000000447171c4885ad725ee4772e8e3c228adee50dcb0",
+      "fixtures": [],
+      "expected": "status 1",
+      "dataHash": "0x3804bd927f9a3174ffd382878e2f6ce11d37bcf3ed230524e01b4ea93fdc9468",
+      "gasLimit": 13255506,
+      "simulatedGas": 12050460,
+      "codeHash": "0xda55db27d6977059048b135856ecd62cc1aa27cfd31ba3d2016a418eb08bcc20",
+      "txHash": "0x28908bfbbd2558c057aefc3cb048f5d7e76639683f43a2b1c4ec6a0d530edb81",
+      "signedAt": "2026-10-31T16:13:12.021Z",
+      "block": 12034957,
+      "gasUsed": 12050460,
+      "effectiveGasPrice": "1013",
+      "status": 1,
+      "ok": true
+    },
+    {
+      "name": "ProvenAssetGate",
+      "kind": "deploy",
+      "nonce": 88,
+      "sender": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "contract": "src/kit/examples/ProvenAssetGate.sol:ProvenAssetGate",
+      "address": "0x24ab41ed794eb788b434485ba12fcab441508d23",
+      "libraries": {},
+      "constructorArgs": "0x0000000000000000000000002ea65f28df54b66beb4c23498a35457382ea1fa96dc44fe16f3e36c49978c422cc11550971f4b3234f9ca23dbac9b99bb0556f500000000000000000000000000000000000000000000000000000000000001e6100000000000000000000000000000000000000000000000000000000000f4240",
+      "fixtures": [
+        "fixtures/v3-testnet-kit/state-reads.json"
+      ],
+      "expected": "status 1",
+      "dataHash": "0x85a2f2eaab09fb36df52bbc47edcfa71663948e5093bfb74a4eda3945be0805b",
+      "gasLimit": 3287963,
+      "simulatedGas": 2989057,
+      "codeHash": "0x6791a28cef326d330a84835a03e447f58f8b768605227513e574a3442bd0581a",
+      "txHash": "0x9a462c6f71f15f077b4d874e2026d43780070aafd11f8f3a1cf8300f43987384",
+      "signedAt": "2026-10-31T16:14:55.865Z",
+      "block": 12034965,
+      "gasUsed": 2989057,
+      "effectiveGasPrice": "1013",
+      "status": 1,
+      "ok": true
+    }
+  ],
+  "reads": {
+    "sepoliaBlock": 12034965,
+    "block": {
+      "number": 264729,
+      "hash": "0x6dc44fe16f3e36c49978c422cc11550971f4b3234f9ca23dbac9b99bb0556f50"
+    },
+    "method": "eth_call and eth_estimateGas",
+    "results": [
+      {
+        "call": "accountInfo",
+        "read": "System.Account of the deployer's EVM account (read 1): nonce 6, free 15,947,352,201,127,852",
+        "ok": true,
+        "gas": 452621,
+        "calldataBytes": 3204
+      },
+      {
+        "call": "assetAccount",
+        "read": "Assets.Account(7777, 0x3e794036…) (read 3): 60,500,000, Liquid",
+        "ok": true,
+        "gas": 480180,
+        "calldataBytes": 3044
+      },
+      {
+        "call": "nftOwner",
+        "read": "Nfts.Item(10, 3163806249) (read 11): owner 0x104eb403…",
+        "ok": true,
+        "gas": 363589,
+        "calldataBytes": 2404
+      },
+      {
+        "call": "contractInfo",
+        "read": "Revive.AccountInfoOf of the vault 0xa02ee16e… (read 14): trie id 0xbe307c2d…, code hash 0xa72553f5…",
+        "ok": true,
+        "gas": 404545,
+        "calldataBytes": 2756
+      },
+      {
+        "call": "contractSlot",
+        "read": "the vault's commitments[1]: 0x2d1ab009…, with its code hash",
+        "ok": true,
+        "gas": 877450,
+        "calldataBytes": 6052
+      }
+    ]
+  }
+}

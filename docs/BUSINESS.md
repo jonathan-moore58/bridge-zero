@@ -10,7 +10,7 @@ assumptions. Other bridges' fees were read on Oct 24, 2026 from the sources link
 | User | What they get | Today |
 |---|---|---|
 | POT holders | POT on Ethereum as wtPOT (an ERC-20) to hold, trade or lend in EVM wallets and apps, and a way back | Live on the testnets: the way in in 48 seconds, proven (rows 54 and 55), or with auto-mint, where the user signs only the lock and needs no ETH, in 144 seconds (rows 83 to 85); the way back in 84 seconds in fast mode for up to 1 tPOT (rows 56 to 58), or about 20 minutes (rows 47 to 51) |
-| EVM apps and wallets | Portaldot state inside a contract (an account's balance, a contract's storage), checked against Portaldot's finality instead of an oracle or a relayer | Live: `ProvenBalance` and `BridgeMinter` on Sepolia read V3 state through the light client |
+| EVM apps and wallets | Portaldot state inside a contract (an account's balance, a contract's storage), checked against Portaldot's finality instead of an oracle or a relayer | Live: `ProvenBalance`, `BridgeMinter` and the proof kit's `PortaldotStateReader` (row 127) on Sepolia read V3 state through the light client |
 | Portaldot | A path for EVM users and liquidity into POT, built on V3's own GRANDPA finality and its EVM (pallet-revive) | Live on the V3 testnet |
 | Liquidity providers | A fee for paying a user on V3 at once, repaid from the vault about 20 minutes later | Planned: LP fast-fill ([Roadmap](../README.md#roadmap)) |
 
@@ -21,7 +21,7 @@ assumptions. Other bridges' fees were read on Oct 24, 2026 from the sources link
 | Bridge fee | every transfer | 0 to 5 basis points (bps); Stargate charges 6 | a new vault and minter (v2); 0 on the testnet |
 | Instant fee | users who choose Instant on the way back | the LP quotes 5 to 30 bps; the protocol keeps 10 to 20% of it (est.) | no contract change: the vault's `release` pays any address |
 | Network fee | every transfer, or an app that sponsors it | at cost, plus a margin | covers the mint's Ethereum gas and the release's costs on V3 (below) |
-| Light-client service | chains, apps and wallets that read proven Portaldot state on an EVM chain | per integrator, priced above the relayer's gas (below) | the proof kit ([PROOF-KIT.md](PROOF-KIT.md)): in the repository and tested, its Reader not on Sepolia yet; a hosted proof API and a freshness agreement are not built |
+| Light-client service | chains, apps and wallets that read proven Portaldot state on an EVM chain | per integrator, priced above the relayer's gas (below) | the proof kit ([PROOF-KIT.md](PROOF-KIT.md)): live on Sepolia; a hosted proof API and a freshness agreement are not built |
 | Grants | ecosystem programs | per program | from month 1 |
 
 ## The market
@@ -86,8 +86,8 @@ Until then the work is paid for by grants, prizes and the light-client service.
 - LP fast-fill on the way back, first with time windows kept off-chain, then settled on chain by a
   small contract on V3; more than one LP, with quotes.
 - The proof kit as packages: an npm package and a command line from the TypeScript in the
-  repository, and the Reader on more chains (v0.1, the library, the Reader, the example gate and
-  `npm run kit`, is in the repository: [PROOF-KIT.md](PROOF-KIT.md)).
+  repository, and the Reader on more chains (v0.1's contracts went live on Sepolia before the
+  event: [PROOF-KIT.md](PROOF-KIT.md)).
 - Grant applications; the threat model and audit preparation.
 
 **Month 2, Dec 10 to Jan 9: v2 contracts and more chains**
@@ -113,7 +113,7 @@ What the testnets already show:
 
 - The relayer has run in watch mode since Oct 23, one process per light client, each with its own
   key; the auto-release watcher has run since Oct 24 ([README](../README.md#status)).
-- 126 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
+- 128 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
   hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 370 forge tests, 380 relayer
   tests and 384 fixture checks pass.
 - The limits are written down, including a six-hour gap while the machine slept on Oct 24
