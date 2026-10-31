@@ -507,12 +507,14 @@ with `npm run kit`.
   than 16 validators (`MAX_AUTHORITIES`) halts the client, since from 18 new keys up it would not
   fit one transaction. Sepolia's fees are near zero (the mint paid 1,015 wei per gas); on
   Ethereum mainnet the same gas is paid at mainnet prices.
-- The relayer runs on one machine, which starts it at logon: a light client is as current as its
-  last run, and while that machine is off or asleep no run happens. The records hold a gap of about
-  six hours: no import into either client from 00:38 to 06:56 UTC on Oct 24, while the machine
-  slept (00:45 to 06:52 UTC); after it woke, the relayer had both clients up to date by 07:03. The
-  auto-release watcher runs on the same machine, like the relayer: while it is off or asleep, no
-  burn is released until a member runs the release by hand or the watcher starts again. Auto-mint
+- The relayer runs on one machine: until Oct 31 a laptop that started it at logon, and since 17:45
+  UTC on Oct 31 a small cloud server that runs it as a service, restarts it after a crash and starts
+  it at boot. A light client is as current as its last run, and while that machine is off no run
+  happens. The records hold a gap of about six hours: no import into either client from 00:38 to
+  06:56 UTC on Oct 24, while the laptop slept (00:45 to 06:52 UTC); after it woke, the relayer had
+  both clients up to date by 07:03. The auto-release watcher runs on the same machine, like the
+  relayer: while it is off, no burn is released until a member runs the release by hand or the
+  watcher starts again. Auto-mint
   runs there too: while it is off, a new lock waits for it, and anyone can still send the lock's
   mint (`npm run mint`). The rollups' V3 clients are kept at V3's validator set by one relayer run
   per rollup after each V3 set change, not by a relayer in watch mode: a lock for a rollup that
