@@ -83,10 +83,10 @@ export async function ethCall(to: Hex, data: Uint8Array, block: string, override
   return { ok: false, revert, message };
 }
 
-/** eth_estimateGas of a call (the 21,000 base and the calldata included); null when the node does not estimate it. */
-export async function estimateGas(to: Hex, data: Uint8Array, block: string, overrides?: CodeOverrides): Promise<number | null> {
+/** eth_estimateGas of a call (the 21,000 base and the calldata included), or the node's reason for not estimating it. */
+export async function estimateGas(to: Hex, data: Uint8Array, block: string, overrides?: CodeOverrides): Promise<{ gas: number } | { refused: string }> {
   const body = await rpcBody("eth_estimateGas", [{ to, data: bytesToHex(data) }, block, ...(overrides ? [overrides] : [])]);
-  return body.error ? null : Number(BigInt(String(body.result)));
+  return body.error ? { refused: body.error.message ?? "error" } : { gas: Number(BigInt(String(body.result))) };
 }
 
 /** What revert data names, such as "UnknownBlock(0x6dc4…6f50)" or 'Error("Incomplete Proof!")'. */

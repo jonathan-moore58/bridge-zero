@@ -43,7 +43,7 @@ import { authoritySetJson, headerJson, justificationJson, proofJson, readJson, w
 import { clientVerifies, verifyJustification } from "./grandpa.js";
 import { blake2_256, childRootKey, storageKey } from "./hash.js";
 import { RpcClient } from "./rpc.js";
-import { decodeAuthorityList, decodeFinalityProof, decodeHeader, decodeJustification, decodeU64, grandpaLogs } from "./scale.js";
+import { decodeAuthorityList, decodeFinalityProof, decodeHeader, decodeJustification, decodeU64 } from "./scale.js";
 import {
   accountIdOf,
   accountInfoAt,
@@ -318,7 +318,31 @@ async function readerStep(r: KitRecords, given: Hex | undefined, b: ImportedBloc
     return;
   }
   const gas = await estimateGas(target.to, data, block, target.overrides);
-  ok(`${target.label}.${call.kind} returns ${what} at #${fmt(b.number)}: ${gas === null ? "gas not estimated" : `${fmt(gas)} gas`} (eth_estimateGas, with the 21,000 base and the calldata), calldata ${fmt(data.length)} B`);
+  ok(`${target.label}.${call.kind} returns ${what} at #${fmt(b.number)}: ${"gas" in gas ? `${fmt(gas.gas)} gas (eth_estimateGas, with the 21,000 base and the calldata)` : `gas not estimated (${gas.refused})`}, calldata ${fmt(data.length)} B`);
+}
+
+/**
+ * Makes `call` on the Reader and requires it to revert with `expected`, the error the walk gives
+ * off chain: for a key that holds nothing, KeyNotPresent is the proof of absence.
+ */
+async function readerRefuses(r: KitRecords, given: Hex | undefined, b: ImportedBlock, call: ReaderCall, expected: string): Promise<void> {
+  const target = readerTarget(r, given);
+  if (!target) {
+    note("the Reader step is skipped: no Reader is deployed (deployments/sepolia-kit.json) and there is no local build (forge build in contracts/)");
+    return;
+  }
+  const answer = await ethCall(target.to, readerCalldata(call), `0x${b.readAt.number.toString(16)}`, target.overrides);
+  if (answer.ok) {
+    fail(`${target.label}.${call.kind} answered instead of reverting ${expected}`);
+    return;
+  }
+  if (target.overrides && answer.revert.length === 0) {
+    note(`the Reader step is skipped: the Sepolia node did not run the local build (${answer.message})`);
+    return;
+  }
+  const name = revertText(answer.revert);
+  if (name.startsWith(`${expected}(`) || name === `Error(${JSON.stringify(expected)})`) ok(`${target.label}.${call.kind} reverts ${name.length > 90 ? `${name.slice(0, 90)}…` : name}`);
+  else fail(`${target.label}.${call.kind} reverts ${name}, not ${expected}`);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -378,7 +402,9 @@ async function readBalance(r: KitRecords, o: ReadOptions, account: string): Prom
     const read = await src.main(key, "System.Account");
     log(`  the read: System.Account, key ${key.length} B; proof ${proofSize(read.proof)}, from ${src.label}`);
     if (!read.value) {
-      ok(`off chain: the proof shows no System.Account entry, so the Reader reverts KeyNotPresent (an account with no balance and no nonce)`);
+      const outcome = outcomeOf(() => readMain(hexToBytes(b.stateRoot), read.proof, key));
+      ok(`off chain: the proof shows no System.Account entry (${outcome}): an account with no balance and no nonce`);
+      await readerRefuses(r, o.reader, b, { kind: "accountInfo", blockHash: hexToBytes(b.hash), accountId: id, proof: read.proof }, outcome);
       return;
     }
     const a = accountInfoAt(hexToBytes(b.stateRoot), id, read.proof);
@@ -402,7 +428,9 @@ async function readAsset(r: KitRecords, o: ReadOptions, assetId: number, account
     const read = await src.main(key, `Assets.Account(${assetId})`);
     log(`  the read: Assets.Account, key ${key.length} B; proof ${proofSize(read.proof)}, from ${src.label}`);
     if (!read.value) {
-      ok(`off chain: the proof shows the account holds no asset ${assetId}: the Reader reverts ${outcomeOf(() => readMain(hexToBytes(b.stateRoot), read.proof, key))}`);
+      const outcome = outcomeOf(() => readMain(hexToBytes(b.stateRoot), read.proof, key));
+      ok(`off chain: the proof shows the account holds no asset ${assetId} (${outcome})`);
+      await readerRefuses(r, o.reader, b, { kind: "assetAccount", blockHash: hexToBytes(b.hash), assetId, accountId: id, proof: read.proof }, outcome);
       return;
     }
     const a = assetAccountAt(hexToBytes(b.stateRoot), assetId, id, read.proof);
@@ -425,7 +453,9 @@ async function readNft(r: KitRecords, o: ReadOptions, collection: number, item: 
     const read = await src.main(key, `Nfts.Item(${collection}, ${item})`);
     log(`  the read: Nfts.Item, key ${key.length} B; proof ${proofSize(read.proof)}, from ${src.label}`);
     if (!read.value) {
-      ok(`off chain: the proof shows no item ${item} in collection ${collection}: the Reader reverts ${outcomeOf(() => readMain(hexToBytes(b.stateRoot), read.proof, key))}`);
+      const outcome = outcomeOf(() => readMain(hexToBytes(b.stateRoot), read.proof, key));
+      ok(`off chain: the proof shows no item ${item} in collection ${collection} (${outcome})`);
+      await readerRefuses(r, o.reader, b, { kind: "nftOwner", blockHash: hexToBytes(b.hash), collection, item, proof: read.proof }, outcome);
       return;
     }
     const n = decodeNftItem(readMain(hexToBytes(b.stateRoot), read.proof, key));
@@ -463,7 +493,8 @@ async function readSlot(r: KitRecords, o: ReadOptions, contract: string, slotTex
   try {
     const s = await slotRead(src, b, address, slot);
     if (!s.word) {
-      ok(`off chain: the child proof shows the slot empty (a zero word is not stored): the Reader reverts KeyNotPresent`);
+      ok(`off chain: the child proof shows the slot empty (KeyNotPresent): a zero word is not stored`);
+      await readerRefuses(r, o.reader, b, { kind: "contractSlot", blockHash: hexToBytes(b.hash), address, slot, proofs: proofsOf(s) }, "KeyNotPresent");
       return;
     }
     const read = contractSlotAt(hexToBytes(b.stateRoot), address, slot, proofsOf(s));
@@ -485,7 +516,8 @@ async function readLock(r: KitRecords, o: ReadOptions, nonce: number): Promise<v
     const slot = commitmentSlot(BigInt(nonce));
     const s = await slotRead(src, b, vault, slot);
     if (!s.word) {
-      ok(`off chain: the vault holds no commitments[${nonce}] at #${fmt(b.number)}: no such lock yet, and the Reader reverts KeyNotPresent`);
+      ok(`off chain: the vault holds no commitments[${nonce}] at #${fmt(b.number)} (KeyNotPresent): no lock ${nonce} at that block`);
+      await readerRefuses(r, o.reader, b, { kind: "contractSlot", blockHash: hexToBytes(b.hash), address: vault, slot, proofs: proofsOf(s) }, "KeyNotPresent");
       return;
     }
     const read = contractSlotAt(hexToBytes(b.stateRoot), vault, slot, proofsOf(s));
