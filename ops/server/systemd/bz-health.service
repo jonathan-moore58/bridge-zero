@@ -1,0 +1,23 @@
+# /etc/systemd/system/bz-health.service
+[Unit]
+Description=Bridge Zero health check (read-only): units running, no halt file, rounds and runs on time, rollup runs, clock, memory and disk
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+# Every unit's journal, without root.
+SupplementaryGroups=systemd-journal
+Environment=HOME=/home/ubuntu
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+# Exit 1 (the service failed, in systemctl --failed) while a check FAILs; each run's lines are in
+# journalctl -u bz-health.
+ExecStart=/home/ubuntu/bz-ops/bz-health.sh
+TimeoutStartSec=5min
+LimitCORE=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bz-health
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=full

@@ -1,0 +1,12 @@
+# /etc/systemd/system/bz-health.timer
+[Unit]
+Description=Bridge Zero health check every 15 minutes
+
+[Timer]
+# At 7, 22, 37 and 52 minutes past each hour: clear of the rollup slots at :00, :20 and :40.
+OnCalendar=*:07/15
+AccuracySec=1min
+Unit=bz-health.service
+
+[Install]
+WantedBy=timers.target

@@ -1172,7 +1172,9 @@ describe("the timeouts: no request may stall the loop", () => {
 
   it("gives up an HTTP RPC that does not answer after its timeout, and asks the next endpoint", async () => {
     const started = Date.now();
-    const rpc = new HttpRpc("test RPC", [url(silent), url(answers)], 300, 1);
+    // The endpoint that answers has the same timeout, so it is 1 s: with 300 ms, a busy machine (npm
+    // test runs the files side by side) made that endpoint miss it.
+    const rpc = new HttpRpc("test RPC", [url(silent), url(answers)], 1_000, 1);
     assert.equal(await rpc.call<string>("eth_chainId", []), "0xaa36a7");
     assert.ok(Date.now() - started < 3_000);
     assert.equal(rpc.lastUrl, url(answers));
@@ -1186,7 +1188,7 @@ describe("the timeouts: no request may stall the loop", () => {
     assert.equal(await new HttpRpc("test RPC", [url(flaky), url(answers)], 1_000, 1).call<string>("eth_chainId", []), "0xaa36a7");
     const body = await new HttpRpc("test RPC", [url(reverts), url(answers)], 1_000, 1).body("eth_call", []);
     assert.equal(revertData(body.error!), "0x12345678");
-    assert.equal((await new HttpRpc("test RPC", [url(silent), url(answers)], 300, 1).firstNonNull<string>("eth_getTransactionReceipt", ["0x00"])), "0xaa36a7");
+    assert.equal((await new HttpRpc("test RPC", [url(silent), url(answers)], 1_000, 1).firstNonNull<string>("eth_getTransactionReceipt", ["0x00"])), "0xaa36a7");
   });
 
   it("gives up a V3 node that does not answer the handshake, or a request, after its timeout", async () => {

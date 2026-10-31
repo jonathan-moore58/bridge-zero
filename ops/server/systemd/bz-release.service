@@ -1,0 +1,40 @@
+# /etc/systemd/system/bz-release.service
+[Unit]
+Description=Bridge Zero release watcher: burns on Sepolia, Base Sepolia and Arbitrum Sepolia, released on V3 by committee members 1 and 2
+Wants=network-online.target
+After=network-online.target time-sync.target
+# 12 starts an hour: room to wait out a committee lock that names a process id reused after a
+# reboot (stale after 10 minutes), with a start every minute.
+StartLimitIntervalSec=1h
+StartLimitBurst=12
+
+[Service]
+Type=exec
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/bridge-zero/relayer
+Environment=HOME=/home/ubuntu
+Environment=PATH=/home/ubuntu/.foundry/bin:/usr/local/bin:/usr/bin:/bin
+Environment=ESBUILD_WORKER_THREADS=0
+ExecStart=/usr/local/bin/node --max-old-space-size=256 --import tsx src/release.ts release --watch 15 --network sepolia,base-sepolia,arbitrum-sepolia --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144 --send --member-keys 1:/home/ubuntu/.bridge-zero/committee/member-1.json,2:/home/ubuntu/.bridge-zero/committee/member-2.json --password-file /home/ubuntu/.foundry/bz-committee-server.pw
+# Exit 4 is a stop for good (the halt file, a key that does not open, an unserved release), which the
+# code says nothing may restart. Exit 1 (the committee's lock held, a refusal) and a crash restart a
+# minute later: the record settles what was submitted, and a dead holder's lock is taken over.
+Restart=on-failure
+RestartPreventExitStatus=4
+RestartSec=60
+# No signal handler: SIGTERM ends node at once; an approval sent is in the record as submitted first.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+# No core file: an abort would write the process's memory, the opened member keys with it, into the
+# working directory, the checkout.
+LimitCORE=0
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bz-release
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

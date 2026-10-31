@@ -1,0 +1,109 @@
+# Builds and tests every part of the repository on every push and pull request, with no chain
+# access: the contracts (the V3 build of the vault, which its tests check, then forge test), the
+# relayer (type-check, tests, and the offline checks of every captured fixture and of the proof
+# kit's fixture) and the site (type-check and tests). The two Sepolia fork tests stay skipped: they
+# run only with SEPOLIA_FORK=1 against a Sepolia RPC. pages.yml builds and deploys the site from main.
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  contracts:
+    name: Contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The four pinned libraries of NOTICE.md; none of them needs its own submodules.
+          submodules: true
+      - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
+        with:
+          version: v1.8.5
+          cache: false
+      - name: Foundry version
+        run: forge --version
+      - name: Build the V3 vault (out-v3)
+        run: FOUNDRY_PROFILE=v3 forge build --skip test --skip script
+      - name: Build
+        run: forge build
+      - name: The V3 build is there
+        # The vault's V3 suites run on this build and check that it is from the current source.
+        # Without it they are skipped, not failed, so its absence fails here.
+        run: test -f out-v3/PortaldotVault.sol/PortaldotVault.json
+      - name: Test
+        run: forge test
+
+  relayer:
+    name: Relayer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: relayer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: relayer/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Type-check
+        run: npx tsc --noEmit
+      - name: Test
+        run: npm test
+      - name: Check the fixtures offline
+        # Every directory of the README's table: headers, GRANDPA signatures, storage proofs and
+        # their tampered copies, re-verified with no network access.
+        run: |
+          failed=""
+          for dir in mainnet mainnet-pre-v3 v3-testnet v3-testnet-vault v3-testnet-mint v3-testnet-hero v3-testnet-lock1 v3-testnet-set59 westend-asset-hub-revive; do
+            echo "::group::npm run check -- --dir ../fixtures/$dir"
+            npm run check -- --dir "../fixtures/$dir" || failed="$failed $dir"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "::error::the fixture checks failed in:$failed"
+            exit 1
+          fi
+      - name: Check the proof kit's fixture offline
+        run: npm run kit -- check --dir ../fixtures/v3-testnet-kit
+
+  site:
+    name: Site
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Type-check and test
+        run: npm run check
