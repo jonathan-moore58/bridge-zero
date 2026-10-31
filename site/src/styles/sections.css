@@ -1933,7 +1933,7 @@
   border-top: 1px solid var(--line-1);
 }
 
-/* A row's transaction: its chain and block over the hash, linked on the chain's explorer. */
+/* A row's transaction: its chain and block over the hash; the hash linked on an EVM chain's explorer, a V3 block on the Node Console. */
 .evrow__tx {
   display: grid;
   justify-items: start;

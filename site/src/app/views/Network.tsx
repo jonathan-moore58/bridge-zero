@@ -8,6 +8,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { decode, encodeCall } from "../../lib/abi.ts";
 import { DECIMALS, LC, MINTER, REPO, SEPOLIA_CHAIN_ID, SEPOLIA_LOGS, TOKEN, V3_EVM, VAULT, etherscanAddress, records, repoFile } from "../../lib/chains.ts";
 import { checksum } from "../../lib/display.ts";
+import { perChain } from "../../lib/evidence.ts";
 import { eventTopic, keccak256 } from "../../lib/hashes.ts";
 import { bytesToHex, type Hex } from "../../lib/hex.ts";
 import { lagMinutes, setsBehind, type ClientState } from "../../lib/lc-read.ts";
@@ -1491,17 +1492,8 @@ function VaultCard({ phone, waiting, rollups }: { phone: boolean; waiting: Waiti
   );
 }
 
-/** The chains the README's evidence rows are on, in its order, as the note names them. */
-const EVIDENCE_CHAINS = [
-  ["sepolia", "Sepolia"],
-  ["v3", "V3"],
-  ["base-sepolia", "Base Sepolia"],
-  ["arbitrum-sepolia", "Arbitrum Sepolia"],
-] as const;
-
 function ContractsCard({ phone }: { phone: boolean }) {
   const rows = records.evidence;
-  const counts = EVIDENCE_CHAINS.map(([chain, name]) => [rows.filter((r) => r.chain === chain).length, name] as const).filter(([n]) => n > 0);
   return (
     <Fold phone={phone} wide id="n-contracts" icon="i-doc" title="Contracts" sub="BridgeMinter and wtPOT are source-verified on Etherscan">
       <ul class="clist">
@@ -1530,7 +1522,7 @@ function ContractsCard({ phone }: { phone: boolean }) {
             <a class="text-link" href={`${REPO}#evidence`} target="_blank" rel="noopener">
               evidence table
             </a>{" "}
-            numbers {num(rows.length)} transactions: {andList(counts.map(([n, name]) => `${num(n)} on ${name}`))}.
+            numbers {num(rows.length)} transactions: {perChain(rows)}.
           </span>
         </p>
       ) : null}

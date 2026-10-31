@@ -139,10 +139,11 @@ function cells(body: string): string[] {
 
 /**
  * The evidence rows. A Sepolia row links its transaction on Etherscan, a Base Sepolia or Arbitrum
- * Sepolia row on Basescan or Arbiscan; a V3 row prints a shortened extrinsic hash, resolved here
- * against `v3Hashes` (the full hashes deployments/ records). A row's chain is its explorer link's,
- * else the one its Block cell names ("Base 51,177,673", "V3 #231,112"), else Sepolia, whose first
- * rows name none; a row whose link and Block cell name two chains fails the build.
+ * Sepolia row on Basescan or Arbiscan; a V3 row prints a shortened hash (an extrinsic's, or the
+ * Ethereum hash of a transaction sent through V3's EVM RPC), resolved here against `v3Hashes` (the
+ * full hashes deployments/ records). A row's chain is its explorer link's, else the one its Block
+ * cell names ("Base 51,177,673", "V3 #231,112"), else Sepolia, whose first rows name none; a row
+ * whose link and Block cell name two chains fails the build.
  */
 export function parseEvidence(readme: string, v3Hashes: string[] = []): EvidenceRow[] {
   const rows: EvidenceRow[] = [];

@@ -2,7 +2,7 @@ import { useState } from "preact/hooks";
 import { Chevron, Doc, GitHub, Shield, Terminal } from "../components/icons.tsx";
 import { CopyButton, ExtLink, Md, SectionHead } from "../components/ui.tsx";
 import { records, REPO, repoFile, repoTree } from "../lib/chains.ts";
-import { evidenceCell, perChain } from "../lib/evidence.ts";
+import { evidenceCell, perChain, type CellLine } from "../lib/evidence.ts";
 
 const V = records.verify;
 
@@ -20,6 +20,19 @@ const FIRST_GROUPS = 4;
 
 /** How many of the evidence rows are on each chain: "58 on Sepolia, 22 on V3, …". */
 const PER_CHAIN = perChain(records.evidence);
+
+/** A line of an evidence row's transaction: its chain and block, or its hash; a link where it has one (lib/evidence.ts, evidenceCell). */
+function CellText({ line, cls }: { line: CellLine; cls: string }) {
+  return line.href ? (
+    <ExtLink href={line.href} class={cls} title={line.title}>
+      {line.text}
+    </ExtLink>
+  ) : (
+    <span class={cls} title={line.title}>
+      {line.text}
+    </span>
+  );
+}
 
 /**
  * A command, wrapped only between its words: a flag such as --rpc-url or a variable stays whole on
@@ -164,18 +177,8 @@ export function Verify() {
                           <Md text={r.what} />
                         </span>
                         <span class="evrow__tx">
-                          <span class="evrow__where" title={c.chain}>
-                            {c.where}
-                          </span>
-                          {c.href ? (
-                            <ExtLink href={c.href} class="mono small" title={c.title}>
-                              {c.text}
-                            </ExtLink>
-                          ) : (
-                            <span class="mono small" title={c.title}>
-                              {c.text}
-                            </span>
-                          )}
+                          <CellText line={c.where} cls="evrow__where" />
+                          <CellText line={c.hash} cls="mono small" />
                         </span>
                         <span class="evrow__res small">
                           <Md text={r.result} />
