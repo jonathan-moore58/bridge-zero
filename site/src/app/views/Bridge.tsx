@@ -35,7 +35,7 @@ import {
   type Dir,
   type Speed,
 } from "../facts.ts";
-import { AUTO_MINT, RELAY_EVERY_MIN, autoMints, relayAfterChange, relayNote, relayNotice } from "../handoff.ts";
+import { AUTO_MINT, RELAY_EVERY_MIN, autoMintAhead, autoMints, clientOn, relayAfterChange, relayNote, relayNotice, setChangesText } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
 import { loadChain, normalize, polka, polkaList, type PolkaState } from "../polkadot.ts";
@@ -697,7 +697,8 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
     <>
       {step(1, "Lock on Portaldot V3", sub ? `${sub.walletName}, once` : "Your wallet, on V3", lockCost)}
       {auto
-        ? step(2, `Mint on ${d.short}`, `Auto-mint, ${T[0]} after your lock · nothing to sign`, null)
+        ? // While the light client reads behind V3's set, the relayer's import, as the note below says.
+          step(2, `Mint on ${d.short}`, autoMintAhead(d, behind, T[0]), null)
         : step(
             2,
             `Mint on ${d.short}`,
@@ -1311,7 +1312,7 @@ function Notice({ k, f, net }: { k: Facts; f: Form; net: NetState }) {
     n = [
       "notice--trust",
       "i-refresh",
-      `The light client${d.key === "sepolia" ? "" : ` on ${d.short}`} is ${net.behind} validator-set change${one ? "" : "s"} behind V3`,
+      `${clientOn(d, true)} is ${setChangesText(net.behind)} behind V3`,
       k.auto
         ? // Auto-mint imports no change itself: a lock after the client's latest header waits for the relayer's import (relayer/src/automint.ts).
           relayNotice(d, net.behind, timeOf(d.key, "auto")[0])

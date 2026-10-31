@@ -17,7 +17,7 @@ import { burnId } from "../../lib/proofs.ts";
 import { request } from "../../lib/rpc.ts";
 import { ROLLUPS, destOf, destState, type Dest } from "../dests.ts";
 import { FAST_CAP, IMPORT_GAS, LATER_CHAINS, SPEED_NAME, V3_SCAN, timeOf } from "../facts.ts";
-import { RELAY_EVERY_MIN } from "../handoff.ts";
+import { RELAY_EVERY_MIN, relayAutoWait, setChangesText } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
 import {
@@ -924,7 +924,7 @@ function Topo({ net }: { net: NetState }) {
           where="watch mode"
           st={dot("verify")}
         >
-          every 10 min
+          every {RELAY_EVERY_MIN.sepolia} min
         </TopoNode>
         <TopoLink label="imports" />
         <TopoNode
@@ -1025,7 +1025,7 @@ function RelayerCard() {
           <h2 class="ncard__title" id="n-relayer">
             Relayer
           </h2>
-          <p class="ncard__sub">Watch mode · a run every 10 min, one key per chain</p>
+          <p class="ncard__sub">Watch mode · a run every {RELAY_EVERY_MIN.sepolia} min, one key per chain</p>
           <span class="ncard__asof">{Number.isFinite(RELAY_AT) ? `Recorded · as of ${dayTime(RELAY_AT)} UTC` : "Recorded"}</span>
         </div>
       </header>
@@ -1581,13 +1581,13 @@ function PageNotice({ net }: { net: NetState }) {
       "Its finalized head can't be read, so neither can the light client's lag. Each card says whether its values are live or recorded. Retrying every 30 s.",
     ];
   } else if (net.key === "relay") {
-    const s = net.behind === 1 ? "" : "s";
     const to = chain.value?.setId;
+    // A mint the visitor sends imports the changes itself (sends.ts); auto-mint waits for the relayer (handoff.ts).
     n = [
       "notice--trust",
       "i-refresh",
-      `The V3 light client is ${net.behind} validator-set change${s} behind`,
-      `${to !== null && to !== undefined ? `V3 moved to set ${to}. ` : ""}A mint made now imports ${net.behind === 1 ? "the change" : "the changes"} first, through Multicall3, for about ${IMPORT_GAS} M gas more per change; nothing waits for the relayer, which imports ${net.behind === 1 ? "it" : "them"} on its next run.`,
+      `The V3 light client is ${setChangesText(net.behind)} behind`,
+      `${to !== null && to !== undefined ? `V3 moved to set ${to}. ` : ""}A mint you send now imports ${net.behind === 1 ? "the change" : "the changes"} first, through Multicall3, for about ${IMPORT_GAS} M gas more per change. ${relayAutoWait(destOf(net.dest), net.behind)}`,
     ];
   } else if (net.key === "paused") {
     n = lc.value?.halted
@@ -1638,7 +1638,9 @@ export function NetworkView({ net }: { net: NetState }) {
           <p class="eyebrow page__eyebrow">{eyebrow}</p>
           <h1 class="page__title">Network</h1>
           <p class="page__lead">
-            The light client every mint uses and the relayer that keeps it current, the same client on two rollups, kept at V3's validator set by the relayer after each set change, the committee that runs the way back, the vault against wtPOT on all three chains, and the contracts. Each card says when its values were read.
+            The light client every mint uses and the relayer that keeps it current, the same client on two rollups, kept at V3's validator set by a relayer run every{" "}
+            {RELAY_EVERY_MIN["base-sepolia"]} minutes, the committee that runs the way back, the vault against wtPOT on all three chains, and the contracts. Each card says when its
+            values were read.
           </p>
         </div>
       </header>
