@@ -38,11 +38,13 @@ So Bridge Zero is an asset bridge and a data bridge. The asset bridge moves tPOT
 Sepolia and Arbitrum Sepolia as wtPOT and back. The data bridge is the light client with the proof
 libraries: any EVM contract can use them to read proven Portaldot state, as ProvenBalance (an
 account's balance) and BridgeMinter (a lock in the vault's storage) do, and they are a building
-block for iBridge. The [proof kit](#for-builders) packages them for other builders: balances,
+block for iBridge. The [proof kit](#for-builders) gathers them for other builders: balances,
 asset balances, NFT owners and contract slots of V3, read through one Solidity library or one
-stateless contract, with the tools that fetch and check the proofs. Today the bridge connects the Portaldot V3 testnet with Ethereum Sepolia and two
-rollups that settle on it, Base Sepolia and Arbitrum Sepolia: one vault on V3 serves all three. The [roadmap](#roadmap) plans a liquidity engine for transfers that settle in seconds and the
-same contracts on more EVM chains that have the BLAKE2F precompile.
+stateless contract, with the tools that fetch and check the proofs. Today the bridge connects the
+Portaldot V3 testnet with Ethereum Sepolia and two rollups that settle on it, Base Sepolia and
+Arbitrum Sepolia: one vault on V3 serves all three. The [roadmap](#roadmap) plans a liquidity
+engine for transfers that settle in seconds and the same contracts on more EVM chains that have the
+BLAKE2F precompile.
 
 ## Live on testnets
 
@@ -290,14 +292,14 @@ npm run kit -- check --dir ../fixtures/v3-testnet-kit
 # ...
 # All checks passed: 41 passed, 0 failed.
 npm test
-# ℹ tests 376
-# ℹ pass 376
+# ℹ tests 380
+# ℹ pass 380
 # ℹ fail 0
 
 cd ../contracts
 FOUNDRY_PROFILE=v3 forge build --skip test --skip script
 forge test
-# Ran 30 test suites in …: 362 tests passed, 0 failed, 2 skipped (364 total tests)
+# Ran 30 test suites in …: 370 tests passed, 0 failed, 2 skipped (372 total tests)
 ```
 
 `npm run check` re-verifies a fixture directory with no network access: every header hashes to its
@@ -340,25 +342,29 @@ never from the caller, and the contract walks the storage proof from it. Everyth
 
 - **Through the Reader:** a contract compiles only
   [`contracts/src/kit/IPortaldotStateReader.sol`](contracts/src/kit/IPortaldotStateReader.sol) and
-  calls `PortaldotStateReader`, a stateless contract with no owner, bound to `GrandpaLightClient`
-  #2 and linked to the deployed `StorageProofs`. It is built and tested, and not deployed on
-  Sepolia yet; until it is, `npm run kit -- read` runs its build at a stand-in address through
-  `eth_call`'s state override, against the deployed light client and `StorageProofs`.
+  the `IFinalizedStateRoots.sol` it imports (both Solidity 0.8.27, exact), and calls
+  `PortaldotStateReader`, a stateless contract with no owner, bound to `GrandpaLightClient` #2 and
+  linked to the deployed `StorageProofs`. It is built and tested, and not deployed on Sepolia yet;
+  until it is, `npm run kit -- read` runs its build at a stand-in address through `eth_call`'s
+  state override, against the deployed light client and `StorageProofs`.
 - **With the library:** [`PortaldotState`](contracts/src/kit/PortaldotState.sol) has the same
   reads as internal functions, the key builders and the decoders.
 - **The example:** [`ProvenAssetGate`](contracts/src/kit/examples/ProvenAssetGate.sol) records
   the EVM addresses that held at least a minimum of a V3 asset at a snapshot block.
-- **The tools:** `npm run kit -- read balance --account 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071`
-  fetches a proof from the V3 node, walks it off chain and has the Reader make the same read
-  (`read asset`, `read nft`, `read slot` and `read lock` likewise); `npm run kit -- check` checks
-  the fixture offline.
+- **The tools:** from `relayer/` (after `npm ci`, and `forge build --skip test --skip script` in
+  `contracts/` for the Reader step),
+  `npm run kit -- read balance --account 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071` fetches a
+  proof from the V3 node, walks it off chain and has the Reader make the same read (`read asset`,
+  `read nft`, `read slot` and `read lock` likewise); `npm run kit -- check` checks the fixture
+  offline.
 
 Proven: a value under the state root of a V3 block the light client imported. Trusted: V3's 2
-validators, the light client's admin and checkpoint, and V3's sudo key and runtime upgrades. Testnet
-limits: the V3 testnet stopped producing blocks on the afternoon of Oct 31 (PKT), and the newest
-block the light client on Sepolia held that evening is #264,729; the decoders are for V3's runtime
-3002. Not in v0.1: an npm package or a packaged command line; the TypeScript is in `relayer/` and
-runs with `npm run kit`.
+validators, the light client's admin and checkpoint, V3's sudo key and runtime upgrades, and the
+vendored ed25519, BLAKE2b and trie code, treated as unaudited. Testnet limits: the V3 testnet's
+public nodes have had no new block since the afternoon of Oct 31 (PKT), and the newest block the
+light client on Sepolia held that evening was #264,729; the decoders are for V3's runtime 3002.
+Not in v0.1: an npm package or a packaged command line; the TypeScript is in `relayer/` and runs
+with `npm run kit`.
 
 ## Status
 
@@ -464,7 +470,7 @@ runs with `npm run kit`.
   `npm run kit` fetches, walks and checks the proofs ([For builders](#for-builders)). On a Sepolia
   node the Reader's build returns the same values as the off-chain walk, against
   `GrandpaLightClient` #2 and the deployed `StorageProofs`.
-- Tests: 362 forge tests, 376 relayer tests and 384 fixture checks (343 with `npm run check`, 41
+- Tests: 370 forge tests, 380 relayer tests and 384 fixture checks (343 with `npm run check`, 41
   with `npm run kit -- check`) pass ([Verify it yourself](#verify-it-yourself)).
 
 **Known limits**
@@ -517,10 +523,12 @@ runs with `npm run kit`.
   Sepolia a rollup's sequencer alone orders its latest blocks, and a restart or a failover that
   drops them could undo a burn released fast. The fast budget, 1 tPOT, counts every chain's fast
   releases.
-- The proof kit reads only blocks the light client imported: the newest on Sepolia on Oct 31 is
-  #264,729, and the V3 testnet stopped producing blocks that afternoon. An absent key reverts
-  `KeyNotPresent`, a proof that it holds nothing, which a consumer may treat as zero.
-  `PortaldotStateReader` is not deployed yet, and the TypeScript is not an npm package.
+- The proof kit reads only blocks the light client imported: the newest on Sepolia on Oct 31 was
+  #264,729, and the V3 testnet's public nodes have had no new block since that afternoon. An absent
+  key reverts `KeyNotPresent`, a proof that it holds nothing, which a consumer may treat as zero
+  (for a contract's slot, only after pinning the contract:
+  [Absent values](docs/PROOF-KIT.md#absent-values)). `PortaldotStateReader` is not deployed yet,
+  and the TypeScript is not an npm package.
 
 ## Roadmap
 

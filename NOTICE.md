@@ -31,7 +31,7 @@ Installed from npm at the exact versions in `relayer/package.json` (resolved in
 
 | Package | Source | Version | Licence | Use | Changes |
 |---|---|---|---|---|---|
-| @noble/hashes | https://github.com/paulmillr/noble-hashes | 2.4.0 | MIT | BLAKE2b hashing | none |
+| @noble/hashes | https://github.com/paulmillr/noble-hashes | 2.4.0 | MIT | BLAKE2b, keccak-256 and SHA-512 hashing | none |
 | @noble/curves | https://github.com/paulmillr/noble-curves | 2.4.0 | MIT | ed25519 signature checks | none |
 | @polkadot/api | https://github.com/polkadot-js/api | 17.0.2 | Apache-2.0 | the V3 vault tool (`relayer/src/v3-vault.ts`): reviveApi dry runs, the sr25519 key and signing of `revive.instantiateWithCode`, extrinsic status and events | none |
 | tsx (dev) | https://github.com/privatenumber/tsx | 4.23.15 | MIT | runs the TypeScript sources | none |

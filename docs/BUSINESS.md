@@ -21,7 +21,7 @@ assumptions. Other bridges' fees were read on Oct 24, 2026 from the sources link
 | Bridge fee | every transfer | 0 to 5 basis points (bps); Stargate charges 6 | a new vault and minter (v2); 0 on the testnet |
 | Instant fee | users who choose Instant on the way back | the LP quotes 5 to 30 bps; the protocol keeps 10 to 20% of it (est.) | no contract change: the vault's `release` pays any address |
 | Network fee | every transfer, or an app that sponsors it | at cost, plus a margin | covers the mint's Ethereum gas and the release's costs on V3 (below) |
-| Light-client service | chains, apps and wallets that read proven Portaldot state on an EVM chain | per integrator, priced above the relayer's gas (below) | the proof kit, packaged |
+| Light-client service | chains, apps and wallets that read proven Portaldot state on an EVM chain | per integrator, priced above the relayer's gas (below) | the proof kit ([PROOF-KIT.md](PROOF-KIT.md)): in the repository and tested, its Reader not on Sepolia yet; a hosted proof API and a freshness agreement are not built |
 | Grants | ecosystem programs | per program | from month 1 |
 
 ## The market
@@ -85,16 +85,17 @@ Until then the work is paid for by grants, prizes and the light-client service.
 
 - LP fast-fill on the way back, first with time windows kept off-chain, then settled on chain by a
   small contract on V3; more than one LP, with quotes.
-- The proof kit packaged for builders (a Foundry library and a TypeScript package), v0.1.
-- The web app public on the testnets.
+- The proof kit as packages: an npm package and a command line from the TypeScript in the
+  repository, and the Reader on more chains (v0.1, the library, the Reader, the example gate and
+  `npm run kit`, is in the repository: [PROOF-KIT.md](PROOF-KIT.md)).
 - Grant applications; the threat model and audit preparation.
 
 **Month 2, Dec 10 to Jan 9: v2 contracts and more chains**
 
 - A v2 vault and minter: the fee the user allows, in the lock's commitment (fast-fill for the way
   in); a bridge fee in bps, paid to a treasury; a network fee.
-- The first L2: Base Sepolia, then Base. The whole deploy, import and proof sequence passed in a
-  simulation on Base Sepolia on Oct 24.
+- The first L2 mainnet, Base. Base Sepolia has run the V3 light client and the way in since Oct 27,
+  and the way back since Oct 28 ([Status](../README.md#status)).
 - A BEEFY verifier prototype, to cut the gas of each import.
 - A light client for Portaldot's V3 mainnet, from its own checkpoint.
 
@@ -113,8 +114,8 @@ What the testnets already show:
 - The relayer has run in watch mode since Oct 23, one process per light client, each with its own
   key; the auto-release watcher has run since Oct 24 ([README](../README.md#status)).
 - 126 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
-  hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 327 forge tests, 346 relayer
-  tests and 343 fixture checks pass.
+  hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 370 forge tests, 380 relayer
+  tests and 384 fixture checks pass.
 - The limits are written down, including a six-hour gap while the machine slept on Oct 24
   ([Known limits](../README.md#status), [what the minter trusts](BRIDGE.md#what-the-minter-trusts),
   [the trusted return path](BRIDGE.md#the-trusted-return-path)).
