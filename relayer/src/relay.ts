@@ -7,13 +7,16 @@
 //   --max-base-fee-change <gwei>, --keep <eth>, --replace-after <minutes>
 //
 // --network sepolia (the default, and everything below as written) | base-sepolia | arbitrum-sepolia
-// runs the same relayer for the client on that network (contracts/script/lib/sepolia.mjs NETWORKS):
-// the client and its code from deployments/<network>.json, that network's RPC (its own variable,
-// BASE_SEPOLIA_RPC_URL or ARBITRUM_SEPOLIA_RPC_URL, else its first public RPC) and archive RPCs
-// (BASE_SEPOLIA_ARCHIVE_RPC_URLS or ARBITRUM_SEPOLIA_ARCHIVE_RPC_URLS), and the sender's record,
-// history and lock named relay-<network>-<sender>, so that one key relays to several networks
-// without sharing a nonce or a lock. There, --keep defaults to 0.001 ETH. Where "Sepolia" stands
-// below, read that network.
+// | bsc-testnet runs the same relayer for the client on that network
+// (contracts/script/lib/sepolia.mjs NETWORKS): the client and its code from
+// deployments/<network>.json, that network's RPC (its own variable, BASE_SEPOLIA_RPC_URL,
+// ARBITRUM_SEPOLIA_RPC_URL or BSC_TESTNET_RPC_URL, else its first public RPC) and archive RPCs
+// (BASE_SEPOLIA_ARCHIVE_RPC_URLS, ARBITRUM_SEPOLIA_ARCHIVE_RPC_URLS or BSC_TESTNET_ARCHIVE_RPC_URLS),
+// and the sender's record, history and lock named relay-<network>-<sender>, so that one key relays
+// to several networks without sharing a nonce or a lock. There, --keep defaults to 0.001 ETH (tBNB
+// on the BNB Smart Chain testnet). On the BNB Smart Chain testnet the priority fee is 0.1 gwei, the
+// least its validators include (its base fee is 0, so the gates below always pass), and a lower
+// --priority-fee is refused. Where "Sepolia" stands below, read that network.
 //
 // A run reads the client's state on Sepolia (currentSetId, latestFinalized, authorities, halted,
 // paused), takes a finality proof at the Portaldot finalized head, and scans the headers from
@@ -171,6 +174,7 @@ import {
   mktxArgs,
   nonces,
   parseGwei,
+  priorityFeeProblem,
   qty,
   receiptOf,
   redact,
@@ -379,7 +383,7 @@ function usage(problem: string): never {
 usage (from relayer/):
   npm run relay -- --chain mainnet|v3 [--dry-run] [--from <address>] [--watch <seconds>]
   npm run relay -- --chain mainnet|v3 --send --account <keystore> --password-file <path> [--watch <seconds>]
-  more options: --network sepolia|base-sepolia|arbitrum-sepolia (default sepolia), --rpc <wss url>, --state-dir <path> (default ~/.bridge-zero),
+  more options: --network sepolia|base-sepolia|arbitrum-sepolia|bsc-testnet (default sepolia), --rpc <wss url>, --state-dir <path> (default ~/.bridge-zero),
     --scan-limit <blocks>, --head-every <blocks>,
     --priority-fee <gwei>, --max-fee <gwei>, --max-base-fee <gwei> (default 0.05), --max-base-fee-change <gwei> (default ${MAX_BASE_FEE_CHANGE}),
     --keep <eth> (default 0.05 on Sepolia, 0.001 elsewhere), --replace-after <minutes> (default 5)`);
@@ -388,7 +392,8 @@ usage (from relayer/):
 
 /**
  * The default --keep: 0.05 ETH on Sepolia, as before; 0.001 ETH on a rollup, where one import needed at
- * most about 0.0004 ETH at its max fee in the dry runs of Oct 27 (Arbitrum Sepolia; Base Sepolia a quarter of that).
+ * most about 0.0004 ETH at its max fee in the dry runs of Oct 27 (Arbitrum Sepolia; Base Sepolia a quarter of that);
+ * 0.001 tBNB on the BNB Smart Chain testnet, where one costs about 0.00019 tBNB at its 0.1 gwei (Nov 1).
  */
 const keepOf = (network: string) => (network === "sepolia" ? "0.05" : "0.001");
 
@@ -479,6 +484,9 @@ function options(): Options {
   const given = amount(values["max-base-fee-change"], parseGwei);
   const maxBaseFeeChange = given ?? max(parseGwei(MAX_BASE_FEE_CHANGE), maxBaseFee);
   if (maxBaseFeeChange < maxBaseFee) usage("--max-base-fee-change must be at least --max-base-fee");
+  // A network whose validators include nothing below its tip (BSC's 0.1 gwei) refuses a lower one.
+  const tipProblem = priorityFeeProblem(priorityFee);
+  if (tipProblem) usage(tipProblem);
   // The most a replacement may offer grows with the priority fee: a large one needs a ceiling of its own.
   if (priorityFee !== undefined && maxFee === undefined && priorityFee > maxBaseFee) {
     usage("--priority-fee is above --max-base-fee: give --max-fee too, the most a transaction may offer per gas");

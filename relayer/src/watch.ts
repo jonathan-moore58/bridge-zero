@@ -4,9 +4,9 @@
 // nothing, or leave it to the members), one round of the watcher over the burns through ports
 // release.ts fills with the chains, the lock that lets one watcher run per committee, the wait
 // between rounds, and the last resort that keeps the watcher running through an error no round
-// handles. A burn on a rollup (Base Sepolia, Arbitrum Sepolia) qualifies the same way, by
-// that chain's finality and confirmations (wayback.ts has each chain's rule), and a round reads one
-// chain's burns. release.ts and watch.test.ts use it.
+// handles. A burn on a rollup (Base Sepolia, Arbitrum Sepolia) or on the BNB Smart Chain testnet
+// qualifies the same way, by that chain's finality and confirmations (wayback.ts has each chain's
+// rule), and a round reads one chain's burns. release.ts and watch.test.ts use it.
 
 import { randomUUID } from "node:crypto";
 import { closeSync, existsSync, openSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";

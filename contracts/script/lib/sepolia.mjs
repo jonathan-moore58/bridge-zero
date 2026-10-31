@@ -18,16 +18,23 @@ import { fileURLToPath } from "node:url";
 
 export const SEPOLIA_CHAIN_ID = 11_155_111n;
 
-// The networks: Sepolia, and two rollups that settle on it. rpcs: the first is used unless the
-// variable rpcEnv is set; each answered eth_chainId and eth_simulateV1 with state overrides on
-// Oct 27, 2026 (tenderly's gateway rate-limits eth_simulateV1, so it is never the first).
-// archives: what the relayer asks for receipts and old state the first no longer serves, unless
-// archiveEnv is set (comma separated); measured Oct 27: publicnode serves Base Sepolia's state at
-// least 1,048,576 blocks back but Arbitrum Sepolia's only about 64 (16 seconds), so Arbitrum's
-// first RPC is its own endpoint (about 4,096 blocks) and tenderly's gateway serves every block of
-// both. Sepolia's are as they were. gasCap: the most gas a plan gives one transaction: EIP-7825's
-// cap on Sepolia, and the same on the rollups (Arbitrum allows 32M a transaction), where the
-// largest step needs about 2.2M. Explorers for the people reading the records.
+// The networks: Sepolia, two rollups that settle on it, and the BNB Smart Chain testnet, an L1 of
+// its own. rpcs: the first is used unless the variable rpcEnv is set; each answered eth_chainId and
+// eth_simulateV1 with state overrides on Oct 27, 2026 (tenderly's gateway rate-limits
+// eth_simulateV1, so it is never the first), BSC's on Nov 1. archives: what the relayer asks for
+// receipts and old state the first no longer serves, unless archiveEnv is set (comma separated);
+// measured Oct 27: publicnode serves Base Sepolia's state at least 1,048,576 blocks back but
+// Arbitrum Sepolia's only about 64 (16 seconds), so Arbitrum's first RPC is its own endpoint (about
+// 4,096 blocks) and tenderly's gateway serves every block of both. Sepolia's are as they were.
+// Measured Nov 1 on the BSC testnet: publicnode first, the only public RPC that serves eth_getLogs
+// there (up to 50,000 blocks a call; its state about 10,000 blocks back, its receipts and logs
+// 60,000 to 90,000); the official endpoints serve no logs and 128 blocks of state but keep
+// receipts for 90 days and more, so they are the first archive, and thirdweb keeps old state.
+// gasCap: the most gas a plan gives one transaction: EIP-7825's cap on Sepolia, and the same on the
+// rollups (Arbitrum allows 32M a transaction) and on BSC (publicnode's node refuses more), where
+// the largest step needs about 2.2M. tip: the least priority fee a network's validators include,
+// where 1,000 wei is not mined: BSC's validators take 0.1 gwei (its base fee is 0). Explorers for
+// the people reading the records.
 export const NETWORKS = {
   sepolia: {
     name: "sepolia",
@@ -61,6 +68,18 @@ export const NETWORKS = {
     archives: ["https://arbitrum-sepolia.gateway.tenderly.co", "https://arbitrum-sepolia-rpc.publicnode.com"],
     explorer: "https://sepolia.arbiscan.io",
     gasCap: 16_777_216,
+  },
+  "bsc-testnet": {
+    name: "bsc-testnet",
+    title: "BNB Smart Chain testnet",
+    chainId: 97n,
+    rpcEnv: "BSC_TESTNET_RPC_URL",
+    rpcs: ["https://bsc-testnet-rpc.publicnode.com", "https://bsc-testnet.bnbchain.org", "https://bsc-testnet-dataseed.bnbchain.org"],
+    archiveEnv: "BSC_TESTNET_ARCHIVE_RPC_URLS",
+    archives: ["https://bsc-testnet.bnbchain.org", "https://97.rpc.thirdweb.com"],
+    explorer: "https://testnet.bscscan.com",
+    gasCap: 16_777_216,
+    tip: 100_000_000n,
   },
 };
 
@@ -452,16 +471,32 @@ export function parseGwei(s) {
   return wei;
 }
 
-// Fees fixed for a whole run: a priority fee of 1,000 wei (above what most Sepolia blocks pay)
-// and a max fee of ten times the next base fee plus it, at least 0.01 gwei, so a rising base fee
-// cannot stall the run; `priorityFee` and `maxFee` (wei) replace them.
+// Fees fixed for a whole run: a priority fee of 1,000 wei (above what most Sepolia blocks pay), or
+// the network's tip where its validators include nothing below one (BSC's 0.1 gwei), and a max fee
+// of ten times the next base fee plus it, at least 0.01 gwei, so a rising base fee cannot stall the
+// run; `priorityFee` and `maxFee` (wei) replace them.
 export async function feesAt(block, { priorityFee, maxFee } = {}) {
   const history = await rpc("eth_feeHistory", ["0x1", block.number, []]);
-  const base = BigInt(history.baseFeePerGas.at(-1));
-  const tip = priorityFee ?? 1_000n;
+  return {
+    ...feesFrom(BigInt(history.baseFeePerGas.at(-1)), { priorityFee, maxFee }),
+    gasPrice: BigInt(await rpc("eth_gasPrice", [])),
+  };
+}
+
+// feesAt's fees at the next base fee `base`, without the node's gas price: the priority fee is
+// `priorityFee`, else the network's tip (NETWORK.tip), else 1,000 wei.
+export function feesFrom(base, { priorityFee, maxFee } = {}, network = NETWORK) {
+  const tip = priorityFee ?? network.tip ?? 1_000n;
   const floor = 10n * base + tip;
-  const max = maxFee ?? (floor > 10_000_000n ? floor : 10_000_000n);
-  return { base, tip, maxFee: max, gasPrice: BigInt(await rpc("eth_gasPrice", [])) };
+  return { base, tip, maxFee: maxFee ?? (floor > 10_000_000n ? floor : 10_000_000n) };
+}
+
+// Why an explicit priority fee (wei) is refused on `network`: below the least its validators
+// include (its tip), a transaction is never mined. Null when it is not, and on a network without one.
+export function priorityFeeProblem(priorityFee, network = NETWORK) {
+  if (priorityFee === undefined || network.tip === undefined || priorityFee >= network.tip) return null;
+  const gwei = (wei) => (Number(wei) / 1e9).toLocaleString("en-US", { maximumFractionDigits: 9 });
+  return `--priority-fee ${gwei(priorityFee)} gwei is below ${gwei(network.tip)} gwei, the least the ${network.title}'s validators include: a transaction offering less is never mined`;
 }
 
 // ------------------------------------------------------------------ send

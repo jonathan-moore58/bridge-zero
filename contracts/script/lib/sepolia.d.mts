@@ -8,7 +8,7 @@ import type { SpawnSyncReturns } from "node:child_process";
 
 type Hex = `0x${string}`;
 
-export type NetworkName = "sepolia" | "base-sepolia" | "arbitrum-sepolia";
+export type NetworkName = "sepolia" | "base-sepolia" | "arbitrum-sepolia" | "bsc-testnet";
 /** One network the scripts can use (sepolia.mjs NETWORKS). */
 export interface Network {
   name: NetworkName;
@@ -22,6 +22,8 @@ export interface Network {
   archives: string[];
   explorer: string;
   gasCap: number;
+  /** The least priority fee its validators include (wei); feesAt's default when no --priority-fee is given, else 1,000 wei. */
+  tip?: bigint;
 }
 export const NETWORKS: Record<NetworkName, Network>;
 /** The network in use (Sepolia until useNetwork), and what follows it: live bindings. */
@@ -75,6 +77,10 @@ export interface Fees {
 }
 export function parseGwei(s: string): bigint;
 export function feesAt(block: { number: string }, options?: { priorityFee?: bigint; maxFee?: bigint }): Promise<Fees>;
+/** feesAt's fees at the next base fee `base` (no gas price): the priority fee is `priorityFee`, else the network's tip, else 1,000 wei. */
+export function feesFrom(base: bigint, options?: { priorityFee?: bigint; maxFee?: bigint }, network?: Network): Omit<Fees, "gasPrice">;
+/** Why an explicit priority fee (wei) is refused on `network` (the one in use by default): below its tip. Null otherwise. */
+export function priorityFeeProblem(priorityFee: bigint | undefined, network?: Network): string | null;
 
 export function redactAlso(...values: (string | undefined)[]): void;
 export function redact(text: unknown): string;

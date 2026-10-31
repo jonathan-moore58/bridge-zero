@@ -1,5 +1,5 @@
 // The trusted way back from each chain a BridgeMinter is on (Sepolia, Base Sepolia, Arbitrum
-// Sepolia), without the network: what "final" means on each, fast mode's confirmations there, and
+// Sepolia, and the BNB Smart Chain testnet once deployed there), without the network: what "final" means on each, fast mode's confirmations there, and
 // what the release tool and its watcher keep apart per chain (its bridge record, its burn cache, its
 // releases in the V3 record, its burn ids). One vault and one committee on V3 serve every chain, so
 // the committee's lock, its halt file and the fast budget are shared: the watcher counts the fast
@@ -15,7 +15,11 @@
 // Sepolia block. Either way a rollup's burn is final when Sepolia has finalized its batch, about 20
 // minutes after the burn on Oct 28, 2026 (Base Sepolia's finalized tag 5,800 to 6,700 blocks of
 // 0.2 s below its latest, Arbitrum Sepolia's 3,800 to 4,500 blocks of 0.25 s, Sepolia's about 80 of
-// 12 s).
+// 12 s). The BNB Smart Chain testnet is an L1 with fast finality (BEP-126): its validators vote on
+// each block, a block is justified once more than 2/3 of their votes are aggregated in the next
+// header, and finalized once its child is justified; its finalized tag was 2 blocks (0.9 s) below
+// its latest at the median on Nov 1, 3 at most, over blocks of 0.45 s. If their votes stall, the tag
+// stops, and its burns wait.
 //
 // Fast mode: the burn read --confirmations blocks below the chain's latest block, up to the fast cap,
 // with the fast releases not final yet within the fast budget, as on Sepolia. A rollup's blocks come
@@ -23,7 +27,9 @@
 // rollup takes at least 36 seconds of its blocks on top of a burn (Base Sepolia 180, Arbitrum Sepolia
 // 144), the time Sepolia's 3 confirmations take. Until a rollup's batch is on Sepolia its sequencer
 // alone orders its blocks: a restart or a failover that drops its latest blocks is the reorg that
-// could undo a fast burn there.
+// could undo a fast burn there. On the BNB Smart Chain testnet the finalized block is about a second
+// behind its latest, so fast mode gains nothing there: the watcher leaves it out of --confirmations
+// and waits for finality; with --send it takes at least 80 (36 seconds of its blocks).
 
 import { NETWORKS, type NetworkName } from "../../contracts/script/lib/sepolia.mjs";
 import { fastReleaseChecked, MAX_CONFIRMATIONS, MIN_WATCH_CONFIRMATIONS, nextWait, parseConfirmations, type FinalizedCheck, type Rule } from "./watch.js";
@@ -35,7 +41,7 @@ export interface WaybackChain {
   chainId: bigint;
   /** Its bridge record: the minter and the token, and the burns sent through the release tool (steps of kind "burn"). */
   record: string;
-  /** Seconds per block, measured on Oct 28, 2026. */
+  /** Seconds per block, measured on Oct 28, 2026 (the BNB Smart Chain testnet's on Nov 1). */
   blockSeconds: number;
   /** About how long after a burn's block the chain's finalized tag passes it. */
   finalizesIn: string;
@@ -52,7 +58,7 @@ export interface WaybackChain {
    * The gas limit of a burn's first dry-run pass: the cap on Sepolia, as before; 1,000,000 on a
    * rollup, where the cap at the max fee (ten times the base fee) needs more ETH than a burner
    * holds there (0.0034 ETH on Arbitrum Sepolia at 0.2 gwei), and a burn takes far less (52,822
-   * gas on either rollup on Oct 28).
+   * gas on either rollup on Oct 28); the same on the BNB Smart Chain testnet.
    */
   burnProbeGas: number;
   /**
@@ -63,8 +69,16 @@ export interface WaybackChain {
    * 58,105 ran out of gas.
    */
   burnGasByEstimate: boolean;
-  /** State the first RPC no longer serves is read from the network's archive RPCs (sepolia.mjs NETWORKS): on Arbitrum Sepolia its own RPC keeps about 4,500 blocks, about as deep as its finalized block. Not on Sepolia, as before. */
+  /** State the first RPC no longer serves is read from the network's archive RPCs (sepolia.mjs NETWORKS): on Arbitrum Sepolia its own RPC keeps about 4,500 blocks, about as deep as its finalized block; on the BNB Smart Chain testnet publicnode keeps about 10,000. Not on Sepolia, as before. */
   archiveState: boolean;
+  /**
+   * Its first RPC answers eth_getLogs over blocks older than it keeps with no logs, and no error:
+   * publicnode on the BNB Smart Chain testnet keeps them for about 8 to 11 hours (Nov 1), and no
+   * other public RPC there serves them. A search there that finds fewer burns than burnCount(), or
+   * mints and burns that do not add up to the total supply, is incomplete, and status reads the views
+   * instead. Elsewhere such a search fails its check, as before.
+   */
+  logsFade: boolean;
 }
 
 export const WAYBACK: Record<NetworkName, WaybackChain> = {
@@ -83,6 +97,7 @@ export const WAYBACK: Record<NetworkName, WaybackChain> = {
     burnProbeGas: 16_777_216,
     burnGasByEstimate: false,
     archiveState: false,
+    logsFade: false,
   },
   "base-sepolia": {
     network: "base-sepolia",
@@ -99,6 +114,7 @@ export const WAYBACK: Record<NetworkName, WaybackChain> = {
     burnProbeGas: 1_000_000,
     burnGasByEstimate: true,
     archiveState: true,
+    logsFade: false,
   },
   "arbitrum-sepolia": {
     network: "arbitrum-sepolia",
@@ -115,6 +131,24 @@ export const WAYBACK: Record<NetworkName, WaybackChain> = {
     burnProbeGas: 1_000_000,
     burnGasByEstimate: true,
     archiveState: true,
+    logsFade: false,
+  },
+  "bsc-testnet": {
+    network: "bsc-testnet",
+    title: "BNB Smart Chain testnet",
+    chainId: NETWORKS["bsc-testnet"].chainId,
+    record: "deployments/bsc-testnet-bridge.json",
+    blockSeconds: 0.45,
+    finalizesIn: "about a second",
+    finality: "the BNB Smart Chain testnet's finalized block: fast finality (BEP-126), a block its validators' votes justified, and its child too, 2 blocks (0.9 s) below its latest on Nov 1",
+    maxConfirmations: 7_200,
+    minSendConfirmations: 80,
+    minSendWhy: "36 seconds of its blocks, the time Sepolia's 3 confirmations take; its finalized block is about a second behind its latest while its validators vote, so fast mode gains nothing there",
+    reconcileBack: 1_800,
+    burnProbeGas: 1_000_000,
+    burnGasByEstimate: true,
+    archiveState: true,
+    logsFade: true,
   },
 };
 
@@ -140,7 +174,7 @@ export function parseNetworks(text: string | undefined): NetworkName[] {
   return names as NetworkName[];
 }
 
-/** --confirmations on one chain: Sepolia's as before (1 to 64, watch.ts parseConfirmations); on a rollup, 1 to its maxConfirmations. */
+/** --confirmations on one chain: Sepolia's as before (1 to 64, watch.ts parseConfirmations); on another chain, 1 to its maxConfirmations. */
 export function parseConfirmationsOn(text: string, chain: WaybackChain): number {
   if (chain.network === "sepolia") return parseConfirmations(text);
   if (!/^\d+$/.test(text)) throw new Error(`a number of blocks is a whole number, got ${JSON.stringify(text)}`);
@@ -203,8 +237,9 @@ export function rulesBy(confirmations: Map<NetworkName, number | null>, fastCap:
 
 /**
  * The file of the watcher's burn cache for `network` in its --state-dir: Sepolia's as before,
- * release-watch-<multisig>.burns.json; a rollup's release-watch-<multisig>.<network>.burns.json, as
- * Base Sepolia's and Arbitrum Sepolia's minters share one address (the cache is kept by minter).
+ * release-watch-<multisig>.burns.json; another chain's release-watch-<multisig>.<network>.burns.json,
+ * as Base Sepolia's, Arbitrum Sepolia's and the BNB Smart Chain testnet's minters share one address
+ * (the cache is kept by minter).
  */
 export const burnCacheName = (multisig: string, network: NetworkName): string =>
   network === "sepolia" ? `release-watch-${multisig}.burns.json` : `release-watch-${multisig}.${network}.burns.json`;
@@ -221,7 +256,7 @@ export const chainIdOf = (burn: RoundBurn): bigint => BigInt(burn.chainId ?? NET
 /** Whether a release round is for a burn on `chainId`'s minter `minter`: both, as the rollups' minters share one address. */
 export const burnOn = (burn: RoundBurn, chainId: bigint, minter: string): boolean => chainIdOf(burn) === chainId && burn.minter.toLowerCase() === minter.toLowerCase();
 
-/** A burn as messages and the halt file name it: Sepolia's by its nonce alone, as before; a rollup's with its chain. */
+/** A burn as messages and the halt file name it: Sepolia's by its nonce alone, as before; another chain's with its chain. */
 export const burnLabel = (chainId: bigint | string, nonce: bigint | string): string => {
   const chain = waybackOf(chainId);
   return chain === null ? `${nonce} on chain ${chainId}` : chain.network === "sepolia" ? `${nonce}` : `${nonce} on ${chain.title}`;

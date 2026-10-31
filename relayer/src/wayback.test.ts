@@ -3,7 +3,9 @@
 // confirmations and records; --network and --confirmations for one chain or several; each chain's
 // burns, releases and burn cache kept apart, though the rollups' minters share one address; one fast
 // budget across every chain; and the two burns recorded on the rollups, whose ids follow the vault's
-// convention with each chain's id. Nothing is read from a chain.
+// convention with each chain's id. The BNB Smart Chain testnet, the fourth chain: its finality (fast
+// finality, about a second), its bounds, its burn cache and label, and its burn 0's id. Nothing is
+// read from a chain.
 //
 //   npm test
 
@@ -96,13 +98,33 @@ describe("each chain's way back", () => {
       assert.equal(c.burnProbeGas, 1_000_000);
       assert.equal(c.burnGasByEstimate, true);
       assert.equal(c.archiveState, true);
+      assert.equal(c.logsFade, false, "a log search that falls short fails its check, as before");
     }
+    assert.equal(WAYBACK.sepolia.logsFade, false);
     assert.equal(WAYBACK["base-sepolia"].minSendConfirmations, 180);
     assert.equal(WAYBACK["arbitrum-sepolia"].minSendConfirmations, 144);
-    assert.deepEqual(WAYBACK_NETWORKS, ["sepolia", "base-sepolia", "arbitrum-sepolia"]);
+    assert.deepEqual(WAYBACK_NETWORKS, ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"]);
     assert.equal(waybackOf(84_532n)?.network, "base-sepolia");
     assert.equal(waybackOf("421614")?.network, "arbitrum-sepolia");
     assert.equal(waybackOf(1n), null);
+  });
+
+  it("gives the BNB Smart Chain testnet its record, chain id 97, its fast finality as final, and 36 seconds of its blocks as the fewest confirmations with --send", () => {
+    const c = WAYBACK["bsc-testnet"];
+    assert.deepEqual(
+      [c.network, c.title, c.chainId, c.record, c.blockSeconds, c.finalizesIn, c.maxConfirmations, c.minSendConfirmations, c.reconcileBack, c.burnProbeGas, c.burnGasByEstimate, c.archiveState, c.logsFade],
+      ["bsc-testnet", "BNB Smart Chain testnet", 97n, "deployments/bsc-testnet-bridge.json", 0.45, "about a second", 7_200, 80, 1_800, 1_000_000, true, true, true],
+    );
+    assert.equal(c.title, NETWORKS["bsc-testnet"].title);
+    assert.match(c.finality, /fast finality \(BEP-126\)/);
+    assert.match(c.finality, /2 blocks \(0\.9 s\) below its latest/);
+    assert.equal(Math.round(c.minSendConfirmations * c.blockSeconds), 36, "the time Sepolia's 3 confirmations take");
+    assert.match(c.minSendWhy, /fast mode gains nothing there/);
+    assert.equal(waybackOf(97n)?.network, "bsc-testnet");
+    assert.equal(waybackOf("97")?.title, "BNB Smart Chain testnet");
+    assert.equal(parseNetwork("bsc-testnet"), "bsc-testnet");
+    assert.throws(() => parseNetwork("bsc"), /one of sepolia, base-sepolia, arbitrum-sepolia, bsc-testnet, got "bsc"/);
+    assert.deepEqual(parseNetworks("sepolia,base-sepolia,arbitrum-sepolia,bsc-testnet"), ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"]);
   });
 
   it("takes --network: one chain for burn, release and status (Sepolia by default), one or several for the watcher", () => {
@@ -134,6 +156,10 @@ describe("--confirmations on each chain", () => {
     assert.throws(() => parseConfirmationsOn("7201", WAYBACK["base-sepolia"]), /from 1 to 7,200 blocks on Base Sepolia \(24 minutes of its blocks; it finalizes a block about 20 minutes after it\), got 7201/);
     assert.throws(() => parseConfirmationsOn("0", WAYBACK["arbitrum-sepolia"]), /from 1 to 7,200 blocks on Arbitrum Sepolia/);
     assert.throws(() => parseConfirmationsOn("1e3", WAYBACK["arbitrum-sepolia"]), /a whole number/);
+    assert.equal(parseConfirmationsOn("1", WAYBACK["bsc-testnet"]), 1);
+    assert.equal(parseConfirmationsOn("7200", WAYBACK["bsc-testnet"]), 7_200);
+    assert.throws(() => parseConfirmationsOn("7201", WAYBACK["bsc-testnet"]), /from 1 to 7,200 blocks on BNB Smart Chain testnet \(54 minutes of its blocks; it finalizes a block about a second after it\), got 7201/);
+    assert.throws(() => parseConfirmationsOn("0", WAYBACK["bsc-testnet"]), /from 1 to 7,200 blocks on BNB Smart Chain testnet/);
   });
 
   it("takes one number for every chain served, or <network>=<n> pairs, a chain left out waiting for finality", () => {
@@ -153,6 +179,15 @@ describe("--confirmations on each chain", () => {
     assert.throws(() => confirmationsBy("65", ["sepolia"]), (e: Error) => /^from 1 to 64 blocks/.test(e.message));
   });
 
+  it("leaves the BNB Smart Chain testnet at finality when the server's pairs leave it out, as its unit names them", () => {
+    const four = ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"] as const;
+    const server = confirmationsBy("sepolia=3,base-sepolia=180,arbitrum-sepolia=144", [...four]);
+    assert.deepEqual([...server], [["sepolia", 3], ["base-sepolia", 180], ["arbitrum-sepolia", 144], ["bsc-testnet", null]]);
+    assert.deepEqual([...confirmationsBy("sepolia=3,base-sepolia=180,arbitrum-sepolia=144", ["sepolia", "base-sepolia", "arbitrum-sepolia"])], [["sepolia", 3], ["base-sepolia", 180], ["arbitrum-sepolia", 144]], "the three as before");
+    assert.deepEqual([...confirmationsBy("bsc-testnet=80", [...four])].at(-1), ["bsc-testnet", 80]);
+    assert.throws(() => confirmationsBy("bsc-testnet=7201", [...four]), /\(bsc-testnet\) from 1 to 7,200 blocks on BNB Smart Chain testnet/);
+  });
+
   it("refuses, with --send, fewer than each chain's minimum, in Sepolia's words as before", () => {
     assert.equal(sendConfirmationsProblem(WAYBACK.sepolia, 2), "takes --confirmations 3 or more: reorgs of one or two blocks happen on Sepolia");
     assert.equal(sendConfirmationsProblem(WAYBACK.sepolia, 3), null);
@@ -160,6 +195,8 @@ describe("--confirmations on each chain", () => {
     assert.equal(sendConfirmationsProblem(WAYBACK["base-sepolia"], 180), null);
     assert.match(sendConfirmationsProblem(WAYBACK["arbitrum-sepolia"], 3) ?? "", /^takes --confirmations 144 or more on Arbitrum Sepolia/);
     assert.equal(sendConfirmationsProblem(WAYBACK["arbitrum-sepolia"], 144), null);
+    assert.match(sendConfirmationsProblem(WAYBACK["bsc-testnet"], 79) ?? "", /^takes --confirmations 80 or more on BNB Smart Chain testnet: 36 seconds of its blocks/);
+    assert.equal(sendConfirmationsProblem(WAYBACK["bsc-testnet"], 80), null);
   });
 
   it("gives every chain the one fast cap and the one fast budget", () => {
@@ -184,6 +221,7 @@ describe("each chain's burns and releases, kept apart", () => {
     assert.equal(burnCacheName(MULTISIG, "sepolia"), `release-watch-${MULTISIG}.burns.json`);
     assert.equal(burnCacheName(MULTISIG, "base-sepolia"), `release-watch-${MULTISIG}.base-sepolia.burns.json`);
     assert.equal(burnCacheName(MULTISIG, "arbitrum-sepolia"), `release-watch-${MULTISIG}.arbitrum-sepolia.burns.json`);
+    assert.equal(burnCacheName(MULTISIG, "bsc-testnet"), `release-watch-${MULTISIG}.bsc-testnet.burns.json`);
   });
 
   it("tells a release's chain by its chain id and minter: Base Sepolia's burn 0 is not Arbitrum Sepolia's, and a round without a chain id is Sepolia's", () => {
@@ -195,6 +233,9 @@ describe("each chain's burns and releases, kept apart", () => {
     assert.equal(burnLabel(11_155_111n, 1n), "1", "Sepolia's burns by their nonce alone, as before");
     assert.equal(burnLabel("84532", "0"), "0 on Base Sepolia");
     assert.equal(burnLabel(421_614n, 0n), "0 on Arbitrum Sepolia");
+    assert.equal(burnLabel(97n, 0n), "0 on BNB Smart Chain testnet");
+    assert.equal(burnOn({ chainId: "97", minter: ROLLUP_MINTER }, 97n, ROLLUP_MINTER), true);
+    assert.equal(burnOn({ chainId: "97", minter: ROLLUP_MINTER }, 84_532n, ROLLUP_MINTER), false, "the same minter address on Base Sepolia");
     assert.equal(burnLabel(5n, 2n), "2 on chain 5");
   });
 
@@ -204,6 +245,8 @@ describe("each chain's burns and releases, kept apart", () => {
     assert.notEqual(ids[0], ids[1]);
     assert.equal(ids[0], "0x6ae40d53f7c3d1156db402387484ed10011948fca8a2dfedd2b25eabbedb6d8d");
     assert.equal(ids[1], "0x9890de419e811a71bd9e8f16963d616b7f746ec284d8ce03813d2508cfe80522");
+    // The BNB Smart Chain testnet's burn 0, when its minter is at the rollups' address: the third id.
+    assert.equal(bytesToHex(burnId(97n, minter, 0n)), "0xf38d1b6cd1e6d5a6fbe5b1f8238646147194891702fd9e164d9b6ad450454773");
   });
 
   it("knows a state an RPC no longer serves, Arbitrum's words and the others'", () => {

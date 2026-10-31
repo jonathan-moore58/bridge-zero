@@ -7,11 +7,11 @@
 //   npm run mint -- bundle --check <file>
 //   npm run mint -- plan [--bundle <file> | --nonce <n>] [--sandbox] [--from <address>]
 //   npm run mint -- deploy [--bundle <file> | --nonce <n>] [--send --account <keystore> --password-file <path>]
-//   npm run mint -- deploy --network base-sepolia|arbitrum-sepolia [--send --account <keystore> --password-file <path>]
+//   npm run mint -- deploy --network base-sepolia|arbitrum-sepolia|bsc-testnet [--send --account <keystore> --password-file <path>]
 //   npm run mint -- mint [--bundle <file> | --nonce <n>] [--from <address>] [--send --account <keystore> --password-file <path>]
 //   npm run mint -- mint --tamper signature|header|proof|amount|recipient | --replay [--bundle <file> | --nonce <n>] [--sandbox | --from <address> | --send ...]
 //   npm run mint -- status
-//   npm run mint -- bundle|plan|mint|status --network base-sepolia|arbitrum-sepolia [... as above, below]
+//   npm run mint -- bundle|plan|mint|status --network base-sepolia|arbitrum-sepolia|bsc-testnet [... as above, below]
 //   more options: --rpc <wss url> (the V3 node), --evm <http(s) url> (its EVM RPC), --artifacts <dir>
 //   (the Sepolia build, by default contracts/out-sepolia), --priority-fee <gwei>, --max-fee <gwei>
 //
@@ -72,16 +72,16 @@
 // and the Etherscan verification command (sepolia profile) is printed for each contract, in the
 // dry run too. deploy needs the deployer's keystore; the mint is open to anyone. A deploy reads the
 // lock (lock 0 unless --bundle or --nonce) only for its minter address.
-// deploy --network base-sepolia or arbitrum-sepolia (contracts/script/lib/sepolia.mjs NETWORKS: that
-// rollup's chain id, RPC and gas cap) deploys the same pair from the same build there, bound to the V3
-// light client of that network (GrandpaLightClient #2 in deployments/<network>.json) and to the same
-// vault, V3 chain id and vault code hash: BridgeMinter at the deployer's nonce 9 and WrappedTPOT at 10,
-// its next two there after the light client's deployment (nonces 0 to 7, the libraries the build links
-// at the addresses they have on Sepolia) and the relayer's funding (8). It reads no lock, as none names
-// that minter yet, and records in deployments/<network>-bridge.json what deployments/sepolia-bridge.json
-// records for Sepolia; the minter there computes each commitment with that rollup's chain id. Without
-// --network, everything is Sepolia's, as above.
-// bundle --nonce, plan, mint and status take --network base-sepolia or arbitrum-sepolia too: the lock
+// deploy --network base-sepolia, arbitrum-sepolia or bsc-testnet (contracts/script/lib/sepolia.mjs
+// NETWORKS: that chain's id, RPC, gas cap and tip) deploys the same pair from the same build there,
+// bound to the V3 light client of that network (GrandpaLightClient #2 in deployments/<network>.json)
+// and to the same vault, V3 chain id and vault code hash: BridgeMinter at the deployer's nonce 9 and
+// WrappedTPOT at 10, its next two there after the light client's deployment (nonces 0 to 7, the
+// libraries the build links at the addresses they have on Sepolia) and the relayer's funding (8). It
+// reads no lock, as none names that minter yet, and records in deployments/<network>-bridge.json what
+// deployments/sepolia-bridge.json records for Sepolia; the minter there computes each commitment with
+// that chain's id. Without --network, everything is Sepolia's, as above.
+// bundle --nonce, plan, mint and status take --network base-sepolia, arbitrum-sepolia or bsc-testnet too: the lock
 // has to name that network's chain id and its minter, CREATE(deployer, 9); the light client, the
 // minter and the token are that network's records (deployments/<network>.json and
 // deployments/<network>-bridge.json) and the RPC its own; a mint's record is
@@ -92,7 +92,8 @@
 // Sepolia. The L1 part of a transaction (l1.ts): on Arbitrum, NodeInterface's estimate of its L1 gas
 // is printed and added to the gas limit it is sent with (the simulated gas + 10% + the L1 gas), as the
 // L1 price can rise before inclusion; on Base, GasPriceOracle's bound of its L1 data fee, paid besides
-// the gas, counts in the balance the sender needs.
+// the gas, counts in the balance the sender needs; the BNB Smart Chain testnet, an L1, has none, and
+// its priority fee is 0.1 gwei, the least its validators include (a lower --priority-fee is refused).
 // mint --tamper and mint --replay are the demo's two reverts, as transactions anyone can send. A
 // tamper is the bundle's importAndMint with one part changed (bridge.ts tamperedCall: a signature
 // byte in the finality proof, a byte of B's state root in the header, a byte of the slot proof,
@@ -218,6 +219,7 @@ import {
   uintWord,
   type LogJson,
 } from "./vault.js";
+import { WAYBACK } from "./wayback.js";
 import {
   CAP,
   NETWORK,
@@ -240,6 +242,7 @@ import {
   nextNonceIs,
   nonces,
   parseGwei,
+  priorityFeeProblem,
   qty,
   receiptOf,
   redact,
@@ -287,6 +290,8 @@ const PAIR_NONCES: Record<NetworkName, readonly [minter: number, token: number]>
   sepolia: [31, 32],
   "base-sepolia": [9, 10],
   "arbitrum-sepolia": [9, 10],
+  // As on the rollups: nonces 0 to 7 the light client, 8 the relayer's funding; the same addresses.
+  "bsc-testnet": [9, 10],
 };
 
 /** The pair of `network`: its records, deployments/<network>.json and deployments/<network>-bridge.json, and its nonces. */
@@ -393,11 +398,11 @@ const USAGE = `usage (from relayer/):
   npm run mint -- bundle --check <file>
   npm run mint -- plan [--bundle <file> | --nonce <n>] [--sandbox] [--from <address>]
   npm run mint -- deploy [--bundle <file> | --nonce <n>] [--send --account <keystore> --password-file <path>]
-  npm run mint -- deploy --network base-sepolia|arbitrum-sepolia [--send --account <keystore> --password-file <path>]
+  npm run mint -- deploy --network base-sepolia|arbitrum-sepolia|bsc-testnet [--send --account <keystore> --password-file <path>]
   npm run mint -- mint [--bundle <file> | --nonce <n>] [--from <address>] [--send --account <keystore> --password-file <path>]
   npm run mint -- mint --tamper ${TAMPERS.join("|")} | --replay [--bundle <file> | --nonce <n>] [--sandbox | --from <address> | --send ...]
   npm run mint -- status
-  bundle, plan, mint and status: --network base-sepolia|arbitrum-sepolia for that rollup's minter (Sepolia's by default)
+  bundle, plan, mint and status: --network base-sepolia|arbitrum-sepolia|bsc-testnet for that chain's minter (Sepolia's by default)
   more options: --rpc <wss url>, --evm <http(s) url>, --artifacts <dir>, --priority-fee <gwei>, --max-fee <gwei>
   plan and mint read ${DEFAULT_OUT}/${BUNDLE_FILE} unless given --bundle or --nonce`;
 
@@ -563,6 +568,10 @@ function planOptions(command: Command, args: string[]): PlanOptions {
     const text = str(v[name]);
     return text === undefined ? undefined : option(`--${name}`, () => parseGwei(text));
   };
+  // A network whose validators include nothing below its tip (BSC's 0.1 gwei) refuses a lower one.
+  const priorityFee = gwei("priority-fee");
+  const tipProblem = priorityFeeProblem(priorityFee);
+  if (tipProblem) usage(tipProblem);
   return {
     ...parseCommon(v),
     command,
@@ -576,7 +585,7 @@ function planOptions(command: Command, args: string[]): PlanOptions {
     account,
     passwordFile,
     artifacts: resolve(str(v.artifacts) ?? at(DEFAULT_ARTIFACTS)),
-    priorityFee: gwei("priority-fee"),
+    priorityFee,
     maxFee: gwei("max-fee"),
   };
 }
@@ -2686,7 +2695,20 @@ async function status(o: Common): Promise<number> {
   let unknownAmounts = 0;
   if (bridge.minterDeployed && bridge.tokenDeployed) {
     const fromBlock = record?.steps.find((s) => s.name === "BridgeMinter" && s.ok)?.block ?? 0;
-    const minterLogs = await sepoliaLogs({ address: bridge.minter, topics: [[MINTED_TOPIC, BURN_REQUESTED_TOPIC]] }, fromBlock, Number(BigInt(block.number)));
+    let minterLogs = await sepoliaLogs({ address: bridge.minter, topics: [[MINTED_TOPIC, BURN_REQUESTED_TOPIC]] }, fromBlock, Number(BigInt(block.number)));
+    // A chain whose RPC answers old blocks with no logs and no error (wayback.ts logsFade): logs that
+    // do not account for burnCount() and the total supply are incomplete, and the views are read instead.
+    if (WAYBACK[BRIDGE_NETWORK].logsFade && !("refused" in minterLogs)) {
+      const of = (logs: LogJson[], topic: string) => logs.filter((x) => x.topics[0]?.toLowerCase() === topic);
+      const burnLogs = of(minterLogs, BURN_REQUESTED_TOPIC);
+      const supply =
+        of(minterLogs, MINTED_TOPIC).reduce((sum, l) => sum + decodeMinted(l).amount, 0n) - burnLogs.reduce((sum, l) => sum + decodeBurnRequested(l).amount, 0n);
+      if (BigInt(burnLogs.length) < bridge.burnCount || supply !== bridge.totalSupply) {
+        minterLogs = {
+          refused: `its logs give ${burnLogs.length} of ${bridge.burnCount} burns and a supply of ${formatWtpot(supply)} for ${formatWtpot(bridge.totalSupply)}: it keeps the logs of recent blocks only, and answers older ones with none`,
+        };
+      }
+    }
     const releaseState = async (id: Uint8Array, amount: bigint | null) => {
       const flag = await evm.word(vault.address, releasedSlot(id), tagV3);
       if (flag === 0n) return "not released yet";

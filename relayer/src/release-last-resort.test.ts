@@ -30,7 +30,15 @@ interface Run {
 }
 
 /** Every chain's RPC a closed local port, unless a test names a stand-in. */
-const ENV = { SEPOLIA_RPC_URL: CLOSED, BASE_SEPOLIA_RPC_URL: CLOSED, ARBITRUM_SEPOLIA_RPC_URL: CLOSED, BASE_SEPOLIA_ARCHIVE_RPC_URLS: CLOSED, ARBITRUM_SEPOLIA_ARCHIVE_RPC_URLS: CLOSED };
+const ENV = {
+  SEPOLIA_RPC_URL: CLOSED,
+  BASE_SEPOLIA_RPC_URL: CLOSED,
+  ARBITRUM_SEPOLIA_RPC_URL: CLOSED,
+  BSC_TESTNET_RPC_URL: CLOSED,
+  BASE_SEPOLIA_ARCHIVE_RPC_URLS: CLOSED,
+  ARBITRUM_SEPOLIA_ARCHIVE_RPC_URLS: CLOSED,
+  BSC_TESTNET_ARCHIVE_RPC_URLS: CLOSED,
+};
 
 /** Node with tsx and `argv` in relayer/ (the tool: src/release.ts and its arguments); a child that runs past 90 s is killed, so none outlives its test. */
 function node(argv: string[], env: Record<string, string> = {}): Promise<Run> {

@@ -3,7 +3,10 @@
 // --keep, --max-spend and --max-base-fee), the first mint of a minter that is not bound to the vault
 // yet (only the head path, whose importAndMint binds it), and the L1 part of a rollup's transaction
 // (l1.ts: Arbitrum's L1 gas in the gas limit, an OP Stack rollup's L1 data fee in the balance a send
-// needs and in what it cost). Sepolia's behaviour is automint.test.ts's. Nothing is read from a chain.
+// needs and in what it cost). And the BNB Smart Chain testnet, the fourth network: its defaults,
+// scan start and hold, its locks told from the rollups' by chain id (one minter address on three
+// chains), no L1 part, and its priority fee of 0.1 gwei; the three others' values as before.
+// Sepolia's behaviour is automint.test.ts's. Nothing is read from a chain.
 //
 //   npm test
 
@@ -19,6 +22,7 @@ import {
   appendLine,
   decide,
   Fatal,
+  feesFor,
   filesOf,
   GAS_CAP,
   gasLimitOf,
@@ -30,6 +34,7 @@ import {
   parseLockedLog,
   parseOptions,
   preflight,
+  priorityFeeOn,
   readBridge,
   recordOf,
   resultFromReceipt,
@@ -69,6 +74,16 @@ const D983: Hex = "0xd9838a86cf83c28ee486544060d1ca4ca2971071";
 const SENDER: Hex = "0x57cc2ba3b883339a9f32726e6d0d3a9ee861a113";
 const ETH = 10n ** 18n;
 const ROLLUPS = ["base-sepolia", "arbitrum-sepolia"] as const;
+const FOUR = ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"] as const;
+/** The BNB Smart Chain testnet's minter as a lock names it: the rollups' address, at the deployer's nonce 9 there too. */
+const BSC: Pick<ReturnType<typeof readBridge>, "vault" | "v3ChainId" | "chainId" | "minter"> = { vault: VAULT, v3ChainId: 420_420_777n, chainId: 97n, minter: ROLLUP_MINTER };
+/** The server's auto-mint once the BNB Smart Chain testnet is served (ops/server/systemd/bz-automint.service, at its activation). */
+const ACTIVATION = [
+  "--network", "sepolia,base-sepolia,arbitrum-sepolia,bsc-testnet", "--send", "--watch", "15", "--grace", "90", "--min-amount", "0.001",
+  "--max-spend", "sepolia=0.02,base-sepolia=0.002,arbitrum-sepolia=0.002,bsc-testnet=0.005",
+  "--keep", "sepolia=0.01,base-sepolia=0.0002,arbitrum-sepolia=0.0002,bsc-testnet=0.001",
+  "--account", "bz-automint",
+];
 const DIR = mkdtempSync(join(tmpdir(), "bz-rollups-test-"));
 
 setLog(() => undefined);
@@ -114,6 +129,57 @@ describe("the auto-mint's --network", () => {
     assert.deepEqual([pairs.keepBy.sepolia, pairs.keepBy["arbitrum-sepolia"]], [10n ** 16n, 2n * 10n ** 14n], "a network left out keeps its default");
     assert.deepEqual([pairs.maxSpendBy.sepolia, pairs.maxSpendBy["arbitrum-sepolia"]], [2n * 10n ** 16n, 4n * 10n ** 15n]);
     assert.deepEqual([pairs.maxBaseFeeBy.sepolia, pairs.maxBaseFeeBy["arbitrum-sepolia"]], [1_500_000_000n, 500_000_000n]);
+  });
+
+  it("takes the BNB Smart Chain testnet as the fourth network, with its own defaults, scan start and hold, the three others' as before", () => {
+    const all = parseOptions(["--network", FOUR.join(",")]);
+    assert.deepEqual(all.networks, [...FOUR]);
+    assert.deepEqual(NETWORK_DEFAULTS["bsc-testnet"], { keep: "0.001", maxSpend: "0.005" });
+    assert.equal(all.keepBy["bsc-testnet"], 10n ** 15n, "0.001 tBNB kept");
+    assert.equal(all.maxSpendBy["bsc-testnet"], 5n * 10n ** 15n, "0.005 tBNB a day");
+    assert.equal(all.maxBaseFeeBy["bsc-testnet"], 1_500_000_000n);
+    assert.deepEqual(
+      [all.keepBy.sepolia, all.maxSpendBy.sepolia, all.keepBy["base-sepolia"], all.maxSpendBy["base-sepolia"], all.keepBy["arbitrum-sepolia"], all.maxSpendBy["arbitrum-sepolia"]],
+      [5n * 10n ** 16n, 2n * 10n ** 16n, 2n * 10n ** 14n, 2n * 10n ** 15n, 2n * 10n ** 14n, 2n * 10n ** 15n],
+      "Sepolia's and the rollups' defaults as before",
+    );
+    assert.deepEqual(START_BLOCKS, { sepolia: 218_400, "base-sepolia": 222_500, "arbitrum-sepolia": 222_500, "bsc-testnet": 269_300 });
+    // Below the head #269,340 its light client starts from (fixtures/v3-testnet-set75): its minter comes after it.
+    const head = JSON.parse(readFileSync(join(ROOT, "fixtures", "v3-testnet-set75", "finality-proof-head.json"), "utf8")) as { header: { number: number } };
+    assert.ok(START_BLOCKS["bsc-testnet"] < head.header.number && head.header.number - START_BLOCKS["bsc-testnet"] < 100);
+    assert.equal(HOLD_MS["bsc-testnet"], 5 * 60_000);
+    const f = filesOf(DIR, SENDER, "bsc-testnet");
+    assert.equal(f.state, join(DIR, `automint-bsc-testnet-${SENDER}.json`));
+    assert.equal(f.lock, join(DIR, `automint-bsc-testnet-${SENDER}.lock`));
+    assert.equal(minterLockOf(ROLLUP_MINTER, DIR, "bsc-testnet"), join(DIR, `automint-bsc-testnet-minter-${ROLLUP_MINTER}.lock`), "one minter address, a lock per network");
+    assert.deepEqual(rpcsOf("bsc-testnet", undefined), NETWORKS["bsc-testnet"].rpcs);
+  });
+
+  it("parses the server's command line once the BNB Smart Chain testnet is served", () => {
+    const password = join(DIR, "not-a-password.txt");
+    writeFileSync(password, "not a password\n");
+    const o = parseOptions([...ACTIVATION, "--password-file", password]);
+    assert.deepEqual(o.networks, [...FOUR]);
+    assert.deepEqual(FOUR.map((x) => o.keepBy[x]), [10n ** 16n, 2n * 10n ** 14n, 2n * 10n ** 14n, 10n ** 15n]);
+    assert.deepEqual(FOUR.map((x) => o.maxSpendBy[x]), [2n * 10n ** 16n, 2n * 10n ** 15n, 2n * 10n ** 15n, 5n * 10n ** 15n]);
+    assert.deepEqual([o.watch, o.graceMs, o.minAmount, o.priorityFee], [15, 90_000, 10n ** 11n, undefined]);
+    // Its dry-run form (ops/server/README.md) too.
+    const dry = parseOptions(["--network", FOUR.join(","), "--grace", "90", "--min-amount", "0.001", ...ACTIVATION.slice(ACTIVATION.indexOf("--max-spend"), ACTIVATION.indexOf("--account")), "--sender", SENDER]);
+    assert.deepEqual(dry.networks, [...FOUR]);
+    assert.equal(dry.sender, SENDER);
+  });
+
+  it("gives each network its priority fee: --priority-fee, else the BNB Smart Chain testnet's 0.1 gwei, else feesFor's 1,000 wei as before", () => {
+    for (const x of ["sepolia", "base-sepolia", "arbitrum-sepolia"] as const) {
+      assert.equal(priorityFeeOn({}, x), undefined, x);
+      assert.deepEqual(feesFor(16n, { priorityFee: priorityFeeOn({}, x) }), { base: 16n, tip: 1_000n, maxFee: 10_000_000n, gasPrice: 1_016n }, `${x} as before`);
+    }
+    assert.equal(priorityFeeOn({}, "bsc-testnet"), 100_000_000n);
+    assert.equal(priorityFeeOn({ priorityFee: 200_000_000n }, "bsc-testnet"), 200_000_000n);
+    assert.deepEqual(feesFor(0n, { priorityFee: priorityFeeOn({}, "bsc-testnet") }), { base: 0n, tip: 100_000_000n, maxFee: 100_000_000n, gasPrice: 100_000_000n });
+    assert.throws(() => parseOptions(["--network", "sepolia,bsc-testnet", "--priority-fee", "0.05"]), /0\.05 gwei is below 0\.1 gwei, the least the BNB Smart Chain testnet's validators include/);
+    assert.equal(parseOptions(["--network", "sepolia,bsc-testnet", "--priority-fee", "0.1"]).priorityFee, 100_000_000n);
+    assert.equal(parseOptions(["--network", "sepolia,base-sepolia", "--priority-fee", "0.000001"]).priorityFee, 1_000n, "no floor without the BNB Smart Chain testnet");
   });
 
   it("refuses a network it does not know, one named twice, values for networks it does not serve, and --retry or --rehearse across networks", () => {
@@ -173,6 +239,22 @@ describe("the auto-mint's --network", () => {
     const five = parseLockedLog(lockedLog(5n, 224_440, 421_614n, ROLLUP_MINTER), readBridge(ROOT, "arbitrum-sepolia"));
     assert.ok(five.kind === "lock");
     assert.equal(five.lock.commitment, "0x636ef291c881c6839ace1d82bfb896a8f8c5322154c31d7e9cde9142e540beb9");
+  });
+
+  it("takes a lock for chain 97 and 0xdc31…2348 on the BNB Smart Chain testnet alone: one minter address, three chain ids", () => {
+    const own = parseLockedLog(lockedLog(8n, 269_400, 97n, ROLLUP_MINTER), BSC);
+    assert.ok(own.kind === "lock");
+    assert.equal(own.lock.dstChainId, 97n);
+    for (const network of ROLLUPS) {
+      const there = parseLockedLog(lockedLog(8n, 269_400, 97n, ROLLUP_MINTER), readBridge(ROOT, network));
+      assert.ok(there.kind === "skip" && new RegExp(`names chain 97, not ${NETWORKS[network].title}`).test(there.why), network);
+    }
+    const base = parseLockedLog(lockedLog(4n, 224_435, 84_532n, ROLLUP_MINTER), BSC);
+    assert.ok(base.kind === "skip" && /names chain 84532, not BNB Smart Chain testnet \(97\)/.test(base.why));
+    const arbitrum = parseLockedLog(lockedLog(5n, 224_440, 421_614n, ROLLUP_MINTER), BSC);
+    assert.ok(arbitrum.kind === "skip" && /names chain 421614/.test(arbitrum.why));
+    const sepolia = parseLockedLog(lockedLog(3n, 222_024, 11_155_111n, SEPOLIA_MINTER), BSC);
+    assert.ok(sepolia.kind === "skip");
   });
 
   it("ends a run over several networks with the worst code: a failed check, then a node unreachable, then a pending transaction", () => {
@@ -239,7 +321,7 @@ describe("the first mint of a minter that is not bound to the vault", () => {
 
 describe("the L1 part of a rollup's transaction", () => {
   it("knows how each network charges for L1", () => {
-    assert.deepEqual(L1_KIND, { sepolia: "none", "base-sepolia": "op", "arbitrum-sepolia": "arbitrum" });
+    assert.deepEqual(L1_KIND, { sepolia: "none", "base-sepolia": "op", "arbitrum-sepolia": "arbitrum", "bsc-testnet": "none" });
     assert.equal(l1Request("none", ROLLUP_MINTER, "0x12"), null);
     assert.equal(l1Request("arbitrum", ROLLUP_MINTER, "0x12")?.to, NODE_INTERFACE);
     assert.equal(l1Request("op", ROLLUP_MINTER, "0x12")?.to, GAS_PRICE_ORACLE);
@@ -347,6 +429,33 @@ describe("a rollup's send: its gas limit, the balance it needs and what it cost"
     assert.ok(fits.gasLimit > GAS_CAP);
   });
 
+  it("on the BNB Smart Chain testnet (no L1 part): the estimate + 10%, the gas limit at its 0.1 gwei in the balance a send needs and in --max-spend", async () => {
+    const r = new FakeRollup();
+    r.base = 0n;
+    r.l1 = NO_L1;
+    const bsc = (more: Partial<PreflightCtx["fees"]> = {}): PreflightCtx => ({
+      ...ctx(r, { priorityFee: priorityFeeOn({}, "bsc-testnet"), keep: 10n ** 15n, ...more }),
+      network: { title: NETWORKS["bsc-testnet"].title, gasCap: NETWORKS["bsc-testnet"].gasCap },
+    });
+    const ok = await preflight(job, bsc(), true);
+    assert.ok(ok.kind === "ready");
+    assert.equal(ok.gasLimit, gasLimitOf(r.gas), "no L1 gas added");
+    assert.equal(ok.l1?.kind ?? "none", "none", "no L1 part, as on Sepolia");
+    assert.deepEqual([ok.fees.base, ok.fees.tip, ok.fees.maxFee], [0n, 100_000_000n, 100_000_000n]);
+    // --max-spend 0.005 tBNB: the gas limit at 0.1 gwei, about 0.00029 tBNB a head-path mint, so 17 of them.
+    const next = BigInt(gasLimitOf(r.gas)) * 100_000_000n;
+    assert.equal((5n * 10n ** 15n) / next, 17n);
+    const capped = await preflight(job, { ...bsc({ maxSpend: 5n * 10n ** 15n }), spent: () => 5n * 10n ** 15n - next + 1n }, true);
+    assert.ok(capped.kind === "wait" && capped.cost === "max-spend");
+    r.funds = BigInt(gasLimitOf(r.gas)) * 100_000_000n + 10n ** 15n - 1n;
+    const short = await preflight(job, bsc(), true);
+    assert.ok(short.kind === "wait" && short.cost === "balance", "the gas limit at the max fee plus --keep");
+    r.gas = 15_300_000;
+    r.funds = ETH;
+    const over = await preflight(job, bsc(), true);
+    assert.ok(over.kind === "failed" && /above BNB Smart Chain testnet's 16,777,216 cap/.test(over.why));
+  });
+
   it("on an OP Stack rollup: the gas limit as on Sepolia, and the L1 fee in the balance a send needs and in --max-spend", async () => {
     const r = new FakeRollup();
     r.base = 5_000_000n;
@@ -388,7 +497,7 @@ describe("a rollup's send: its gas limit, the balance it needs and what it cost"
   });
 
   it("holds a rollup's lock for 5 minutes after such a wait, never Sepolia's (planned every round, as before), a replacement's, or after any other end", () => {
-    assert.deepEqual(HOLD_MS, { sepolia: 0, "base-sepolia": 300_000, "arbitrum-sepolia": 300_000 });
+    assert.deepEqual(HOLD_MS, { sepolia: 0, "base-sepolia": 300_000, "arbitrum-sepolia": 300_000, "bsc-testnet": 300_000 });
     const short = { kind: "wait", why: "the sender has 0 ETH", cost: "balance", balance: 0n } as const;
     for (const network of ROLLUPS) {
       assert.deepEqual(holdAfter(short, network, "head", false, 1_000), { path: "head", until: 301_000, cost: "balance", why: "the sender has 0 ETH", balance: 0n });

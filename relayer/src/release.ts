@@ -16,8 +16,8 @@
 //   [--fast-cap <tPOT>] [--fast-budget <tPOT>, --watch] [--fast-cap-override, for either above 10 tPOT]
 //   more options: --rpc <wss url> (the V3 node), --evm <http(s) url> (its EVM RPC), --priority-fee
 //   <gwei> and --max-fee <gwei> (burn)
-//   --network sepolia|base-sepolia|arbitrum-sepolia (burn, release, status; Sepolia's by default), or
-//   several comma separated for release --watch: the chain whose minter the burn is on (below)
+//   --network sepolia|base-sepolia|arbitrum-sepolia|bsc-testnet (burn, release, status; Sepolia's by
+//   default), or several comma separated for release --watch: the chain whose minter the burn is on (below)
 //
 // burn dry-runs BridgeMinter.burn(amount, v3Recipient) on Sepolia with eth_simulateV1, validation
 // on, from the sender (--from, by default the deployer 0xD983…1071) at its nonce and with its
@@ -204,7 +204,8 @@
 //
 // --network: the chain of the burn, Sepolia's by default and everything above as written. Base
 // Sepolia (84532) and Arbitrum Sepolia (421614) have a BridgeMinter each, at the same address
-// (0xdc31…2348), bound to the same vault on V3. A burn there takes that chain's records
+// (0xdc31…2348), bound to the same vault on V3, and so will the BNB Smart Chain testnet (97), at
+// that address too once deployed there. A burn there takes that chain's records
 // (deployments/<network>-bridge.json, where a burn is a step of kind "burn"), its RPCs (sepolia.mjs
 // NETWORKS: <NETWORK>_RPC_URL when set, else its first public one), its chain id in the burn id
 // (keccak256(abi.encode(BURN_TAG, block.chainid, minter, nonce)): burn ids differ per chain) and
@@ -219,7 +220,14 @@
 // Base's L1 data fee in the balance a send needs (l1.ts), and the record keeps the receipt's l1Fee
 // (Base) or gasUsedForL1 (Arbitrum). A read of state that the
 // rollup's RPC no longer serves (Arbitrum Sepolia's own keeps about 4,500 blocks, about as deep as
-// its finalized block) goes to that network's archive RPCs. release --watch takes several chains,
+// its finalized block) goes to that network's archive RPCs. The BNB Smart Chain testnet, an L1, is
+// read and sent the same way, with no L1 part: final is its finalized tag, fast finality (BEP-126)
+// about a second behind its latest (wayback.ts), so the watcher waits for finality there; fast mode
+// takes 1 to 7,200 of its 0.45 s blocks, at least 80 with --send; a burn's priority fee is 0.1 gwei,
+// the least its validators include (a lower --priority-fee is refused). Its public RPC that serves
+// eth_getLogs (publicnode) keeps them for about 8 to 11 hours and then answers with none, and no
+// error: status reads the views when the logs show fewer burns than burnCount, and the watcher finds
+// an older burn only through an RPC that keeps the minter's logs (BSC_TESTNET_RPC_URL). release --watch takes several chains,
 // comma separated, and serves them from one process, a round for one chain after the other, each
 // with its own wait (a chain whose RPC fails backs off alone), its own round count (--rounds n is n
 // rounds of each chain, and the exit code the worst of each chain's last round's) and burn cache
@@ -350,6 +358,7 @@ import {
   nextNonceIs,
   nonces,
   parseGwei,
+  priorityFeeProblem,
   qty,
   receiptOf,
   redact,
@@ -615,9 +624,10 @@ const USAGE = `usage (from relayer/):
   npm run release -- fund --member <1|2|3> | --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]
   npm run release -- status
   more options: --rpc <wss url>, --evm <http(s) url>, --priority-fee <gwei> and --max-fee <gwei> (burn)
-  --network sepolia|base-sepolia|arbitrum-sepolia: the chain of the burn (burn, release, status), Sepolia's by default;
+  --network sepolia|base-sepolia|arbitrum-sepolia|bsc-testnet: the chain of the burn (burn, release, status), Sepolia's by default;
     release --watch takes several, comma separated, and --confirmations one number for each or <network>=<n> pairs
-    (Base Sepolia 1 to 7,200, 180 or more with --send; Arbitrum Sepolia 1 to 7,200, 144 or more with --send)
+    (Base Sepolia 1 to 7,200, 180 or more with --send; Arbitrum Sepolia 1 to 7,200, 144 or more with --send;
+    BNB Smart Chain testnet 1 to 7,200, 80 or more with --send, best left out: it finalizes in about a second)
   the return path is trusted: the committee's multisig releases on V3, and no contract checks a release against its burn`;
 
 function usage(problem: string): never {
@@ -805,16 +815,21 @@ function burnOptions(args: string[]): BurnOptions {
     const text = str(v[name]);
     return text === undefined ? undefined : option(`--${name}`, () => parseGwei(text));
   };
+  const network = networkOption(v);
+  // A network whose validators include nothing below its tip (BSC's 0.1 gwei) refuses a lower one.
+  const priorityFee = gwei("priority-fee");
+  const tipProblem = priorityFeeProblem(priorityFee, NETWORKS[network]);
+  if (tipProblem) usage(tipProblem);
   return {
     ...parseCommon(v),
-    network: networkOption(v),
+    network,
     amount: option("--amount", () => parseWtpot(amountText)),
     v3Recipient: option("--v3-recipient", () => nonZeroAddress(recipientText, "--v3-recipient")),
     from: fromText === undefined ? undefined : option("--from", () => parseAddress(fromText, "--from")),
     send,
     account,
     passwordFile,
-    priorityFee: gwei("priority-fee"),
+    priorityFee,
     maxFee: gwei("max-fee"),
   };
 }
@@ -3878,7 +3893,12 @@ async function statusCommand(o: Common & { network: NetworkName }): Promise<numb
   const F = Number(BigInt(finalized.number));
   const state = await sepoliaState(b, latest.number);
   log(`${NET.title} block ${fmt(L)} (finalized ${fmt(F)}): BridgeMinter ${checksumAddress(hexToBytes(b.minter))}, ${state.burnCount} burn${state.burnCount === 1n ? "" : "s"}; wtPOT total supply ${formatWtpot(state.totalSupply)}`);
-  const found = await sepoliaLogs({ address: b.minter, topics: [BURN_REQUESTED_TOPIC] }, b.deployBlock, L);
+  let found = await sepoliaLogs({ address: b.minter, topics: [BURN_REQUESTED_TOPIC] }, b.deployBlock, L);
+  // A chain whose RPC answers old blocks with no logs and no error (wayback.ts logsFade): fewer logs than burns means some are gone.
+  if (NET.logsFade && !("refused" in found)) {
+    const n = found.logs.filter((x) => x.address.toLowerCase() === b.minter).length;
+    if (BigInt(n) < state.burnCount) found = { refused: `it returned ${n} BurnRequested log${n === 1 ? "" : "s"} for ${state.burnCount} burns: it keeps the logs of recent blocks only, and answers older ones with none` };
+  }
   const burns: { burnNonce: bigint; burnId: Uint8Array; burn: BurnOnChain | null; source: string }[] = [];
   if ("refused" in found) {
     log(`     the ${NET.title} RPC refuses eth_getLogs (${found.refused}): the burns from burnCount and burnIdOf, their amounts and recipients from ${b.chain.record} where it has them`);

@@ -1,5 +1,6 @@
 // What a transaction on a rollup pays for its data on L1 (Sepolia), besides its execution gas, and
-// how the tools estimate it before they send. Sepolia has none.
+// how the tools estimate it before they send. Sepolia has none, nor the BNB Smart Chain testnet, an
+// L1 of its own.
 //
 // Arbitrum (Nitro): L1 gas. The poster's cost is charged as gas units at the L2 gas price, so it is
 // part of the gas a transaction uses and must fit in its gas limit; eth_estimateGas includes it, at
@@ -19,13 +20,15 @@ import { bytesToHex, concatBytes, hexToBytes, type Hex } from "./bytes.js";
 import { abiEncode, uintAt } from "./bridge.js";
 import { addressWord, selector, uintWord } from "./vault.js";
 
-/** How a network charges for L1: not at all (Sepolia), in gas units (Arbitrum), or as a fee besides the gas (OP Stack). */
+/** How a network charges for L1: not at all (Sepolia, the BNB Smart Chain testnet), in gas units (Arbitrum), or as a fee besides the gas (OP Stack). */
 export type L1Kind = "none" | "arbitrum" | "op";
 
 export const L1_KIND: Record<NetworkName, L1Kind> = {
   sepolia: "none",
   "base-sepolia": "op",
   "arbitrum-sepolia": "arbitrum",
+  // An L1 with no L1 part: a transaction pays its gas alone.
+  "bsc-testnet": "none",
 };
 
 /** Arbitrum's NodeInterface (eth_call only) and the OP Stack's GasPriceOracle predeploy. */

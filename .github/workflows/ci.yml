@@ -75,7 +75,7 @@ jobs:
         # their tampered copies, re-verified with no network access.
         run: |
           failed=""
-          for dir in mainnet mainnet-pre-v3 v3-testnet v3-testnet-vault v3-testnet-mint v3-testnet-hero v3-testnet-lock1 v3-testnet-set59 westend-asset-hub-revive; do
+          for dir in mainnet mainnet-pre-v3 v3-testnet v3-testnet-vault v3-testnet-mint v3-testnet-hero v3-testnet-lock1 v3-testnet-set59 v3-testnet-set75 westend-asset-hub-revive; do
             echo "::group::npm run check -- --dir ../fixtures/$dir"
             npm run check -- --dir "../fixtures/$dir" || failed="$failed $dir"
             echo "::endgroup::"

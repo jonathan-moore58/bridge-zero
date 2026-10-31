@@ -6,7 +6,7 @@
 //
 //   npm run automint [-- --watch <seconds>] [--grace <seconds>] [--from <V3 block>] [--sender <address>] [--rehearse <nonce>]
 //   npm run automint -- --send --account <keystore> --password-file <path> [--watch <seconds>] [--grace <seconds>] [--keep <eth>] [--from <V3 block>] [--retry <nonce>]
-//   more options: --network sepolia|base-sepolia|arbitrum-sepolia[,...] (default sepolia; below),
+//   more options: --network sepolia|base-sepolia|arbitrum-sepolia|bsc-testnet[,...] (default sepolia; below),
 //   --state-dir <path> (default ~/.bridge-zero), --rpc <wss url> (the V3 node), --evm <http(s) url> (its EVM RPC),
 //   --grace <seconds> (default 90), --replace-after <minutes> (default 10), --min-amount <tPOT> (default 0.001),
 //   --max-spend <eth> a day (default 0.02), --priority-fee <gwei>, --max-fee <gwei>, --max-base-fee <gwei> (default 1.5)
@@ -104,19 +104,22 @@
 // reached, up to 10 minutes); only a Fatal ends it: a lost lock, a record that cannot be written, a
 // refused key, or cast unable to sign.
 //
-// --network sepolia (the default, and everything above as written) | base-sepolia | arbitrum-sepolia,
-// or several, comma separated (--network sepolia,base-sepolia,arbitrum-sepolia): one process serves
-// each network's BridgeMinter in turn, a round for one network after the other, each with its own
-// records (deployments/<network>-bridge.json, the minter, its token and the light client it takes),
-// RPCs (contracts/script/lib/sepolia.mjs NETWORKS: <NETWORK>_RPC_URL when set, then its public
-// ones), state, history and locks (automint-<network>-<sender>.*, and
-// automint-<network>-minter-<minter>.lock, as the rollups share one minter address), scan start
-// (V3 #222,500 on the rollups, below the minters there) and wait (a round that could not reach a node
-// backs off that network alone). Where "Sepolia" stands above, read that network. --keep,
-// --max-spend and --max-base-fee take one value for every network, or <network>=<value> pairs,
-// comma separated; a network left out takes its default (--keep 0.05 ETH and --max-spend 0.02 ETH
-// on Sepolia, 0.0002 and 0.002 on a rollup). --retry and --rehearse take one network.
-// What a rollup adds: its minter may not be bound to the vault yet (a mint before the bind reverts
+// --network sepolia (the default, and everything above as written) | base-sepolia | arbitrum-sepolia
+// | bsc-testnet, or several, comma separated (--network sepolia,base-sepolia,arbitrum-sepolia): one
+// process serves each network's BridgeMinter in turn, a round for one network after the other, each
+// with its own records (deployments/<network>-bridge.json, the minter, its token and the light client
+// it takes), RPCs (contracts/script/lib/sepolia.mjs NETWORKS: <NETWORK>_RPC_URL when set, then its
+// public ones), state, history and locks (automint-<network>-<sender>.*, and
+// automint-<network>-minter-<minter>.lock, as the rollups and the BNB Smart Chain testnet share one
+// minter address), scan start (V3 #222,500 on the rollups and #269,300 on the BNB Smart Chain testnet,
+// below the minters there) and wait (a round that could not reach a node backs off that network
+// alone). Where "Sepolia" stands above, read that network. --keep, --max-spend and --max-base-fee
+// take one value for every network, or <network>=<value> pairs, comma separated; a network left out
+// takes its default (--keep 0.05 ETH and --max-spend 0.02 ETH on Sepolia, 0.0002 and 0.002 on a
+// rollup, 0.001 and 0.005 tBNB on the BNB Smart Chain testnet). --retry and --rehearse take one
+// network. The BNB Smart Chain testnet's priority fee is 0.1 gwei, the least its validators include
+// (its base fee is 0), unless --priority-fee, which no network served takes below its own least.
+// What a rollup (and the BNB Smart Chain testnet) adds: its minter may not be bound to the vault yet (a mint before the bind reverts
 // VaultNotBound()), so its first mint goes by the head path, whose importAndMint carries the vault's
 // account proof and binds it in the same transaction (lock 0's mint on Sepolia did, README row 32);
 // mint(p) at a held header cannot bind, so while the minter is not bound a lock waits for the head
@@ -129,7 +132,8 @@
 // above --max-base-fee, --max-spend reached, or the sender's balance short) is not planned again for
 // 5 minutes (HOLD_MS), or until the sender's balance rises or the base fee is back within the gate,
 // so that no bundle is captured every round only to wait again (one process serves every network,
-// and such a round slows the others'). Sepolia's locks are planned every round, as before.
+// and such a round slows the others'), and the BNB Smart Chain testnet's the same. Sepolia's locks
+// are planned every round, as before.
 //
 // automint-main.ts runs it (npm run automint); automint.test.ts tests it.
 
@@ -141,7 +145,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { keccak_256 } from "@noble/hashes/sha3.js";
-import { eth, fmt, keystoreAddress, mktxArgs, NETWORKS, parseGwei, qty, redact, redactAlso, sleep, type Fees, type NetworkName, type Receipt } from "../../contracts/script/lib/sepolia.mjs";
+import { eth, fmt, keystoreAddress, mktxArgs, NETWORKS, parseGwei, priorityFeeProblem, qty, redact, redactAlso, sleep, type Fees, type NetworkName, type Receipt } from "../../contracts/script/lib/sepolia.mjs";
 import {
   addressAt,
   BRIDGE_ERRORS,
@@ -213,9 +217,12 @@ export const DEFAULT_START_BLOCK = 218_400;
 /**
  * Where each network's first run scans from without --from. On Base Sepolia and Arbitrum Sepolia
  * BridgeMinter was created at about 20:58 UTC on Oct 27, 2026 (V3 #222,6xx; README rows 94 to 97),
- * and the first lock naming it is lock 4 (V3 #224,435): #222,500 is below both.
+ * and the first lock naming it is lock 4 (V3 #224,435): #222,500 is below both. On the BNB Smart
+ * Chain testnet the minter is created after its light client's checkpoint, the head #269,340 that
+ * fixtures/v3-testnet-set75 captured on Nov 1: #269,300 is below every lock that can name it, and the
+ * vault's earlier locks are accounted as below the scan's start, as on the rollups.
  */
-export const START_BLOCKS: Record<NetworkName, number> = { sepolia: DEFAULT_START_BLOCK, "base-sepolia": 222_500, "arbitrum-sepolia": 222_500 };
+export const START_BLOCKS: Record<NetworkName, number> = { sepolia: DEFAULT_START_BLOCK, "base-sepolia": 222_500, "arbitrum-sepolia": 222_500, "bsc-testnet": 269_300 };
 /** Blocks below the state's next block that each round reads again, in case the EVM RPC's log index lagged behind its finalized block. */
 export const SCAN_OVERLAP = 64;
 /** Our transactions for one lock that may be mined without minting it before the lock is left to the operator. */
@@ -242,12 +249,16 @@ const DEFAULT_KEEP = "0.05";
 /**
  * --keep and --max-spend of each network when left out: Sepolia's as before; on a rollup, where a
  * mint costs about 0.00005 ETH on Arbitrum Sepolia and a quarter of that on Base Sepolia (2.5 M gas
- * at 0.02 and 0.005 gwei, Oct 28), 0.0002 ETH kept and 0.002 ETH a day.
+ * at 0.02 and 0.005 gwei, Oct 28), 0.0002 ETH kept and 0.002 ETH a day; on the BNB Smart Chain
+ * testnet, where one costs about 0.00026 tBNB by the head path and 0.00006 by a held header (2.6 M
+ * and 0.6 M gas at its 0.1 gwei, Nov 1), 0.001 tBNB kept and 0.005 tBNB a day: about 17 head-path
+ * mints a day as --max-spend counts them (the gas limit at 0.1 gwei), a fuse rather than a budget.
  */
 export const NETWORK_DEFAULTS: Record<NetworkName, { keep: string; maxSpend: string }> = {
   sepolia: { keep: DEFAULT_KEEP, maxSpend: "0.02" },
   "base-sepolia": { keep: "0.0002", maxSpend: "0.002" },
   "arbitrum-sepolia": { keep: "0.0002", maxSpend: "0.002" },
+  "bsc-testnet": { keep: "0.001", maxSpend: "0.005" },
 };
 const DEFAULT_MAX_BASE_FEE = "1.5";
 /** --grace: the app still offers its own mint once a lock is final, so a send waits this long for the locker first. */
@@ -259,7 +270,7 @@ const DEFAULT_MIN_AMOUNT = "0.001";
 /** --max-spend, in ETH: the most our mined transactions may cost over SPEND_WINDOW_MS. */
 const DEFAULT_MAX_SPEND = "0.02";
 const MAX_REPLACE_AFTER_MINUTES = 1_440;
-/** The relayer's priority fee (sepolia.mjs feesAt): 1,000 wei, above what most Sepolia blocks pay. */
+/** The relayer's priority fee (sepolia.mjs feesAt): 1,000 wei, above what most Sepolia blocks pay; a network with a tip of its own (NETWORKS tip, BSC's 0.1 gwei) takes that instead (main). */
 const DEFAULT_TIP = 1_000n;
 /** The lowest max fee feesAt sets (0.01 gwei). */
 const MIN_MAX_FEE = 10_000_000n;
@@ -591,7 +602,7 @@ export interface Options {
 export const USAGE = `usage (from relayer/):
   npm run automint [-- --watch <seconds>] [--grace <seconds>] [--from <V3 block>] [--sender <address>] [--rehearse <nonce>]
   npm run automint -- --send --account <keystore> --password-file <path> [--watch <seconds>] [--grace <seconds>] [--keep <eth>] [--from <V3 block>] [--retry <nonce>]
-  more options: --network sepolia|base-sepolia|arbitrum-sepolia, or several comma separated (default sepolia),
+  more options: --network sepolia|base-sepolia|arbitrum-sepolia|bsc-testnet, or several comma separated (default sepolia),
     --state-dir <path> (default ~/.bridge-zero), --rpc <wss url>, --evm <http(s) url>,
     --grace <seconds> (default ${DEFAULT_GRACE}), --replace-after <minutes> (default ${DEFAULT_REPLACE_AFTER}),
     --min-amount <tPOT> (default ${DEFAULT_MIN_AMOUNT}), --max-spend <eth> a day (default ${DEFAULT_MAX_SPEND}),
@@ -711,6 +722,11 @@ export function parseOptions(args: string[]): Options {
     }
   };
   const priorityFee = gwei("priority-fee");
+  // --priority-fee is every network's: none that has a tip (BSC's 0.1 gwei, the least its validators include) takes less.
+  for (const x of served) {
+    const problem = priorityFeeProblem(priorityFee, NETWORKS[x]);
+    if (problem) usage(problem);
+  }
   const maxFee = gwei("max-fee");
   const maxBaseFeeBy = perNetwork("max-base-fee", str("max-base-fee"), served, () => DEFAULT_MAX_BASE_FEE, parseGwei);
   const maxBaseFee = maxBaseFeeBy[served[0]];
@@ -1649,6 +1665,9 @@ export function feesFor(base: bigint, o: { priorityFee?: bigint; maxFee?: bigint
   return { base, tip, maxFee: o.maxFee ?? (floor > MIN_MAX_FEE ? floor : MIN_MAX_FEE), gasPrice: base + tip };
 }
 
+/** The priority fee a round on `network` takes: --priority-fee, else the network's tip (BSC's 0.1 gwei), else none given, feesFor's 1,000 wei. */
+export const priorityFeeOn = (o: { priorityFee?: bigint }, network: NetworkName): bigint | undefined => o.priorityFee ?? NETWORKS[network].tip;
+
 /** The gas limit a transaction is sent with: its estimate + 10%, rounded up. */
 export const gasLimitOf = (gas: number) => gas + Math.ceil(gas / 10);
 
@@ -2062,14 +2081,15 @@ export async function sendJob(job: Job, ctx: SendCtx, replacing: Stuck | null = 
 }
 
 /**
- * How long a rollup's lock is not planned again after its send (or a dry run's) waited for what it
- * costs: the next base fee above --max-base-fee, --max-spend reached, or the sender's balance short.
- * Planning it captures a bundle from the V3 node (the head path's captureBundle, some 10 s of work)
- * and asks for eth_call and eth_estimateGas, only to wait again; and every network's rounds run in
- * one process, one after the other, so a lock that cannot be paid for would slow the others' rounds
- * for as long as it waits. None on Sepolia: its locks are planned every round, as before.
+ * How long a rollup's lock (or the BNB Smart Chain testnet's) is not planned again after its send (or
+ * a dry run's) waited for what it costs: the next base fee above --max-base-fee, --max-spend reached,
+ * or the sender's balance short. Planning it captures a bundle from the V3 node (the head path's
+ * captureBundle, some 10 s of work) and asks for eth_call and eth_estimateGas, only to wait again; and
+ * every network's rounds run in one process, one after the other, so a lock that cannot be paid for
+ * would slow the others' rounds for as long as it waits. None on Sepolia: its locks are planned every
+ * round, as before.
  */
-export const HOLD_MS: Record<NetworkName, number> = { sepolia: 0, "base-sepolia": 5 * 60_000, "arbitrum-sepolia": 5 * 60_000 };
+export const HOLD_MS: Record<NetworkName, number> = { sepolia: 0, "base-sepolia": 5 * 60_000, "arbitrum-sepolia": 5 * 60_000, "bsc-testnet": 5 * 60_000 };
 
 /** A lock not planned again on `path` before `until`, as its last send waited for `cost` (why): unless the sender's balance rises above `balance`, or the next base fee is back within --max-base-fee. */
 export interface Hold {
@@ -2842,8 +2862,9 @@ export async function main(argv = process.argv.slice(2)): Promise<number> {
       }
       const network = NETWORKS[x];
       const run: Run = {
-        // This network's --keep, --max-spend and --max-base-fee, where a round reads them.
-        o: { ...o, keep: o.keepBy[x], maxSpend: o.maxSpendBy[x], maxBaseFee: o.maxBaseFeeBy[x] },
+        // This network's --keep, --max-spend and --max-base-fee, where a round reads them, and its
+        // priority fee (priorityFeeOn: the BNB Smart Chain testnet's 0.1 gwei unless --priority-fee).
+        o: { ...o, keep: o.keepBy[x], maxSpend: o.maxSpendBy[x], maxBaseFee: o.maxBaseFeeBy[x], priorityFee: priorityFeeOn(o, x) },
         bridge,
         sender,
         files,

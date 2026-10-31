@@ -18,12 +18,13 @@
 //   node script/deploy-sepolia.mjs [--network <name>] --send --account bz-deployer --password-file <path> [--resume]
 //   node script/deploy-sepolia.mjs [--network <name>] --verify
 //
-// --network: sepolia (the default, the plan above), base-sepolia or arbitrum-sepolia (lib/sepolia.mjs
-// NETWORKS: chain id, RPCs, explorer, gas cap). A rollup gets the V3 testnet's client only, from
-// fixtures/v3-testnet-set59: the libraries, GrandpaLightClient #2 and ProvenBalance #2, initialize
-// with the set that the newest set change started, at that set change (the set that signs the
-// head, so nothing is left to import before it), and importAndProve at the head; no old mainnet,
-// no tampered proof. The same build serves: the deployer's nonce there must be 0, so the
+// --network: sepolia (the default, the plan above), base-sepolia, arbitrum-sepolia or bsc-testnet
+// (lib/sepolia.mjs NETWORKS: chain id, RPCs, explorer, gas cap, tip). Another chain gets the V3
+// testnet's client only, from fixtures/v3-testnet-set59 on a rollup and fixtures/v3-testnet-set75
+// on the BNB Smart Chain testnet: the libraries, GrandpaLightClient #2 and ProvenBalance #2,
+// initialize with the set that the newest set change started, at that set change (the set that
+// signs the head, so nothing is left to import before it), and importAndProve at the head; no old
+// mainnet, no tampered proof. The same build serves: the deployer's nonce there must be 0, so the
 // libraries land where the sepolia profile links them, and nothing else may come first.
 // Each network has its own record, deployments/<network>.json.
 //
@@ -35,12 +36,13 @@
 // and when it is mined, and --resume continues that file from its first unmined step.
 // --verify submits every deployed contract to Etherscan with forge verify-contract (forge reads
 // the key from ETHERSCAN_API_KEY).
-// Fees: a priority fee of 1,000 wei and a max fee of ten times the next base fee plus it, at least
-// 0.01 gwei, fixed for the run; --priority-fee and --max-fee (gwei) replace them. The
-// RPC is SEPOLIA_RPC_URL when set, else the public endpoint (on another network, its own variable,
-// BASE_SEPOLIA_RPC_URL or ARBITRUM_SEPOLIA_RPC_URL, else its first public RPC). Exit code 0 on
-// success, 1 when a check fails, 2 when the RPC cannot be reached, 3 when a sent transaction is
-// still pending.
+// Fees: a priority fee of 1,000 wei (on the BNB Smart Chain testnet 0.1 gwei, the least its
+// validators include; a lower --priority-fee is refused there) and a max fee of ten times the next
+// base fee plus it, at least 0.01 gwei, fixed for the run; --priority-fee and --max-fee (gwei)
+// replace them. The RPC is SEPOLIA_RPC_URL when set, else the public endpoint (on another network,
+// its own variable, BASE_SEPOLIA_RPC_URL, ARBITRUM_SEPOLIA_RPC_URL or BSC_TESTNET_RPC_URL, else its
+// first public RPC). Exit code 0 on success, 1 when a check fails, 2 when the RPC cannot be reached,
+// 3 when a sent transaction is still pending.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -86,6 +88,7 @@ import {
   fixtureCalls,
   parseGwei,
   feesAt,
+  priorityFeeProblem,
   redactAlso,
   redact,
   toolEnv,
@@ -133,7 +136,7 @@ usage (from contracts/):
   node script/deploy-sepolia.mjs [--network <name>] [--dry-run] [--resume] [--priority-fee <gwei>] [--max-fee <gwei>]
   node script/deploy-sepolia.mjs [--network <name>] --send --account <keystore> --password-file <path> [--resume] [fees]
   node script/deploy-sepolia.mjs [--network <name>] --verify
-  --network: sepolia (the default), base-sepolia or arbitrum-sepolia`);
+  --network: sepolia (the default), base-sepolia, arbitrum-sepolia or bsc-testnet`);
   exit(1);
 }
 for (let i = 2; i < process.argv.length; i++) {
@@ -174,6 +177,9 @@ try {
 } catch (err) {
   usage(`--network: ${err.message}`);
 }
+// A network whose validators include nothing below its tip (BSC's 0.1 gwei) refuses a lower --priority-fee.
+const tipProblem = priorityFeeProblem(PRIORITY_FEE);
+if (tipProblem) usage(tipProblem);
 const RECORD = join(CONTRACTS, "..", "deployments", `${NETWORK.name}.json`);
 
 // ------------------------------------------------------------------ the plan
@@ -182,9 +188,12 @@ const LIBRARIES = ["SCL_EIP6565", "GrandpaCodec", "AuthoritySets", "StorageProof
 const UNITS = [...LIBRARIES, "GrandpaLightClient", "ProvenBalance"];
 // The light clients of each network, each with the fixtures it starts from: on Sepolia (the first
 // deployment) both chains, initialized one set before a set change that is then imported, and
-// the tampered proof mined as a failed transaction; on a rollup the V3 testnet only, at the
-// checkpoint "current" (fixtureCalls), so no set change is imported, and no tampered proof.
+// the tampered proof mined as a failed transaction; on another chain the V3 testnet only, at the
+// checkpoint "current" (fixtureCalls), so no set change is imported, and no tampered proof. The
+// rollups' records name set 59's data (--resume rebuilds the plan from it); the BNB Smart Chain
+// testnet, deployed later, starts from set 75, captured on Nov 1 (V3 #266,908, head #269,340).
 const V3_NOW = { id: "#2", dir: "v3-testnet-set59", title: "the Portaldot V3 testnet", checkpoint: "current", tamper: false };
+const V3_SET75 = { id: "#2", dir: "v3-testnet-set75", title: "the Portaldot V3 testnet", checkpoint: "current", tamper: false };
 const PLANS = {
   sepolia: [
     { id: "#1", dir: "mainnet", title: "the old Portaldot mainnet", checkpoint: "parent", tamper: true },
@@ -192,6 +201,7 @@ const PLANS = {
   ],
   "base-sepolia": [V3_NOW],
   "arbitrum-sepolia": [V3_NOW],
+  "bsc-testnet": [V3_SET75],
 };
 const CHAINS = PLANS[NETWORK.name];
 
