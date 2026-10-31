@@ -5,7 +5,9 @@
 // the vault, lock 1's LockProof), the tampers mirrored (a flip in every item, other keys, another
 // root, values of another length or variant, an externally owned account's entry), B's header and
 // finality against the light client's answer, the whole offline check, and the calldata of the
-// Reader and the example gate against what cast computes.
+// Reader and the example gate against what cast computes. Then state-fetch.ts against stand-in
+// nodes: a V3 node on another chain, or without B, refused with the --from-fixture hint, and
+// eth_estimateGas asked again only while the Sepolia RPC has not seen the block.
 //
 //   npm test
 
@@ -14,9 +16,11 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { abiEncode, mintCalldata, signersHint } from "./bridge.js";
 import { bytesToHex, concatBytes, flipByte, hexToBytes, type Hex } from "./bytes.js";
+import { Chain } from "./chain.js";
 import { clientVerifies, verifyJustification } from "./grandpa.js";
 import { blake2_256 } from "./hash.js";
-import { decodeAuthorityList, decodeFinalityProof, decodeHeader, decodeJustification } from "./scale.js";
+import type { RpcClient } from "./rpc.js";
+import { decodeAuthorityList, decodeFinalityProof, decodeHeader, decodeJustification, type RpcHeader } from "./scale.js";
 import {
   accountInfoAt,
   assetAccountAt,
@@ -56,6 +60,7 @@ import {
   systemAccountKey,
   type StateReadsFixture,
 } from "./state.js";
+import { estimateGas, nodeAgrees, type ImportedBlock } from "./state-fetch.js";
 import { selector, uintWord } from "./vault.js";
 
 const f = JSON.parse(readFileSync(new URL("../../fixtures/v3-testnet-kit/state-reads.json", import.meta.url), "utf8")) as StateReadsFixture;
@@ -357,5 +362,73 @@ describe("the Reader's and the gate's calldata", () => {
     assert.deepEqual(main, { kind: "readMain", value, number: 264_729 });
     assert.throws(() => decodeReaderResult("assetAccount", words(1n, 2n)), /96 bytes/);
     assert.throws(() => decodeReaderResult("assetAccount", words(1n, 256n, 3n)), /uint8/);
+  });
+});
+
+describe("state-fetch.ts against stand-in nodes", () => {
+  const V3_GENESIS = f.provenance.genesisHash;
+  /** B as GrandpaLightClient #2 answered for it, with the genesis the client follows: the V3 testnet's. */
+  const b: ImportedBlock = {
+    network: "sepolia",
+    client: f.lightClient.address,
+    hash: f.header.hash,
+    number: f.lightClient.headerOf.number,
+    stateRoot: f.lightClient.headerOf.stateRoot,
+    setId: f.lightClient.headerOf.setId,
+    genesis: V3_GENESIS,
+    latest: f.lightClient.latestFinalized,
+    readAt: f.lightClient.readAt,
+  };
+  const header: RpcHeader = {
+    parentHash: f.header.parentHash,
+    number: `0x${f.header.number.toString(16)}`,
+    stateRoot: f.header.stateRoot,
+    extrinsicsRoot: f.header.extrinsicsRoot,
+    digest: { logs: f.header.digest.map((d) => d.scale) },
+  };
+  /** A V3 node that serves genesis `genesis` and, with `hasB`, B's header as chain_getHeader gives it. */
+  const node = (genesis: Hex, hasB: boolean) =>
+    new Chain({
+      url: "wss://test-node-v3.portaldot.dev",
+      async request<T>(method: string, params: unknown[]): Promise<T> {
+        if (method === "chain_getBlockHash" && params[0] === 0) return genesis as T;
+        if (method === "chain_getHeader") return (hasB && params[0] === f.header.hash ? header : null) as T;
+        throw new Error(`the stand-in node has no answer for ${method}`);
+      },
+    } as unknown as RpcClient);
+
+  it("refuses a V3 node on another chain, or one without B's header, with the --from-fixture hint", async () => {
+    assert.equal((await nodeAgrees(node(V3_GENESIS, true), b)).number, 264_729, "the testnet's node, with B");
+    // At about 10:05 PM PKT on Oct 31 the testnet's URL briefly served another chain (genesis 0x6e7f1f24…); a stand-in for it:
+    const other = `0x6e7f1f24${"00".repeat(28)}` as Hex;
+    await assert.rejects(nodeAgrees(node(other, true), b), {
+      name: "KitStop",
+      message: `the V3 node serves another chain: genesis ${other}, where GrandpaLightClient #2 on sepolia follows ${V3_GENESIS}; run with --from-fixture <file> to take the proofs from a fixture (fixtures/v3-testnet-kit/state-reads.json holds #264,729's)`,
+    });
+    // A node of the testnet without B (chain.ts: "no header for …").
+    await assert.rejects(nodeAgrees(node(V3_GENESIS, false), b), {
+      name: "KitStop",
+      message: /^the V3 node does not have the header of #264729 \(no header for 0x6dc44fe1[0-9a-f]{56}\): it is behind the light client or on another chain; run with --from-fixture /,
+    });
+  });
+
+  it("asks eth_estimateGas again while the Sepolia RPC has not seen the block, and for no other refusal", async (t) => {
+    const answers: object[] = [];
+    let asked = 0;
+    t.mock.method(globalThis, "fetch", async () => {
+      asked++;
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, ...answers.shift() }));
+    });
+    const notSeen = { error: { code: -32000, message: "block not found: 0xb7a4fb" } };
+    const estimate = (tries?: number) => estimateGas(f.lightClient.address, Uint8Array.of(1), "0xb7a4fb", undefined, tries, 1);
+    answers.push(notSeen, { error: { code: -32000, message: "header not found" } }, { result: "0x6e80d" });
+    assert.deepEqual(await estimate(), { gas: 452_621 });
+    assert.equal(asked, 3);
+    answers.push({ error: { code: 3, message: "execution reverted" } });
+    assert.deepEqual(await estimate(), { refused: "execution reverted" });
+    assert.equal(asked, 4, "a refusal of another kind is not asked again");
+    answers.push(notSeen, notSeen, notSeen);
+    assert.deepEqual(await estimate(3), { refused: "block not found: 0xb7a4fb, asked 3 times" });
+    assert.equal(asked, 7);
   });
 });

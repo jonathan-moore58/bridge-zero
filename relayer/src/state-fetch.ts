@@ -1,13 +1,14 @@
 // The proof kit's reads from the network, read-only: the V3 block the light client on Sepolia holds
-// (GrandpaLightClient #2, by eth_call), whether the V3 node agrees about that block, and the proofs
-// of a read at it from the V3 node, each walked here with the contracts' checks (state.ts) before
-// anything uses it. kit.ts (npm run kit) uses it. Nothing here signs or sends.
+// (GrandpaLightClient #2, by eth_call), whether the V3 node is on the chain the client follows (its
+// genesis) and agrees about that block, and the proofs of a read at it from the V3 node, each walked
+// here with the contracts' checks (state.ts) before anything uses it. kit.ts (npm run kit) uses it.
+// Nothing here signs or sends.
 //
 // Only blocks the light client imported can be read on chain: the Reader takes a block hash and
 // asks the client for its state root (UnknownBlock otherwise). The V3 node keeps a block's state
 // only as long as it chooses to (the testnet node still served #264,729 on Oct 31, after V3 stopped
-// producing blocks); when it has discarded it, or does not answer, a fixture's proofs are the way
-// left (kit.ts --from-fixture).
+// producing blocks); when it has discarded it, does not answer, or serves another chain (as the
+// testnet's URL briefly did on Oct 31), a fixture's proofs are the way left (kit.ts --from-fixture).
 
 import { BRIDGE_ERRORS, callData, CLIENT, errorMap, revertName, uintAt, wordAt, type LockProof } from "./bridge.js";
 import { bytesToHex, equalBytes, hexToBytes, shortHex, type Hex } from "./bytes.js";
@@ -19,7 +20,7 @@ import type { Header } from "./scale.js";
 import { childSlotAt, contractAt, KIT_ERRORS, lockProofOf, outcomeOf } from "./state.js";
 import { readProof } from "./trie.js";
 import { checksumAddress, commitmentSlot } from "./vault.js";
-import { rpc, rpcBody, useNetwork, type NetworkName } from "../../contracts/script/lib/sepolia.mjs";
+import { rpc, rpcBody, sleep, useNetwork, type NetworkName } from "../../contracts/script/lib/sepolia.mjs";
 
 /** A refusal with what to do about it. */
 export class KitStop extends Error {
@@ -34,13 +35,17 @@ export class KitUnreachable extends Error {
 const ERRORS = errorMap([...BRIDGE_ERRORS, ...KIT_ERRORS]);
 const FALLBACK = "run with --from-fixture <file> to take the proofs from a fixture (fixtures/v3-testnet-kit/state-reads.json holds #264,729's)";
 
-/** A V3 node read; a node that does not answer, or no longer has the block's state, says how to go on. */
+/**
+ * A V3 node read; a node that does not answer, does not have the block (chain.ts header: "no header
+ * for …"), or no longer has the block's state, says how to go on.
+ */
 async function nodeRead<T>(what: string, read: () => Promise<T>): Promise<T> {
   try {
     return await read();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (error instanceof RpcError && error.code === undefined) throw new KitUnreachable(`the V3 node did not answer ${what} (${message}); ${FALLBACK}`);
+    if (/^no header for /.test(message)) throw new KitStop(`the V3 node does not have ${what} (${message}): it is behind the light client or on another chain; ${FALLBACK}`);
     if (/discarded|pruned|unknown block|not found/i.test(message)) throw new KitStop(`the V3 node no longer has the state for ${what} (${message}); ${FALLBACK}`);
     throw error;
   }
@@ -58,6 +63,8 @@ export interface ImportedBlock {
   stateRoot: Hex;
   /** The set that finalized it (the client's headerOf().setId; for a checkpoint, the set installed with it). */
   setId: number;
+  /** The genesis hash of the chain the client follows (its genesisHash()): the V3 node must serve the same. */
+  genesis: Hex;
   /** The client's latest block. */
   latest: { hash: Hex; number: number };
   /** The block of `network` the client was read at. */
@@ -83,10 +90,24 @@ export async function ethCall(to: Hex, data: Uint8Array, block: string, override
   return { ok: false, revert, message };
 }
 
-/** eth_estimateGas of a call (the whole transaction, base and calldata included), or the node's reason for not estimating it. */
-export async function estimateGas(to: Hex, data: Uint8Array, block: string, overrides?: CodeOverrides): Promise<{ gas: number } | { refused: string }> {
-  const body = await rpcBody("eth_estimateGas", [{ to, data: bytesToHex(data) }, block, ...(overrides ? [overrides] : [])]);
-  return body.error ? { refused: body.error.message ?? "error" } : { gas: Number(BigInt(String(body.result))) };
+/** What a public RPC answers when the backend that took the request has not seen the block yet (geth says "header not found"). */
+const BLOCK_NOT_SEEN = /\b(block|header) not found\b/i;
+
+/**
+ * eth_estimateGas of a call (the whole transaction, base and calldata included), or the node's
+ * reason for not estimating it. `block` is the Sepolia block the client was just read at, which a
+ * lagging backend of a load-balanced RPC may not have yet ("block not found: 0xb7a4fb" in 2 of 4
+ * runs on Oct 31): only that refusal is asked again, up to `tries` times, `pauseMs` apart.
+ */
+export async function estimateGas(to: Hex, data: Uint8Array, block: string, overrides?: CodeOverrides, tries = 5, pauseMs = 3_000): Promise<{ gas: number } | { refused: string }> {
+  for (let attempt = 1; ; attempt++) {
+    const body = await rpcBody("eth_estimateGas", [{ to, data: bytesToHex(data) }, block, ...(overrides ? [overrides] : [])]);
+    if (!body.error) return { gas: Number(BigInt(String(body.result))) };
+    const refused = body.error.message ?? "error";
+    if (!BLOCK_NOT_SEEN.test(refused)) return { refused };
+    if (attempt >= tries) return { refused: `${refused}, asked ${attempt} times` };
+    await sleep(pauseMs);
+  }
 }
 
 /** What revert data names, such as "UnknownBlock(0x6dc4…6f50)" or 'Error("Incomplete Proof!")'. */
@@ -94,8 +115,8 @@ export const revertText = (data: Uint8Array): string => (data.length === 0 ? "a 
 
 /**
  * The block `at` (else the client's latest) as the light client `client` on `network` holds it:
- * latestFinalized() and headerOf(block). Refused when the client does not hold the block: the
- * Reader would revert UnknownBlock.
+ * latestFinalized(), genesisHash() and headerOf(block). Refused when the client does not hold the
+ * block: the Reader would revert UnknownBlock.
  */
 export async function importedBlock(network: NetworkName, client: Hex, at?: Hex): Promise<ImportedBlock> {
   useNetwork(network);
@@ -103,6 +124,8 @@ export async function importedBlock(network: NetworkName, client: Hex, at?: Hex)
   const latest = await ethCall(client, callData(CLIENT.latestFinalized), head.number);
   if (!latest.ok) throw new Error(`latestFinalized() on ${client} reverted: ${revertText(latest.revert)}`);
   const latestBlock = { hash: bytesToHex(wordAt(latest.data, 0)), number: Number(uintAt(latest.data, 1)) };
+  const genesis = await ethCall(client, callData(CLIENT.genesisHash), head.number);
+  if (!genesis.ok) throw new Error(`genesisHash() on ${client} reverted: ${revertText(genesis.revert)}`);
   const hash = (at ?? latestBlock.hash).toLowerCase() as Hex;
   const header = await ethCall(client, callData(HEADER_OF, hexToBytes(hash)), head.number);
   if (!header.ok) {
@@ -117,13 +140,21 @@ export async function importedBlock(network: NetworkName, client: Hex, at?: Hex)
     number: Number(uintAt(header.data, 0)),
     stateRoot: bytesToHex(wordAt(header.data, 1)),
     setId: Number(uintAt(header.data, 2)),
+    genesis: bytesToHex(wordAt(genesis.data, 0)),
     latest: latestBlock,
     readAt: { number: Number(BigInt(head.number)), hash: head.hash },
   };
 }
 
-/** The V3 node's header of the block: its SCALE bytes must hash to the block's hash (chain.ts) and name the client's number and state root. */
+/**
+ * The V3 node's header of the block, from a node on the chain the light client follows: the node's
+ * genesis hash must be the client's genesisHash() (at about 10:05 PM PKT on Oct 31 the testnet's URL
+ * briefly served another chain), and the header's SCALE bytes must hash to the block's hash
+ * (chain.ts) and name the client's number and state root.
+ */
 export async function nodeAgrees(chain: Chain, b: ImportedBlock): Promise<Header> {
+  const genesis = String(await nodeRead("the genesis hash", () => chain.rpc.request<Hex>("chain_getBlockHash", [0]))).toLowerCase();
+  if (genesis !== b.genesis) throw new KitStop(`the V3 node serves another chain: genesis ${genesis}, where GrandpaLightClient #2 on ${b.network} follows ${b.genesis}; ${FALLBACK}`);
   const header = await nodeRead(`the header of #${b.number}`, () => chain.header(b.hash));
   if (header.number !== b.number || bytesToHex(header.stateRoot) !== b.stateRoot) {
     throw new KitStop(`the V3 node's header of ${shortHex(b.hash)} is #${header.number} with state root ${shortHex(header.stateRoot)}; the light client holds #${b.number} with ${shortHex(b.stateRoot)}`);

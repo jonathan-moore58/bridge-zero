@@ -13,15 +13,17 @@
 //            --reader <address> (default: deployments/sepolia-kit.json), --from-fixture <file>
 //
 // A read takes B, a V3 block that GrandpaLightClient #2 on Sepolia imported: its latest, unless --at
-// names another one it holds. The V3 node's header of B must hash to B and name the client's state
-// root. The read's proof comes from the V3 node (or, with --from-fixture, from a state-reads
-// fixture of B) and is walked here with the contracts' checks (state.ts); then PortaldotStateReader
-// makes the same read on a Sepolia node, by eth_call and eth_estimateGas, and must return the same
-// value. Until the Reader is deployed (no deployments/sepolia-kit.json and no --reader), the call
-// runs the local build (contracts/out, from forge build) at a stand-in address through eth_call's
-// state override, against the deployed light client and StorageProofs; a node that refuses state
-// overrides skips that step with a note. read lock also recomputes the lock's commitment with
-// BridgeMinter.commitmentOf and runs BridgeMinter.mint with the proofs as an eth_call.
+// names another one it holds. The V3 node must serve the chain the client follows (the client's
+// genesis hash), and its header of B must hash to B and name the client's state root. The read's
+// proof comes from the V3 node (or, with --from-fixture, from a state-reads fixture of B) and is
+// walked here with the contracts' checks (state.ts); then PortaldotStateReader makes the same read
+// on a Sepolia node, by eth_call and eth_estimateGas (asked again while the RPC has not seen the
+// block), and must return the same value. Until the Reader is deployed (no
+// deployments/sepolia-kit.json and no --reader), the call runs the local build (contracts/out, from
+// forge build) at a stand-in address through eth_call's state override, against the deployed light
+// client and StorageProofs; a node that refuses state overrides skips that step with a note. read
+// lock also recomputes the lock's commitment with BridgeMinter.commitmentOf and runs
+// BridgeMinter.mint with the proofs as an eth_call.
 //
 // capture reads, at B (by default the client's latest), everything fixtures/v3-testnet-kit holds:
 // B's header and its parent, the set that signs B, grandpa_proveFinality(B), the signers hint, the
@@ -391,7 +393,7 @@ async function begin(r: KitRecords, o: ReadOptions): Promise<{ b: ImportedBlock;
     await chain.rpc.close();
     throw error;
   }
-  ok(`the V3 node's header of B hashes to B and names the same state root`);
+  ok(`the V3 node serves the client's chain (genesis ${shortHex(b.genesis)}), and its header of B hashes to B and names the same state root`);
   return { b, src: nodeSource(chain, b) };
 }
 
@@ -658,7 +660,7 @@ async function capture(o: { out?: string; at?: Hex; force: boolean; rpc: string 
   const chain = await connectV3(o.rpc);
   try {
     const header = await nodeAgrees(chain, b);
-    ok(`the V3 node's header of B hashes to B and names the client's state root`);
+    ok(`the V3 node serves the client's chain (genesis ${shortHex(b.genesis)}), and its header of B hashes to B and names the client's state root`);
     const parentHash = bytesToHex(header.parentHash);
     const parent = await chain.header(parentHash);
     const parentRef = { number: parent.number, hash: parentHash };
