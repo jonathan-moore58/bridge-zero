@@ -17,7 +17,7 @@ import { burnId } from "../../lib/proofs.ts";
 import { request } from "../../lib/rpc.ts";
 import { ROLLUPS, destOf, destState, type Dest } from "../dests.ts";
 import { FAST_CAP, IMPORT_GAS, LATER_CHAINS, SPEED_NAME, V3_SCAN, timeOf } from "../facts.ts";
-import { RELAY_AFTER_CHANGE_MS, SET_CHANGES_TEXT } from "../handoff.ts";
+import { RELAY_EVERY_MIN } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
 import {
@@ -40,6 +40,12 @@ type Dot = "verify" | "trust" | "revert" | "muted";
 
 /** The relayer imports V3's head every 600 blocks, about an hour (README, the relayer's watch mode; relayer/src/relay.ts, CHAINS.v3.headEvery). */
 const HEAD_EVERY_V3 = 600;
+/**
+ * On each rollup the relayer's run, every 20 minutes (../handoff.ts, RELAY_EVERY_MIN), imports V3's
+ * head only once it is this many blocks past the client's latest, about 3 hours of V3's 6 s blocks
+ * (its --head-every there, since Oct 31, 20:33 UTC); a run that imports a set change imports the head too.
+ */
+const HEAD_EVERY_ROLLUP = 1_800;
 /** While the relayer runs, each client is at most about 70 min behind its chain (README, the relayer's watch mode). */
 const LAG_CEILING = 70;
 // As contracts/src/grandpa/GrandpaLightClient.sol declares it; its setId is the set that signed.
@@ -839,8 +845,9 @@ function RollupLcCard({ d }: { d: Dest & { key: RollupKey } }) {
       </dl>
       <p class="ncard__note">
         <span>
-          Kept at V3's validator set by one relayer run about {RELAY_AFTER_CHANGE_MS / 60_000} minutes after each set change ({SET_CHANGES_TEXT}); between runs, mints
-          import V3's head themselves, so the head lag grows to hours. Its address is also the old mainnet's client's on Sepolia: another chain, another contract.{" "}
+          Kept at V3's validator set by the relayer: a run every {RELAY_EVERY_MIN[d.key]} minutes imports any set change this client lacks, and V3's head once it is{" "}
+          {num(HEAD_EVERY_ROLLUP)} blocks (about {Math.round((HEAD_EVERY_ROLLUP * LC.v3.blockTimeSec) / 3600)} hours) past the client's; between those, mints import V3's head
+          themselves, so the head lag grows to hours. Its address is also the old mainnet's client's on Sepolia: another chain, another contract.{" "}
           <a class="text-link" href={keysHref(d.key)}>
             Where its keys come from
           </a>

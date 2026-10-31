@@ -4,12 +4,13 @@
 // chain the lock names: one process serves Sepolia, Base Sepolia and Arbitrum Sepolia since Oct 28,
 // with the same minimum and grace (it minted locks 4 and 5, README rows 106 and 107). The page does
 // not ask the wallet for that mint: it waits, and offers the visitor's own mint only when auto-mint
-// has not minted it in a while. On a rollup a lock can wait for the relayer too: after V3 changes
-// validator set, auto-mint mints no lock there until the relayer's run brings the rollup's light
-// client to the new set. Pure, so that node --test runs it.
+// has not minted it in a while. A lock can wait for the relayer too: auto-mint imports no
+// validator-set change itself, so after V3 changes set it mints no lock on a chain until the
+// relayer has brought that chain's light client to the new set. The page knows this from what it
+// reads, the client's set against V3's (net.ts), not from the clock. Pure, so that node --test runs it.
 
 import type { Hex } from "../lib/hex.ts";
-import type { DestKey } from "./dests.ts";
+import type { Dest, DestKey } from "./dests.ts";
 import type { LockSender } from "./model.ts";
 
 export const AUTO_MINT = {
@@ -30,14 +31,10 @@ export const AUTO_MINT = {
    * The visitor's own mint is offered 5 minutes after the lock's V3 block: about twice lock 2's,
    * room for a missed round, slow Sepolia slots and locks queued before this one (auto-mint sends
    * one transaction at a time). Sooner would race it: the mint that loses reverts NonceAlreadyUsed.
+   * The same while the light client reads behind V3's set: the offer then says that auto-mint waits
+   * for the relayer, and that the visitor's own mint imports the change first.
    */
   fallbackAfterMs: 5 * 60_000,
-  /**
-   * After a relayer run a lock waits for (relayWait), the visitor's own mint is offered no sooner than
-   * this: auto-mint's next round mints it within a minute of the run, and its plan would import the
-   * set change too, racing auto-mint for 2.4 M gas more.
-   */
-  afterRelayMs: 3 * 60_000,
   /** While auto-mint's key has a transaction the chain has not mined, up to 15 minutes: it replaces a stuck one after 10. */
   pendingGraceMs: 15 * 60_000,
   /** Its --max-spend on Sepolia: at most this much ETH of gas a day. */
@@ -60,94 +57,90 @@ export const autoMints = (amount: bigint, sender: SenderKind): boolean => amount
  * mint offered from `offerAt`. pending: auto-mint's key has a transaction the destination has not
  * mined (it sends one at a time, so this lock's mint may be queued behind it), so the offer waits
  * longer. offer: auto-mint has not minted it in time: the visitor can mint it. The same on every
- * destination: the offer 5 minutes after the lock's V3 block, and on a rollup no sooner than a few
- * minutes after the relayer's run the lock waits for (relayWait).
+ * destination and at any time of day: the offer 5 minutes after the lock's V3 block.
  */
 export type Handoff = { kind: "self" } | { kind: "waiting"; offerAt: number } | { kind: "pending"; offerAt: number } | { kind: "offer"; since: number };
 
-/**
- * The handoff of a lock of `amount` from `sender`, mined in a V3 block at `lockedAt` (ms), at `now`,
- * whether auto-mint's key has a transaction pending, and the relayer's run it waits for, if any.
- */
-export function handoffOf(amount: bigint, sender: SenderKind, lockedAt: number, now: number, autoPending: boolean, wait: RelayWait | null = null): Handoff {
+/** The handoff of a lock of `amount` from `sender`, mined in a V3 block at `lockedAt` (ms), at `now`, and whether auto-mint's key has a transaction pending. */
+export function handoffOf(amount: bigint, sender: SenderKind, lockedAt: number, now: number, autoPending: boolean): Handoff {
   if (!autoMints(amount, sender)) return { kind: "self" };
-  const due = Math.max(lockedAt + AUTO_MINT.fallbackAfterMs, wait ? wait.relay + AUTO_MINT.afterRelayMs : 0);
+  const due = lockedAt + AUTO_MINT.fallbackAfterMs;
   const late = Math.max(lockedAt + AUTO_MINT.pendingGraceMs, due);
   if (autoPending && now < late) return { kind: "pending", offerAt: late };
   if (now < due) return { kind: "waiting", offerAt: due };
   return { kind: "offer", since: autoPending ? late : due };
 }
 
-/**
- * How far along the usual wait is, 0 to 0.9: the mint step's segment of the card's bar. `until`: when
- * auto-mint usually mints it (ms), lock 2's 144 s after the lock unless a relayer run comes first (relayWait).
- */
-export const handoffProgress = (lockedAt: number, now: number, until = lockedAt + AUTO_MINT.usualSeconds * 1000): number =>
-  Math.min(0.9, Math.max(0, (now - lockedAt) / Math.max(1, until - lockedAt)));
+/** How far along the usual wait is, 0 to 0.9: the mint step's segment of the card's bar, toward lock 2's 144 s after the lock. */
+export const handoffProgress = (lockedAt: number, now: number): number => Math.min(0.9, Math.max(0, (now - lockedAt) / (AUTO_MINT.usualSeconds * 1000)));
 
 // ---------------------------------------------------------------------------------------------
-// A rollup's light client after a V3 set change
+// A light client behind V3's validator set
 
 /**
- * When V3 changes validator set: every 6 hours, at these minutes of the UTC day, 01:54, 07:54,
- * 13:54 and 19:54 (README, "the way in to Base Sepolia and Arbitrum Sepolia").
+ * How often the relayer runs for the light client on each destination, in minutes: Sepolia's every
+ * 10 (watch mode, since Oct 23), each rollup's every 20 (since Oct 31, 20:33 UTC, at :00, :20 and
+ * :40 past the hour). A run imports every validator-set change the client lacks, so once V3 has
+ * changed set, the client is at the new one within about that long, while the relayer's machine runs.
+ *
+ * When V3 changes set is not known in advance: its changes follow its sessions, and a stall moves
+ * them. They came every 6 hours at the same times of the UTC day until Oct 28; then set 65 began 19
+ * hours after set 64, and set 75, at #266,908 on Oct 31, 10 hours and 2,179 blocks after set 74
+ * (the clients' authoritySetAt, and those blocks' timestamps). So the page predicts no change: it
+ * reads the client's set against V3's (net.ts), and while the client is behind, says that the
+ * relayer brings it to the new set within this many minutes.
  */
-export const V3_SET_CHANGES_UTC: readonly number[] = [1 * 60 + 54, 7 * 60 + 54, 13 * 60 + 54, 19 * 60 + 54];
+export const RELAY_EVERY_MIN: Readonly<Record<DestKey, number>> = { sepolia: 10, "base-sepolia": 20, "arbitrum-sepolia": 20 };
 
-/** Those times as the page says them: "01:54, 07:54, 13:54 and 19:54 UTC". */
-export const SET_CHANGES_TEXT = ((t: string[]) => `${t.slice(0, -1).join(", ")} and ${t.at(-1) ?? ""} UTC`)(
-  V3_SET_CHANGES_UTC.map((m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`),
-);
+/** "within about 20 minutes": how soon the relayer brings the light client on `dest` to V3's set, once V3 has changed it. */
+export const relayWithin = (dest: DestKey): string => `within about ${RELAY_EVERY_MIN[dest]} minutes`;
 
-/**
- * The rollups' light clients are kept at V3's validator set by one relayer run per rollup, 6
- * minutes after each set change. Until it runs, the client is a set behind: a mint by the head path
- * (importAndMint at V3's head) reverts WrongSetId, and auto-mint, which sends only mint(p) at a
- * header the client holds or that path, waits for it. Sepolia's client is relayed every 10 minutes.
- */
-export const RELAY_AFTER_CHANGE_MS = 6 * 60_000;
+/** What a client `behind` V3's set lacks: "a validator-set change", "2 validator-set changes". */
+export const setChangesText = (behind: number): string => (behind === 1 ? "a validator-set change" : `${behind} validator-set changes`);
 
-/** A set change as the clock has it: when V3 changes set (ms), and when the rollups' relayer run brings their clients to it. */
-export interface RelayWait {
-  change: number;
-  relay: number;
-}
+/** "once the relayer has imported it, within about 20 minutes": when auto-mint mints, while the light client on `d` is `behind` V3's set. */
+const relayOnce = (d: Dest, behind: number): string => `once the relayer has imported ${behind === 1 ? "it" : "them"}, ${relayWithin(d.key)}`;
 
-const DAY_MS = 24 * 60 * 60_000;
-
-/**
- * The set change whose relayer run a lock to `dest` waits for, when auto-mint would come to it
- * (its usual time after the lock's V3 block at `lockedAt`, ms) in the minutes between V3's change
- * and that run; null when it would not, and always on Sepolia. By the clock: V3's sessions and the
- * relayer's run can drift, so the page words these times as approximate, and a client that reads
- * behind V3 (net.ts) says more than the clock. The visitor's own mint is offered a few minutes after
- * the run (handoffOf); one sent before it imports the set change itself (sends.ts).
- */
-export function relayWait(dest: DestKey, lockedAt: number): RelayWait | null {
-  if (dest === "sepolia") return null;
-  const due = lockedAt + AUTO_MINT.usualSeconds * 1000;
-  const day = due - (due % DAY_MS);
-  for (const d of [day - DAY_MS, day]) {
-    for (const minute of V3_SET_CHANGES_UTC) {
-      const change = d + minute * 60_000;
-      if (due >= change && due < change + RELAY_AFTER_CHANGE_MS) return { change, relay: change + RELAY_AFTER_CHANGE_MS };
-    }
-  }
-  return null;
+/** The review's note on a lock auto-mint is to mint while the light client on `d` reads `behind` V3's set (net.ts); null when it reads at V3's set. */
+export function relayNote(d: Dest, behind: number): string | null {
+  if (behind < 1) return null;
+  const client = d.key === "sepolia" ? "The V3 light client" : `The light client on ${d.short}`;
+  return `${client} is ${setChangesText(behind)} behind V3: auto-mint mints a lock made now ${relayOnce(d, behind)}.`;
 }
 
 /**
- * When auto-mint usually mints a lock to `dest` mined at `lockedAt` (ms): lock 2's 144 s after it,
- * or, when it waits for the relayer's run (relayWait), its round about a minute after that run (the
- * 90 s grace long past).
+ * The card's notice on the way in, for a lock auto-mint mints, while the light client on `d` reads
+ * `behind` V3's set: `usual` is auto-mint's usual time ("≈ 2½ min"). The visitor's own mint is
+ * offered after the usual 5 minutes, and imports the change itself.
  */
-export function mintDueAt(dest: DestKey, lockedAt: number): number {
-  const w = relayWait(dest, lockedAt);
-  return w ? w.relay + (AUTO_MINT.usualSeconds - 90) * 1000 : lockedAt + AUTO_MINT.usualSeconds * 1000;
+export function relayNotice(d: Dest, behind: number, usual: string): string {
+  const one = behind === 1;
+  return `Auto-mint mints your lock ${relayOnce(d, behind)}, so it can take longer than ${usual}. If it has not minted it within ${AUTO_MINT.fallbackAfterMs / 60_000} minutes of your lock, this page offers you the mint, which imports ${one ? "the change" : "the changes"} itself.`;
 }
 
-/** "01:54 UTC": a time of the day, as the card says when a set change and its relayer run are. */
-export function utcClock(ms: number): string {
-  const d = new Date(ms);
-  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")} UTC`;
+/**
+ * What any V3 set change does to auto-mint on `d`, said where the client reads at V3's set (the
+ * review and the way in's tooltip): `who` waits for the relayer to bring `client` to the new set.
+ */
+export const relayAfterChange = (d: Dest, who: string, client: string): string => `After V3 changes validator set, ${who} waits for the relayer to bring ${client} to the new set, ${relayWithin(d.key)}`;
+
+/** The mint step's line while auto-mint waits for the relayer: the light client on `d` reads `behind` V3's set. */
+export function relayStepLine(d: Dest, behind: number): readonly (string | { nb: string })[] {
+  return [
+    { nb: "Auto-mint waits for the relayer," },
+    " ",
+    { nb: relayWithin(d.key) },
+    " · ",
+    { nb: `the light client on ${d.short}` },
+    " ",
+    { nb: `is ${setChangesText(behind)} behind V3` },
+    " · ",
+    { nb: "nothing to sign" },
+  ];
 }
+
+/** When auto-mint mints, in the transfer's foot ("Auto-mint mints 1 wtPOT for 0x… on Base Sepolia …"), while the light client on `d` reads behind V3's set. */
+export const relayFootWhen = (d: Dest): string => `once the relayer has imported V3's new validator set ${d.key === "sepolia" ? "on Sepolia" : "there"}, ${relayWithin(d.key)}`;
+
+/** The offer of the visitor's own mint while auto-mint waits for the relayer: why it waits, before what the visitor's mint costs. */
+export const relayOfferWhy = (d: Dest, behind: number): string => `The light client on ${d.short} is ${setChangesText(behind)} behind V3: auto-mint mints this lock ${relayOnce(d, behind)}.`;

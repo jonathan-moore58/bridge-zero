@@ -11,7 +11,7 @@ import { checksum } from "../../lib/display.ts";
 import type { Hex } from "../../lib/records-types.ts";
 import { deployed, destOf, explorerAddress, explorerBlock, explorerTx, type Dest, type DestKey } from "../dests.ts";
 import { FAST_CAP, IMPORT_GAS, SLOW_RELEASE_MS, SPEED_NAME, fastWait, fromOf, mintGasText, timeOf, toOf, type ChainInfo, type Dir, type Speed } from "../facts.ts";
-import { AUTO_MINT, autoMints, handoffOf, handoffProgress, mintDueAt, relayWait, utcClock, type RelayWait } from "../handoff.ts";
+import { AUTO_MINT, autoMints, handoffOf, handoffProgress, relayFootWhen, relayOfferWhy, relayStepLine } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
 import type { Route } from "../router.ts";
@@ -139,8 +139,6 @@ interface Head {
   auto: boolean;
   /** The foot's line once the lock is on V3 and the mint is auto-mint's to send. */
   waitText: string | null;
-  /** The clock's "usually", when it is not the destination's usual time: a lock whose auto-mint waits for the relayer's run (usualOf). */
-  usual: readonly [string, string] | null;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -771,7 +769,6 @@ function replayHead(r: Replay): Head {
       facts: factsOf(r.run),
       auto: false,
       waitText: null,
-      usual: null,
     };
   }
   return {
@@ -788,7 +785,6 @@ function replayHead(r: Replay): Head {
     facts: NO_FACTS,
     auto: false,
     waitText: null,
-    usual: null,
   };
 }
 
@@ -914,57 +910,19 @@ function replayBack(b: BurnRun, speed: Speed, w: BackPlan, t: number): TxState {
 // Live transfers: drawn from what the wallet and the chains have answered
 
 /**
- * On a rollup, a lock whose auto-mint would come in the minutes between a V3 set change and the
- * relayer's run waits for that run (handoff.ts, relayWait): the mint step's line says so, with the
- * times as the clock gives them, about, and its bar fills toward the run. Past the run's time, until
- * the visitor's own mint is offered, that auto-mint mints it after the run.
- */
-function waitLine(w: RelayWait, d: Dest, now: number): Line {
-  const tail = [" · ", { nb: `nothing to sign on ${d.short}` }] as const;
-  if (now >= w.relay) return [{ nb: "The relayer's run was due" }, " ", { nb: `at about ${utcClock(w.relay)}` }, " · ", { nb: "auto-mint mints it after that run" }, ...tail];
-  return [{ nb: "Auto-mint waits for the relayer's run" }, " ", { nb: `at about ${utcClock(w.relay)}` }, " · ", { nb: "V3 changed validator set" }, " ", { nb: `at about ${utcClock(w.change)}` }, ...tail];
-}
-
-/** The light client on `d` reads behind V3's set (net.ts), whatever the clock says: auto-mint waits for the relayer's import. */
-function behindLine(d: Dest, behind: number): Line {
-  return [
-    { nb: "Auto-mint waits for the relayer" },
-    " · ",
-    { nb: `the light client on ${d.short}` },
-    " ",
-    { nb: `is ${behind === 1 ? "a validator-set change" : `${behind} validator-set changes`} behind V3` },
-    " · ",
-    { nb: "nothing to sign" },
-  ];
-}
-
-/** When auto-mint usually mints a lock locked at `lockedAt` on `d`: lock 2's time after it, or after the relayer's run it waits for. */
-const mintDue = (d: Dest, lockedAt: number): number => mintDueAt(d.key, lockedAt);
-
-/**
- * The clock's "usually" for a lock to `d` mined at `lockedAt` whose auto-mint waits for the relayer's
- * run (relayWait): from `from` (the transfer's start, or the lock's block) to when auto-mint usually
- * mints it after that run. Null when it does not wait.
- */
-function usualOf(d: Dest, lockedAt: number, from: number): readonly [string, string] | null {
-  const w = relayWait(d.key, lockedAt);
-  if (!w) return null;
-  return [`≈ ${Math.max(1, Math.round((mintDue(d, lockedAt) - from) / 60_000))} min`, `after the relayer's run at about ${utcClock(w.relay)}`];
-}
-
-/**
  * The foot's line once the lock is on V3: while auto-mint is to mint it, whom it pays and when it
- * usually does; for a Polkadot wallet's lock, that only this browser can find it again (V3's EVM RPC
- * serves no log of a Substrate extrinsic, so Activity elsewhere does not list it).
+ * usually does, or, while the light client on its destination reads `behind` V3's set (net.ts),
+ * that it waits for the relayer; for a Polkadot wallet's lock, that only this browser can find it
+ * again (V3's EVM RPC serves no log of a Substrate extrinsic, so Activity elsewhere does not list it).
  */
-function waitTextOf(x: LiveTransfer): string | null {
+function waitTextOf(x: LiveTransfer, behind: number): string | null {
   if (x.dir !== "in") return null;
   const here = x.sender.kind === "substrate";
   const d = destOf(x.dest);
   if (autoMints(x.amount, x.sender.kind)) {
-    const w = x.lock.stage === "mined" ? relayWait(x.dest, x.lock.minedAt) : null;
-    const when = w ? `after the relayer's run at about ${utcClock(w.relay)}, which brings the light client on ${d.short} to V3's new validator set` : `${timeOf(x.dest, "auto")[0]} after your lock`;
-    return `You can close this page. Auto-mint usually mints ${fmt(toTokens(x.amount))} wtPOT for ${short(checksum(x.recipient))}${d.key === "sepolia" ? "" : ` on ${d.short}`} ${when}; ${here ? "Activity in this browser lists it" : "Activity shows it on any device"}.`;
+    const what = `${fmt(toTokens(x.amount))} wtPOT for ${short(checksum(x.recipient))}${d.key === "sepolia" ? "" : ` on ${d.short}`}`;
+    const mints = behind > 0 ? `Auto-mint mints ${what} ${relayFootWhen(d)}` : `Auto-mint usually mints ${what} ${timeOf(x.dest, "auto")[0]} after your lock`;
+    return `You can close this page. ${mints}; ${here ? "Activity in this browser lists it" : "Activity shows it on any device"}.`;
   }
   if (here) {
     return "You can close this page. Your tPOT stays locked for you, and the lock does not expire: Activity in this browser lists it, to send its mint. Other devices cannot see a lock signed with a Polkadot wallet yet.";
@@ -972,7 +930,8 @@ function waitTextOf(x: LiveTransfer): string | null {
   return null;
 }
 
-function liveHead(x: LiveTransfer): Head {
+/** `behind`: the validator-set changes the light client on the transfer's destination reads behind V3 (net.ts). */
+function liveHead(x: LiveTransfer, behind: number): Head {
   return {
     dest: x.dest,
     mode: x.dir === "in" ? "in" : x.speed,
@@ -986,8 +945,7 @@ function liveHead(x: LiveTransfer): Head {
     receipt: `#/receipt/${x.id}`,
     facts: x.dir === "in" ? liveFacts(x) : NO_FACTS,
     auto: x.dir === "in" && autoMints(x.amount, x.sender.kind),
-    waitText: waitTextOf(x),
-    usual: x.dir === "in" && autoMints(x.amount, x.sender.kind) && x.lock.stage === "mined" ? usualOf(destOf(x.dest), x.lock.minedAt, x.startedAt) : null,
+    waitText: waitTextOf(x, behind),
   };
 }
 
@@ -1004,16 +962,15 @@ const mintCost = (d: Dest, behind: number): string => `≈ ${mintGasText(d, behi
 
 /**
  * The offer of the visitor's own mint on `d`, when auto-mint has not minted it in time (handoff.ts).
- * While the light client there reads `behind` V3's set, auto-mint waits for the relayer, `wait`
- * the run the clock expected: the offer says so, and that the visitor's mint imports the change.
+ * While the light client there reads `behind` V3's set, auto-mint waits for the relayer: the offer
+ * says so, how soon the relayer comes, and that the visitor's mint imports the change itself.
  */
-function offerOf(recipient: Hex, d: Dest, behind: number, wait: RelayWait | null): NonNullable<TxState["offer"]> {
+function offerOf(recipient: Hex, d: Dest, behind: number): NonNullable<TxState["offer"]> {
   const pays = `any address can send the mint, it pays ${short(checksum(recipient))}`;
   if (behind > 0) {
-    const late = wait ? `The relayer's run due at about ${utcClock(wait.relay)} has not reached ${d.short} yet` : `The light client on ${d.short} is behind V3's validator set`;
     return {
       title: "Auto-mint is waiting for the relayer",
-      text: `${late}, and auto-mint mints this lock once it has. Your tPOT stays locked for you, and the lock does not expire. You can mint it yourself now: ${pays}, it imports ${behind === 1 ? "the set change" : `the ${behind} set changes`} first, and it costs ${mintCost(d, behind)}.`,
+      text: `${relayOfferWhy(d, behind)} Your tPOT stays locked for you, and the lock does not expire. You can mint it yourself now: ${pays}, it imports ${behind === 1 ? "the set change" : `the ${behind} set changes`} first, and it costs ${mintCost(d, behind)}.`,
     };
   }
   const runs =
@@ -1102,11 +1059,9 @@ function liveIn(x: LockTransfer, now: number, evm: string | null, behind: number
   const built = x.proof.builtAt ?? now;
   const of = route && route.steps > 1 ? ` ${route.step} of ${route.steps}` : "";
   const gas = route?.gas != null ? `≈ ${gasText(route.gas)} gas` : `≈ ${mintGasText(d, behind)} M gas`;
-  // On a rollup, the relayer's run after a V3 set change that auto-mint waits for (handoff.ts), by the clock.
-  const wait = locked ? relayWait(d.key, locked.minedAt) : null;
-  // Auto-mint's mint, or the visitor's own (handoff.ts), from the lock's V3 block and the run it waits for; before the lock is on V3, by its amount and its sender.
+  // Auto-mint's mint, or the visitor's own (handoff.ts), from the lock's V3 block; before the lock is on V3, by its amount and its sender.
   const kind = x.sender.kind;
-  const handoff = locked ? handoffOf(x.amount, kind, locked.minedAt, now, x.autoPending, wait) : autoMints(x.amount, kind) ? null : ({ kind: "self" } as const);
+  const handoff = locked ? handoffOf(x.amount, kind, locked.minedAt, now, x.autoPending) : autoMints(x.amount, kind) ? null : ({ kind: "self" } as const);
   const theirs = locked ? handoff?.kind !== "self" : autoMints(x.amount, kind);
   if (mint && mint.stage !== "asking") M.tx = { hash: mint.hash, href: explorerTx(d, mint.hash), label: "mint transaction" };
   if (minted) {
@@ -1129,24 +1084,24 @@ function liveIn(x: LockTransfer, now: number, evm: string | null, behind: number
       M.sub = note.text;
     } else if (handoff?.kind === "waiting" || handoff?.kind === "pending") {
       M.st = "active";
-      M.p = locked ? handoffProgress(locked.minedAt, now, mintDue(d, locked.minedAt)) : 0;
+      // While the light client reads behind V3's set, auto-mint waits for the relayer, which no read
+      // here can time: the segment stays empty rather than fill toward lock 2's 144 s.
+      M.p = locked && behind === 0 ? handoffProgress(locked.minedAt, now) : 0;
       // Pending: auto-mint's key has a transaction the chain has not mined, this lock's mint or another's
       // it sends first (one at a time): the page cannot tell which, so it says only that.
       M.sub =
         handoff.kind === "pending"
           ? [{ nb: "Auto-mint has a transaction waiting" }, " ", { nb: `on ${d.short}` }, " · ", { nb: "yours may be queued behind it" }, " · ", { nb: "nothing to sign" }]
-          : wait
-            ? waitLine(wait, d, now)
-            : behind > 0
-              ? behindLine(d, behind)
-              : [{ nb: "Auto-mint sends it for you" }, " · ", { nb: `usually ${auto[0]} after your lock` }, " · ", { nb: "nothing to sign" }];
+          : behind > 0
+            ? relayStepLine(d, behind)
+            : [{ nb: "Auto-mint sends it for you" }, " · ", { nb: `usually ${auto[0]} after your lock` }, " · ", { nb: "nothing to sign" }];
     } else if (handoff?.kind === "offer") {
       M.st = "needs";
       M.sub = behind > 0 ? "Auto-mint waits for the relayer · you can send the mint" : "Auto-mint hasn't minted it yet · you can send the mint";
       needs = evm
         ? { action: "Mint it yourself", note: `Your wallet asks for the mint on ${d.short}, ${mintCost(d, behind)}. It pays ${short(checksum(x.recipient))}.` }
         : { action: "Connect an Ethereum wallet to mint", note: `Any Ethereum wallet with ${d.short} ETH can send the mint: it pays the lock's recipient, whoever sends it.` };
-      offer = offerOf(x.recipient, d, behind, wait);
+      offer = offerOf(x.recipient, d, behind);
     } else {
       M.st = "needs";
       M.sub = route ? `${route.title} · ${gas}` : needsOn(d).action;
@@ -1327,7 +1282,6 @@ function chainHead(x: ChainTransfer, id: string): Head {
     // Read from V3's EVM logs: an Ethereum wallet's lock.
     auto: x.dir === "in" && autoMints(x.amount, "evm"),
     waitText: null,
-    usual: x.dir === "in" && x.at !== null && autoMints(x.amount, "evm") ? usualOf(d, x.at, x.at) : null,
   };
 }
 
@@ -1364,25 +1318,21 @@ function chainIn(x: ChainLock, now: number, evm: string | null, behind: number):
   let offer: TxState["offer"] = null;
   // Auto-mint mints a lock of its minimum or more (handoff.ts): the visitor's own mint is offered when it has not, in time.
   // A lock read from V3's EVM logs is an Ethereum wallet's.
-  const wait = x.at !== null ? relayWait(d.key, x.at) : null;
   const handoff =
-    x.at !== null ? handoffOf(x.amount, "evm", x.at, now, false, wait) : autoMints(x.amount, "evm") ? ({ kind: "waiting", offerAt: now } as const) : ({ kind: "self" } as const);
+    x.at !== null ? handoffOf(x.amount, "evm", x.at, now, false) : autoMints(x.amount, "evm") ? ({ kind: "waiting", offerAt: now } as const) : ({ kind: "self" } as const);
   if (x.minted === null) M.sub = "Could not read whether it was minted";
   else if (x.final === true && handoff.kind === "waiting") {
     M.st = "active";
-    M.p = x.at !== null ? handoffProgress(x.at, now, mintDue(d, x.at)) : 0;
-    M.sub = wait
-      ? waitLine(wait, d, now)
-      : behind > 0
-        ? behindLine(d, behind)
-        : [{ nb: "Auto-mint sends it" }, " · ", { nb: `usually ${auto[0]} after the lock` }, " · ", { nb: "nothing to sign" }];
+    // As for a live transfer: while the light client reads behind V3's set, the wait is the relayer's, and the segment stays empty.
+    M.p = x.at !== null && behind === 0 ? handoffProgress(x.at, now) : 0;
+    M.sub = behind > 0 ? relayStepLine(d, behind) : [{ nb: "Auto-mint sends it" }, " · ", { nb: `usually ${auto[0]} after the lock` }, " · ", { nb: "nothing to sign" }];
   } else if (x.final === true && handoff.kind === "offer") {
     M.st = "needs";
     M.sub = behind > 0 ? "Auto-mint waits for the relayer · you can send the mint" : "Auto-mint hasn't minted it yet · you can send the mint";
     needs = evm
       ? { action: "Mint it yourself", note: `Your wallet asks for the mint on ${d.short}, ${mintCost(d, behind)}. It pays ${short(checksum(x.recipient))}.` }
       : { action: "Connect an Ethereum wallet to mint", note: `Any Ethereum wallet with ${d.short} ETH can send the mint.` };
-    offer = offerOf(x.recipient, d, behind, wait);
+    offer = offerOf(x.recipient, d, behind);
   } else if (x.final === true) {
     M.st = "needs";
     M.sub = needsOn(d).action;
@@ -1608,8 +1558,8 @@ function TxScreen({ h, s, onAct }: { h: Head; s: TxState; onAct: (a: TransferAct
   const d = destOf(h.dest);
   const from = fromOf(dir, h.dest);
   const to = toOf(dir, h.dest);
-  const T = h.usual ?? timeOf(h.dest, h.auto ? "auto" : h.mode);
-  // Its source kept on one line: on a phone the relayer's run wraps whole, not its "UTC".
+  const T = timeOf(h.dest, h.auto ? "auto" : h.mode);
+  // Its source kept on one line: on a phone it wraps whole, not word by word.
   const usual = (
     <>
       {`${h.mode === "in" ? "" : `${h.fallback ? "Standard (fallback)" : SPEED_NAME[h.mode]} · `}usually ${T[0]} · `}
@@ -1884,8 +1834,9 @@ function LiveTx({ x, net }: { x: LiveTransfer; net: NetState }) {
   const evm = useEvm();
   useTick(1000, !done && x.failure === null);
   const now = Date.now();
-  const s = x.dir === "in" ? liveIn(x, now, evm, behindOn(net, x.dest)) : liveBack(x, now);
-  const h = liveHead(x);
+  const behind = behindOn(net, x.dest);
+  const s = x.dir === "in" ? liveIn(x, now, evm, behind) : liveBack(x, now);
+  const h = liveHead(x, behind);
   useFinish(x.id, done, h.receipt);
   return <TxScreen h={h} s={s} onAct={actOn(x.id)} />;
 }

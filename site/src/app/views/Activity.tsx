@@ -16,7 +16,7 @@ import { request, SubstrateClient, type Endpoint } from "../../lib/rpc.ts";
 import { decodeTimestampInherent } from "../../lib/scale.ts";
 import { DESTS, burnKey, deployed, destOf, destOfLock, explorerAddress, lockKey, selectable, type DestKey } from "../dests.ts";
 import { SPEED_NAME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
-import { handoffOf, relayWait } from "../handoff.ts";
+import { handoffOf } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import { polka } from "../polkadot.ts";
 import type { Route } from "../router.ts";
@@ -544,7 +544,7 @@ function journalRow(t: LiveTransfer, now: number): Row {
   // A lock auto-mint mints (handoff.ts) waits for it, not for the visitor, until the transfer's page
   // offers the visitor's own mint (its proof checked, nothing sent yet); one it does not take waits
   // for the visitor once its plan is ready.
-  const h = lock && n !== null && !done && t.lock.stage === "mined" ? handoffOf(t.amount, t.sender.kind, t.lock.minedAt, now, t.autoPending, relayWait(t.dest, t.lock.minedAt)) : null;
+  const h = lock && n !== null && !done && t.lock.stage === "mined" ? handoffOf(t.amount, t.sender.kind, t.lock.minedAt, now, t.autoPending) : null;
   const own = lock && t.mint === null && t.note === null && t.proof.builtAt !== null;
   const offered = h?.kind === "offer" && own;
   const waitsForYou = lock && n !== null && !done && (t.failure !== null || offered || (h?.kind === "self" && own));
@@ -578,7 +578,7 @@ function journalRow(t: LiveTransfer, now: number): Row {
 function liveRows(f: Found, now: number): Row[] {
   const locks = f.locks.items.map((l): Row => {
     // Read from V3's EVM logs: an Ethereum wallet's lock. Auto-mint's, until the page offers its mint (handoff.ts); one whose block time was not read is taken as offered.
-    const h = l.minted === false && l.at !== null ? handoffOf(l.amount, "evm", l.at, now, false, relayWait(l.dest, l.at)) : null;
+    const h = l.minted === false && l.at !== null ? handoffOf(l.amount, "evm", l.at, now, false) : null;
     const waiting = h?.kind === "waiting" || h?.kind === "pending";
     const status: Status = l.minted === true ? "minted" : l.minted === false ? (waiting ? "progress" : "locked") : "unread";
     return {
