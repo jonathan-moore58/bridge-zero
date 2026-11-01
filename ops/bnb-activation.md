@@ -445,5 +445,8 @@ The server's `deployments/v3-testnet.json` has a release round for chain 97 with
 - **Finality stops.** If the validators' votes stall, the `finalized` tag stops and the burns there
   wait: the safe failure.
 - **A tBNB price rise.** Every number above is at 0.1 gwei and scales with it.
-- **The logo.** BNB Chain's brand guidelines ask projects to seek approval before using its logo:
-  the app shows a text mark, "BNB", until that approval is given.
+- **The logo.** BNB Chain's brand guidelines ask projects to seek approval before using its logo,
+  and none has been asked yet: the owner chose on Nov 1 to show its logomark for the BNB Smart
+  Chain testnet anyway, as Base's and Arbitrum's since Oct 28, by the guidelines' rules (NOTICE.md).
+  Should BNB Chain object, `bnb` leaves `CHAIN` in `site/src/app/marks.tsx`, and the chip shows
+  its text mark, "BNB", again.

@@ -18,12 +18,12 @@ export function Footer() {
               <span class="brand__name">Bridge Zero</span>
             </a>
             <p class="small muted">
-              A Portaldot light client on Ethereum, and a token bridge built on it. Contracts on Sepolia check GRANDPA finality and Substrate storage proofs; trust rests on the
-              Portaldot validator set.
+              A Portaldot light client on Ethereum and EVM chains, and a token bridge built on it. Contracts on Sepolia, Base Sepolia, Arbitrum Sepolia and the BNB Smart Chain
+              testnet check GRANDPA finality and Substrate storage proofs; trust rests on the Portaldot validator set.
             </p>
             <p class="foot__testnet">
               <span class="badge badge--brand">testnet only</span>
-              <span class="small dim">Sepolia and the Portaldot V3 testnet only: tPOT and wtPOT are testnet tokens, and the vendored cryptography and trie code is treated as unaudited.</span>
+              <span class="small dim">The Portaldot V3 testnet and four EVM testnets only: tPOT and wtPOT are testnet tokens, and the vendored cryptography and trie code is treated as unaudited.</span>
             </p>
           </div>
           <nav class="foot__col" aria-label="This page">

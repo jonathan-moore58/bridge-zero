@@ -854,10 +854,20 @@
   height: 62%;
 }
 
-/* Base's and Arbitrum's rules keep other graphics out of their clear space: the wallet button's
-   status dot sits outside their chip. */
+/* BNB Chain's yellow logomark on the dark chip, with clear space inside it, and never narrower than
+   its guidelines' 15 px: the mark is 85.7% as wide as its box, so the box is 18 px at the least. */
+.mark--logo[data-mark="bnb"] .mark__img {
+  width: 62%;
+  height: 62%;
+  min-width: 18px;
+  min-height: 18px;
+}
+
+/* Base's, Arbitrum's and BNB Chain's rules keep other graphics out of their clear space: the wallet
+   button's status dot sits outside their chip. */
 .wallet__net:has(.mark[data-mark="base"])::after,
-.wallet__net:has(.mark[data-mark="arbitrum"])::after {
+.wallet__net:has(.mark[data-mark="arbitrum"])::after,
+.wallet__net:has(.mark[data-mark="bnb"])::after {
   right: -6px;
   bottom: -5px;
 }
@@ -877,7 +887,8 @@
   fill: var(--text-2);
 }
 
-/* The BNB Smart Chain's text mark: three letters where an initial has one. */
+/* The BNB Smart Chain's initial, three letters where the others have one: its text mark until Nov 1,
+   when its chip took BNB Chain's logomark (marks.tsx). */
 .mark[data-mark="bnb"] .mark__letter text {
   font-size: 7px;
   letter-spacing: -0.02em;
@@ -918,17 +929,18 @@
   box-shadow: none;
 }
 
-/* One column: V3's client on Sepolia, then on the two rollups, then the rest in the order they had. */
+/* One column: V3's client on Sepolia, then on each other destination in the config's order (the
+   columns split them, the first column's first), then the rest in the order they had. Each card by
+   its title, so that a destination more or less in a column does not reorder the others. */
 @media (max-width: 960px) {
-  .ncol:first-child > :nth-child(1) { order: 1; }
-  .ncol:first-child > :nth-child(2) { order: 2; }
-  .ncol:last-child > :nth-child(2) { order: 3; }
-  .ncol:last-child > :nth-child(1) { order: 4; }
-  .ncol:first-child > :nth-child(3) { order: 5; }
-  .ncol:last-child > :nth-child(3) { order: 6; }
-  .ncol:first-child > :nth-child(4) { order: 7; }
-  .ncol:last-child > :nth-child(4) { order: 8; }
-  .ngrid > .ncard--wide:last-child { order: 9; }
+  .ncol > :has(#lc-v3) { order: 1; }
+  .ncols .ncol > .ncard--rollup { order: 2; }
+  .ncol > :has(#n-relayer) { order: 3; }
+  .ncol > :has(#n-watch) { order: 4; }
+  .ncol > :has(#n-committee) { order: 5; }
+  .ncol > :has(#n-vault) { order: 6; }
+  .ncol > :has(#lc-main) { order: 7; }
+  .ngrid > .ncard--wide:last-child { order: 8; }
 }
 
 /* The receipt's route: the two chains' marks before it, as a transfer shows them. */
@@ -944,8 +956,10 @@
   height: 22px;
 }
 
+/* At 22 px BNB Chain's logomark keeps its 18 px least width (above), which leaves a 2 px ring: the
+   discs touch, and the front one's ring stops at the back one's mark. */
 .rc__route .pairmark--sm .mark + .mark {
-  margin-left: -5px;
+  margin-left: 0;
 }
 
 /* ------------------------------------------------------------------ 12. Verify

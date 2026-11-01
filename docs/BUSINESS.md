@@ -113,12 +113,13 @@ Until then the work is paid for by grants, prizes and the light-client service.
 What the testnets already show:
 
 - The relayer has run in watch mode since Oct 23, one process for each of Sepolia's two light
-  clients, each with its own key, and the rollups' clients by runs on a timer; the auto-release
+  clients, each with its own key, and the other chains' clients by runs on a timer; the auto-release
   watcher has run since Oct 24; both have run on a cloud server since Oct 31
   ([README](../README.md#status)).
-- 128 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
-  hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 370 forge tests, 403 relayer
-  tests, 316 site tests and 432 fixture checks pass, in CI on every push.
+- 149 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
+  hash, on Sepolia, the V3 testnet, Base Sepolia, Arbitrum Sepolia and the BNB Smart Chain testnet;
+  370 forge tests, 403 relayer tests, 324 site tests and 432 fixture checks pass, in CI on every
+  push.
 - The limits are written down, including the gaps while the laptop that ran them slept or was off,
   from Oct 24 to Oct 31 ([Known limits](../README.md#status),
   [what the minter trusts](BRIDGE.md#what-the-minter-trusts),

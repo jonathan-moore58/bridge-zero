@@ -7,10 +7,14 @@
 // destination pickable only once the app sends to it (SENDS). And the BNB Smart Chain testnet, shown
 // since its first round trip on Nov 1: its entry as measured that day, its records, and the flag
 // that hid it until then (HIDDEN), which keeps a destination it holds out of every picker, wagmi
-// chain and the Content-Security-Policy. Offline.
+// chain and the Content-Security-Policy. And how the pages show the four: the strip under the card
+// on a chain with one speed, the Network page's words for them, its columns and its meters, the
+// pairs of chips, the card's tooltips and speed tiles, the pages' titles and the status page's
+// headline. Offline.
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -52,6 +56,7 @@ import {
   DESTS_NAMED,
   DESTS_WORD,
   FAST_BUDGET_LINE,
+  FAST_DESTS_WORD,
   LATER_CHAINS,
   MINT_GAS,
   MINT_GAS_FULL,
@@ -67,9 +72,12 @@ import {
   destsNamedOf,
   fastWait,
   fromOf,
+  orList,
   otherChainsOf,
   runDayOf,
   sendChain,
+  stdRunOf,
+  stdTimesText,
   timeOf,
   toOf,
 } from "../src/app/facts.ts";
@@ -523,7 +531,7 @@ test("the rollups' runs are the README's: lock 6 and lock 7 minted 139 s and 133
 });
 
 test("the fast budget: before a burn that goes Fast is signed, one line that it is shared; on the transfer screen, why a fast burn waits past Fast's usual time", () => {
-  assert.equal(FAST_BUDGET_LINE, "Fast mode shares one 1 tPOT budget across all chains: while another fast release is in flight, your burn can wait for finality.");
+  assert.equal(FAST_BUDGET_LINE, "Fast mode shares one 1 tPOT budget across the three chains with Fast: while another fast release is in flight, your burn can wait for finality.");
   const arb = destOf("arbitrum-sepolia");
   const t0 = 1_793_186_433_000;
   const waiting = { qualifiedAt: t0, final: false, approvals: 0, released: false };
@@ -533,7 +541,7 @@ test("the fast budget: before a burn that goes Fast is signed, one line that it 
   // Its times keep to one line: no-break spaces inside "≈ 105 s" and "≈ 19 min".
   assert.equal(
     late?.replace(/\u00a0/g, " "),
-    "Fast usually takes ≈ 105 s. Fast mode shares one 1 tPOT budget across all chains: while another fast release holds it, your burn waits until that release's burn is final, or yours is (≈ 19 min, as Standard). Releases also wait while the committee's watcher, on one machine, is off.",
+    "Fast usually takes ≈ 105 s. Fast mode shares one 1 tPOT budget across the three chains with Fast: while another fast release holds it, your burn waits until that release's burn is final, or yours is (≈ 19 min, as Standard). Releases also wait while the committee's watcher, on one machine, is off.",
   );
   assert.ok(late?.includes("≈\u00a019\u00a0min") && late.includes("≈\u00a0105\u00a0s"));
   // A burn read from the chains, whose approvals the page does not read, is said the same way.
@@ -614,8 +622,29 @@ test("the BNB Smart Chain testnet is shown since Nov 1: in DESTS, both pickers, 
   assert.deepEqual(shown(ALL_DESTS, HIDDEN).map((d) => d.key), DESTS.map((d) => d.key));
 });
 
-test("its entry: chain 97 as viem knows it, its names, the text mark, BscScan, the RPCs of Nov 1, fast finality and one speed, the 0.1 gwei tip, its records' addresses and its first round trip", () => {
+test("its entry: chain 97 as viem knows it, its names (BSC on the chain button), BNB Chain's mark, BscScan, the RPCs of Nov 1, fast finality and one speed, the 0.1 gwei tip, its records' addresses and its first round trip", () => {
   assert.deepEqual([BSC.chainId, BSC.name, BSC.sub, BSC.full, BSC.short, BSC.mark], [97, "BNB Smart Chain", "testnet", "BNB Smart Chain testnet", "BSC testnet", "bnb"]);
+  // The card's chain button, where "BNB Smart Chain" was cut off: "BSC" over "testnet", its short form, and its label the full name. No other chain's button changes.
+  assert.equal(BSC.btn, "BSC");
+  assert.equal(`${BSC.btn} ${BSC.sub}`, BSC.short);
+  assert.deepEqual(
+    ALL_DESTS.filter((d) => d.btn !== undefined).map((d) => d.key),
+    ["bsc-testnet"],
+  );
+  assert.deepEqual([CH["bsc-testnet"].btn, CH.v3.btn], ["BSC", undefined]);
+  const bridge = readFileSync(join(here, "..", "src", "app", "views", "Bridge.tsx"), "utf8");
+  assert.match(bridge, /<span class="chain-btn__name">\{c\.btn \?\? c\.name\}<\/span>/);
+  assert.match(bridge, /aria-label=\{`\$\{name\}: \$\{c\.full\}, \$\{c\.token\}/);
+  // The trust diagram under the card shows the button's two lines too, where "BNB Smart Chain", one line in a 76 px column, ran past the strip's edge at 768 to 1280 px, and "BSC" alone on a phone; the picker's rows keep the full name.
+  assert.match(bridge, /<span class="lanes__chain">\{d\.btn \?\? d\.name\}<\/span>\s*<span class="lanes__net">\{d\.sub\}<\/span>/);
+  assert.match(bridge, /<span class="lanes__short" aria-hidden="true">\s*\{sep \? d\.short : \(d\.btn \?\? d\.name\)\}\s*<\/span>/);
+  assert.match(bridge, /<span class="list-row__title">\{c\.full\}<\/span>/);
+  // No destination's name there is longer than the V3 node's own, "Portaldot V3", which keeps inside the strip; the others' are as before.
+  for (const d of DESTS) assert.ok((d.btn ?? d.name).length <= "Portaldot V3".length, d.key);
+  assert.deepEqual(
+    DESTS.map((d) => d.btn ?? d.name),
+    ["Ethereum", "Base", "Arbitrum", "BSC"],
+  );
   assert.equal(viemBscTestnet.id, 97);
   assert.equal(bscTestnet.id, 97);
   assert.deepEqual(bscTestnet.rpcUrls.default.http, BSC.rpcs.map((e) => e.url));
@@ -758,11 +787,270 @@ test("as shown since Nov 1: picked on either side, its lock told from the rollup
   assert.equal(explorerTx(destOf("bsc-testnet"), `0x${"ab".repeat(32)}`), `https://testnet.bscscan.com/tx/0x${"ab".repeat(32)}`);
 });
 
-test("its mark is a text mark, BNB, with no image shipped or listed: BNB Chain asks for approval before its logo is used", () => {
+test("its mark is BNB Chain's logomark, shipped unmodified and listed in NOTICE.md: the owner chose on Nov 1 to show it, though BNB Chain asks for approval before its logo is used", () => {
+  const dir = join(here, "..", "src", "app", "marks");
+  const sha256 = (file: string): string => createHash("sha256").update(readFileSync(join(dir, file))).digest("hex");
+  // BNB Chain's Symbol (yellow), byte for byte as its brand guidelines' SVG download serves it.
+  assert.ok(existsSync(join(dir, "bnb.svg")));
+  assert.equal(sha256("bnb.svg"), "b8ff1ce0b5af2e2d9bcf5ec89fedd5224079f4f7267e306e23e8d691024f5eff");
+  // Imported for "bnb" and in CHAIN, so the build ships it and its chip shows it; "BNB" stays only as the fallback letters.
   const marks = readFileSync(join(here, "..", "src", "app", "marks.tsx"), "utf8");
-  assert.match(marks, /bnb: "BNB"/);
-  assert.doesNotMatch(marks, /import \w+ from "\.\/marks\/bnb/i);
-  assert.ok(!existsSync(join(here, "..", "src", "app", "marks", "bnb.svg")) && !existsSync(join(here, "..", "src", "app", "marks", "bnb.png")));
-  assert.doesNotMatch(readFileSync(join(repo, "NOTICE.md"), "utf8"), /BNB/);
-  assert.match(readFileSync(join(here, "..", "src", "app", "styles", "v3.css"), "utf8"), /\.mark\[data-mark="bnb"\] \.mark__letter text \{/);
+  assert.match(marks, /^import bnb from "\.\/marks\/bnb\.svg";$/m);
+  assert.match(marks, /^const CHAIN: Partial<Record<MarkKey, string>> = \{ portaldot, ethereum, base, arbitrum, bnb \};$/m);
+  assert.match(marks, /, bnb: "BNB" \};$/m);
+  assert.equal(BSC.mark, "bnb");
+  // Listed in NOTICE.md by that hash and its source, with the marks whose owners' terms ask for approval, and the owner's choice of Nov 1.
+  const notice = readFileSync(join(repo, "NOTICE.md"), "utf8");
+  const approval = notice.split("### Marks whose owners' terms ask for approval")[1] ?? "";
+  const row = approval.split("\n").find((l) => l.startsWith("| `bnb.svg` |")) ?? "";
+  assert.ok(row.endsWith(` | \`${sha256("bnb.svg")}\` |`), row);
+  assert.ok(row.includes("https://www.bnbchain.org/images/brand-guidelines/svg/BNB%20Chain_Symbol_Yellow.svg, the SVG download of the Symbol (yellow)"), row);
+  assert.ok(row.includes("(ii) BNB Smart Chain (BSC) (previously Binance Smart Chain)"), row);
+  assert.match(approval.replace(/\s+/g, " "), /These four owners' terms ask for written approval .* On Nov 1 the owner chose to show BNB Chain's logomark in the same way, to name the BNB Smart Chain testnet/);
+  // The section's opening says why each mark is shown: its owner's terms allow it, or they ask for approval and the project's owner chose to show it.
+  const intro = (notice.split("## Logos (the bridge app)")[1] ?? "").split("### Shown")[0]?.replace(/\s+/g, " ") ?? "";
+  assert.ok(
+    intro.includes(
+      "by its owner's own mark where the owner's terms allow it, and where they ask for approval first and the project's owner chose to show it all the same, as \"Marks whose owners' terms ask for approval\" below records (Base's and Arbitrum's since Oct 28, BNB Chain's since Nov 1; SubWallet's is held back).",
+    ),
+    intro,
+  );
+  // As every mark in the folder is: its file unmodified, by its own hash.
+  for (const f of readdirSync(dir)) {
+    const listed = notice.split("\n").find((l) => l.startsWith(`| \`${f}\` |`)) ?? "";
+    assert.ok(listed.endsWith(` | \`${sha256(f)}\` |`), f);
+  }
+  // The guidelines' 15 px: the mark is 85.7% as wide as its 96-unit box (x 7 to 89.29), so the 18 px box v3.css keeps it in at the least makes it 15.4 px.
+  const svg = readFileSync(join(dir, "bnb.svg"), "utf8");
+  assert.match(svg, /viewBox="0 0 96 96"/);
+  const xs = [...svg.matchAll(/[ML](-?[\d.]+) (-?[\d.]+)/g)].map((m) => Number(m[1]));
+  const wide = (Math.max(...xs) - Math.min(...xs)) / 96;
+  assert.ok(wide > 0.857 && wide < 0.858 && 18 * wide >= 15, String(wide));
+  const css = readFileSync(join(here, "..", "src", "app", "styles", "v3.css"), "utf8");
+  assert.match(css, /\.mark--logo\[data-mark="bnb"\] \.mark__img \{\s*width: 62%;\s*height: 62%;\s*min-width: 18px;\s*min-height: 18px;\s*\}/);
+  // Its clear space keeps the wallet button's status dot outside its chip, as Base's and Arbitrum's do; the fallback letters keep their size.
+  assert.match(css, /\.wallet__net:has\(\.mark\[data-mark="arbitrum"\]\)::after,\s*\.wallet__net:has\(\.mark\[data-mark="bnb"\]\)::after \{\s*right: -6px;\s*bottom: -5px;\s*\}/);
+  assert.match(css, /\.mark\[data-mark="bnb"\] \.mark__letter text \{/);
+  // The page serves its own copy: its images are its own, none hotlinked from bnbchain.org.
+  assert.ok(cspPolicy(true).includes("img-src 'self' data:"));
+});
+
+// ---------------------------------------------------------------------------------------------
+// How the pages show the four
+
+/** A source file of the site: src/app/views/Bridge.tsx is view("Bridge.tsx"). */
+const siteFile = (...path: string[]): string => readFileSync(join(here, "..", ...path), "utf8");
+const view = (file: string): string => siteFile("src", "app", "views", file);
+const style = (file: string): string => siteFile("src", "app", "styles", file);
+
+test("the way back's strip from a chain with one speed states no Fast cap, but its own run: burn 0, 46 s from its block to the release on Nov 1, linked to its receipt; its badge says Recorded, as every strip's does", () => {
+  // The run (facts.ts, ROLLUP_RUNS), the README's: timed on the BNB Smart Chain testnet only.
+  assert.deepEqual(stdRunOf("bsc-testnet"), { seconds: 46, on: "Nov 1" });
+  for (const key of ["sepolia", "base-sepolia", "arbitrum-sepolia"] as const) assert.equal(stdRunOf(key), null, key);
+  const section = README.replace(/\s+/g, " ").split("### More chains: the BNB Smart Chain testnet")[1] ?? "";
+  assert.equal(Number(/the release's block came (\d+) seconds after the burn's/.exec(section)?.[1]), stdRunOf("bsc-testnet")?.seconds);
+  assert.deepEqual(BSC.firsts, { lock: 8, burn: 0 });
+  const bridge = view("Bridge.tsx");
+  const strip = bridge.slice(bridge.indexOf("function ProofStrip("), bridge.indexOf("function ChainButton("));
+  // A chain with one speed: its finality, then its run, linked as the strip's other facts are; no Fast cap there.
+  const at = strip.indexOf("{d.fastConfirmations === null ? (");
+  const fast = strip.indexOf("before a Fast release");
+  assert.ok(at > 0 && fast > at, "the strip's two branches on the way back from a destination other than Sepolia");
+  const one = strip.slice(at, fast);
+  assert.match(one, /for a burn to be final on \{d\.short\}: its validators' votes \(fast finality\)/);
+  assert.match(one, /\{stdRun && firsts \? \(\s*<li class="fact">\s*<a class="fact__link" href=\{`#\/receipt\/\$\{burnKey\(d\.key, firsts\.burn\)\}`\}>/);
+  assert.match(one, /\{stdRun\.seconds\}\s*<span class="unit">s<\/span>/);
+  assert.match(one, /from the burn's block to the release ·\{" "\}\s*<Nb>\s*burn \{firsts\.burn\}, \{stdRun\.on\}\s*<\/Nb>/);
+  assert.doesNotMatch(one, /tPOT|Fast burn/);
+  assert.match(strip, /const stdRun = stdRunOf\(d\.key\);/);
+  // The chains with Fast keep their three facts, the cap the last, its budget across the chains with Fast.
+  const rest = strip.slice(fast, strip.indexOf("</ul>"));
+  assert.match(rest, /per Fast burn, and 1 tPOT in all across the \{FAST_DESTS_WORD\} chains with Fast before finality; larger burns go Standard/);
+  assert.equal((strip.match(/per Fast burn/g) ?? []).length, 2, "Sepolia's cap, and the other chains with Fast");
+  // Recorded, as Sepolia's and the rollups' strips say.
+  assert.match(strip, /: d\.finality\.kind === "batch" \? "Recorded Oct 27 · Oct 28" : "Recorded Nov 1"\}<\/span>/);
+  assert.doesNotMatch(strip, /Measured/);
+});
+
+test("the Network page names the four from the config: the way back's chains, the vault's supply, the fast budget across the three chains with Fast, and Standard's time on each, estimated or measured", () => {
+  assert.deepEqual([orList([]), orList(["V3"]), orList(["V3", "Sepolia"]), orList(["a", "b", "c"])], ["", "V3", "V3 or Sepolia", "a, b or c"]);
+  const network = view("Network.tsx");
+  // The topology's way back: a burn on any of them.
+  assert.match(network, /<strong>Way back · trusted:<\/strong> a burn on \{orList\(DESTS\.map\(\(d\) => d\.short\)\)\}, released on V3 by the committee/);
+  assert.equal(orList(DESTS.map((d) => d.short)), "Sepolia, Base Sepolia, Arbitrum Sepolia or BSC testnet");
+  // The vault's supply, summed on every chain with wtPOT.
+  assert.match(network, /waiting`\}, on \{DESTS_WORD\} chains<\/span>/);
+  assert.doesNotMatch(network, /on 3 chains|a burn on Sepolia, Base Sepolia or Arbitrum Sepolia/);
+  // The fast budget spans the chains with Fast: three of the four; the BNB Smart Chain testnet has one speed.
+  assert.equal(FAST_DESTS_WORD, "three");
+  assert.equal(DESTS_WORD, "four");
+  assert.deepEqual(
+    DESTS.filter((d) => d.fastConfirmations !== null).map((d) => d.key),
+    ["sepolia", "base-sepolia", "arbitrum-sepolia"],
+  );
+  assert.match(network, /≤ \{FAST_CAP\} tPOT in flight before finality, across the \{FAST_DESTS_WORD\} chains with Fast/);
+  for (const [name, src] of [
+    ["Network.tsx", network],
+    ["Bridge.tsx", view("Bridge.tsx")],
+  ] as const) {
+    assert.doesNotMatch(src, /across the \{DESTS_WORD\} chains/, name);
+  }
+  // Standard's time on each chain with its own word: the three estimates, and the BNB Smart Chain testnet's 46 s, measured.
+  // Each time keeps its words together (no-break spaces), as fastWait does: "≈ 46 s" never breaks after "≈" on a phone.
+  const nb = (t: string) => t.replace(/ /g, "\u00a0");
+  assert.equal(stdTimesText(DESTS), `${nb("≈ 17 min")} on Sepolia, ${nb("≈ 21 min")} on Base Sepolia and ${nb("≈ 19 min")} on Arbitrum Sepolia, est.; ${nb("≈ 46 s")} on BSC testnet, measured Nov 1`);
+  for (const d of DESTS) assert.ok(stdTimesText(DESTS).includes(`${nb(timeOf(d.key, "std")[0])} on ${d.short}`), d.key);
+  assert.equal(stdTimesText(BEFORE), `${nb("≈ 17 min")} on Sepolia, ${nb("≈ 21 min")} on Base Sepolia and ${nb("≈ 19 min")} on Arbitrum Sepolia, est.`);
+  assert.match(network, /· any amount, and Fast above the cap · \{stdTimesText\(DESTS\)\}<\/span>/);
+});
+
+test("the Network page's clients on the other destinations: each lag meter full at the relayer's head import there, 1,800 V3 blocks; their cards in two columns that end together, and on a phone together after V3's client on Sepolia", () => {
+  const network = view("Network.tsx");
+  // The meter's scale: the relayer's 70-min ceiling on Sepolia, a rollup's head import (about 3 hours).
+  assert.match(network, /const HEAD_EVERY_ROLLUP = 1_800;/);
+  assert.match(network, /const HEAD_LAG_ROLLUP = \(HEAD_EVERY_ROLLUP \* LC\.v3\.blockTimeSec\) \/ 60;/);
+  const probe = readJson("fixtures/probe/test-node-v3.portaldot.dev.json");
+  assert.equal((1_800 * Math.round(probe.finality.blockTimeAvgMs / 1000)) / 60, 180, "180 min of V3's 6 s blocks");
+  assert.match(network, /function Meter\(\{ lag, ceiling = LAG_CEILING, scale = LAG_CEILING \}/);
+  assert.match(network, /const pct = lag === null \? 0 : Math\.min\(100, Math\.round\(\(lag \/ scale\) \* 100\)\);/);
+  assert.match(network, /<Meter lag=\{lag\} ceiling=\{null\} scale=\{HEAD_LAG_ROLLUP\} \/>/);
+  assert.doesNotMatch(network, /lag \/ LAG_CEILING/);
+  // The columns: the first half of the cards (rounded down) under V3's client, the rest under the relayer, whose column's own cards are a client card shorter.
+  assert.match(network, /const split = Math\.floor\(ROLLUPS\.length \/ 2\);/);
+  assert.match(network, /\(column === 0 \? ROLLUPS\.slice\(0, split\) : ROLLUPS\.slice\(split\)\)\.map\(\(d\) => <RollupLcCard key=\{d\.key\} d=\{d\} \/>\)/);
+  assert.doesNotMatch(network, /i % 2/);
+  const split = Math.floor(ROLLUPS.length / 2);
+  assert.deepEqual(
+    [ROLLUPS.slice(0, split).map((d) => d.key), ROLLUPS.slice(split).map((d) => d.key)],
+    [["base-sepolia"], ["arbitrum-sepolia", "bsc-testnet"]],
+  );
+  // One column: V3's client, the other destinations' together in the config's order, then the rest as before, each card by its title.
+  const css = style("v3.css");
+  const block = css.slice(css.indexOf("/* One column: V3's client on Sepolia"), css.indexOf("/* The receipt's route"));
+  assert.deepEqual(
+    [...block.matchAll(/^\s*(.+?) \{ order: (\d+); \}$/gm)].map((m) => [m[1], Number(m[2])]),
+    [
+      [".ncol > :has(#lc-v3)", 1],
+      [".ncols .ncol > .ncard--rollup", 2],
+      [".ncol > :has(#n-relayer)", 3],
+      [".ncol > :has(#n-watch)", 4],
+      [".ncol > :has(#n-committee)", 5],
+      [".ncol > :has(#n-vault)", 6],
+      [".ncol > :has(#lc-main)", 7],
+      [".ngrid > .ncard--wide:last-child", 8],
+    ],
+  );
+  assert.doesNotMatch(block, /nth-child/);
+  // The titles the order goes by are the cards' own.
+  for (const id of ["n-relayer", "n-watch", "n-committee", "n-vault"]) assert.ok(network.includes(`id="${id}"`), id);
+  assert.match(network, /const id = which === "v3" \? "lc-v3" : "lc-main";/);
+  assert.match(network, /<article class="card ncard ncard--lc ncard--rollup" aria-labelledby=\{id\}>/);
+});
+
+test("a pair of chips covers no part of either mark: the front chip and its ring stay in the empty ring around the back chip's mark, for every chain's mark, at every size a pair is drawn", () => {
+  const v3css = style("v3.css");
+  const screens = style("screens.css");
+  /** The declarations of `selector`'s rule, which starts a line of `text`. */
+  const rule = (text: string, selector: string): string => {
+    const at = text.indexOf(`\n${selector} {`);
+    assert.ok(at >= 0, selector);
+    return text.slice(at, text.indexOf("}", at));
+  };
+  const value = (decls: string, prop: string): number => {
+    const m = new RegExp(`\\n\\s*${prop}: (-?[\\d.]+)(?:px|%)?;`).exec(decls);
+    assert.ok(m, `${prop} in ${decls}`);
+    return Number(m[1]);
+  };
+  // Each chain's mark in its chip (v3.css): a square share of the chip, and BNB Chain's never under 18 px.
+  const shares = { portaldot: 76, ethereum: 60, base: 50, arbitrum: 62, bnb: 62 } as const;
+  assert.deepEqual(Object.keys(shares).sort(), [...new Set(["portaldot", ...ALL_DESTS.map((d) => d.mark)])].sort());
+  for (const [mark, share] of Object.entries(shares)) {
+    const decls = rule(v3css, `.mark--logo[data-mark="${mark}"] .mark__img`);
+    assert.deepEqual([value(decls, "width"), value(decls, "height")], [share, share], mark);
+  }
+  assert.equal(value(rule(v3css, `.mark--logo[data-mark="bnb"] .mark__img`), "min-width"), 18);
+  const image = (mark: keyof typeof shares, chip: number): number => Math.max((chip * shares[mark]) / 100, mark === "bnb" ? 18 : 0);
+  // The front chip's 2 px ring in the surface colour.
+  assert.match(rule(v3css, ".pairmark .mark--logo:first-child"), /box-shadow: inset 0 0 0 1px var\(--line-2\), 0 0 0 2px var\(--ink-2\);/);
+  const ring = 2;
+  // The pairs: a transfer's and the Verify card's head (32 px), the Verify picker's and Activity's rows (28 px), the receipt's route (22 px).
+  const pairs = [
+    { where: "the cards' heads", chip: 32, left: value(rule(screens, ".pairmark .mark + .mark"), "margin-left") },
+    { where: "the rows", chip: 28, left: value(rule(screens, ".pairmark--sm .mark + .mark"), "margin-left") },
+    { where: "the receipt's route", chip: 22, left: value(rule(v3css, ".rc__route .pairmark--sm .mark + .mark"), "margin-left") },
+  ];
+  assert.deepEqual(
+    pairs.map((p) => p.left),
+    [-1, -1, 0],
+  );
+  for (const p of pairs) {
+    // Still a pair: the chips touch or overlap.
+    assert.ok(p.left <= 0, p.where);
+    for (const mark of Object.keys(shares) as (keyof typeof shares)[]) {
+      const empty = (p.chip - image(mark, p.chip)) / 2;
+      assert.ok(ring - p.left <= empty, `${p.where}: the front chip reaches ${ring - p.left} px into a ${mark} chip, whose mark starts ${empty} px in`);
+    }
+  }
+  // The sizes, as the pages set them.
+  for (const file of ["Verify.tsx", "Tx.tsx"]) {
+    assert.match(view(file), /<span class="pairmark" aria-hidden="true">\s*<ChainMark mark=\{from\.mark\} cls="mark--32" \/>\s*<ChainMark mark=\{to\.mark\} cls="mark--32" \/>/, file);
+  }
+  for (const file of ["Verify.tsx", "Activity.tsx"]) {
+    assert.match(view(file), /<span class="pairmark pairmark--sm" aria-hidden="true">\s*<ChainMark mark=\{from\.mark\} cls="mark--28" \/>\s*<ChainMark mark=\{to\.mark\} cls="mark--28" \/>/, file);
+  }
+  assert.match(view("Receipt.tsx"), /<dd class="kv__v rc__route">\s*<span class="pairmark pairmark--sm" aria-hidden="true">/);
+  assert.match(rule(v3css, ".rc__route .mark"), /width: 22px;\s*height: 22px;/);
+});
+
+test("the card's details: each cost's tooltip shows whole on every chain, the rows clipped only while they fold; with one speed, the lone Standard tile takes the row", () => {
+  const app = style("app.css");
+  assert.match(app, /\n\.quote__inner \{\s*min-height: 0;\s*clip-path: inset\(0\);\s*\}/);
+  assert.match(app, /\n\.quote__sum\[aria-expanded="true"\] \+ \.quote__body \.quote__inner \{\s*clip-path: inset\(-100vh -100vw\);\s*transition: clip-path 0s linear var\(--dur-2\);\s*\}/);
+  const at = app.indexOf("\n.quote__inner {");
+  assert.doesNotMatch(app.slice(at, app.indexOf("}", at)), /overflow/);
+  // The tooltips in those rows: the lock's cost, the burn's gas and the mint's gas.
+  const bridge = view("Bridge.tsx");
+  const rows = bridge.slice(bridge.indexOf('<div class="quote__inner">'), bridge.indexOf("{needsShown ? ("));
+  assert.deepEqual(
+    [...rows.matchAll(/<Tip id="(tip-[a-z]+)"/g)].map((m) => m[1]),
+    ["tip-lock", "tip-burn", "tip-mint"],
+  );
+  // One speed: the Standard tile alone (no Fast tile is drawn), across the row, its time beside its title on a phone too.
+  assert.match(app, /\n\.speed > \.opt:only-child \{\s*grid-column: 1 \/ -1;\s*\}/);
+  assert.match(app, /\n {2}\.speed > \.opt--row:only-child \.opt__time \{\s*flex-basis: auto;\s*margin-left: auto;\s*\}/);
+  assert.match(bridge, /\{oneSpeed \? null : \(\s*<button[^>]*?id="opt-fast"/);
+});
+
+test("the pages' titles and the status page's headline: the app's names the four destinations; the status page is a Portaldot light client on Ethereum and EVM chains, and its description and footer name the four as its lead does; the README opens the same way", () => {
+  const app = siteFile("app", "index.html");
+  const title = /<title>([^<]+)<\/title>/.exec(app)?.[1] ?? "";
+  const description = /name="description"\s+content="([^"]+)"/.exec(app)?.[1] ?? "";
+  assert.equal(title, "Bridge Zero · bridge tPOT between Portaldot V3 and Sepolia, Base Sepolia, Arbitrum Sepolia or the BNB Smart Chain testnet");
+  for (const d of DESTS) {
+    assert.ok(title.includes(d.key === "sepolia" ? "Sepolia" : d.full), `the title names ${d.full}`);
+    assert.ok(description.includes(d.full), `the description names ${d.full}`);
+  }
+  // The status page's headline, its gradient on the trailing phrase, "and EVM chains" held together so that it never wraps before a lone "chains.".
+  const hero = siteFile("src", "sections", "Hero.tsx");
+  assert.match(hero, /<h1 class="hero__title" id="hero-title">\s*A Portaldot light client <br class="hero__br" \/>\s*<span class="grad">on Ethereum and&nbsp;EVM&nbsp;chains<\/span>\.\s*<\/h1>/);
+  const page = siteFile("index.html");
+  assert.match(page, /<title>Bridge Zero · a Portaldot light client on Ethereum and EVM chains<\/title>/);
+  // Its lead names the four chains whose contracts check the proofs; its description and its footer the same four.
+  const chains = /Contracts on ([^.]+?) check Portaldot's GRANDPA finality/.exec(hero)?.[1] ?? "";
+  assert.equal(chains, "Sepolia, Base Sepolia, Arbitrum Sepolia and the BNB Smart Chain testnet");
+  for (const d of DESTS) assert.ok(chains.includes(d.key === "sepolia" ? "Sepolia" : d.full), d.full);
+  const pageDescription = /name="description"\s+content="([^"]+)"/.exec(page)?.[1] ?? "";
+  assert.ok(pageDescription.startsWith(`A Portaldot light client on Ethereum and EVM chains. Contracts on ${chains} check Portaldot's GRANDPA finality`), pageDescription);
+  const footer = siteFile("src", "sections", "Footer.tsx").replace(/\s+/g, " ");
+  assert.ok(footer.includes(`A Portaldot light client on Ethereum and EVM chains, and a token bridge built on it. Contracts on ${chains} check GRANDPA finality`), "the footer");
+  assert.match(README, /\n\nA Portaldot light client on Ethereum and EVM chains\. Solidity contracts check\s/);
+  // No headline says "on Ethereum" alone any longer.
+  for (const [name, text] of [
+    ["Hero.tsx", hero],
+    ["index.html", page],
+    ["Footer.tsx", footer],
+    ["README.md", README],
+  ] as const) {
+    assert.doesNotMatch(text, /light client on Ethereum[.,<]|"grad">on Ethereum</, name);
+  }
 });

@@ -655,9 +655,10 @@ export function Hero() {
       <div class="container">
         <div class={`hero__grid ${run ? "" : "hero__grid--solo"}`}>
           <div class="hero__intro">
+            {/* "and EVM chains" holds together: where the column is too narrow for the second line, it wraps after "on Ethereum", never before a lone "chains." */}
             <h1 class="hero__title" id="hero-title">
               A Portaldot light client <br class="hero__br" />
-              <span class="grad">on Ethereum</span>.
+              <span class="grad">on Ethereum and&nbsp;EVM&nbsp;chains</span>.
             </h1>
             <p class="hero__claim">No trusted relayer. Trust rests on the Portaldot validator set.</p>
             <p class="hero__lead">

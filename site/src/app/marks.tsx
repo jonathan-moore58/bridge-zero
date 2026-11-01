@@ -8,15 +8,20 @@
 // chain: the owner chose to show them on Oct 28, though their owners' terms ask for written approval
 // (NOTICE.md quotes both). Each follows its brand's rules: Base's Square sits on a white ground at
 // half the chip (its App Icons rule), Arbitrum's is its kit's all-white logomark for dark grounds,
-// and the wallet button's status dot stays clear of both. SubWallet's mark is held back (its kit is
-// for partners only) and its file is not imported, so the build does not ship it; SubWallet shows the
-// generic wallet icon, as before. The BNB Smart Chain testnet shows a neutral text mark, "BNB", in the
-// app's own type, and no image: BNB Chain's brand guidelines (read Nov 1) ask projects to seek its
-// approval before using the logo, so none is shipped or listed in NOTICE.md until that is granted.
+// and the wallet button's status dot stays clear of both. BNB Chain's logomark names the BNB Smart
+// Chain testnet in the same way: the owner chose to show it on Nov 1, as with Base and Arbitrum on
+// Oct 28, though BNB Chain's brand guidelines ask projects to seek its approval before using the
+// logo (NOTICE.md quotes them). It follows their rules: the yellow logomark, which they ask for
+// wherever possible, on the app's dark chip (9.6:1, not a low-contrast ground); never narrower than
+// their 15 px minimum, the smallest chips included; and clear space, a margin inside the chip and
+// the status dot outside it (their X, the logomark's height on every side, does not fit an icon).
+// v3.css sets each. SubWallet's mark is held back (its kit is for partners only) and its file is
+// not imported, so the build does not ship it; SubWallet shows the generic wallet icon, as before.
 
 import type { MarkKey } from "./dests.ts";
 import arbitrum from "./marks/arbitrum.svg";
 import base from "./marks/base.svg";
+import bnb from "./marks/bnb.svg";
 import ethereum from "./marks/ethereum.svg";
 import polkadotJs from "./marks/polkadot-js.svg";
 import portaldotWallet from "./marks/portaldot-wallet.png";
@@ -24,9 +29,9 @@ import portaldot from "./marks/portaldot.png";
 import talisman from "./marks/talisman.svg";
 
 /** The chains' marks the page ships; a chain missing here shows its initial. */
-const CHAIN: Partial<Record<MarkKey, string>> = { portaldot, ethereum, base, arbitrum };
+const CHAIN: Partial<Record<MarkKey, string>> = { portaldot, ethereum, base, arbitrum, bnb };
 
-/** The letter a chain's chip shows while its mark is held back; the BNB Smart Chain's text mark, three letters (v3.css sets them smaller). */
+/** The letter a chain's chip shows while its mark is held back; none is now: the BNB Smart Chain's chip shows BNB Chain's logomark since Nov 1, and "BNB", three letters (v3.css sets them smaller), was its text mark until then. */
 const INITIAL: Record<MarkKey, string> = { portaldot: "P", ethereum: "E", base: "B", arbitrum: "A", bnb: "BNB" };
 
 /** A chain's mark in the app's round chip, or its initial while the mark is held back; `cls` sets its size (mark--28 and so on). */

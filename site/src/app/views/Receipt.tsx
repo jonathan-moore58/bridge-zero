@@ -366,15 +366,16 @@ function Big({ s }: { s: number }) {
 }
 
 /**
- * A row's chain and where on it ("#323,534,868"). On small phones a rollup is named by its chain
- * button's first word, as the route is: "Arbitrum Sepolia #…" beside a transaction does not fit.
+ * A row's chain and where on it ("#323,534,868"). On small phones a destination other than Sepolia
+ * is named as its chain button names it ("Arbitrum", "BSC"), as the route is: "Arbitrum Sepolia #…"
+ * or "BNB Smart Chain #…" beside a transaction does not fit.
  */
 function ChainAt({ d, at }: { d: Dest; at: string }) {
   if (d.key === "sepolia") return <>{`${d.short} ${at}`}</>;
   return (
     <>
       <span class="rc__wide">{`${d.short} ${at}`}</span>
-      <span class="rc__tight">{`${d.name} ${at}`}</span>
+      <span class="rc__tight">{`${d.btn ?? d.name} ${at}`}</span>
     </>
   );
 }
@@ -439,7 +440,7 @@ function InMain({ m, whose }: { m: InReceipt; whose: string }) {
             ) : (
               <>
                 <span class="rc__wide">Portaldot V3 → {d.short}</span>
-                <span class="rc__tight">V3 → {d.name}</span>
+                <span class="rc__tight">V3 → {d.btn ?? d.name}</span>
               </>
             )}
           </dd>
@@ -614,7 +615,7 @@ function BackMain({ m, whose }: { m: BackReceipt; whose: string }) {
             ) : (
               <>
                 <span class="rc__wide">{d.short} → Portaldot V3</span>
-                <span class="rc__tight">{d.name} → V3</span>
+                <span class="rc__tight">{d.btn ?? d.name} → V3</span>
               </>
             )}
           </dd>

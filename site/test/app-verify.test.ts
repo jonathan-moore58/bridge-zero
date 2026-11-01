@@ -1,22 +1,27 @@
 // The Verify page's lists and words, apart from the checks themselves (proof-verify.test.ts): the
 // picker's transfers from the records (seven locks and five burns, each group newest first), a lock
-// past them as read from V3 (its log not read, none, or minted by used(n)), what the "Another lock
-// or burn" field takes, the ids the page goes by and the destination the top bar shows
-// on it, each step's title, the verdict of a run (Verified only when every check passed on the mint
-// itself; the way back always Trusted), and the commands that check the same without the page.
-// Offline.
+// past them as read from V3 (its log not read, none, or minted by used(n)), the nonces read so (every
+// one the records lack, gaps included) and where they sit among the records', what the "Another lock
+// or burn" field takes and says when no transfer has a hash, the ids the page goes by and the
+// destination the top bar shows on it, each step's title and the keys panel's names for them, the
+// verdict of a run (Verified only when every check passed on the mint itself; the way back always
+// Trusted), and the commands that check the same without the page. And the vault's locks counted
+// against the records, as the Network page states them. Offline.
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { buildRecords } from "../build/records.ts";
-import { destOf, refOf } from "../src/app/dests.ts";
-import { bareMeta, beyondLock, burnRows, commandsOf, dayTime, lockRows, readField, verifyDest, type VerifyHead } from "../src/app/verify-model.ts";
+import { DESTS, destOf, refOf } from "../src/app/dests.ts";
+import { DESTS_NAMED } from "../src/app/facts.ts";
+import { bareMeta, beyondLock, beyondNonces, burnRows, commandsOf, dayTime, lockRows, locksNote, readField, verifyDest, wayInRows, type BeyondLock, type VerifyHead } from "../src/app/verify-model.ts";
 import { signedChecked, stepTitles, verdictOf, waitingRun, type Facts, type Run, type StepState } from "../src/lib/proof/verdict.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const records = buildRecords(process.env.RECORDS_ROOT ?? join(here, "..", ".."));
+const source = (...path: string[]): string => readFileSync(join(here, "..", "src", "app", ...path), "utf8");
 
 test("the picker lists the recorded locks and burns from the records, each group newest first; lock 3 came from a Polkadot wallet", () => {
   const locks = lockRows(records);
@@ -76,6 +81,88 @@ test("a lock past the records: a Locked log not read says so, never that there i
   assert.ok(Number.isNaN(beyondLock(7, { ...log, at: null }).row?.at));
 });
 
+test("the locks read from V3 are every nonce below the vault's nextNonce that the records lack, gaps included, newest first, at most the cap: locks 6 and 7 under lock 8, nine in all", () => {
+  const recorded = records.locks.map((l) => l.nonce);
+  assert.deepEqual(
+    [...recorded].sort((a, b) => a - b),
+    [0, 1, 2, 3, 4, 5, 8],
+  );
+  // The vault at nonce 9 (lock 8 its last): locks 6 and 7, which the owner's wallet sent on Oct 28 and the records do not hold, below lock 8, which they do.
+  assert.deepEqual(beyondNonces(9, recorded, 8), [7, 6]);
+  // Above the records too, the newest first, and the gaps after them, within the cap.
+  assert.deepEqual(beyondNonces(12, recorded, 8), [11, 10, 9, 7, 6]);
+  assert.deepEqual(beyondNonces(20, recorded, 8), [19, 18, 17, 16, 15, 14, 13, 12]);
+  assert.deepEqual(beyondNonces(12, recorded, 4), [11, 10, 9, 7]);
+  // None when the records hold every lock, or the vault none.
+  assert.deepEqual(beyondNonces(9, [0, 1, 2, 3, 4, 5, 6, 7, 8], 8), []);
+  assert.deepEqual(beyondNonces(0, [], 8), []);
+  assert.deepEqual(beyondNonces(3, [], 8), [2, 1, 0]);
+  // The picker lists them among the records', by nonce, newest first: the heading counts nine.
+  const read: BeyondLock[] = [beyondLock(7, null), { n: 6, read: "reading", row: null }];
+  const rows = wayInRows(lockRows(records), read);
+  assert.deepEqual(
+    rows.map((x) => [x.n, x.from]),
+    [
+      [8, "records"],
+      [7, "v3"],
+      [6, "v3"],
+      [5, "records"],
+      [4, "records"],
+      [3, "records"],
+      [2, "records"],
+      [1, "records"],
+      [0, "records"],
+    ],
+  );
+  assert.equal(rows.length, 9);
+  // readBeyond asks for exactly these, from the records' nonces and the vault's slot 1.
+  const verify = source("verify.ts");
+  assert.match(verify, /const ns = beyondNonces\(next, records\.locks\.map\(\(l\) => l\.nonce\), BEYOND_MAX\);/);
+  assert.doesNotMatch(verify, /Math\.max\(m, l\.nonce \+ 1\)/, "no longer only the nonces above the highest recorded one");
+  // The picker's group: one list in nonce order, counted whole.
+  const page = source("views", "Verify.tsx");
+  assert.match(page, /const locks = wayInRows\(LOCKS, useBox\(beyond\)\);/);
+  assert.match(page, /<Group title="The way in · light client" count=\{locks\.length\}>/);
+});
+
+test("the vault's locks against the records, as the Network page counts them: the records' seven by nonce, all minted, and the two more the vault holds", () => {
+  const recorded = records.locks.map((l) => ({ n: l.nonce, done: l.mint !== null }));
+  assert.equal(locksNote(recorded, 9), "locks 0 to 5 and 8, all minted; 2 more the V3 record lacks");
+  // Read before the vault: no count past the records.
+  assert.equal(locksNote(recorded, null), "locks 0 to 5 and 8, all minted");
+  assert.equal(locksNote(recorded, 7), "locks 0 to 5 and 8, all minted");
+  // Two, one, a lock not minted by the records, and runs of two kept apart.
+  assert.equal(
+    locksNote(
+      [
+        { n: 0, done: true },
+        { n: 1, done: true },
+      ],
+      9,
+    ),
+    "locks 0 and 1, both minted; 7 more the V3 record lacks",
+  );
+  assert.equal(locksNote([{ n: 0, done: true }], 1), "lock 0, minted");
+  assert.equal(
+    locksNote(
+      [
+        { n: 4, done: true },
+        { n: 5, done: false },
+        { n: 8, done: true },
+        { n: 9, done: true },
+      ],
+      10,
+    ),
+    "locks 4, 5, 8 and 9, 3 minted; 6 more the V3 record lacks",
+  );
+  assert.equal(locksNote([], 9), "none in the records");
+  // The vault card counts records.locks, not the recorded runs Activity replays (locks 0 and 1).
+  const network = source("views", "Network.tsx");
+  assert.match(network, /const locks = records\.locks\.map\(\(l\) => \(\{ n: l\.nonce, done: l\.mint !== null \}\)\);/);
+  assert.match(network, /<span class="dim">· \{locksNote\(locks, v \? Number\(v\.nextNonce\) : null\)\}<\/span>/);
+  assert.doesNotMatch(network, /since the records/);
+});
+
 test("the field takes lock-7, a bare 7, burn-base-sepolia-0 and a transaction hash, and says what it does not take", () => {
   assert.deepEqual(readField("lock-7"), { kind: "id", id: "lock-7" });
   assert.deepEqual(readField(" 7 "), { kind: "id", id: "lock-7" });
@@ -85,6 +172,14 @@ test("the field takes lock-7, a bare 7, burn-base-sepolia-0 and a transaction ha
   const hash = `0x${"ab".repeat(32)}`;
   assert.deepEqual(readField(hash.toUpperCase().replace("0X", "0x")), { kind: "hash", hash });
   for (const bad of ["", "0x1234", "lock-x", "burn-optimism-0", "07", "-1"]) assert.equal(readField(bad).kind, "bad", JSON.stringify(bad));
+  // A hash no transfer has: the page names every chain it looked on, V3 and each destination it shows.
+  const page = source("views", "Verify.tsx");
+  assert.ok(page.includes("text: `No lock, mint or burn of this bridge has that hash on V3, ${DESTS_NAMED}.`"));
+  assert.doesNotMatch(page, /hash on V3, Sepolia, Base Sepolia or Arbitrum Sepolia/);
+  assert.equal(`No lock, mint or burn of this bridge has that hash on V3, ${DESTS_NAMED}.`, "No lock, mint or burn of this bridge has that hash on V3, Sepolia, the two rollups and the BNB Smart Chain testnet.");
+  // lookupHash looks on each destination the picker offers: the four.
+  assert.match(source("verify.ts"), /for \(const d of DESTS\.filter\(\(x\) => selectable\(x\)\)\) \{\s*const rc = await request<Receipt>/);
+  assert.equal(DESTS.length, 4);
 });
 
 test("the page's ids are the receipts' ids, and the top bar shows the transfer's destination, as on a receipt", () => {
@@ -110,6 +205,18 @@ test("each step's title, in the destination's words: the way in, a lock not mint
   assert.equal(titles("in", "unminted", "Sepolia")[5], "Would Sepolia accept it?");
   assert.equal(titles("in", "fallback", "Sepolia")[5], "Accepted on Sepolia");
   assert.deepEqual(titles("back", "minted", "Arbitrum Sepolia"), ["Burn on Arbitrum Sepolia", "Burn id", "Released on V3", "The release itself"]);
+  // "Where the keys come from" names a step by its number in the check list, either way: the set that
+  // signed is checked at step 3 (the way in's "Validator signatures", the way back's "Released on V3").
+  assert.equal(titles("in", "minted", "Sepolia")[2], "Validator signatures");
+  assert.equal(titles("back", "minted", "Sepolia")[2], "Released on V3");
+  const page = source("views", "Verify.tsx");
+  const keys = page.slice(page.indexOf("function KeysPanel("), page.indexOf("function WithoutPage("));
+  assert.ok(keys.length > 0, "Verify.tsx's KeysPanel");
+  assert.match(keys, /const carriedIn = run\.dir === "in" \? "step 2" : "step 3";/);
+  assert.match(keys, /const sigStep = "Step 3";/);
+  assert.match(keys, /const readIn = run\.dir === "in" \? "step 2" : "step 3";/);
+  assert.match(keys, /\{carriedOk \? \(run\.dir === "back" \? "Step 3" : "Step 2"\) : ""\}/);
+  assert.doesNotMatch(keys, /"B\d"/, "no step is named B1 to B4 on the page");
 });
 
 /** A finished run whose steps are in `states`. */

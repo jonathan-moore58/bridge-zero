@@ -14,6 +14,8 @@ export type ChainKey = "v3" | DestKey;
 export interface ChainFace {
   name: string;
   sub: string;
+  /** The chain button's first line where `name` is too long for it (./dests.ts): "BSC". */
+  btn?: string;
   full: string;
   short: string;
   mark: MarkKey;
@@ -29,7 +31,7 @@ const V3: ChainInfo = { key: "v3", name: "Portaldot V3", sub: "testnet", full: "
 
 export const CH = Object.fromEntries([
   ["v3", V3],
-  ...DESTS.map((d) => [d.key, { key: d.key, name: d.name, sub: d.sub, full: d.full, short: d.short, mark: d.mark, token: "wtPOT", chainId: BigInt(d.chainId) } satisfies ChainInfo]),
+  ...DESTS.map((d) => [d.key, { key: d.key, name: d.name, sub: d.sub, btn: d.btn, full: d.full, short: d.short, mark: d.mark, token: "wtPOT", chainId: BigInt(d.chainId) } satisfies ChainInfo]),
 ]) as Record<ChainKey, ChainInfo>;
 
 /** The card's two sides: V3 and the destination `dest`, the way `dir` goes. */
@@ -94,6 +96,16 @@ const runOf = (dest: RollupKey): RollupRun | undefined => (ROLLUP_RUNS as Partia
 /** The day auto-mint's time on `dest` was measured, as the card's strip states it: Sepolia's run of Oct 27 (AUTO_TIME), each other chain's own (ROLLUP_RUNS); null where none ran yet. */
 export const runDayOf = (dest: DestKey): string | null => (dest === "sepolia" ? "Oct 27" : (runOf(dest)?.on ?? null));
 
+/**
+ * The standard way back as a run timed it on `dest`, from the burn's block to the release's
+ * (ROLLUP_RUNS, std), and its day: burn 0 on the BNB Smart Chain testnet, 46 s on Nov 1. Null where
+ * no run timed it.
+ */
+export function stdRunOf(dest: DestKey): { seconds: number; on: string } | null {
+  const run = dest === "sepolia" ? undefined : runOf(dest);
+  return run?.std !== undefined ? { seconds: run.std, on: run.on } : null;
+}
+
 /** Fast on a rollup while the budget is free: the one run that timed it, Arbitrum Sepolia's burn 1. */
 const ROLLUP_FAST = { seconds: ROLLUP_RUNS["arbitrum-sepolia"].fast, on: "arbitrum-sepolia" } as const;
 
@@ -150,6 +162,12 @@ export const countWord = (n: number): string => ["no", "one", "two", "three", "f
 export const DESTS_WORD = countWord(DESTS.length);
 
 /**
+ * The destinations with a fast mode (fast confirmations), in words: "three", Sepolia and the two
+ * rollups. The fast budget spans these; the BNB Smart Chain testnet has one speed.
+ */
+export const FAST_DESTS_WORD = countWord(DESTS.filter((d) => d.fastConfirmations !== null).length);
+
+/**
  * The chains of `dests` besides V3 and Sepolia, as the pages name them: the rollups by their count
  * ("two rollups"), and any other destination by its name (the BNB Smart Chain testnet, an L1).
  */
@@ -166,6 +184,32 @@ export const OTHER_CHAINS: readonly string[] = otherChainsOf(DESTS);
 export function andList(items: readonly string[]): string {
   if (items.length < 2) return items.join("");
   return `${items.slice(0, -1).join(", ")} and ${items.at(-1) ?? ""}`;
+}
+
+/** Items in running text, one or another: "a", "a or b", "a, b or c". */
+export function orList(items: readonly string[]): string {
+  if (items.length < 2) return items.join("");
+  return `${items.slice(0, -1).join(", ")} or ${items.at(-1) ?? ""}`;
+}
+
+/**
+ * Standard's time on each of `dests`, as the release watcher's card states them, each with what it
+ * is: an estimate, or measured on its day (timeOf's source). Neighbours alike share one word: "≈ 17
+ * min on Sepolia, ≈ 21 min on Base Sepolia and ≈ 19 min on Arbitrum Sepolia, est.; ≈ 46 s on BSC
+ * testnet, measured Nov 1".
+ */
+export function stdTimesText(dests: readonly Dest[]): string {
+  const groups: { what: string; items: string[] }[] = [];
+  for (const d of dests) {
+    const [time, source] = timeOf(d.key, "std");
+    const what = source.startsWith("est.") ? "est." : source;
+    const last = groups.at(-1);
+    // A time never breaks across lines ("≈ 46 s"), as fastWait keeps them.
+    const item = `${time.replace(/ /g, "\u00a0")} on ${d.short}`;
+    if (last && last.what === what) last.items.push(item);
+    else groups.push({ what, items: [item] });
+  }
+  return groups.map((g) => `${andList(g.items)}, ${g.what}`).join("; ");
 }
 
 /**
@@ -218,7 +262,7 @@ export const FAST_CAP = 1;
  * publishes no budget, so the page cannot tell when it is in use: it says that it can be, before a
  * burn that goes Fast is signed, and why when one waits.
  */
-export const FAST_BUDGET_LINE = `Fast mode shares one ${FAST_CAP} tPOT budget across all chains: while another fast release is in flight, your burn can wait for finality.`;
+export const FAST_BUDGET_LINE = `Fast mode shares one ${FAST_CAP} tPOT budget across the ${FAST_DESTS_WORD} chains with Fast: while another fast release is in flight, your burn can wait for finality.`;
 
 /** A qualified burn with no approval this long is late: the watcher's rounds take about 20 s, its checks under a minute. */
 export const SLOW_RELEASE_MS = 3 * 60_000;
@@ -237,7 +281,7 @@ export function fastWait(d: Dest, at: { qualifiedAt: number | null; final: boole
   const t = (mode: Speed) => timeOf(d.key, mode)[0].replace(/ /g, "\u00a0");
   // Base Sepolia's Fast is Arbitrum Sepolia's run (rollupTime): an estimate there, and said to be.
   const est = timeOf(d.key, "fast")[1].startsWith("est.") ? " (est.)" : "";
-  return `Fast usually takes ${t("fast")}${est}. Fast mode shares one ${FAST_CAP} tPOT budget across all chains: while another fast release holds it, your burn waits until that release's burn is final, or yours is (${t("std")}, as Standard). Releases also wait while the committee's watcher, on one machine, is off.`;
+  return `Fast usually takes ${t("fast")}${est}. Fast mode shares one ${FAST_CAP} tPOT budget across the ${FAST_DESTS_WORD} chains with Fast: while another fast release holds it, your burn waits until that release's burn is final, or yours is (${t("std")}, as Standard). Releases also wait while the committee's watcher, on one machine, is off.`;
 }
 
 /**

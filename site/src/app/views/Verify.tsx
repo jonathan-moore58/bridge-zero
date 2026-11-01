@@ -12,13 +12,13 @@ import { checksum } from "../../lib/display.ts";
 import { signedChecked, verdictOf, waitingRun, type Line, type Run, type Step, type StepState, type Val, type VerdictKind } from "../../lib/proof/verdict.ts";
 import type { History } from "../../lib/proof/verify.ts";
 import { destOf, refOf, type Dest } from "../dests.ts";
-import { fromOf, toOf, type ChainInfo } from "../facts.ts";
+import { DESTS_NAMED, fromOf, toOf, type ChainInfo } from "../facts.ts";
 import { ChainMark } from "../marks.tsx";
 import type { Route } from "../router.ts";
 import { useBox } from "../store.ts";
 import { chainIdOf, isDone, toTokens, transfers, type LiveTransfer } from "../transfers.ts";
 import { Addr, Chip, CopyButton, Icon, Nb, announce, closeSheet, fmt, num, openSheet, short, toast } from "../ui.tsx";
-import { bareMeta, commandsOf, dayTime, readField, type BeyondLock, type PickRow } from "../verify-model.ts";
+import { bareMeta, commandsOf, dayTime, readField, wayInRows, type BeyondLock, type PickRow } from "../verify-model.ts";
 import { BURNS, LOCKS, beyond, headOf, histories, leaveHistory, leaveVerify, lookupHash, runs, startBeyond, startHistory, startVerify, type VerifyHead } from "../verify-runs.ts";
 import { Tick } from "./Receipt.tsx";
 import { CssSpan, EmptyCard, Redirect } from "./Tx.tsx";
@@ -160,7 +160,7 @@ function Field() {
       .then((id) => {
         setBusy(false);
         if (id) go(id);
-        else setNote({ err: true, text: "No lock, mint or burn of this bridge has that hash on V3, Sepolia, Base Sepolia or Arbitrum Sepolia." });
+        else setNote({ err: true, text: `No lock, mint or burn of this bridge has that hash on V3, ${DESTS_NAMED}.` });
       });
   };
   return (
@@ -201,12 +201,12 @@ function Field() {
 
 /**
  * The picker: the field first, as the list's search row; then this browser's finished transfers,
- * the locks (the records', and the ones past them read from V3) and the burns. `current`: the
- * transfer on screen, marked when the list opens in the sheet.
+ * the locks (the records', and the ones they lack read from V3, newest first among them) and the
+ * burns. `current`: the transfer on screen, marked when the list opens in the sheet.
  */
 function PickList({ current = null }: { current?: string | null }) {
   const mine = [...useBox(transfers).values()].map(yourRow).filter((r): r is PickRow => r !== null).sort((a, b) => b.at - a.at);
-  const more = useBox(beyond);
+  const locks = wayInRows(LOCKS, useBox(beyond));
   useEffect(startBeyond, []);
   return (
     <div class="vpick">
@@ -216,11 +216,16 @@ function PickList({ current = null }: { current?: string | null }) {
           <PickRowView key={r.id} r={r} whence="this browser" current={current} />
         ))}
       </Group>
-      <Group title="The way in · light client" count={LOCKS.length + more.length}>
-        {more.map((x) => (x.row ? <PickRowView key={x.n} r={x.row} whence="read from V3" current={current} /> : <BareRow key={x.n} n={x.n} read={x.read} current={current} />))}
-        {LOCKS.map((r) => (
-          <PickRowView key={r.id} r={r} whence="recorded" current={current} />
-        ))}
+      <Group title="The way in · light client" count={locks.length}>
+        {locks.map((x) =>
+          x.from === "records" ? (
+            <PickRowView key={x.n} r={x.row} whence="recorded" current={current} />
+          ) : x.lock.row ? (
+            <PickRowView key={x.n} r={x.lock.row} whence="read from V3" current={current} />
+          ) : (
+            <BareRow key={x.n} n={x.n} read={x.lock.read} current={current} />
+          ),
+        )}
       </Group>
       <Group title="The way back · committee" count={BURNS.length}>
         {BURNS.map((r) => (
@@ -330,13 +335,13 @@ function KeysPanel({ d, run, focus }: { d: Dest; run: Run; focus: boolean }) {
   const total = walk ? walk.changes.length : (cp?.changes ?? null);
   const ok = walk ? walk.changes.filter((c) => c.state === "passed").length : 0;
   const allOk = !!walk?.done && ok === total;
-  // The set that signed is checked once its signatures passed: step 3 on the way in, B3 on the way back.
+  // The set that signed is checked once its signatures passed: step 3 either way (the way in's "Validator signatures", the way back's "Released on V3").
   const signedOk = signedChecked(run);
-  // Changes V3 made after the client's last import, carried forward here: in step 2 on the way in (a lock read from V3 now), in B3 on the way back.
-  const carriedIn = run.dir === "in" ? "step 2" : "B3";
+  // Changes V3 made after the client's last import, carried forward here: in step 2 on the way in (a lock read from V3 now), in step 3 on the way back.
+  const carriedIn = run.dir === "in" ? "step 2" : "step 3";
   const carriedOk = run.steps.some((s) => (s.key === "keys" && s.state === "passed") || (s.key === "released" && (s.state === "passed" || s.state === "open")));
-  const sigStep = run.dir === "in" ? "Step 3" : "B3";
-  const readIn = run.dir === "in" ? "step 2" : "B3";
+  const sigStep = "Step 3";
+  const readIn = run.dir === "in" ? "step 2" : "step 3";
   // The chain's own Initialized log once the walk has read it, else the records' initialize.
   const init = walk?.init ?? initOf(d);
   const signed = run.dir === "in" ? "this block" : `V3's head #${f.block ? num(f.block.number) : "…"}`;
@@ -401,7 +406,7 @@ function KeysPanel({ d, run, focus }: { d: Dest; run: Run; focus: boolean }) {
                 Checked here in {carriedIn}: each signed by the set before, up to set {String(f.setId)}
               </p>
             </div>
-            <span class="rail__state">{carriedOk ? (run.dir === "back" ? "B3" : "Step 2") : ""}</span>
+            <span class="rail__state">{carriedOk ? (run.dir === "back" ? "Step 3" : "Step 2") : ""}</span>
           </li>
         ) : null}
         <li class={`rail__item${signedOk ? " is-passed" : ""}`}>
@@ -920,7 +925,7 @@ function NothingToVerify({ id, why }: { id: string; why?: string }) {
   const name = id.length > 32 ? short(id, 14, 8) : id;
   return (
     <EmptyCard title="Nothing to verify" action={{ href: "#/verify", text: "Pick a transfer" }}>
-      No lock or burn goes by <span class="mono">{name}</span>. {why || "The page checks a lock (lock-7), a burn on Sepolia (burn-0) or on a rollup (burn-base-sepolia-0)."}
+      No lock or burn goes by <span class="mono">{name}</span>. {why || "The page checks a lock (lock-7), a burn on Sepolia (burn-0) or on another destination (burn-base-sepolia-0, burn-bsc-testnet-0)."}
     </EmptyCard>
   );
 }

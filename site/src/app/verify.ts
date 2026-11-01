@@ -16,7 +16,7 @@ import { DESTS, burnKey, clientOf, deployed, destByChainId, destOf, explorerAddr
 import { planEnv } from "./sends.ts";
 import { findBurn, findLock, findMint, v3BlockTime, type ChainLock } from "./transfers.ts";
 import { headOf, histories, setRun, type VerifyHead } from "./verify-runs.ts";
-import { beyondLock, burnLabel, type BeyondLock } from "./verify-model.ts";
+import { beyondLock, beyondNonces, burnLabel, type BeyondLock } from "./verify-model.ts";
 
 // ---------------------------------------------------------------------------------------------
 // Each destination, as the checks read it
@@ -307,16 +307,16 @@ export async function runHistory(dest: DestKey, ctl: { stopped(): boolean }): Pr
 const BEYOND_MAX = 8;
 
 /**
- * The locks the vault holds past the records (its nextNonce, the word at slot 1), newest first,
- * each filled in once its Locked log is read, and its chip once used(n) answers on the chain it
- * names: a lock sent as a Substrate extrinsic has no log through eth_getLogs, and stays a bare nonce;
- * one whose log was not read says so. Reported as each one is read. `before`: the last read's list,
- * whose rows are kept, so that only the logs it did not read are asked for again.
+ * The locks the vault holds that the records lack: every nonce below its nextNonce (the word at
+ * slot 1) that records.locks does not hold, the gaps between recorded ones included, newest first
+ * (beyondNonces), each filled in once its Locked log is read, and its chip once used(n) answers on
+ * the chain it names: a lock sent as a Substrate extrinsic has no log through eth_getLogs, and stays
+ * a bare nonce; one whose log was not read says so. Reported as each one is read. `before`: the
+ * last read's list, whose rows are kept, so that only the logs it did not read are asked for again.
  */
 export async function readBeyond(report: (locks: readonly BeyondLock[]) => void, before: readonly BeyondLock[] = []): Promise<void> {
   const next = Number(BigInt((await request<Hex>(V3_EVM, "eth_getStorageAt", [VAULT, "0x1", "latest"])).result));
-  const from = records.locks.reduce((m, l) => Math.max(m, l.nonce + 1), 0);
-  const ns = Array.from({ length: Math.max(0, Math.min(next - from, BEYOND_MAX)) }, (_, i) => next - 1 - i);
+  const ns = beyondNonces(next, records.locks.map((l) => l.nonce), BEYOND_MAX);
   const kept = (n: number) => before.find((x) => x.n === n && x.read === "read");
   let list: BeyondLock[] = ns.map((n) => kept(n) ?? { n, read: "reading", row: null });
   report(list);

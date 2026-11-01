@@ -708,6 +708,19 @@ test("the evidence chains link where the app links them: Etherscan, Basescan and
   assert.deepEqual(evidenceCell(bsc[0]!).hash, { text: "0xababab…abab", href: `https://testnet.bscscan.com/tx/${tx}`, title: "BNB Smart Chain testnet, block 72,105,331" });
   assert.deepEqual(r.evidence.filter((x) => x.chain === "bsc-testnet").map((x) => x.n), [...Array.from({ length: 16 }, (_, i) => 129 + i), 146, 147]);
   assert.ok(perChain(r.evidence).endsWith(" and 18 on the BNB Smart Chain testnet"), perChain(r.evidence));
+  // Each of those rows names the chain, as the rollups' read "Base Sepolia: ...": "BSC testnet: ", or its full name in row 129 (the deployer's funding) and row 146 (lock 8's mint); its V3 rows, 145, 148 and 149, name V3.
+  for (const x of r.evidence.filter((y) => y.chain === "bsc-testnet")) {
+    if (x.n === 129 || x.n === 146) assert.ok(/\bthe BNB Smart Chain testnet\b/i.test(x.what), `row ${x.n}: ${x.what}`);
+    else assert.ok(x.what.startsWith("BSC testnet: "), `row ${x.n}: ${x.what}`);
+  }
+  assert.deepEqual(
+    r.evidence.filter((x) => x.what.startsWith("BSC testnet: ")).map((x) => x.n),
+    [...Array.from({ length: 15 }, (_, i) => 130 + i), 147],
+  );
+  assert.deepEqual(
+    r.evidence.filter((x) => [145, 148, 149].includes(x.n)).map((x) => x.chain),
+    ["v3", "v3", "v3"],
+  );
   assert.deepEqual(evidenceCell({ chain: "arbitrum-sepolia", tx, txText: "0xabababab…", block: 323_663_335, blockUrl: null }), {
     where: { text: "Arbitrum 323,663,335", href: null, title: "Arbitrum Sepolia" },
     hash: { text: "0xababab…abab", href: `https://sepolia.arbiscan.io/tx/${tx}`, title: "Arbitrum Sepolia, block 323,663,335" },

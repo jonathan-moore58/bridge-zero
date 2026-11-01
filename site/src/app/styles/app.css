@@ -502,6 +502,11 @@ body {
   gap: 8px;
 }
 
+/* One speed (the BNB Smart Chain testnet's): its Standard tile alone takes the row. */
+.speed > .opt:only-child {
+  grid-column: 1 / -1;
+}
+
 .speed .opt__meta {
   display: flex;
   flex-wrap: wrap;
@@ -622,9 +627,17 @@ body {
   transition: grid-template-rows var(--dur-2) var(--ease-out), opacity var(--dur-2) var(--ease-out), visibility 0s;
 }
 
+/* The rows are clipped while they grow or shrink, and not once they are open, so that a cost's
+   tooltip (the lock's, the burn's, the mint's) shows whole above its row on every chain. A clip-path,
+   not overflow: its change can wait for the rows to grow, and closing clips again at once. */
 .quote__inner {
   min-height: 0;
-  overflow: hidden;
+  clip-path: inset(0);
+}
+
+.quote__sum[aria-expanded="true"] + .quote__body .quote__inner {
+  clip-path: inset(-100vh -100vw);
+  transition: clip-path 0s linear var(--dur-2);
 }
 
 .quote__list {
@@ -989,6 +1002,11 @@ body {
   border-top: 1px solid var(--line-1);
 }
 
+/* Two facts (a one-speed chain's way back) share the row in halves. */
+.facts:has(> .fact:nth-child(2):last-child) {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .fact {
   display: grid;
   align-content: start;
@@ -1064,7 +1082,8 @@ body {
     display: none;
   }
 
-  .facts {
+  .facts,
+  .facts:has(> .fact:nth-child(2):last-child) {
     grid-template-columns: minmax(0, 1fr);
     gap: 10px;
   }
@@ -1641,6 +1660,12 @@ body {
     flex-basis: 100%;
     margin: 0;
     font-size: var(--fs-ui);
+  }
+
+  /* A lone tile has the row's width: its time stays beside its title, as on a wider screen. */
+  .speed > .opt--row:only-child .opt__time {
+    flex-basis: auto;
+    margin-left: auto;
   }
 
   .opt--row .opt__meta {

@@ -23,7 +23,7 @@ export type DestKey = "sepolia" | "base-sepolia" | "arbitrum-sepolia" | "bsc-tes
 /** Every destination but Sepolia: the chains with a V3 light client card of their own on the Network page. */
 export type RollupKey = Exclude<DestKey, "sepolia">;
 
-/** A chain's mark, as ./marks.tsx ships it (each one's source is in NOTICE.md; "bnb" is a text mark, with no image). */
+/** A chain's mark, as ./marks.tsx ships it (each one's source is in NOTICE.md; "bnb" is BNB Chain's logomark, since Nov 1). */
 export type MarkKey = "portaldot" | "ethereum" | "base" | "arbitrum" | "bnb";
 
 /** A cost measured on one of the chain's recorded transactions: the gas as the card rounds it, in full, whose it was (its README row), and what else to know of it. */
@@ -46,6 +46,13 @@ export interface Dest {
   /** The chain button's two lines: "Base" over "Sepolia". */
   name: string;
   sub: string;
+  /**
+   * The chain button's first line in place of `name`, where that is too long for it: "BSC" over
+   * "testnet", the chain's common short form, where "BNB Smart Chain" was cut off. The trust
+   * diagram under the card shows it too, where "BNB Smart Chain" ran past the strip's edge; the
+   * picker and the text keep `name` and `full`.
+   */
+  btn?: string;
   /** "Base Sepolia": the destination list, the Network page. */
   full: string;
   /** "Base Sepolia" in running text ("on Base Sepolia"); Sepolia is "Sepolia". */
@@ -193,9 +200,10 @@ const DESTS_ALL: readonly Dest[] = [
     chainId: 97,
     name: "BNB Smart Chain",
     sub: "testnet",
+    btn: "BSC",
     full: "BNB Smart Chain testnet",
     short: "BSC testnet",
-    // A text mark: BNB Chain's brand guidelines ask projects to seek approval before using its logo.
+    // BNB Chain's logomark, shown since Nov 1 though its brand guidelines ask for approval first (./marks.tsx, NOTICE.md).
     mark: "bnb",
     rpcs: BSC_TESTNET,
     explorer: { name: "BscScan", url: "https://testnet.bscscan.com" },

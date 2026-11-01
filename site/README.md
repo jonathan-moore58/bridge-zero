@@ -120,10 +120,11 @@ logs on V3's EVM RPC, which serves none of a Substrate extrinsic. `AUTO_MINT.sub
 `System.Events`.
 
 `src/assets/portaldot.png` is the Portaldot mark, 128 px. The bridge app shows each chain and each
-Polkadot wallet by its owner's own mark where the owner's terms allow it, the files in
-`src/app/marks/`, unmodified; `NOTICE.md` gives each one's source and terms, and why Base's,
-Arbitrum's and SubWallet's are held back until their owners approve (the app shows the chain's
-initial, or the generic wallet icon, instead). Its destinations are one config, `src/app/dests.ts`:
+Polkadot wallet by its owner's own mark, the files in `src/app/marks/`, unmodified; `NOTICE.md`
+gives each one's source and terms. Base's, Arbitrum's and BNB Chain's terms ask for approval first,
+and the project's owner chose to show them all the same, each by its brand's rules (Base's and
+Arbitrum's on Oct 28, BNB Chain's logomark for the BNB Smart Chain testnet on Nov 1); SubWallet's
+is held back (the generic wallet icon instead). Its destinations are one config, `src/app/dests.ts`:
 Sepolia, Base Sepolia, Arbitrum Sepolia and the BNB Smart Chain testnet, each with its V3 light
 client, BridgeMinter and wtPOT, RPCs, block time, L1 rule, fast confirmations, finality and recorded
 costs. The app's lock, mint and burn run to all four, as auto-mint and the release watcher serve

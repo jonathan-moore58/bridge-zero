@@ -3,10 +3,10 @@
 [![CI](https://github.com/jonathan-moore58/bridge-zero/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jonathan-moore58/bridge-zero/actions/workflows/ci.yml?query=branch%3Amain)
 [![Pages](https://github.com/jonathan-moore58/bridge-zero/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/jonathan-moore58/bridge-zero/actions/workflows/pages.yml?query=branch%3Amain)
 
-A Portaldot light client on Ethereum. Solidity contracts check Portaldot's GRANDPA
-finality (the validators' signatures) and Substrate storage proofs, so an EVM
-contract can use Portaldot state without a trusted relayer: trust rests on the
-Portaldot validator set.
+A Portaldot light client on Ethereum and EVM chains. Solidity contracts check
+Portaldot's GRANDPA finality (the validators' signatures) and Substrate storage
+proofs, so an EVM contract can use Portaldot state without a trusted relayer:
+trust rests on the Portaldot validator set.
 
 **The bridge app: [jonathan-moore58.github.io/bridge-zero/app](https://jonathan-moore58.github.io/bridge-zero/app/)**. Lock
 tPOT on the Portaldot V3 testnet and receive wtPOT on Sepolia, Base Sepolia, Arbitrum Sepolia or
@@ -373,8 +373,8 @@ forge test
 cd ../site
 npm ci
 npm run check
-# ℹ tests 316
-# ℹ pass 316
+# ℹ tests 324
+# ℹ pass 324
 # ℹ fail 0
 ```
 
@@ -591,7 +591,7 @@ with `npm run kit`.
 - CI since Oct 31: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds and tests the
   contracts, the relayer (with the ten fixture directories and the kit's fixture) and the site on
   every push and pull request.
-- Tests: 370 forge tests (the 2 Sepolia fork tests skipped), 403 relayer tests, 316 site tests and
+- Tests: 370 forge tests (the 2 Sepolia fork tests skipped), 403 relayer tests, 324 site tests and
   432 fixture checks (391 with `npm run check`, 41 with `npm run kit -- check`) pass, in CI and in
   [Verify it yourself](#verify-it-yourself).
 
@@ -662,7 +662,8 @@ with `npm run kit`.
   lock's for lock 2, and 139 and 133 seconds after it for locks 6 and 7 on the rollups (rows 117 to
   120), since auto-mint waits a 90-second grace after finality so that a user minting from the page
   is not raced; auto-mint skips locks below 0.001 tPOT and keeps to 0.02 ETH of gas a day on
-  Sepolia and 0.002 on each rollup. LP fast-fill is planned for the way back.
+  Sepolia, 0.002 on each rollup and 0.005 tBNB on the BNB Smart Chain testnet. LP fast-fill is
+  planned for the way back.
   From a rollup the standard way back waits for that chain's finality, 16 to 22 minutes behind its
   latest block on Oct 28 (Sepolia finalizes the rollup's batch), and fast mode for 36 seconds of its
   blocks: 105 seconds from Arbitrum Sepolia's burn block to the release's (rows 121 to 123), and 905
@@ -1593,24 +1594,24 @@ is not on BscScan yet.
 | # | What it shows | Transaction | Block | Result |
 |---|---|---|---|---|
 | 129 | The BNB Smart Chain testnet: 0.2999979 tBNB to the deployer from `0xBB06…dE9`, which paid the gas of the rows that follow | [`0x148259c0…`](https://testnet.bscscan.com/tx/0x148259c0b8edaf139d87163732db1c29c5b29cae1891d55d9f078c6321639bd4) | BSC 140,152,968 | success, 21,000 gas |
-| 130 | `SCL_EIP6565` created (ed25519; the deployer's nonce 0) | [`0x656ff9c9…`](https://testnet.bscscan.com/tx/0x656ff9c9e4ecc7f30e21f788c63087d19931f55d5173e3fbbef268de5cd774a8) | BSC 140,161,293 | success, 2,064,643 gas |
-| 131 | `GrandpaCodec` created (nonce 1) | [`0x6a03ef2d…`](https://testnet.bscscan.com/tx/0x6a03ef2d5edf58d0e05c241a6d66e4552d0a1c15489f7a2b48975d7dcb2881d2) | BSC 140,161,320 | success, 1,433,476 gas |
-| 132 | `AuthoritySets` created (nonce 2) | [`0x78039c38…`](https://testnet.bscscan.com/tx/0x78039c38da0a54b311d57b6af0de1363d681612b1570c43fe26b63797693b869) | BSC 140,161,337 | success, 1,277,278 gas |
-| 133 | `StorageProofs` created (nonce 3) | [`0xd523cf2f…`](https://testnet.bscscan.com/tx/0xd523cf2ff8c3e3e90902f1f8fdaf5af298d609c89fafd2985b3ae0e103f20ffd) | BSC 140,161,356 | success, 1,810,064 gas |
-| 134 | `GrandpaLightClient` #2 created, for the V3 testnet (nonce 4) | [`0x28013678…`](https://testnet.bscscan.com/tx/0x280136786f7c2c6776d0a8c61c12cc00c1530bc41c371cdce9d20006f616b842) | BSC 140,161,377 | success, 2,136,019 gas |
-| 135 | `ProvenBalance` #2 created, bound to #2 (nonce 5) | [`0x6739f711…`](https://testnet.bscscan.com/tx/0x6739f7113f6488c0fd751f1fda2e2aea032b3eb5e848376b2453206e81ff9ed2) | BSC 140,161,403 | success, 953,593 gas |
-| 136 | V3 testnet client initialized at a checkpoint: set 75, its 2 keys, at the set change #266,908 that started it (the one trusted, admin step) | [`0xc6e6e0b8…`](https://testnet.bscscan.com/tx/0xc6e6e0b835d76bb110a9a354d5821b0dbbd06c4e47c5d3e62ebedf07d64d9fd7) | BSC 140,161,424 | success, 504,776 gas |
-| **137** | **V3 testnet block #269,340 verified (2 of 2), and an account balance proven from its state root (System.Account, trie V1)** | [`0xfb31780a…`](https://testnet.bscscan.com/tx/0xfb31780abf0daeab855a4c37ed809e770a05cae30e6c073163600955967c0c41) | BSC 140,161,448 | **success, 2,118,725 gas** |
-| 138 | The relayer key `0xE94a…0257` funded with 0.1 tBNB by the deployer (nonce 8) | [`0x1d9717e8…`](https://testnet.bscscan.com/tx/0x1d9717e8833c27da79ca1275af13b66890ccbf5ea9ac9c70c491c41f278233ab) | BSC 140,161,541 | success, 21,000 gas |
-| 139 | `BridgeMinter` created (nonce 9), taking the chain's V3 client `0x3897…0ab6`, the vault `0xa02E…8ffd` on chain 420420777 and its code hash, and the token at nonce 10 | [`0x1136bbfe…`](https://testnet.bscscan.com/tx/0x1136bbfe8491f9176dc5cbf202fa0e49f008e8fa8ed51be4c6be2e1ed21a2bff) | BSC 140,162,374 | success, 1,399,559 gas |
-| 140 | `WrappedTPOT` created (nonce 10), the minter its only minter | [`0x5b6add74…`](https://testnet.bscscan.com/tx/0x5b6add744e783130ecb38f24c9480e2aec888770f526d20277d7ac7f45ca14f0) | BSC 140,162,400 | success, 471,093 gas |
-| 141 | The auto-mint key `0x57cc…A113` funded with 0.05 tBNB by the deployer (nonce 11) | [`0x64be203f…`](https://testnet.bscscan.com/tx/0x64be203fb39e865e8cca6cc376f1a7af695308034eeb564d5a0ac85cd9b5e4b6) | BSC 140,162,585 | success, 21,000 gas |
-| 142 | V3 testnet set change 75 → 76 at #270,477: 2 of 2 signatures | [`0x58a7b4ed…`](https://testnet.bscscan.com/tx/0x58a7b4ed3055448758d29261769bf4c9a51240c0cdfd7a125330e924526a61c5) | BSC 140,164,852 | success, 1,852,257 gas |
-| 143 | V3 testnet set change 76 → 77 at #274,059: 2 of 2 signatures | [`0xcfe9a8ae…`](https://testnet.bscscan.com/tx/0xcfe9a8ae2ba8f0f6f9e92858bea9a7e8c61b0a396a8a16f8724e1994a0ef7975) | BSC 140,164,870 | success, 1,844,978 gas |
-| 144 | V3 testnet block #275,530 verified: the light client at the live head | [`0xa707d519…`](https://testnet.bscscan.com/tx/0xa707d51984e12fee8dc5416aa7509b3e35f289de72341a3960f1f551b4f98cd7) | BSC 140,164,885 | success, 1,692,097 gas |
+| 130 | BSC testnet: `SCL_EIP6565` created (ed25519; the deployer's nonce 0) | [`0x656ff9c9…`](https://testnet.bscscan.com/tx/0x656ff9c9e4ecc7f30e21f788c63087d19931f55d5173e3fbbef268de5cd774a8) | BSC 140,161,293 | success, 2,064,643 gas |
+| 131 | BSC testnet: `GrandpaCodec` created (nonce 1) | [`0x6a03ef2d…`](https://testnet.bscscan.com/tx/0x6a03ef2d5edf58d0e05c241a6d66e4552d0a1c15489f7a2b48975d7dcb2881d2) | BSC 140,161,320 | success, 1,433,476 gas |
+| 132 | BSC testnet: `AuthoritySets` created (nonce 2) | [`0x78039c38…`](https://testnet.bscscan.com/tx/0x78039c38da0a54b311d57b6af0de1363d681612b1570c43fe26b63797693b869) | BSC 140,161,337 | success, 1,277,278 gas |
+| 133 | BSC testnet: `StorageProofs` created (nonce 3) | [`0xd523cf2f…`](https://testnet.bscscan.com/tx/0xd523cf2ff8c3e3e90902f1f8fdaf5af298d609c89fafd2985b3ae0e103f20ffd) | BSC 140,161,356 | success, 1,810,064 gas |
+| 134 | BSC testnet: `GrandpaLightClient` #2 created, for the V3 testnet (nonce 4) | [`0x28013678…`](https://testnet.bscscan.com/tx/0x280136786f7c2c6776d0a8c61c12cc00c1530bc41c371cdce9d20006f616b842) | BSC 140,161,377 | success, 2,136,019 gas |
+| 135 | BSC testnet: `ProvenBalance` #2 created, bound to #2 (nonce 5) | [`0x6739f711…`](https://testnet.bscscan.com/tx/0x6739f7113f6488c0fd751f1fda2e2aea032b3eb5e848376b2453206e81ff9ed2) | BSC 140,161,403 | success, 953,593 gas |
+| 136 | BSC testnet: V3 testnet client initialized at a checkpoint: set 75, its 2 keys, at the set change #266,908 that started it (the one trusted, admin step) | [`0xc6e6e0b8…`](https://testnet.bscscan.com/tx/0xc6e6e0b835d76bb110a9a354d5821b0dbbd06c4e47c5d3e62ebedf07d64d9fd7) | BSC 140,161,424 | success, 504,776 gas |
+| **137** | **BSC testnet: V3 testnet block #269,340 verified (2 of 2), and an account balance proven from its state root (System.Account, trie V1)** | [`0xfb31780a…`](https://testnet.bscscan.com/tx/0xfb31780abf0daeab855a4c37ed809e770a05cae30e6c073163600955967c0c41) | BSC 140,161,448 | **success, 2,118,725 gas** |
+| 138 | BSC testnet: the relayer key `0xE94a…0257` funded with 0.1 tBNB by the deployer (nonce 8) | [`0x1d9717e8…`](https://testnet.bscscan.com/tx/0x1d9717e8833c27da79ca1275af13b66890ccbf5ea9ac9c70c491c41f278233ab) | BSC 140,161,541 | success, 21,000 gas |
+| 139 | BSC testnet: `BridgeMinter` created (nonce 9), taking the chain's V3 client `0x3897…0ab6`, the vault `0xa02E…8ffd` on chain 420420777 and its code hash, and the token at nonce 10 | [`0x1136bbfe…`](https://testnet.bscscan.com/tx/0x1136bbfe8491f9176dc5cbf202fa0e49f008e8fa8ed51be4c6be2e1ed21a2bff) | BSC 140,162,374 | success, 1,399,559 gas |
+| 140 | BSC testnet: `WrappedTPOT` created (nonce 10), the minter its only minter | [`0x5b6add74…`](https://testnet.bscscan.com/tx/0x5b6add744e783130ecb38f24c9480e2aec888770f526d20277d7ac7f45ca14f0) | BSC 140,162,400 | success, 471,093 gas |
+| 141 | BSC testnet: the auto-mint key `0x57cc…A113` funded with 0.05 tBNB by the deployer (nonce 11) | [`0x64be203f…`](https://testnet.bscscan.com/tx/0x64be203fb39e865e8cca6cc376f1a7af695308034eeb564d5a0ac85cd9b5e4b6) | BSC 140,162,585 | success, 21,000 gas |
+| 142 | BSC testnet: V3 testnet set change 75 → 76 at #270,477: 2 of 2 signatures | [`0x58a7b4ed…`](https://testnet.bscscan.com/tx/0x58a7b4ed3055448758d29261769bf4c9a51240c0cdfd7a125330e924526a61c5) | BSC 140,164,852 | success, 1,852,257 gas |
+| 143 | BSC testnet: V3 testnet set change 76 → 77 at #274,059: 2 of 2 signatures | [`0xcfe9a8ae…`](https://testnet.bscscan.com/tx/0xcfe9a8ae2ba8f0f6f9e92858bea9a7e8c61b0a396a8a16f8724e1994a0ef7975) | BSC 140,164,870 | success, 1,844,978 gas |
+| 144 | BSC testnet: V3 testnet block #275,530 verified: the light client at the live head | [`0xa707d519…`](https://testnet.bscscan.com/tx/0xa707d51984e12fee8dc5416aa7509b3e35f289de72341a3960f1f551b4f98cd7) | BSC 140,164,885 | success, 1,692,097 gas |
 | 145 | Lock 8 on V3: 0.001 tPOT locked for `0xD983…1071` on the BNB Smart Chain testnet (chain 97, minter `0xdc31…2348`), from the deployer's EVM account; the vault stores the commitment `0xde3757fd…dc59f93c` in `commitments[8]` | `0x354cda49…d9e461ec` | V3 [#275,563](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/275563) | success, cost 3.864 tPOT, almost all storage deposit |
 | **146** | **Lock 8 minted on the BNB Smart Chain testnet by auto-mint: `importAndMint` at V3 block #275,580 (2 of 2, set 77), the vault bound, `commitments[8]` proven, 0.001 wtPOT to `0xD983…1071`, sent and paid by `0x57cc…A113`** | [`0x81f73eb9…`](https://testnet.bscscan.com/tx/0x81f73eb92d43381f8ced3f8e4866f455f32811cc053b68b2c8ac6242ab93eea5) | BSC 140,165,449 | **success, 2,658,627 gas** |
-| 147 | Burn 0, 0.001 wtPOT burned for `0xD983…1071` on V3, burn id `0xf38d1b6c…50454773` (`Transfer` to the zero address, then `BurnRequested`), from the deployer (nonce 12) | [`0x0a904a75…f61a92e3`](https://testnet.bscscan.com/tx/0x0a904a7576e38b1e6a21a48fc3bf2717cd15ae83ecd049e777bda614f61a92e3) | BSC 140,165,763 | success, 52,822 gas |
+| 147 | BSC testnet: burn 0, 0.001 wtPOT burned for `0xD983…1071` on V3, burn id `0xf38d1b6c…50454773` (`Transfer` to the zero address, then `BurnRequested`), from the deployer (nonce 12) | [`0x0a904a75…f61a92e3`](https://testnet.bscscan.com/tx/0x0a904a7576e38b1e6a21a48fc3bf2717cd15ae83ecd049e777bda614f61a92e3) | BSC 140,165,763 | success, 52,822 gas |
 | 148 | The BNB Smart Chain testnet's burn 0, by the auto-release watcher: member 1 opens the release with the burn final there: `multisig.asMulti` without a timepoint, with the call in full (`NewMultisig`; 9.27 tPOT reserved until it runs) | `0xc2088912…e0318461` | V3 [#275,611](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/275611) | final, fee 0.033 tPOT |
 | **149** | **Member 2 runs it: `asMulti` at timepoint #275,611 → `MultisigExecuted` Ok, the vault's `Released`, 0.001 tPOT to `0xD983…1071`; `released[burnId]` true, `outstanding` 1.412 → 1.411 tPOT** | `0x4c715149…f7ed58c8` | V3 [#275,615](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/275615) | **final, fee 0.034 tPOT** |
 
@@ -1669,7 +1670,7 @@ Lines on Nov 1, counted with `wc -l` (blank lines and comments included):
 
 | Code | Files | Lines |
 |---|---|---|
-| The project's own: `contracts/src` (without `trie/vendor/`), `contracts/test`, `contracts/script`, `relayer/src`, `site/src`, `site/build`, `site/test`, `ops` | 233 | 103,713 |
+| The project's own: `contracts/src` (without `trie/vendor/`), `contracts/test`, `contracts/script`, `relayer/src`, `site/src`, `site/build`, `site/test`, `ops` | 233 | 104,308 |
 | Vendored, unmodified: the Solidity of the four libraries in `contracts/lib/`, at the commits NOTICE.md pins | 149 | 62,200 |
 | Vendored and modified: `contracts/src/trie/vendor/PolkadotTrie.sol` | 1 | 176 |
 

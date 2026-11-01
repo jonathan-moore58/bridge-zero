@@ -1,13 +1,15 @@
 // The Verify page's words and lists, apart from the build's records so that node --test runs them:
-// the transfers it lists to pick from (the recorded locks and burns, newest first), what the field
-// takes (lock-7, 7, burn-base-sepolia-0, a transaction hash), and the commands that check the same
-// without this page. The checks themselves are ../lib/proof/verify.ts; the reads and the runs are
-// ./verify.ts.
+// the transfers it lists to pick from (the recorded locks and burns, newest first, and the locks
+// read from V3 that the records lack), what the field takes (lock-7, 7, burn-base-sepolia-0, a
+// transaction hash), and the commands that check the same without this page; and the vault's locks
+// counted against the records, as the Network page states them. The checks themselves are
+// ../lib/proof/verify.ts; the reads and the runs are ./verify.ts.
 
 import type { Hex } from "../lib/hex.ts";
 import type { Facts, Run } from "../lib/proof/verdict.ts";
 import type { BurnRecord, RecordedLock, ReleaseRecord, RollupRuns } from "../lib/records-types.ts";
 import { DESTS, burnKey, destByChainId, lockKey, refOf, type Dest, type DestKey } from "./dests.ts";
+import { andList } from "./facts.ts";
 
 /** What the card's head says of a transfer: from the records at once, or once its chain has been read. */
 export interface VerifyHead {
@@ -85,6 +87,26 @@ export function beyondLock(n: number, log: { dest: DestKey; amount: bigint; at: 
   return { n, read: "read", row };
 }
 
+/**
+ * The nonces the picker reads from V3: every one below the vault's nextNonce (`next`) that the
+ * records lack (`recorded`), the gaps between recorded ones included (locks 6 and 7, under lock 8),
+ * newest first, at most `max`.
+ */
+export function beyondNonces(next: number, recorded: readonly number[], max: number): number[] {
+  const held = new Set(recorded);
+  const out: number[] = [];
+  for (let n = next - 1; n >= 0 && out.length < max; n--) if (!held.has(n)) out.push(n);
+  return out;
+}
+
+/** A row of the picker's way in: a recorded lock, or one read from V3. */
+export type WayInRow = { from: "records"; n: number; row: PickRow } | { from: "v3"; n: number; lock: BeyondLock };
+
+/** The picker's way in, newest first: the recorded locks and those read from V3, which can sit between them (locks 6 and 7, under lock 8). */
+export function wayInRows(recorded: readonly PickRow[], read: readonly BeyondLock[]): WayInRow[] {
+  return [...recorded.map((row): WayInRow => ({ from: "records", n: row.n, row })), ...read.map((lock): WayInRow => ({ from: "v3", n: lock.n, lock }))].sort((a, b) => b.n - a.n);
+}
+
 /** What the picker says of a lock past the records that has no row: its log being read, not read, or none (a Substrate extrinsic's). */
 export function bareMeta(read: BeyondLock["read"]): string {
   if (read === "reading") return "Reading its Locked log on V3…";
@@ -121,6 +143,29 @@ export function lockRows(r: Pick<PickRecords, "locks">, dests: readonly Dest[] =
       return d ? [{ id: lockKey(l.nonce), dir: "in", dest: d.key, n: l.nonce, amount: BigInt(l.amountNative), at: Date.parse(l.signedAt), label: `Lock ${l.nonce}`, substrate: l.via === "substrate", done: l.mint !== null }] : [];
     })
     .sort((a, b) => b.n - a.n);
+}
+
+/**
+ * The vault's locks against the records, as the Network page's vault card counts them: the recorded
+ * ones by nonce, three or more in a row as a range, whether the records hold them minted, and how
+ * many more the vault holds (its nextNonce, `onChain`; null until read): "locks 0 to 5 and 8, all
+ * minted; 2 more the V3 record lacks".
+ */
+export function locksNote(recorded: readonly { n: number; done: boolean | null }[], onChain: number | null): string {
+  if (!recorded.length) return "none in the records";
+  const ns = [...new Set(recorded.map((r) => r.n))].sort((a, b) => a - b);
+  const parts: string[] = [];
+  for (let i = 0; i < ns.length; ) {
+    let j = i;
+    while (j + 1 < ns.length && ns[j + 1] === (ns[j] ?? 0) + 1) j++;
+    if (j - i >= 2) parts.push(`${ns[i]} to ${ns[j]}`);
+    else for (let k = i; k <= j; k++) parts.push(String(ns[k]));
+    i = j + 1;
+  }
+  const minted = recorded.filter((r) => r.done === true).length;
+  const state = minted < recorded.length ? `${minted} minted` : recorded.length === 1 ? "minted" : recorded.length === 2 ? "both minted" : "all minted";
+  const more = onChain !== null && onChain > recorded.length ? onChain - recorded.length : 0;
+  return `${ns.length === 1 ? "lock" : "locks"} ${andList(parts)}, ${state}${more ? `; ${more} more the V3 record lacks` : ""}`;
 }
 
 /** The recorded burns, newest first: Sepolia's and each rollup's, each released when the records hold its release by its id. */

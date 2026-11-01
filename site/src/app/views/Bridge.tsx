@@ -16,9 +16,9 @@ import { SENDS, burnKey, deployed, destOf, destState, gasFrom, lockKey, pickRows
 import {
   CH,
   DESTS_NAMED,
-  DESTS_WORD,
   FAST_BUDGET_LINE,
   FAST_CAP,
+  FAST_DESTS_WORD,
   IMPORT_GAS,
   LATER_CHAINS,
   LOCK_CEILING,
@@ -31,6 +31,7 @@ import {
   chainById,
   fromOf,
   runDayOf,
+  stdRunOf,
   timeOf,
   toOf,
   type ChainFace,
@@ -925,13 +926,16 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
  * The strip under the card: what each way trusts, and its recorded numbers, for the card's
  * destination `d`; the way in's time is auto-mint's when it mints the card's lock (`auto`). Sepolia's
  * are its recorded runs, which the replays play; a rollup's are its own records of Oct 28 and the
- * rules that set its times, with its first lock and burn read from its chain.
+ * rules that set its times, with its first lock and burn read from its chain. A chain with one speed
+ * (the BNB Smart Chain testnet) states no Fast cap: its burn's release as its run timed it instead.
  */
 function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
   const back = dir === "back";
   const sep = d.key === "sepolia";
   // A rollup's first lock and burn, which the strip links to (./dests.ts firsts, README rows 98 to 113); none before a chain's first round trip.
   const firsts = sep ? null : d.firsts;
+  // A one-speed chain's way back as its run timed it (facts.ts, ROLLUP_RUNS): burn 0's 46 s on the BNB Smart Chain testnet, Nov 1.
+  const stdRun = stdRunOf(d.key);
   // Auto-mint's time as the card states it: Sepolia's run of Oct 27, each other chain's own (facts.ts, ROLLUP_RUNS): the rollups' of Oct 28, the BNB Smart Chain testnet's of Nov 1.
   const autoTime = timeParts(timeOf(d.key, "auto")[0].replace(/^≈ /, ""));
   // A chain with no run of its own yet states Sepolia's, an estimate, and says so as the card does.
@@ -942,7 +946,7 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
         <h2 class="proof__title" id="proof-title">
           What each way trusts
         </h2>
-        <span class="badge badge--sm proof__rec">{sep ? "Recorded Oct 20 · Oct 24" : d.finality.kind === "batch" ? "Recorded Oct 27 · Oct 28" : "Measured Nov 1"}</span>
+        <span class="badge badge--sm proof__rec">{sep ? "Recorded Oct 20 · Oct 24" : d.finality.kind === "batch" ? "Recorded Oct 27 · Oct 28" : "Recorded Nov 1"}</span>
       </div>
       <div class="lanes">
         <div class="lanes__node">
@@ -973,12 +977,13 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
             </p>
           </div>
         </div>
+        {/* The chain button's two lines where a chain has them ("BSC" over "testnet"): "BNB Smart Chain" ran past the strip's edge. */}
         <div class="lanes__node">
           <ChainMark mark={d.mark} cls="mark--36" />
-          <span class="lanes__chain">{d.name}</span>
+          <span class="lanes__chain">{d.btn ?? d.name}</span>
           <span class="lanes__net">{d.sub}</span>
           <span class="lanes__short" aria-hidden="true">
-            {sep ? d.short : d.name}
+            {sep ? d.short : (d.btn ?? d.name)}
           </span>
         </div>
       </div>
@@ -1014,18 +1019,37 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
           ) : (
             <>
               {d.fastConfirmations === null ? (
-                <li class="fact">
-                  <a class="fact__link" href="#/network">
-                    <span class="fact__num">
-                      <span class="fact__approx">≈</span>
-                      {d.finality.seconds}
-                      <span class="unit">s</span>
-                    </span>
-                    <span class="fact__text">
-                      for a burn to be final on {d.short}: its validators' votes (fast finality), {d.finality.range} on Nov 1 · one speed, the watcher's next round
-                    </span>
-                  </a>
-                </li>
+                <>
+                  <li class="fact">
+                    <a class="fact__link" href="#/network">
+                      <span class="fact__num">
+                        <span class="fact__approx">≈</span>
+                        {d.finality.seconds}
+                        <span class="unit">s</span>
+                      </span>
+                      <span class="fact__text">
+                        for a burn to be final on {d.short}: its validators' votes (fast finality), {d.finality.range} on Nov 1 · one speed, the watcher's next round
+                      </span>
+                    </a>
+                  </li>
+                  {/* One speed, so no Fast cap: its own run instead, which its first burn's receipt shows. */}
+                  {stdRun && firsts ? (
+                    <li class="fact">
+                      <a class="fact__link" href={`#/receipt/${burnKey(d.key, firsts.burn)}`}>
+                        <span class="fact__num">
+                          {stdRun.seconds}
+                          <span class="unit">s</span>
+                        </span>
+                        <span class="fact__text">
+                          from the burn's block to the release ·{" "}
+                          <Nb>
+                            burn {firsts.burn}, {stdRun.on}
+                          </Nb>
+                        </span>
+                      </a>
+                    </li>
+                  ) : null}
+                </>
               ) : (
                 <>
                   <li class="fact">
@@ -1049,16 +1073,16 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
                       <span class="fact__text">for a burn to be final on {d.short}, its batch final on Sepolia · burn 0, released at finality Oct 28</span>
                     </a>
                   </li>
+                  <li class="fact">
+                    <a class="fact__link" href="#/network">
+                      <span class="fact__num">
+                        <span class="fact__approx">≤</span>1<span class="unit">tPOT</span>
+                      </span>
+                      <span class="fact__text">per Fast burn, and 1 tPOT in all across the {FAST_DESTS_WORD} chains with Fast before finality; larger burns go Standard</span>
+                    </a>
+                  </li>
                 </>
               )}
-              <li class="fact">
-                <a class="fact__link" href="#/network">
-                  <span class="fact__num">
-                    <span class="fact__approx">≤</span>1<span class="unit">tPOT</span>
-                  </span>
-                  <span class="fact__text">per Fast burn, and 1 tPOT in all across the {DESTS_WORD} chains before finality; larger burns go Standard</span>
-                </a>
-              </li>
             </>
           )
         ) : (
@@ -1117,7 +1141,7 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
   );
 }
 
-/** `who`: the Polkadot account the lock is sent from, under the chain's name. */
+/** `who`: the Polkadot account the lock is sent from, under the chain's name. The name is `btn` where a chain has one ("BSC" over "testnet"); its label keeps the full name. */
 function ChainButton({ side, c, dir, who = null }: { side: "from" | "to"; c: ChainFace; dir: Dir; who?: { line: string; title: string } | null }) {
   const name = side === "from" ? "From" : "To";
   return (
@@ -1132,7 +1156,7 @@ function ChainButton({ side, c, dir, who = null }: { side: "from" | "to"; c: Cha
       <ChainMark mark={c.mark} />
       <span class="chain-btn__text">
         <span class="chain-btn__label">{name}</span>
-        <span class="chain-btn__name">{c.name}</span>
+        <span class="chain-btn__name">{c.btn ?? c.name}</span>
         <span class={`chain-btn__sub${who ? " chain-btn__sub--who" : ""}`}>{who ? who.line : c.sub}</span>
       </span>
       <Icon id="i-chevron-down" cls="i--16 chain-btn__chev" />

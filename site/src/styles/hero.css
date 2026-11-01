@@ -54,7 +54,8 @@
   color: var(--text-1);
 }
 
-/* Sized to its column, so that "A Portaldot light client" stays on one line above "on Ethereum." */
+/* Sized to its column, so that "A Portaldot light client" stays on one line above "on Ethereum and
+   EVM chains.", which wraps after "on Ethereum" where the column is narrower than that line. */
 @supports (font-size: 1cqi) {
   .hero__title {
     font-size: clamp(1.6rem, 8.9cqi, 2.45rem);

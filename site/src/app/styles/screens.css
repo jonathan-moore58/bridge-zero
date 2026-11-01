@@ -382,7 +382,10 @@ a.status:active {
   flex: none;
 }
 
-/* Two chain discs, the source in front: about 30% overlap, a 2 px ring in the surface colour. */
+/* Two chain discs, the source in front, with a 2 px ring in the surface colour. They overlap by
+   1 px: the ring and that pixel reach 3 px into the back disc, inside the empty ring each chip
+   leaves around its mark (Portaldot's mark leaves the least, 12% of the chip: 3.4 px at 28, 3.8 at
+   32), so no disc covers another's mark, whose clear space BNB Chain's and Arbitrum's rules ask for. */
 .pairmark .mark {
   border-radius: 50%;
 }
@@ -394,11 +397,11 @@ a.status:active {
 }
 
 .pairmark .mark + .mark {
-  margin-left: -9px;
+  margin-left: -1px;
 }
 
 .pairmark--sm .mark + .mark {
-  margin-left: -8px;
+  margin-left: -1px;
 }
 
 .proof__link .i:first-child {

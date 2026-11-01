@@ -338,6 +338,16 @@ test("auto-mint's cap on each chain is its --max-spend there, in that chain's ga
   // The offer of the visitor's own mint says the cap in the chain's own token.
   assert.match(offerOf(destOf("bsc-testnet", ALL_DESTS), 0, "0xAbCd…1234", "x").text, / spends at most 0\.005 tBNB of gas a day on BSC testnet: /);
   assert.match(offerOf(ARB, 0, "0xAbCd…1234", "x").text, / spends at most 0\.002 ETH of gas a day on Arbitrum Sepolia: /);
+  // The README's Known limits say the same caps, the BNB Smart Chain testnet's in tBNB.
+  const readme = readFileSync(join(repo, "README.md"), "utf8").replace(/\s+/g, " ");
+  const m = AUTO_MINT.maxSpend;
+  assert.equal(m["base-sepolia"], m["arbitrum-sepolia"], "one cap on each rollup");
+  assert.ok(
+    readme.includes(
+      `auto-mint skips locks below 0.001 tPOT and keeps to ${m.sepolia} ETH of gas a day on Sepolia, ${m["base-sepolia"]} on each rollup and ${m["bsc-testnet"]} tBNB on the BNB Smart Chain testnet.`,
+    ),
+    "the README's Known limits",
+  );
 });
 
 /** Every .ts and .tsx file under `dir`. */

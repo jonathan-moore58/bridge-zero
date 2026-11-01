@@ -99,15 +99,18 @@ Neither font has a Reserved Font Name. The SHA-256 is of the file as it is serve
 
 ## Logos (the bridge app)
 
-The bridge app (`site/app/`) shows each chain and each Polkadot wallet by its owner's own mark,
-where the owner's terms allow it. Each file in `site/src/app/marks/` is the owner's file, byte for
-byte: nothing is redrawn, recoloured, cropped or resized, and the build serves it as it is
-(`site/vite.config.ts` inlines no asset). A chain's mark sits in the app's round chip; a wallet's
-mark is shown in the wallet picker's rounded icon frame, as every wallet's own icon is. Ethereum
-wallets are shown with the icon they announce themselves (EIP-6963), which the app does not ship.
-Each mark names its chain or wallet, and only that: no partnership or endorsement is implied. The
-names and marks are their owners' trademarks. Downloaded on Oct 28, 2026; the SHA-256 is of the
-file as it is in the repository. The app's Network page links here, for the credit CC BY 4.0 asks.
+The bridge app (`site/app/`) shows each chain and each Polkadot wallet by its owner's own mark
+where the owner's terms allow it, and where they ask for approval first and the project's owner
+chose to show it all the same, as "Marks whose owners' terms ask for approval" below records (Base's
+and Arbitrum's since Oct 28, BNB Chain's since Nov 1; SubWallet's is held back). Each file in
+`site/src/app/marks/` is the owner's file, byte for byte: nothing is redrawn, recoloured, cropped or
+resized, and the build serves it as it is (`site/vite.config.ts` inlines no asset). A chain's mark
+sits in the app's round chip; a wallet's mark is shown in the wallet picker's rounded icon frame, as
+every wallet's own icon is. Ethereum wallets are shown with the icon they announce themselves
+(EIP-6963), which the app does not ship. Each mark names its chain or wallet, and only that: no
+partnership or endorsement is implied. The names and marks are their owners' trademarks. Downloaded
+on Oct 28, 2026, BNB Chain's on Nov 1; the SHA-256 is of the file as it is in the repository. The
+app's Network page links here, for the credit CC BY 4.0 asks.
 
 ### Shown
 
@@ -125,15 +128,22 @@ instead, which reads on its dark surfaces.
 
 ### Marks whose owners' terms ask for approval
 
-These three owners' terms ask for written approval before anyone uses their mark, and none has
+These four owners' terms ask for written approval before anyone uses their mark, and none has
 been asked yet. On Oct 28 the project's owner chose to show Base's and Arbitrum's marks to name
 their networks, as multichain pages do, following each brand's rules (Base's Square on a white
 ground at half the chip; Arbitrum's all-white logomark on the dark chip; the wallet button's status
-dot outside both). SubWallet's stays held back: `site/src/app/marks.tsx` does not import its file,
-so the build does not ship it, and SubWallet shows the generic wallet icon.
+dot outside both). On Nov 1 the owner chose to show BNB Chain's logomark in the same way, to name
+the BNB Smart Chain testnet, following its brand guidelines: the yellow logomark alone, as an icon,
+on the dark chip (9.6:1, not the low contrast the one-colour versions are for); never under 15 px
+wide, in the smallest chips too (`site/src/app/styles/v3.css`); for clear space, a margin inside
+the chip and the status dot outside it (the guidelines' X, the logomark's height on every side,
+does not fit an icon); and served from the app's own copy, never from bnbchain.org. SubWallet's
+stays held back: `site/src/app/marks.tsx` does not import its file, so the build does not ship it,
+and SubWallet shows the generic wallet icon.
 
 | File | Mark | Source | The terms | SHA-256 |
 |---|---|---|---|---|
 | `base.svg` | Base's Square (blue), for Base Sepolia | `logo/TheSquare/Digital/Base_square_blue.svg` in Base's brand kit, https://github.com/base/brand-kit at `eba9e730be34f8c9ae7f9a21f32cc6aafebe2ad1` (linked from https://brand.base.org/) | Base's Terms of Service (https://docs.base.org/terms-of-service, last updated Apr 8, 2026) govern the Base Testnet, which the app reads; under Acceptable Use the user agrees not to "Use any Coinbase brands, logos, or trademarks (or any brands, logos, or trademarks that are confusingly similar) without our express prior written approval, which we may withhold at our discretion for any reason", and the same terms count "the Base logo, the Base name" among Coinbase's marks. The brand kit has no licence file, and the brand guide grants no permission. Shown, the guide's App Icons rule (https://brand.base.org/core-identifiers) would apply: "place the blue Square on a white ground: no gradients, borders, or drop shadows", and "in a circular mask, reduce to fifty percent" | `b4f2b487011713f98481cc53c4ce095629b4876acbdbc2f0f3ad69a9688ba82e` |
 | `arbitrum.svg` | The Arbitrum logomark, secondary (all white), for Arbitrum Sepolia | `0923_Arbitrum_Logos_zip/Arbiturm-logomark_AllWhite_RGB/0923_Arbitrum_Logos_Logomark_RGB.svg` in `AllVersionsOfArbitrumLogos.zip`, attached to "Arbitrum brand guidelines" in the Arbitrum Foundation's brand kit, https://arbitrumfoundation.notion.site/Arbitrum-Brand-Kit-48751dc5e03240a5872496283f088f79 (linked from https://arbitrum.foundation/). The all-white version because the guidelines say: "Do ensure excellent readability by using the secondary version of the Arbitrum logo against a dark and clean background", and the primary's navy hexagon is 1.3:1 against the app's chip | The guidelines' "9. Legal": "Use of our brand assets must be expressly authorized in writing (including, in many cases, pursuant to the related product or service license agreement or similar arrangement)." No licence is stated; inquiries go to partnerships@arbitrum.io. Shown, the guidelines' other rules would apply: colours and proportions unchanged, no drop shadow, never below 12 px, and "Don't place your logo or anything within the clear space" | `939aa2f49ee22058c05c115de0a4f0c95ffd7a57e121df25de893cecca4036db` |
+| `bnb.svg` | BNB Chain's logomark (its kit's "Symbol"), yellow, for the BNB Smart Chain testnet | https://www.bnbchain.org/images/brand-guidelines/svg/BNB%20Chain_Symbol_Yellow.svg, the SVG download of the Symbol (yellow), the third card under "Logos" in BNB Chain's brand guidelines, https://www.bnbchain.org/en/brand-guidelines (linked as "Brand Guidelines" under "About" in bnbchain.org's footer); byte for byte `BNB Chain - Logo/SVG/BNB Chain_Symbol_Yellow.svg` in the page's "Download All" kit, https://www.bnbchain.org/images/brand-guidelines/BNBChain-Logo.zip. BNB Smart Chain has no mark of its own: the kit holds only BNB Chain's logo, stacked logo and logomark, bnbchain.org's BNB Smart Chain page (https://www.bnbchain.org/en/bnb-smart-chain) shows the "BNB Chain" logo, and the guidelines do not name BSC; bnbchain.org's Disclaimer (https://www.bnbchain.org/en/disclaimer) defines "BNB Chain" as four blockchains, "(ii) BNB Smart Chain (BSC) (previously Binance Smart Chain)" among them. The yellow, because the guidelines say "The yellow logo (all variations) should always be used, wherever possible." and keep the one-colour versions for a yellow logo "against a background colour that results in low-contrast"; it is 9.6:1 against the app's chip | The guidelines' "Expectations from Projects": "Projects should seek approval from BNB Chain before using the logo." and "Projects need to send the proposed way they wish to use the logo and explain how it will be distributed."; under "Do’s & Dont’s": "Projects can add the BNB Chain logo to their website and social posts only when talking about something related to building on or being powered by BNB Chain and is solely used to identify that their project is on BNB Chain.", "Projects must not modify the BNB Chain logo in any way.", "Projects must not use the BNB Chain logo in a way that implies endorsement or sponsorship by BNB Chain.", and no wording like "‘Official,’ ‘Partnering,’ ‘Collaborating’" with BNB Chain unless cleared by management. No licence is stated, and no contact is named for approval (the page's footer links https://www.bnbchain.org/en/contact). bnbchain.org's Disclaimer (last updated May 2026), which prevails over the site's other pages: the BNB Chain logo is one of the "BNB Chain Marks", trademarks owned by or licensed to BNB Foundation, and nothing on the site grants "any license or right to use, copy, or imitate, in whole or in part, any trademark displayed on the Website, without BNB Foundation’s written permission" (its section 4.2); nor may anyone "“hotlink” any BNB Chain Marks" without prior written approval (section 3.1). Shown, the guidelines' other rules apply: the logomark alone only for "Buttons", "Profile Picture", "An expression for the BNB Token" or "As an Icon"; the logomark no narrower than 15 pixels; "a safe space of ‘X’ around the BNB Chain logo", X "derived from the height of the logomark"; no outline, shadow or gradient, no change to its shape, form or colour, no stretching, and no busy or low-contrast background | `b8ff1ce0b5af2e2d9bcf5ec89fedd5224079f4f7267e306e23e8d691024f5eff` |
 | `subwallet.png` | SubWallet's mark (gradient) | `packages/extension-koni/public/images/subwallet/gradient-logo.png`, https://github.com/Koniverse/SubWallet-Extension at `1f9b2a4cb6fea68193e5e012dcca7284a1dd0d80` | SubWallet's Branding Kit (https://brand.koni.studio/subwallet-brand-kit.html, in Koni Studio's brand center), under its rules: "Don't imply a partnership: Use the logo only in approved co-marketing contexts. Submit for review before publishing."; its footer: "Branding Kit v1.0.1 · Partner use only"; approvals: partners@koni.studio. The "Brand Kit" link on https://subwallet.app downloads https://codeload.github.com/Koniverse/SubWallet-Branding-Kit/zip/refs/heads/main, a repository with no README or licence. The extension's Apache-2.0 licence grants no trademark rights (its section 6) | `c6d6ec63d1c4782a6364463df6f69217fb6ec6c54101926558fe765b15c7ff5a` |

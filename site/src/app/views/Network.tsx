@@ -15,8 +15,8 @@ import { lagMinutes, setsBehind, type ClientState } from "../../lib/lc-read.ts";
 import { registry, useField, type ChainHead, type Field, type LcState } from "../../lib/live.ts";
 import { burnId } from "../../lib/proofs.ts";
 import { request } from "../../lib/rpc.ts";
-import { ROLLUPS, clientOf, destOf, destState, type Dest } from "../dests.ts";
-import { DESTS_WORD, FAST_CAP, IMPORT_GAS, LATER_CHAINS, OTHER_CHAINS, SPEED_NAME, V3_SCAN, andList, timeOf } from "../facts.ts";
+import { DESTS, ROLLUPS, clientOf, destOf, destState, type Dest } from "../dests.ts";
+import { DESTS_WORD, FAST_CAP, FAST_DESTS_WORD, IMPORT_GAS, LATER_CHAINS, OTHER_CHAINS, SPEED_NAME, V3_SCAN, andList, orList, stdTimesText } from "../facts.ts";
 import { RELAY_EVERY_MIN, relayAutoWait, setChangesText } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
@@ -32,8 +32,9 @@ import {
   type RollupSupply,
 } from "../rollups.ts";
 import { Addr, Chip, Icon, fmt, num, short } from "../ui.tsx";
+import { locksNote } from "../verify-model.ts";
 import { keysHref } from "../verify-runs.ts";
-import { RUNS, clockUtc, dayTime, qty, runTitle, sepoliaTime, tok, type RawLog, type Run } from "./Activity.tsx";
+import { RUNS, clockUtc, dayTime, qty, runTitle, sepoliaTime, tok, type RawLog } from "./Activity.tsx";
 
 type ClientKey = "v3" | "mainnet";
 type Dot = "verify" | "trust" | "revert" | "muted";
@@ -48,6 +49,8 @@ const HEAD_EVERY_V3 = 600;
 const HEAD_EVERY_ROLLUP = 1_800;
 /** While the relayer runs, each client is at most about 70 min behind its chain (README, the relayer's watch mode). */
 const LAG_CEILING = 70;
+/** A rollup client's lag meter reads full at the relayer's head import there: 1,800 of V3's blocks, about 3 hours (180 min of its 6 s blocks). */
+const HEAD_LAG_ROLLUP = (HEAD_EVERY_ROLLUP * LC.v3.blockTimeSec) / 60;
 // As contracts/src/grandpa/GrandpaLightClient.sol declares it; its setId is the set that signed.
 const HEADER_IMPORTED = eventTopic("HeaderImported(bytes32,uint32,bytes32,uint64,uint256)");
 
@@ -406,14 +409,15 @@ function lcAsOf(key: ClientKey, lc: Field<LcState>, chain: Field<ChainHead>): st
 }
 
 /**
- * The lag on a 70-min scale; its width is a runtime CSS variable, set through the CSSOM. `ceiling`:
- * the relayer's 70-min ceiling, named and turning the bar amber past it, where the relayer runs in
- * watch mode (Sepolia's clients); null where nothing keeps the client within one (the rollups'), and
- * the bar is neutral.
+ * The lag on a scale of `scale` minutes, the client's own head import: the relayer's 70-min ceiling
+ * on Sepolia, its 1,800 V3 blocks on a rollup (HEAD_LAG_ROLLUP). Its width is a runtime CSS
+ * variable, set through the CSSOM. `ceiling`: the relayer's 70-min ceiling, named and turning the
+ * bar amber past it, where the relayer runs in watch mode (Sepolia's clients); null where nothing
+ * keeps the client within one (the rollups'), and the bar is neutral.
  */
-function Meter({ lag, ceiling = LAG_CEILING }: { lag: number | null; ceiling?: number | null }) {
+function Meter({ lag, ceiling = LAG_CEILING, scale = LAG_CEILING }: { lag: number | null; ceiling?: number | null; scale?: number }) {
   const fill = useRef<HTMLSpanElement>(null);
-  const pct = lag === null ? 0 : Math.min(100, Math.round((lag / LAG_CEILING) * 100));
+  const pct = lag === null ? 0 : Math.min(100, Math.round((lag / scale) * 100));
   useLayoutEffect(() => {
     fill.current?.style.setProperty("--fill", `${pct}%`);
   }, [pct]);
@@ -730,8 +734,8 @@ function RollupLcCard({ d }: { d: Dest & { key: RollupKey } }) {
           <span class="lag__big">{lag === null ? reading || chain.status === "loading" ? wait : "—" : <LagFigure lag={lag} />}</span>
           <span class="lag__label">behind Portaldot's finalized head</span>
         </div>
-        {/* The relayer keeps this client at V3's set, not its head within a ceiling: the bar is neutral, never a warning. */}
-        <Meter lag={lag} ceiling={null} />
+        {/* The relayer keeps this client at V3's set, not its head within a ceiling: the bar is neutral, never a warning, and full at its head import. */}
+        <Meter lag={lag} ceiling={null} scale={HEAD_LAG_ROLLUP} />
       </div>
       <dl class="ncard__grid">
         <div>
@@ -998,7 +1002,7 @@ function Topo({ net }: { net: NetState }) {
         </div>
         <p class="topo__backlabel">
           <span>
-            <strong>Way back · trusted:</strong> a burn on Sepolia, Base Sepolia or Arbitrum Sepolia, released on V3 by the committee
+            <strong>Way back · trusted:</strong> a burn on {orList(DESTS.map((d) => d.short))}, released on V3 by the committee
           </span>
         </p>
       </div>
@@ -1105,7 +1109,7 @@ function WatcherCard({ waiting }: { waiting: Waiting }) {
           <span class="nlist__v">
             A round every 15 s, on one machine{" "}
             <span class="dim">
-              · releases after {FAST_BLOCKS} (36 s) · ≤ {FAST_CAP} tPOT per burn · ≤ {FAST_CAP} tPOT in flight before finality, across the {DESTS_WORD} chains
+              · releases after {FAST_BLOCKS} (36 s) · ≤ {FAST_CAP} tPOT per burn · ≤ {FAST_CAP} tPOT in flight before finality, across the {FAST_DESTS_WORD} chains with Fast
             </span>
           </span>
           {/* Whether the watcher runs right now is not something this page can read: its settings, not its state. */}
@@ -1123,7 +1127,7 @@ function WatcherCard({ waiting }: { waiting: Waiting }) {
           </span>
           <span class="nlist__v">
             After the chain's finality{" "}
-            <span class="dim">· any amount, and Fast above the cap · {andList([destOf("sepolia"), ...ROLLUPS].map((d) => `${timeOf(d.key, "std")[0]} on ${d.short}`))}, est.</span>
+            <span class="dim">· any amount, and Fast above the cap · {stdTimesText(DESTS)}</span>
           </span>
           <span class="nlist__end">
             <span class="tag tag--verify">
@@ -1306,20 +1310,12 @@ function CommitteeCard({ phone }: { phone: boolean }) {
   );
 }
 
-/** "lock 0 and lock 1, both minted", and how many more the chain has than the records. */
-function countNote(runs: Run[], onChain: number | null, done: string): string {
-  const names = runs.map((r) => (r.dir === "in" ? `lock ${r.n}` : `burn ${r.n}${r.speed ? ` (${SPEED_NAME[r.speed]})` : ""}`));
-  const finished = runs.filter((r) => r.done).length;
-  const state = finished === runs.length ? (runs.length === 2 ? `both ${done}` : runs.length > 2 ? `all ${done}` : done) : `${finished} ${done}`;
-  const more = onChain !== null && onChain > runs.length ? onChain - runs.length : 0;
-  return `${andList(names)}, ${state}${more ? `; ${more} more since the records` : ""}`;
-}
-
 /**
- * The vault against wtPOT on every chain it is minted on: one vault backs Sepolia's, Base Sepolia's
- * and Arbitrum Sepolia's wtPOT, so its outstanding is set against their supplies summed, and the
- * burns waiting are counted on all three (`waiting`, withRollups). `rollups`: each rollup's wtPOT
- * and burns (rollups.ts).
+ * The vault against wtPOT on every chain it is minted on: one vault backs the wtPOT of every
+ * destination (Sepolia, the two rollups and the BNB Smart Chain testnet), so its outstanding is set
+ * against their supplies summed, and the burns waiting are counted on all of them (`waiting`,
+ * withRollups). `rollups`: each other destination's wtPOT and burns (rollups.ts). Its locks are
+ * counted against the records' (records.locks): those the vault holds and the records do not.
  */
 function VaultCard({ phone, waiting, rollups }: { phone: boolean; waiting: Waiting; rollups: readonly (Field<RollupSupply> & { d: Dest })[] }) {
   const vault = useField("v3.vault");
@@ -1360,7 +1356,7 @@ function VaultCard({ phone, waiting, rollups }: { phone: boolean; waiting: Waiti
             : vault.status === "live" && supplies === "mixed"
               ? `Outstanding live, as of ${clockUtc(vault.at ?? Date.now())}; supply live on some chains, recorded on others`
               : "Could not read";
-  const locks = RUNS.filter((r) => r.dir === "in").sort((x, y) => Number(x.n) - Number(y.n));
+  const locks = records.locks.map((l) => ({ n: l.nonce, done: l.mint !== null }));
   // The burns waiting sit under the supply, so they are shown only when read alike with it: live with live, recorded with recorded.
   const alike = supplies === "live" ? waiting.live : supplies === "recorded" && !waiting.live;
   const n = alike ? waiting.count : null;
@@ -1445,7 +1441,7 @@ function VaultCard({ phone, waiting, rollups }: { phone: boolean; waiting: Waiti
             {supply !== undefined ? fmt(tok(supply)) : supplies === "loading" ? wait : "—"}
             <span class="unit">wtPOT</span>
           </span>
-          <span class="balance__label">{n === null ? "supply + burns waiting" : `supply + ${n} burn${n === 1 ? "" : "s"} waiting`}, on 3 chains</span>
+          <span class="balance__label">{n === null ? "supply + burns waiting" : `supply + ${n} burn${n === 1 ? "" : "s"} waiting`}, on {DESTS_WORD} chains</span>
         </div>
       </div>
       {check}
@@ -1470,7 +1466,7 @@ function VaultCard({ phone, waiting, rollups }: { phone: boolean; waiting: Waiti
           <span class="nlist__k">Locks</span>
           <span class="nlist__v">
             {v ? `${num(Number(v.nextNonce))} to date` : vault.status === "loading" ? wait : "—"}{" "}
-            <span class="dim">· {countNote(locks, v ? Number(v.nextNonce) : null, "minted")}</span>
+            <span class="dim">· {locksNote(locks, v ? Number(v.nextNonce) : null)}</span>
           </span>
           <span class="nlist__end" />
         </li>
@@ -1608,8 +1604,13 @@ function PageNotice({ net }: { net: NetState }) {
 
 export function NetworkView({ net }: { net: NetState }) {
   const phone = usePhone();
-  // Each rollup's client card, in turn in the first and the second column (the BNB Smart Chain testnet's too, once shown).
-  const cards = (column: 0 | 1) => ROLLUPS.filter((_, i) => i % 2 === column).map((d) => <RollupLcCard key={d.key} d={d} />);
+  // Each other destination's client card, in the config's order: the first half (rounded down) in
+  // the first column, under V3's client on Sepolia, the rest in the second, under the relayer. The
+  // second column's own cards are shorter by about one client card, so with three (Base Sepolia's
+  // on the left, Arbitrum Sepolia's and the BNB Smart Chain testnet's on the right) both columns end
+  // together at 1280 px. On a phone they follow V3's client in that order (v3.css).
+  const split = Math.floor(ROLLUPS.length / 2);
+  const cards = (column: 0 | 1) => (column === 0 ? ROLLUPS.slice(0, split) : ROLLUPS.slice(split)).map((d) => <RollupLcCard key={d.key} d={d} />);
   // wtPOT and the burns on each chain besides Sepolia: the vault backs every chain's wtPOT. ROLLUPS is fixed, so the hooks run in one order.
   const supplies = ROLLUPS.map((d) => ({ ...useRollupSupply(d.key), d }));
   const waiting = withRollups(useWaiting(), supplies);
