@@ -119,8 +119,14 @@ node script/deploy-sepolia.mjs --network bsc-testnet --send --account bz-deploye
 Check: `Every step is mined and checked; the record is …deployments/bsc-testnet.json`.
 
 - Exit code 3 (a transaction still pending): run the same line with `--resume`.
-- `cast publish` reports an underpriced or too-low fee from publicnode: `export
-  BSC_TESTNET_RPC_URL=https://bsc-testnet.bnbchain.org` and run again with `--resume`.
+- publicnode refuses the 0.1 gwei tip (untested before the first send): the run prints `(cast
+  publish: …; waiting for 0x… anyway)` and would wait 20 minutes for a transaction that went
+  nowhere. Press Ctrl-C at that line (its hash is in the record already), `export
+  BSC_TESTNET_RPC_URL=https://bsc-testnet.bnbchain.org`, and run the same line with `--resume`: it
+  finds that transaction neither mined nor pending, marks it dropped and signs it again at the same
+  nonce, sent through the official endpoint. Keep the variable for the sends of steps 4 and 12, put
+  `--rpc-url $BSCO` in place of `$BSC` in steps 3 and 5, and `unset BSC_TESTNET_RPC_URL` before a
+  `status`, which reads the minter's logs: that endpoint serves none.
 
 Read it back:
 
@@ -144,6 +150,9 @@ cast send 0xE94a82E2c7f38f777E8845A9d8c36B6be6a30257 --value 0.1ether --nonce 8 
 cast balance 0xE94a82E2c7f38f777E8845A9d8c36B6be6a30257 --ether --rpc-url $BSCO   # 0.1
 cast nonce 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 --rpc-url $BSCO              # 9
 ```
+
+If publicnode refuses the transfer as underpriced, nothing went out: the same line with `--rpc-url
+$BSCO`, still at nonce 8.
 
 Write `deployments/bsc-testnet-funding.json` by hand, in `base-sepolia-funding.json`'s shape:
 `network` `"bsc-testnet"`, `deployer`, and `steps` with `faucet` (the incoming tBNB: `kind`
@@ -173,6 +182,11 @@ bound`, 0 burns, supply 0. The dry run prints each contract's `forge verify-cont
 bsc-testnet`). BscScan verification through Etherscan's V2 API may need a paid plan for this chain;
 if the key is refused, BscScan's own form or `--verifier sourcify` does it. It is optional.
 
+If the `--send` run prints `(cast publish: …; waiting for 0x… anyway)` with publicnode's refusal,
+press Ctrl-C, `export BSC_TESTNET_RPC_URL=https://bsc-testnet.bnbchain.org` (unless step 2 did) and
+run the same line again: it finds that transaction neither mined nor pending, marks it dropped and
+sends it again at the same nonce. `unset BSC_TESTNET_RPC_URL` before `mint -- status`.
+
 ## 5. The auto-mint key's funding, nonce 11 (laptop)
 
 ```sh
@@ -180,6 +194,8 @@ cast send 0x57cc2ba3B883339a9F32726E6d0d3A9EE861A113 --value 0.05ether --nonce 1
 cast balance 0x57cc2ba3B883339a9F32726E6d0d3A9EE861A113 --ether --rpc-url $BSCO   # 0.05
 cast nonce 0xD9838A86cF83C28Ee486544060D1cA4Ca2971071 --rpc-url $BSCO              # 12
 ```
+
+If publicnode refuses it, the same line with `--rpc-url $BSCO`, still at nonce 11.
 
 ## 6. Commit B: the records, the app's addresses and the server's units (laptop)
 
@@ -191,6 +207,11 @@ On `main`, one commit:
   `token` from the records (lower case) and `minterFrom` BridgeMinter's block. It stays in `HIDDEN`.
   `cd site && npm run check` then runs the record checks of `test/app-dests.test.ts` against them,
   and `cd relayer && npm test` the pair's (`networks.test.ts`, no longer skipped).
+- The counts the pair's test changes: in the README, `# ℹ pass 403` and `# ℹ skipped 0` under `npm
+  test` in Verify it yourself, the sentence on the relayer's skipped test in the paragraph after
+  that block (it goes), and in Status "403 relayer tests" without "(one skipped until the BNB Smart
+  Chain testnet's records exist)". `docs/BUSINESS.md`'s "403 relayer tests … pass" stays as it is,
+  every one of them passing then.
 - The server's files, below, and in `docs/DEPLOY.md` the funds table's BNB Smart Chain testnet row
   (tBNB from a faucet, no bridge from Sepolia; 14,211,226 gas, 0.00142 tBNB), the relayer's and
   auto-mint's rows, the lines of §2 and §4 with `bsc-testnet`, and §3.8's last sentence ("was added
@@ -271,10 +292,21 @@ Check:
 On the fork on Nov 1 these three dry runs passed against the fork's deployment, with the three
 other chains read live.
 
+Then start the four services, the timer still stopped: no lock names chain 97 and its minter has
+no burn yet, so auto-mint and the watcher have nothing to do there, while Sepolia's, Base Sepolia's
+and Arbitrum Sepolia's locks are minted and their burns released again from here on, through step
+8 however long it takes.
+
+```sh
+sudo systemctl start bz-release bz-automint bz-relay-v3 bz-relay-mainnet
+journalctl -u bz-release -u bz-automint -o cat -n 80      # a round on each of the four chains; auto-mint's "Next rounds" names the BNB Smart Chain testnet
+```
+
 ## 8. The first run of the BNB Smart Chain testnet's relayer, by hand (server)
 
-With the timer still stopped: a first run can scan more than the timer's 20 minutes allow when the
-client is days behind.
+With the timer still stopped (the four services run): a first run can scan more than the timer's
+20 minutes allow when the client is days behind, and a timer's run of chain 97 meanwhile would find
+this one's lock and end with exit code 1.
 
 ```sh
 cd ~/bridge-zero/relayer
@@ -286,12 +318,13 @@ ls ~/.bridge-zero/relay-bsc-testnet-0xe94a82e2c7f38f777e8845a9d8c36b6be6a30257.*
 
 Check: exit code 0, and the relay record `relay-bsc-testnet-0xe94a….jsonl` in `~/.bridge-zero`.
 
-## 9. Start the units (server)
+## 9. Start the timer (server)
 
 ```sh
-sudo systemctl start bz-release bz-automint bz-relay-v3 bz-relay-mainnet bz-rollups.timer
-journalctl -u bz-release -u bz-automint -o cat -n 80      # a round on each of the four chains; auto-mint's "Next rounds" names the BNB Smart Chain testnet
-~/bz-ops/bz-health.sh                                     # after the next 20-minute slot: "last rollup run for bsc-testnet: exit 0", "health: 0 FAIL"
+sudo systemctl start bz-rollups.timer
+systemctl list-timers bz-rollups.timer                    # the next 20-minute slot
+journalctl -u bz-rollups -o cat --since=-25min            # after it: "rollup run <network>: exit 0" for each of the three
+~/bz-ops/bz-health.sh                                     # "last rollup run for bsc-testnet: exit 0", "health: 0 FAIL"
 ```
 
 ## 10. The first lock (laptop, `relayer/`, right after a relayer run)
@@ -339,7 +372,10 @@ cast call 0xdc31a3BC1354545EeB985AaD7b2Aa662E9272348 "burnIdOf(uint256)(bytes32)
 
 Check, in the dry run: `burn 0 will carry burn id 0xf38d1b6c…50454773`, `52,822 gas … with 68,665,
 eth_estimateGas's 62,422 + 10%`, the priority fee 100,000,000 wei. After `--send`: `BurnRequested`
-(burn 0), the `Transfer` to the zero address, and the wtPOT supply on chain 97 back to 0.
+(burn 0), the `Transfer` to the zero address, and the wtPOT supply on chain 97 back to 0. If the
+`--send` run prints publicnode's refusal and waits, press Ctrl-C, export the official endpoint as
+in step 2 and run the same `--send` line again: it marks the burn it signed dropped (neither mined
+nor pending) and burns again at the same nonce, still burn 0.
 
 ## 13. The watcher releases it (server)
 
@@ -366,23 +402,33 @@ The server's `deployments/v3-testnet.json` has a release round for chain 97 with
   BNB Smart Chain testnet's relay and auto-mint histories copied into `deployments/`, as for the
   rollups.
 - README: the evidence rows (a new section, "More chains: the BNB Smart Chain testnet"), the
-  Roadmap's "More EVM chains" (done), the Status and Known limits (its logs on publicnode for about
-  8 to 11 hours; 1.85M and 1.70M gas at 0.1 gwei; the watcher's one speed there), the plan and the
-  Development log; `site/README.md`.
+  Roadmap's "More EVM chains" (done), the Status and Known limits (publicnode's logs and receipts
+  of recent blocks only, and a burn the watcher never saw while its log was served waiting for an
+  RPC that keeps them; 1.85M and 1.70M gas at 0.1 gwei; the watcher's one speed there), the plan and
+  the Development log; `site/README.md`.
 
 ## If something goes wrong
 
 - **A send is refused as underpriced** (publicnode, at 0.1 gwei; untested before the first send):
-  `BSC_TESTNET_RPC_URL=https://bsc-testnet.bnbchain.org` for the laptop's sends. On the server set it
-  for the relayer's script and auto-mint only, never for `bz-release`: the official endpoints serve
-  no logs, and the watcher reads the minter's logs through that variable.
+  `BSC_TESTNET_RPC_URL=https://bsc-testnet.bnbchain.org` for the laptop's sends, after Ctrl-C on a
+  run that waits on the refused transaction (steps 2, 4 and 12 say how each goes on), and `--rpc-url
+  $BSCO` for `cast send`. On the server set it for the relayer's script and auto-mint only, never
+  for `bz-release`: the official endpoints serve no logs, and the watcher reads the minter's logs
+  through that variable.
 - **A nonce moved** (anything else sent from the deployer on chain 97 first): the pair's addresses
   are not the rollups'. Follow the records: `PAIR_NONCES` in `relayer/src/mint.ts` and the app's
   entry take the record's.
-- **Logs gone.** publicnode keeps chain 97's logs and receipts for about 8 to 11 hours and then
-  answers with none, and no error. A burn made while the watcher was down longer waits as `no log
-  yet` until `BSC_TESTNET_RPC_URL` names an RPC that keeps the minter's logs; `mint status` and
-  `release status` read `burnCount` and `burnIdOf` instead when the logs fall short.
+- **Logs gone.** publicnode forgets chain 97's old logs and receipts and answers them with none and
+  no error: on Nov 1 it served those of the blocks from #140,000,000 on, 10.5 to 12.7 hours back. A
+  burn the watcher saw is released however late it qualifies: the release reads its transaction's
+  receipt, from the official endpoints once publicnode has none, as it does for a burn `release
+  burn` sent (its record holds the transaction). Only a burn the watcher never saw while its log was
+  served, made while the watcher was down longer than that, waits, as `older than the RPC keeps`:
+  the watcher searches 100,000 blocks back at most on publicnode. Stop `bz-release` at an idle
+  moment, run its unit's line once by hand with `--rounds 1` and `BSC_TESTNET_RPC_URL` set to an RPC
+  that keeps the minter's logs (publicnode's own URL too, while it has them; the search then goes
+  back to the last released burn), then start `bz-release` again. `mint status` and `release status`
+  read `burnCount` and `burnIdOf` instead when the logs fall short.
 - **Finality stops.** If the validators' votes stall, the `finalized` tag stops and the burns there
   wait: the safe failure.
 - **A tBNB price rise.** Every number above is at 0.1 gwei and scales with it.

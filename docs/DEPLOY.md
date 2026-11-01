@@ -317,8 +317,11 @@ What else a chain may need, as the BNB Smart Chain testnet did:
   lower `--priority-fee` is refused; the app's entry takes `minTip`. The tools' 1,000 wei would
   never be mined.
 - An RPC that serves `eth_getLogs` over 10,000 blocks or more, first in its `rpcs`: the release
-  tool, its watcher and the app search the minter's logs. On BSC only publicnode serves them, for
-  about 8 to 11 hours, and then answers with none and no error (`logsFade` in `wayback.ts`).
+  tool, its watcher and the app search the minter's logs. On BSC only publicnode serves them, and
+  it forgets old blocks' logs and receipts, answering with none and no error (on Nov 1 it served
+  those from block 140,000,000 on, 10.5 to 12.7 hours back): `logsFade` and `logBlocks` in
+  `wayback.ts`, where a burn the watcher saw is read again from its receipt, from the archive RPCs,
+  which keep receipts (the official endpoints first).
 - An L1 is `"none"` in `L1_KIND`: no L1 part in a transaction.
 - Its `WAYBACK` entry says what final means there: an Ethereum epoch, a rollup's batch final on
   Sepolia, or, on BSC, its validators' votes (fast finality, about a second): there the chain is

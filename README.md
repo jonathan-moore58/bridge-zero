@@ -358,8 +358,8 @@ npm run kit -- check --dir ../fixtures/v3-testnet-kit
 # ...
 # All checks passed: 41 passed, 0 failed.
 npm test
-# ℹ tests 396
-# ℹ pass 395
+# ℹ tests 403
+# ℹ pass 402
 # ℹ fail 0
 # ℹ skipped 1
 
@@ -581,8 +581,8 @@ with `npm run kit`.
 - CI since Oct 31: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds and tests the
   contracts, the relayer (with the ten fixture directories and the kit's fixture) and the site on
   every push and pull request.
-- Tests: 370 forge tests (the 2 Sepolia fork tests skipped), 396 relayer tests (one skipped until
-  the BNB Smart Chain testnet's records exist), 295 site tests and 432 fixture checks (391 with
+- Tests: 370 forge tests (the 2 Sepolia fork tests skipped), 403 relayer tests (one skipped until
+  the BNB Smart Chain testnet's records exist), 296 site tests and 432 fixture checks (391 with
   `npm run check`, 41 with `npm run kit -- check`) pass, in CI and in
   [Verify it yourself](#verify-it-yourself).
 
