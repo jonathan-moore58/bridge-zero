@@ -179,8 +179,9 @@ Check, in the dry run: `the deployer's next nonce is 9`, BridgeMinter `1,399,559
 WrappedTPOT `471,093 gas`, each `the code is the build's`. After `--send`: the two contracts at
 `0xdc31…2348` and `0xE113…A95e`, `deployments/bsc-testnet-bridge.json` written, and status `not
 bound`, 0 burns, supply 0. The dry run prints each contract's `forge verify-contract` line (`--chain
-bsc-testnet`). BscScan verification through Etherscan's V2 API may need a paid plan for this chain;
-if the key is refused, BscScan's own form or `--verifier sourcify` does it. It is optional.
+bsc-testnet`). BscScan verification through Etherscan's V2 API took the free key for this chain on
+Nov 1, with `node contracts/script/deploy-sepolia.mjs --network bsc-testnet --verify` for the light
+client's six; forge also sent each to Sourcify. It is optional.
 
 If the `--send` run prints `(cast publish: …; waiting for 0x… anyway)` with publicnode's refusal,
 press Ctrl-C, `export BSC_TESTNET_RPC_URL=https://bsc-testnet.bnbchain.org` (unless step 2 did) and
