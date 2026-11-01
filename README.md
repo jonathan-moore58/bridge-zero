@@ -358,9 +358,10 @@ npm run kit -- check --dir ../fixtures/v3-testnet-kit
 # ...
 # All checks passed: 41 passed, 0 failed.
 npm test
-# ℹ tests 382
-# ℹ pass 382
+# ℹ tests 395
+# ℹ pass 394
 # ℹ fail 0
+# ℹ skipped 1
 
 cd ../contracts
 FOUNDRY_PROFILE=v3 forge build --skip test --skip script
@@ -389,6 +390,7 @@ the state root to its value, and tampered copies fail. Each directory passes:
 | `../fixtures/v3-testnet-hero` | the bundle row 32 minted with, V3 #108,424, set 30 | 31 passed |
 | `../fixtures/v3-testnet-lock1` | the bundle lock 1 was minted with (row 55), V3 #118,637, set 33 | 31 passed |
 | `../fixtures/v3-testnet-set59` | V3 testnet, set 59, head #214,510: the rollups' checkpoint and balance proof (rows 67, 68, 75 and 76) | 48 passed, 1 skipped |
+| `../fixtures/v3-testnet-set75` | V3 testnet, set 75, head #269,340: the checkpoint the BNB Smart Chain testnet's client starts from | 48 passed, 1 skipped |
 | `../fixtures/westend-asset-hub-revive` | a pallet-revive contract slot on Westend Asset Hub | 31 passed |
 
 `npm run kit -- check` does the same for the proof kit's fixture, `../fixtures/v3-testnet-kit`: V3
@@ -397,10 +399,11 @@ contract entries, the vault's 11 slots, and their tampers (41 passed; [For build
 
 `FOUNDRY_PROFILE=v3 forge build` writes the V3 build of the vault, which its tests check; without
 it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, which run with
-`SEPOLIA_FORK=1` against a Sepolia RPC. forge installs solc 0.8.27 on first use.
+`SEPOLIA_FORK=1` against a Sepolia RPC. The relayer's skipped test checks the BNB Smart Chain
+testnet's deployment records, which its activation writes. forge installs solc 0.8.27 on first use.
 
 [CI](.github/workflows/ci.yml) runs all of this on every push and pull request, on Linux: the
-contracts, the relayer with the nine fixture directories and the kit's fixture, and the site; its
+contracts, the relayer with the ten fixture directories and the kit's fixture, and the site; its
 badge is at the top. On Windows, check the sources out with LF line ends (`core.autocrlf` false):
 CRLF changes the libraries' source hashes, which the bytecode's metadata carries, so a build no
 longer matches the deployed contracts.
@@ -576,10 +579,11 @@ with `npm run kit`.
   and tests to its light clients, vault, committee, minters and pages, with each command as the
   tools take it; no copy has been deployed from other accounts yet.
 - CI since Oct 31: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds and tests the
-  contracts, the relayer (with the nine fixture directories and the kit's fixture) and the site on
+  contracts, the relayer (with the ten fixture directories and the kit's fixture) and the site on
   every push and pull request.
-- Tests: 370 forge tests (the 2 Sepolia fork tests skipped), 382 relayer tests, 288 site tests and
-  384 fixture checks (343 with `npm run check`, 41 with `npm run kit -- check`) pass, in CI and in
+- Tests: 370 forge tests (the 2 Sepolia fork tests skipped), 395 relayer tests (one skipped until
+  the BNB Smart Chain testnet's records exist), 295 site tests and 432 fixture checks (391 with
+  `npm run check`, 41 with `npm run kit -- check`) pass, in CI and in
   [Verify it yourself](#verify-it-yourself).
 
 **Known limits**

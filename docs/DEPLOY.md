@@ -76,9 +76,10 @@ rollups' ETH was bridged from Sepolia through their canonical bridges (the READM
 **RPCs.** The tools use public endpoints unless told otherwise: each EVM network's are in `NETWORKS`
 ([`contracts/script/lib/sepolia.mjs`](../contracts/script/lib/sepolia.mjs)), and V3's node and EVM
 RPC are `wss://test-node-v3.portaldot.dev` and `https://test-evm-rpc-v3.portaldot.dev`.
-`SEPOLIA_RPC_URL`, `BASE_SEPOLIA_RPC_URL` and `ARBITRUM_SEPOLIA_RPC_URL` replace a network's first
-RPC; `SEPOLIA_ARCHIVE_RPC_URLS` and the rollups' `..._ARCHIVE_RPC_URLS` (comma separated) the RPCs
-asked for old receipts and state; `--rpc` and `--evm` the V3 node and its EVM RPC. Of a URL given
+`SEPOLIA_RPC_URL`, `BASE_SEPOLIA_RPC_URL`, `ARBITRUM_SEPOLIA_RPC_URL` and `BSC_TESTNET_RPC_URL`
+replace a network's first RPC; `SEPOLIA_ARCHIVE_RPC_URLS` and the other networks'
+`..._ARCHIVE_RPC_URLS` (`BASE_SEPOLIA_`, `ARBITRUM_SEPOLIA_`, `BSC_TESTNET_`; comma separated) the
+RPCs asked for old receipts and state; `--rpc` and `--evm` the V3 node and its EVM RPC. Of a URL given
 this way only the host is printed, as a URL can carry a key. `ETHERSCAN_API_KEY` is read for source
 verification only.
 
@@ -307,8 +308,31 @@ per-transaction gas limit its deployments fit in: under Sepolia's rules, which p
 needs a row for it (`L1_KIND` in `l1.ts`, `PAIR_NONCES` in `mint.ts`, `WAYBACK` in `wayback.ts`,
 its finality and fast-mode rule, and `START_BLOCKS`, `NETWORK_DEFAULTS` and `HOLD_MS` in
 `automint.ts`). `PLANS` in `deploy-sepolia.mjs` needs one too, and the app a destination in
-`site/src/app/dests.ts`. The BNB Smart Chain testnet is next on the roadmap, as a fourth
-destination.
+`site/src/app/dests.ts`, which `HIDDEN` keeps out of sight until the chain's first round trip.
+
+What else a chain may need, as the BNB Smart Chain testnet did:
+
+- A tip of its own. Where the validators include nothing below a priority fee (BSC's 0.1 gwei, and
+  its base fee is 0), `tip` in its `NETWORKS` entry is every tool's default priority fee there, and a
+  lower `--priority-fee` is refused; the app's entry takes `minTip`. The tools' 1,000 wei would
+  never be mined.
+- An RPC that serves `eth_getLogs` over 10,000 blocks or more, first in its `rpcs`: the release
+  tool, its watcher and the app search the minter's logs. On BSC only publicnode serves them, for
+  about 8 to 11 hours, and then answers with none and no error (`logsFade` in `wayback.ts`).
+- An L1 is `"none"` in `L1_KIND`: no L1 part in a transaction.
+- Its `WAYBACK` entry says what final means there: an Ethereum epoch, a rollup's batch final on
+  Sepolia, or, on BSC, its validators' votes (fast finality, about a second), where the watcher is
+  left out of `--confirmations` and waits for finality.
+- A fresh checkpoint: `npm run capture` at V3's newest set change, and a `PLANS` entry naming it
+  (`fixtures/v3-testnet-set75` for BSC). The relayer refuses a client more than `--scan-limit`
+  (100,800) V3 blocks behind, so a checkpoint older than about a week needs a new capture, or that
+  option on the first run.
+- The same addresses as the rollups: with nonces 0 to 7 the light client, 8 the relayer's funding,
+  9 and 10 BridgeMinter and wtPOT, 11 the auto-mint key's funding, in that order and with nothing
+  else sent first, the deployer's contracts land where they are on Base Sepolia and Arbitrum Sepolia.
+
+The BNB Smart Chain testnet is configured this way and is next on the roadmap, as a fourth
+destination: [`ops/bnb-activation.md`](../ops/bnb-activation.md) is its activation, step by step.
 
 ## 4. Run it
 

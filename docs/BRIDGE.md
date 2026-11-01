@@ -150,6 +150,14 @@ the sender's balance, so a dry run from a key with less fails on funds; `--from`
 holds it, or a lower `--max-fee`, runs it. Lock 4 (Base Sepolia) and lock 5 (Arbitrum Sepolia) were
 planned this way on Oct 28: `importAndMint` with `bindVault`, 2,639,946 and 2,612,827 gas.
 
+**On the BNB Smart Chain testnet**, configured and not deployed yet, `--network bsc-testnet` works
+the same way: the pair at the deployer's nonces 9 and 10 there too, at the rollups' addresses when
+nothing else came first. It is an L1 of its own, so a transaction has no L1 part; its base fee is 0
+and its validators include nothing below a priority fee of 0.1 gwei, which every tool uses there
+(`tip` in `NETWORKS`), refusing a lower `--priority-fee`. On a local fork of the chain on Nov 1 (its
+EVM, at the real chain's prices), the pair took 1,399,559 and 471,093 gas, and a first
+`importAndMint`, from real V3 proofs of a lock, 2,661,628 gas with the vault's bind.
+
 `plan` and `mint` take the bundle file given, a bundle read on the spot for `--nonce`, or else
 `fixtures/v3-testnet-mint/mint-bundle.json`. Without `--send` nothing is signed: a dry run refuses
 `--account` and `--password-file`. A plan with a creation refuses a Sepolia build that was not
@@ -378,6 +386,18 @@ after a block (5,800 to 6,700 of Base Sepolia's 0.2 s blocks, 3,800 to 4,500 of 
 0.001 wtPOT on each rollup, are the README's rows 108 and 109, and their releases on V3, by the
 auto-release watcher with each burn final on its rollup, rows 110 to 113.
 
+**From the BNB Smart Chain testnet**, once deployed, the way back is the same with `--network
+bsc-testnet`, its burn id `keccak256(abi.encode(BURN_TAG, 97, minter, burnNonce))` (burn 0 at
+`0xdc31…2348` would be `0xf38d…4773`). Final there is the chain's own finality, not a batch's: its
+validators vote on each block (fast finality, BEP-126), a block is final once its child is justified
+by more than two thirds of their votes, and the `finalized` tag was 2 blocks (0.9 s) below the
+latest on Nov 1. So the watcher waits for finality there and takes no `--confirmations` for it: fast
+mode would add a reorg exposure for no time saved. Its one public RPC that serves `eth_getLogs`
+(publicnode) keeps them for about 8 to 11 hours, then answers older blocks with no logs and no
+error: the watcher finds a burn made while it was down longer than that only through an RPC that
+keeps the minter's logs (`BSC_TESTNET_RPC_URL`), and `status` reads `burnCount` and `burnIdOf` when
+the logs show fewer burns than the views.
+
 ### The release tool
 
 | Command | What it does |
@@ -391,7 +411,7 @@ auto-release watcher with each burn final on its rollup, rows 110 to 113.
 | `release --watch <seconds> [--network <chain>[,<chain>...]] [--confirmations <c> [--fast-budget <tPOT>]] [--state-dir <path>] [--send --member-keys 1:<path>,2:<path> --password-file <path>]` | The auto-release watcher: each round settles what was on its way, then every burn that qualifies gets every check, then member 1's and member 2's approvals, checked and recorded; the fast releases not final yet stay within the budget; one per committee (its lock in `~/.bridge-zero`); a fatal stop leaves a halt file and exit code 4 ([below](#fast-mode-and-the-auto-release-watcher)). With several chains, one process serves them in turn, the budget counted across them; `--confirmations` takes one number or `<network>=<n>` pairs ([below](#several-chains)). |
 | `fund --member <1\|2\|3> \| --multisig --amount <tPOT> [--from <ss58>] [--send --key-file <path>]` | `balances.transferKeepAlive` from the testnet account `5ERJiUnzmQwEF98X3rGyKiNsyjrcenLGJST3MULCjUSwgPJ7` (or `--from`) to a member or to the multisig, with the fee and what the member needs; `--send` signs with a key file in `v3-vault deploy`'s format (`.substrate.mnemonic`) and records the transfer (`committeeFunding`). |
 | `status` | The burns on Sepolia (logs in windows, or `burnCount` and `burnIdOf` when the RPC refuses old logs) with the release state of each on V3 (`released[burnId]`, the record, the multisig's open operations), the members' and the multisig's balances, and the accounting: `outstanding` covers the wtPOT supply and the burns not released yet. |
-| `burn`, `release` or `status` `... --network base-sepolia\|arbitrum-sepolia` | The same on that rollup: its records (`deployments/<network>-bridge.json`, a burn a step of kind `burn` there), its RPC (`BASE_SEPOLIA_RPC_URL` or `ARBITRUM_SEPOLIA_RPC_URL`, else its first public one; a state it no longer serves from `<NETWORK>_ARCHIVE_RPC_URLS` or the public archives), its chain id in the burn id and its rule: final is its `finalized` tag; `--confirmations` from 1 to 7,200 of its blocks, with `--send` at least 180 on Base Sepolia and 144 on Arbitrum Sepolia. A burn's dry run runs its first pass at 1,000,000 gas (the cap at the max fee needs more ETH than a burner holds there) and the burn is sent with `eth_estimateGas`'s + 10% (on Arbitrum with its L1 gas once more), the L1 data fee counted in the balance on Base; the record keeps the receipt's `l1Fee` or `gasUsedForL1`. Without `--network`, Sepolia, as above; `fund` is V3's and takes none. |
+| `burn`, `release` or `status` `... --network base-sepolia\|arbitrum-sepolia\|bsc-testnet` | The same on that chain (the BNB Smart Chain testnet at 0.1 gwei, with no L1 part, final in about a second, its logs from publicnode for about 8 to 11 hours, then the views; below) and on that rollup: its records (`deployments/<network>-bridge.json`, a burn a step of kind `burn` there), its RPC (`BASE_SEPOLIA_RPC_URL` or `ARBITRUM_SEPOLIA_RPC_URL`, else its first public one; a state it no longer serves from `<NETWORK>_ARCHIVE_RPC_URLS` or the public archives), its chain id in the burn id and its rule: final is its `finalized` tag; `--confirmations` from 1 to 7,200 of its blocks, with `--send` at least 180 on Base Sepolia and 144 on Arbitrum Sepolia. A burn's dry run runs its first pass at 1,000,000 gas (the cap at the max fee needs more ETH than a burner holds there) and the burn is sent with `eth_estimateGas`'s + 10% (on Arbitrum with its L1 gas once more), the L1 data fee counted in the balance on Base; the record keeps the receipt's `l1Fee` or `gasUsedForL1`. Without `--network`, Sepolia, as above; `fund` is V3's and takes none. |
 
 Nothing is signed without `--send`, and a dry run refuses the key options. Every fetch of the
 process refuses `eth_send*` and `eth_sign*`, and the V3 node's provider refuses `author_submit*`
@@ -702,8 +722,11 @@ burn's chain id and minter) and the fast budget.
   Sepolia and Arbitrum Sepolia 1 to 7,200, with `--send` at least 180 and 144, the 36 seconds of
   their 0.2 s and 0.25 s blocks that Sepolia's 3 take. Until its batch is on Sepolia a rollup's
   sequencer alone orders its latest blocks: a restart or a failover that drops them is the reorg
-  that could undo a burn released fast. `--confirmations <n>` gives every chain n; `<network>=<n>`
-  pairs give each its own, and a chain left out waits for finality.
+  that could undo a burn released fast. The BNB Smart Chain testnet, once deployed, is final in
+  about a second by its validators' votes: 1 to 7,200 of its 0.45 s blocks, at least 80 with
+  `--send`, though it is best left out of `--confirmations`, where it waits for finality.
+  `--confirmations <n>` gives every chain n; `<network>=<n>` pairs give each its own, and a chain
+  left out waits for finality.
 - **One fast budget.** The fast releases of every chain whose burns are not final on their own
   chain yet (with `--send`, or not checked against their chain's final blocks yet) stay within
   `--fast-budget` in all, by default the cap, 1 tPOT: one vault and one committee pay for all. With
@@ -712,7 +735,8 @@ burn's chain id and minter) and the fast budget.
   that answers that chain's id) to tell whether its block is final, and one it cannot read counts as
   not final. Each chain's own fast releases are checked against its final blocks in its own rounds,
   as on Sepolia. An approval by hand in fast mode counts every chain's too.
-- **Kept apart.** Base Sepolia's and Arbitrum Sepolia's minters share one address, so the watcher
+- **Kept apart.** Base Sepolia's and Arbitrum Sepolia's minters share one address (and so will the
+  BNB Smart Chain testnet's), so the watcher
   tells a chain's releases by chain id and minter, its burn cache is one file per chain
   (`release-watch-<multisig>.<network>.burns.json` in `--state-dir`; Sepolia's as before), and burn
   ids differ per chain (the chain id is in each), so no release of one chain's burn n stands for
@@ -761,6 +785,12 @@ the earlier, Sepolia-only line leaves the rollups' burns waiting, with a warning
 log, and does not start at all (exit code 4) while the record holds a rollup's release that only a
 round of that rollup finishes. The same goes for the auto-mint: the line that starts it again has
 to name `--network sepolia,base-sepolia,arbitrum-sepolia`, as the running one does.
+
+At the BNB Smart Chain testnet's activation the two lines gain `bsc-testnet` in `--network` and none
+in `--confirmations` ([`ops/bnb-activation.md`](../ops/bnb-activation.md)): `--network
+sepolia,base-sepolia,arbitrum-sepolia,bsc-testnet --confirmations
+sepolia=3,base-sepolia=180,arbitrum-sepolia=144`. Its fees and its logs are the RPC's, as above: the
+watcher reads the minter's logs through `BSC_TESTNET_RPC_URL` or publicnode.
 
 ## What the minter trusts
 
