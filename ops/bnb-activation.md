@@ -70,7 +70,9 @@ Check: `Plan: 8 transactions from nonce 0`; `next base fee 0 wei, priority fee 1
 max fee 100,000,000 wei`; each step's gas as in the table; `8 transactions: 12,298,574 gas`; `The
 dry run passed. Nothing was signed or sent.` Stop anvil afterwards. publicnode keeps the state of
 about the last 10,000 blocks (75 minutes), which the fork reads lazily: a fork older than that
-starts failing its reads.
+starts failing its reads. Against the chain itself (no `BSC_TESTNET_RPC_URL`) the same dry run stops
+in its first request while the deployer holds nothing: `insufficient funds for gas * price + value:
+have 0 want 1677721600000000`, the 16,777,216 cap at 0.1 gwei.
 
 ## 1. The tBNB has arrived (laptop, reads only)
 
