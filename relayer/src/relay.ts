@@ -16,7 +16,9 @@
 // to several networks without sharing a nonce or a lock. There, --keep defaults to 0.001 ETH (tBNB
 // on the BNB Smart Chain testnet). On the BNB Smart Chain testnet the priority fee is 0.1 gwei, the
 // least its validators include (its base fee is 0, so the gates below always pass), and a lower
-// --priority-fee is refused. Where "Sepolia" stands below, read that network.
+// --priority-fee is refused; its official endpoints, which keep 128 blocks of state, answer an older
+// one with "missing trie node", which is a pruned state there (prunedOn) and sends a read of it to
+// the archives. Where "Sepolia" stands below, read that network.
 //
 // A run reads the client's state on Sepolia (currentSetId, latestFinalized, authorities, halted,
 // paused), takes a finality proof at the Portaldot finalized head, and scans the headers from
@@ -1824,6 +1826,15 @@ interface RpcAnswer {
  */
 export const pruned = (error: unknown) => /prun|historical state|history (is )?unavailable|"code":4444\b/i.test(errorText(error));
 
+/**
+ * pruned, on `network`: on the BNB Smart Chain testnet "missing trie node" too, which its official
+ * endpoints answer for the state of any block more than 128 back (about a minute of its blocks; Nov
+ * 1), so that callAt asks the archives when one of them is the RPC (BSC_TESTNET_RPC_URL) and an
+ * archive's answer of it is no passing failure. Elsewhere that error is a node that has not seen the
+ * block yet (transient), as before.
+ */
+export const prunedOn = (network: string, error: unknown): boolean => pruned(error) || (network === "bsc-testnet" && /missing trie node/i.test(errorText(error)));
+
 /** The whole JSON-RPC answer of `url`, an RPC other than the Sepolia RPC (rpcBody). */
 async function rpcBodyAt(url: string, method: string, params: unknown[]): Promise<RpcAnswer> {
   const res = await fetch(url, {
@@ -1876,7 +1887,7 @@ async function fromArchives(method: string, params: unknown[], usable: (a: RpcAn
         return answer;
       }
       const error = answer.error ? new Error(JSON.stringify(answer.error)) : undefined;
-      if (error && transient(error) && !pruned(error)) {
+      if (error && transient(error) && !prunedOn(NETWORK.name, error)) {
         failed = `${hostOf(url)}: ${errorText(error)}`;
         log(`     (${failed})`);
       }
@@ -1913,7 +1924,7 @@ export async function callAt(call: object, block: string, what: string): Promise
       if (!answer.error) return answer;
       // A pruned state goes to the archives, even when the RPC puts data on that error.
       failure = new Error(JSON.stringify(answer.error));
-      if (pruned(failure)) break;
+      if (prunedOn(NETWORK.name, failure)) break;
       // An error without revert data can be a node that has not seen the block yet: asked again.
       if (answer.error.data !== undefined || !transient(failure)) return answer;
     } catch (error) {
@@ -1926,7 +1937,7 @@ export async function callAt(call: object, block: string, what: string): Promise
   // An archive RPC's revert counts, with or without data (not every RPC returns it); its pruned or passing errors do not.
   const served = (a: RpcAnswer) => {
     const error = new Error(JSON.stringify(a.error));
-    return !a.error || !(pruned(error) || transient(error));
+    return !a.error || !(prunedOn(NETWORK.name, error) || transient(error));
   };
   return fromArchives("eth_call", [call, block], served, `${what} at ${NETWORK.title} block ${fmt(Number(BigInt(block)))}`);
 }

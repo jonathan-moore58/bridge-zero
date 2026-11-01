@@ -6,7 +6,8 @@
 // releases of every chain against one budget, and so does an approval by hand in fast mode
 // (fastExposure). The watcher's rounds over several chains (WatchSchedule: each chain's own count and
 // wait), and what a watcher that does not serve a chain would leave behind there (unservedRounds),
-// are here too. release.ts and wayback.test.ts use it.
+// are here too, and how far a chain whose first RPC forgets old blocks' logs is searched and where
+// its old receipts come from (logSearchFrom, receiptFrom). release.ts and wayback.test.ts use it.
 //
 // Final: each chain's finalized block tag (eth_getBlockByNumber "finalized"). On Sepolia, Ethereum's
 // finality, about two epochs after a block. On an OP Stack chain (Base Sepolia) the node derives its
@@ -72,13 +73,26 @@ export interface WaybackChain {
   /** State the first RPC no longer serves is read from the network's archive RPCs (sepolia.mjs NETWORKS): on Arbitrum Sepolia its own RPC keeps about 4,500 blocks, about as deep as its finalized block; on the BNB Smart Chain testnet publicnode keeps about 10,000. Not on Sepolia, as before. */
   archiveState: boolean;
   /**
-   * Its first RPC answers eth_getLogs over blocks older than it keeps with no logs, and no error:
-   * publicnode on the BNB Smart Chain testnet keeps them for about 8 to 11 hours (Nov 1), and no
-   * other public RPC there serves them. A search there that finds fewer burns than burnCount(), or
-   * mints and burns that do not add up to the total supply, is incomplete, and status reads the views
-   * instead. Elsewhere such a search fails its check, as before.
+   * Its first RPC answers eth_getLogs over blocks older than it keeps with no logs, and no error, and
+   * eth_getTransactionReceipt of their transactions with null: publicnode on the BNB Smart Chain
+   * testnet, the one public RPC there that serves eth_getLogs, served those of the blocks from
+   * #140,000,000 on (Oct 31, about 12:47 UTC) and none before when measured on Nov 1, 10.5 to 12.7
+   * hours back. There no log in a block is no answer: a burn the watcher saw is read again from its
+   * transaction's receipt, from the archive RPCs when publicnode has none (receiptFrom; the official
+   * endpoints keep them); a search goes back logBlocks at most; and a search that finds fewer burns
+   * than burnCount(), or mints and burns that do not add up to the total supply, is incomplete, and
+   * status reads the views instead. Elsewhere such a search fails its check, as before.
    */
   logsFade: boolean;
+  /**
+   * On a logsFade chain, how far below the latest block a search of its first RPC's logs goes (the
+   * watcher's for a burn it has not seen, a release's when the burn is not where it was seen):
+   * 100,000 blocks on the BNB Smart Chain testnet, 12.5 hours of its 0.45 s blocks, about what
+   * publicnode kept on Nov 1, as every 10,000 blocks more cost a request in each of the watcher's
+   * rounds while a burn's log is gone. An RPC named by the chain's variable (rpcEnv), publicnode's own
+   * URL too, is searched from where the search starts, as elsewhere (logSearchFrom).
+   */
+  logBlocks?: number;
 }
 
 export const WAYBACK: Record<NetworkName, WaybackChain> = {
@@ -149,6 +163,7 @@ export const WAYBACK: Record<NetworkName, WaybackChain> = {
     burnGasByEstimate: true,
     archiveState: true,
     logsFade: true,
+    logBlocks: 100_000,
   },
 };
 
@@ -167,6 +182,51 @@ export function fadedLogs(chain: Pick<WaybackChain, "logsFade">, found: { burns:
   const what = [`${found.burns} BurnRequested log${found.burns === 1 ? "" : "s"} for ${views.burnCount} burn${views.burnCount === 1n ? "" : "s"}`];
   if (supply) what.push(`a supply of ${found.supply} base units for ${views.totalSupply}`);
   return `its logs give ${what.join(" and ")}: it keeps the logs of recent blocks only, and answers older ones with none`;
+}
+
+/**
+ * Where a search of the minter's logs from block `from` to block `to` starts: on a chain whose first
+ * RPC forgets old blocks' logs (logsFade), at most its logBlocks below `to` while that RPC is read
+ * (`firstRpc`: no variable names one), as further back it answers with none; `from` with an RPC the
+ * chain's variable names, and on every other chain, as before.
+ */
+export const logSearchFrom = (chain: Pick<WaybackChain, "logBlocks">, from: number, to: number, firstRpc: boolean): number =>
+  chain.logBlocks !== undefined && firstRpc ? Math.max(from, to - chain.logBlocks) : from;
+
+/** A JSON-RPC answer as an RPC gave it, its error included; an RPC that did not answer gives an error too. */
+export interface RpcAnswer {
+  result?: unknown;
+  error?: { code?: number; message?: string };
+}
+
+/**
+ * The receipt of transaction `hash` from the RPCs `urls`, asked in turn through `ask`: on a chain
+ * whose first RPC answers null for the receipt of an old block's transaction (logsFade), its archive
+ * RPCs, the BNB Smart Chain testnet's official endpoints first, which keep them for 90 days and more.
+ * The first receipt of that transaction counts (`from` names its RPC); { receipt: null } when none
+ * had it and one answered with none (as auto-mint's firstNonNull reads a receipt: thirdweb, the
+ * second, often answers a rate limit); { unreachable } when none answered, so that a receipt no RPC
+ * could serve for a moment is never taken for none. `ask` gives a failed request as an answer with an
+ * error.
+ */
+export async function receiptFrom<R extends { transactionHash?: string }>(
+  urls: string[],
+  hash: string,
+  ask: (url: string, method: string, params: unknown[]) => Promise<RpcAnswer>,
+): Promise<{ receipt: R | null; from?: string } | { unreachable: string }> {
+  const failed: string[] = [];
+  let answered = false;
+  for (const url of urls) {
+    const answer = await ask(url, "eth_getTransactionReceipt", [hash]);
+    if (answer.error !== undefined) {
+      failed.push(`${new URL(url).host}: ${answer.error.message ?? "error"}${answer.error.code === undefined ? "" : ` (code ${answer.error.code})`}`);
+      continue;
+    }
+    answered = true;
+    const r = answer.result as R | null | undefined;
+    if (r && typeof r.transactionHash === "string" && r.transactionHash.toLowerCase() === hash.toLowerCase()) return { receipt: r, from: url };
+  }
+  return !answered && failed.length > 0 ? { unreachable: failed.join("; ") } : { receipt: null };
 }
 
 /** The chains a minter is on, in the order of sepolia.mjs NETWORKS. */

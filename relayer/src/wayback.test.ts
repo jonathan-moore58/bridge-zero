@@ -4,8 +4,9 @@
 // burns, releases and burn cache kept apart, though the rollups' minters share one address; one fast
 // budget across every chain; and the two burns recorded on the rollups, whose ids follow the vault's
 // convention with each chain's id. The BNB Smart Chain testnet, the fourth chain: its finality (fast
-// finality, about a second), its bounds, its burn cache and label, and its burn 0's id. Nothing is
-// read from a chain.
+// finality, about a second), its bounds, its burn cache and label, its burn 0's id, and what its first
+// RPC forgetting old blocks' logs and receipts takes (how far its logs are searched, its receipts from
+// the archive RPCs, and where release.ts reads them). Nothing is read from a chain.
 //
 //   npm test
 
@@ -28,11 +29,13 @@ import {
   fadedLogs,
   fastExposure,
   fastReleasesOf,
+  logSearchFrom,
   otherFastChains,
   parseConfirmationsOn,
   parseNetwork,
   parseNetworks,
   prunedState,
+  receiptFrom,
   rulesBy,
   sendConfirmationsProblem,
   unservedRounds,
@@ -41,6 +44,7 @@ import {
   WAYBACK_NETWORKS,
   waybackOf,
   type FastRound,
+  type RpcAnswer,
 } from "./wayback.js";
 import {
   addHalt,
@@ -100,8 +104,10 @@ describe("each chain's way back", () => {
       assert.equal(c.burnGasByEstimate, true);
       assert.equal(c.archiveState, true);
       assert.equal(c.logsFade, false, "a log search that falls short fails its check, as before");
+      assert.equal(c.logBlocks, undefined, "its logs searched from where the search starts, as before");
     }
     assert.equal(WAYBACK.sepolia.logsFade, false);
+    assert.equal(WAYBACK.sepolia.logBlocks, undefined);
     assert.equal(WAYBACK["base-sepolia"].minSendConfirmations, 180);
     assert.equal(WAYBACK["arbitrum-sepolia"].minSendConfirmations, 144);
     assert.deepEqual(WAYBACK_NETWORKS, ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"]);
@@ -121,6 +127,7 @@ describe("each chain's way back", () => {
     assert.match(c.finality, /2 blocks \(0\.9 s\) below its latest/);
     assert.equal(Math.round(c.minSendConfirmations * c.blockSeconds), 36, "the time Sepolia's 3 confirmations take");
     assert.match(c.minSendWhy, /fast mode gains nothing there/);
+    assert.equal(c.logBlocks, 100_000, "12.5 hours of its 0.45 s blocks, about what publicnode kept on Nov 1");
     assert.equal(waybackOf(97n)?.network, "bsc-testnet");
     assert.equal(waybackOf("97")?.title, "BNB Smart Chain testnet");
     assert.equal(parseNetwork("bsc-testnet"), "bsc-testnet");
@@ -252,7 +259,8 @@ describe("each chain's burns and releases, kept apart", () => {
 
   it("reads the views where the BNB Smart Chain testnet's RPC has let old logs fade, and nowhere else", () => {
     const views = { burnCount: 3n, totalSupply: 5n };
-    // publicnode keeps about 8 to 11 hours of logs, then answers with none and no error.
+    // publicnode served the logs of the blocks from #140,000,000 on when measured on Nov 1, 10.5 to
+    // 12.7 hours back, and answers older ones with none and no error.
     assert.match(fadedLogs(WAYBACK["bsc-testnet"], { burns: 1 }, views) ?? "", /^its logs give 1 BurnRequested log for 3 burns: it keeps the logs of recent blocks only/);
     assert.match(fadedLogs(WAYBACK["bsc-testnet"], { burns: 3, supply: 4n }, views) ?? "", /3 BurnRequested logs for 3 burns and a supply of 4 base units for 5/);
     assert.equal(fadedLogs(WAYBACK["bsc-testnet"], { burns: 3, supply: 5n }, views), null, "the logs account for the views");
@@ -267,6 +275,59 @@ describe("each chain's burns and releases, kept apart", () => {
     assert.ok(prunedState('{"code":4444,"message":"pruned history unavailable"}'));
     assert.equal(prunedState('{"code":-32000,"message":"header not found"}'), false);
     assert.equal(prunedState('{"code":3,"message":"execution reverted"}'), false);
+  });
+
+  it("searches the BNB Smart Chain testnet's logs 100,000 blocks back at most on publicnode, and every other chain's, or another RPC's, from where the search starts, as before", () => {
+    const bsc = WAYBACK["bsc-testnet"];
+    assert.equal(logSearchFrom(bsc, 140_200_000, 141_000_000, true), 140_900_000, "a burn the watcher never saw, four days of blocks later: 10 requests a round, not 80");
+    assert.equal(logSearchFrom(bsc, 140_950_000, 141_000_000, true), 140_950_000, "the last released burn's block, when nearer");
+    assert.equal(logSearchFrom(bsc, 140_200_000, 141_000_000, false), 140_200_000, "an RPC that BSC_TESTNET_RPC_URL names, publicnode's own URL too, is searched in full");
+    for (const network of ["sepolia", "base-sepolia", "arbitrum-sepolia"] as const) {
+      assert.equal(logSearchFrom(WAYBACK[network], 11_950_851, 13_000_000, true), 11_950_851, network);
+      assert.equal(logSearchFrom(WAYBACK[network], 11_950_851, 13_000_000, false), 11_950_851, network);
+    }
+  });
+
+  describe("a receipt the first RPC no longer serves, from the archive RPCs", () => {
+    const HASH = `0x${"ab".repeat(32)}`;
+    const OFFICIAL = "https://bsc-testnet.bnbchain.org";
+    const THIRDWEB = "https://97.rpc.thirdweb.com";
+    const receipt = (hash = HASH) => ({ status: "0x1", blockNumber: "0x8583b00", blockHash: `0x${"44".repeat(32)}`, transactionHash: hash, logs: [] });
+    /** A stand-in for the RPCs: each URL's answer, and the requests asked of them. */
+    const rpcs = (answers: Record<string, RpcAnswer>) => {
+      const asked: string[] = [];
+      const ask = async (url: string, method: string, params: unknown[]): Promise<RpcAnswer> => {
+        asked.push(`${new URL(url).host} ${method} ${String(params[0]).slice(0, 6)}`);
+        return answers[url] ?? { error: { message: "fetch failed" } };
+      };
+      return { ask, asked };
+    };
+
+    it("takes the first archive's receipt of that transaction, asking the next only when one has none", async () => {
+      const a = rpcs({ [OFFICIAL]: { result: receipt() }, [THIRDWEB]: { result: receipt() } });
+      const found = await receiptFrom<ReturnType<typeof receipt>>([OFFICIAL, THIRDWEB], HASH, a.ask);
+      assert.ok("receipt" in found);
+      assert.equal(found.receipt?.transactionHash, HASH);
+      assert.equal(found.from, OFFICIAL);
+      assert.deepEqual(a.asked, ["bsc-testnet.bnbchain.org eth_getTransactionReceipt 0xabab"], "the official endpoint has it: thirdweb is not asked");
+      const b = rpcs({ [OFFICIAL]: { result: null }, [THIRDWEB]: { result: receipt() } });
+      const second = await receiptFrom<ReturnType<typeof receipt>>([OFFICIAL, THIRDWEB], HASH, b.ask);
+      assert.ok("receipt" in second && second.from === THIRDWEB);
+      const c = rpcs({ [OFFICIAL]: { result: receipt(`0x${"cd".repeat(32)}`) }, [THIRDWEB]: { result: null } });
+      assert.deepEqual(await receiptFrom([OFFICIAL, THIRDWEB], HASH, c.ask), { receipt: null }, "another transaction's receipt is none");
+    });
+
+    it("is none when an archive answered with none and none had it, and unreachable when none answered", async () => {
+      assert.deepEqual(await receiptFrom([OFFICIAL, THIRDWEB], HASH, rpcs({ [OFFICIAL]: { result: null }, [THIRDWEB]: { result: null } }).ask), { receipt: null });
+      const limited = { error: { code: 429, message: "Rate limit exceeded" } };
+      assert.deepEqual(await receiptFrom([OFFICIAL, THIRDWEB], HASH, rpcs({ [OFFICIAL]: { result: null }, [THIRDWEB]: limited }).ask), { receipt: null }, "the official endpoint keeps receipts: its none is none, whatever thirdweb's rate limit");
+      const down = await receiptFrom([OFFICIAL, THIRDWEB], HASH, rpcs({ [THIRDWEB]: limited }).ask);
+      assert.deepEqual(down, { unreachable: "bsc-testnet.bnbchain.org: fetch failed; 97.rpc.thirdweb.com: Rate limit exceeded (code 429)" }, "a passing failure is never taken for none");
+      assert.deepEqual(await receiptFrom([], HASH, rpcs({}).ask), { receipt: null }, "no archive RPC named");
+      // One that has it settles it, whatever another gave.
+      const one = await receiptFrom<ReturnType<typeof receipt>>([OFFICIAL, THIRDWEB], HASH, rpcs({ [THIRDWEB]: { result: receipt() } }).ask);
+      assert.ok("receipt" in one && one.receipt?.transactionHash === HASH);
+    });
   });
 });
 
@@ -639,6 +700,32 @@ describe("release.ts on each chain", () => {
     const finalized = slice("async function finalizedOn(", "function leaveHalt(");
     assert.match(finalized, /ask<string>\("eth_chainId", \[\]\)[^]*BigInt\(served\) !== chainId[^]*return null;[^]*"eth_getBlockByNumber", \["finalized", false\]/, "the RPC must answer the chain's id first");
     assert.doesNotMatch(finalized, /attempt/, "one short attempt");
+  });
+
+  it("reads a receipt on the burn's chain from its RPC as before, and from the archive RPCs once a chain whose first RPC forgets them has none", () => {
+    const receipt = slice("async function receiptOnChain(", "/** @polkadot/api");
+    assert.match(receipt, /const receipt = await sepolia\("receipt", \(\) => receiptOf\(hash, false\)\);\s*if \(receipt !== null \|\| !NET\.logsFade\) return receipt;\s*const archived = await receiptFrom<Receipt>\(archivesOf\(NET\.network\), hash, askAt\);\s*if \("unreachable" in archived\) throw new Unreachable\(/);
+    // Every receipt of a burn read without waiting goes through it: the burn's read, the hint's, the recorded burn step's, a fast release's check and the settling of an open burn.
+    assert.equal([...source.matchAll(/receiptOf\([^)]*, false\)/g)].length, 1, "receiptOnChain's own read alone");
+    assert.match(slice("async function burnOnSepolia(", "async function releaseOnV3("), /const receipt = await receiptOnChain\(found\.txHash\);/);
+    assert.match(slice("async function burnReceipt(", "async function reconcileFast("), /await receiptOnChain\(txHash\)/);
+    assert.match(slice("async function settleOpenBurns(", "async function completeBurn("), /const receipt = await receiptOnChain\(entry\.txHash!\);/);
+  });
+
+  it("takes no log in the block where a burn was seen as no answer on a chain whose first RPC forgets old logs, and reads the burn from its receipt, as when the logs are refused", () => {
+    const find = slice("async function findBurn(", "class EvmRpcError");
+    assert.match(find, /if \(!\("refused" in found\) && \(ours\(found\.logs\)\.length > 0 \|\| !b\.chain\.logsFade\)\) logs = ours\(found\.logs\);\s*else if \(hint\.txHash\) \{\s*const receipt = \(await receiptOnChain\(hint\.txHash\)\)/);
+    // A burn this tool sent: its recorded transaction's receipt, in the canonical block the record names.
+    assert.match(find, /if \(b\.chain\.logsFade && recorded\.txHash\) \{[^]*receiptOnChain\(recorded\.txHash\)[^]*"eth_getBlockByNumber", \[qty\(recorded\.block!\), false\][^]*=== recorded\.block\) return burnOfLog\(l\);/);
+    assert.match(find, /return search\(logSearchFrom\(b\.chain, b\.deployBlock, to, onFirstRpc\(b\.chain\)\), to\);/);
+  });
+
+  it("searches a burn the watcher has not seen logBlocks back at most, and says so when it is not there", () => {
+    const since = slice("async function burnsSince(", "async function burnStateOf(");
+    assert.match(since, /const searchFrom = logSearchFrom\(b\.chain, fromBlock, latest, onFirstRpc\(b\.chain\)\);\s*const found = await recentBurn\(b, n, searchFrom, latest\);/);
+    assert.match(since, /if \(found === null && searchFrom > fromBlock\) \{[^]*its log is older than the RPC keeps, or not served yet/);
+    assert.match(slice("async function reconcileFast(", "async function watchOnce("), /recentBurn\(b, n, logSearchFrom\(b\.chain, Math\.max\(b\.deployBlock, round\.burn\.block - b\.chain\.reconcileBack\), h\.finalized, onFirstRpc\(b\.chain\)\), h\.finalized\)/);
+    assert.match(source, /const onFirstRpc = \(chain: WaybackChain\): boolean => !process\.env\[NETWORKS\[chain\.network\]\.rpcEnv\];/, "capped while no variable names the RPC: one named, publicnode's own URL too, is searched in full");
   });
 
   it("keeps an approval by hand in fast mode to the fast budget, across every chain", () => {

@@ -225,9 +225,15 @@
 // about a second behind its latest (wayback.ts), so the watcher waits for finality there; fast mode
 // takes 1 to 7,200 of its 0.45 s blocks, at least 80 with --send; a burn's priority fee is 0.1 gwei,
 // the least its validators include (a lower --priority-fee is refused). Its public RPC that serves
-// eth_getLogs (publicnode) keeps them for about 8 to 11 hours and then answers with none, and no
-// error: status reads the views when the logs show fewer burns than burnCount, and the watcher finds
-// an older burn only through an RPC that keeps the minter's logs (BSC_TESTNET_RPC_URL).
+// eth_getLogs (publicnode) forgets old blocks' logs and receipts, and answers them with none and no
+// error: on Nov 1 it served those of the blocks from #140,000,000 on (Oct 31, about 12:47 UTC), 10.5
+// to 12.7 hours back, and none before. So a burn the watcher saw (its burn cache, or the burn step
+// this tool recorded) is read again from its transaction's receipt, from the archive RPCs once
+// publicnode has none (the official endpoints keep them); a search of its logs goes back 100,000
+// blocks at most while no variable names the RPC (logBlocks); status reads the views when the logs
+// show fewer burns than burnCount; and a burn the watcher never saw while its log was served is found
+// only through an RPC that keeps the minter's logs, named by BSC_TESTNET_RPC_URL (publicnode's own URL
+// too, while it has them), which is searched in full.
 // release --watch takes several chains, comma separated, and serves them from one process, a round for one chain after the other, each
 // with its own wait (a chain whose RPC fails backs off alone), its own round count (--rounds n is n
 // rounds of each chain, and the exit code the worst of each chain's last round's) and burn cache
@@ -387,10 +393,12 @@ import {
   fadedLogs,
   fastExposure,
   fastReleasesOf,
+  logSearchFrom,
   otherFastChains,
   parseNetwork,
   parseNetworks,
   prunedState,
+  receiptFrom,
   rulesBy,
   sendConfirmationsProblem,
   unservedRounds,
@@ -398,6 +406,7 @@ import {
   WAYBACK,
   WAYBACK_NETWORKS,
   waybackOf,
+  type RpcAnswer,
   type WaybackChain,
 } from "./wayback.js";
 import {
@@ -606,6 +615,38 @@ async function stateRead<T>(what: string, method: string, params: unknown[]): Pr
     }
   }
   return sepolia(what, () => rpc<T>(method, params));
+}
+
+/** The JSON-RPC answer of `url`, an RPC other than the one in use; one that did not answer, as an error. */
+async function askAt(url: string, method: string, params: unknown[]): Promise<RpcAnswer> {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    return (await response.json()) as RpcAnswer;
+  } catch (error) {
+    if (error instanceof DryRunViolation) throw error;
+    return { error: { message: errorText(error) } };
+  }
+}
+
+/**
+ * The receipt of `hash` on the burn's chain, null when there is none: its RPC's, as before. On a
+ * chain whose first RPC forgets old blocks' receipts as it does their logs (NET.logsFade: publicnode
+ * on the BNB Smart Chain testnet answers null), when it has none, the first of the network's archive
+ * RPCs that has it (wayback.ts receiptFrom; the official endpoints keep them), and Unreachable when
+ * none of them answered.
+ */
+async function receiptOnChain(hash: Hex): Promise<Receipt | null> {
+  const receipt = await sepolia("receipt", () => receiptOf(hash, false));
+  if (receipt !== null || !NET.logsFade) return receipt;
+  const archived = await receiptFrom<Receipt>(archivesOf(NET.network), hash, askAt);
+  if ("unreachable" in archived) throw new Unreachable(`${NET.title} archive RPCs unreachable (the receipt of ${hash}: ${redact(archived.unreachable)})`);
+  if (archived.receipt) log(`     (receipt: ${new URL(RPC).host} no longer serves it; read from ${new URL(archived.from!).host})`);
+  return archived.receipt;
 }
 
 /** @polkadot/api, loaded when a command reads V3. The tool never calls process.exit (v3-vault.ts says why). */
@@ -1371,23 +1412,35 @@ function burnOfLog(l: LogJson): BurnOnChain {
 }
 
 /**
+ * Whether `chain` is read through its first RPC, the one its logsFade and logBlocks describe
+ * (publicnode on the BNB Smart Chain testnet): no variable (rpcEnv) names an RPC for it. One that is
+ * named, publicnode's own URL too, is searched back to where a search starts.
+ */
+const onFirstRpc = (chain: WaybackChain): boolean => !process.env[NETWORKS[chain.network].rpcEnv];
+
+/**
  * BurnRequested(n): first in the block `hint` names (the watcher's, from its round), where the log
  * counts only in the canonical block of that number (its block hash is eth_getBlockByNumber's), read
  * with eth_getLogs over that one block or, when the RPC refuses that (pruned history), from its
  * transaction's receipt; then from the block the record names for it; then from the minter's deploy
- * block to `to`. Null when there is none.
+ * block to `to`. Null when there is none. On a chain whose first RPC answers old blocks with no logs
+ * and no error (wayback.ts logsFade), none in the hint's block is no answer either, and the receipt
+ * decides there too (receiptOnChain: from the archive RPCs once that RPC has none); a burn this tool
+ * sent is read from its recorded transaction's receipt when its block shows no log; and the search
+ * from the deploy block goes back logBlocks at most while that RPC is in use (logSearchFrom).
  */
 async function findBurn(b: Bridge, n: bigint, to: number, hint?: BurnHint): Promise<BurnOnChain | null> {
   const filter = { address: b.minter, topics: [BURN_REQUESTED_TOPIC, bytesToHex(uintWord(n))] };
+  const ours = (logs: LogJson[]) =>
+    logs.filter((l) => l.address.toLowerCase() === b.minter && !(l as { removed?: boolean }).removed && l.topics[0]?.toLowerCase() === BURN_REQUESTED_TOPIC && l.topics[1]?.toLowerCase() === filter.topics[1]);
   if (hint && hint.block <= to) {
-    const ours = (logs: LogJson[]) =>
-      logs.filter((l) => l.address.toLowerCase() === b.minter && !(l as { removed?: boolean }).removed && l.topics[0]?.toLowerCase() === BURN_REQUESTED_TOPIC && l.topics[1]?.toLowerCase() === filter.topics[1]);
     const canonical = await sepolia("block", () => rpc<{ hash: string } | null>("eth_getBlockByNumber", [qty(hint.block), false]));
     let logs: LogJson[] | null = null;
     const found = await sepoliaLogs(filter, hint.block, hint.block);
-    if (!("refused" in found)) logs = ours(found.logs);
+    // Where the first RPC answers old blocks with no logs (logsFade), none there is no answer: the receipt decides, as when the logs are refused.
+    if (!("refused" in found) && (ours(found.logs).length > 0 || !b.chain.logsFade)) logs = ours(found.logs);
     else if (hint.txHash) {
-      const receipt = (await sepolia("receipt", () => receiptOf(hint.txHash!, false))) as { logs?: LogJson[] } | null;
+      const receipt = (await receiptOnChain(hint.txHash)) as { logs?: LogJson[] } | null;
       if (receipt?.logs) logs = ours(receipt.logs);
     }
     if (logs && logs.length > 1) throw new Stop(`${logs.length} BurnRequested logs for burn ${n} in #${fmt(hint.block)}`);
@@ -1396,15 +1449,27 @@ async function findBurn(b: Bridge, n: bigint, to: number, hint?: BurnHint): Prom
     if (l && hash && canonical && hash === canonical.hash.toLowerCase() && Number(BigInt(l.blockNumber ?? "-1")) === hint.block && (!hint.blockHash || hash === hint.blockHash)) return burnOfLog(l);
     log(`     burn ${n}'s log is not in the canonical block #${fmt(hint.block)} where the round saw it${logs === null ? " (the RPC serves neither the logs nor the receipt there)" : ""}: searching for it`);
   }
-  const recorded = b.record.steps.find((s) => s.kind === "burn" && s.ok && s.burn?.burnNonce === n.toString() && s.block !== null && s.block <= to);
-  for (const [from, until] of recorded ? [[recorded.block!, recorded.block!], [b.deployBlock, to]] : [[b.deployBlock, to]]) {
+  const search = async (from: number, until: number): Promise<BurnOnChain | null> => {
     const found = await sepoliaLogs(filter, from, until);
     if ("refused" in found) throw new Stop(`the ${b.chain.title} RPC refuses eth_getLogs: ${found.refused}; set ${NETWORKS[b.chain.network].rpcEnv} to an RPC that keeps the minter's logs from #${fmt(b.deployBlock)}`);
     const logs = found.logs.filter((l) => l.address.toLowerCase() === b.minter && !(l as { removed?: boolean }).removed);
     if (logs.length > 1) throw new Stop(`${logs.length} BurnRequested logs for burn ${n}`);
-    if (logs.length === 1) return burnOfLog(logs[0]);
+    return logs.length === 1 ? burnOfLog(logs[0]) : null;
+  };
+  const recorded = b.record.steps.find((s) => s.kind === "burn" && s.ok && s.burn?.burnNonce === n.toString() && s.block !== null && s.block <= to);
+  if (recorded) {
+    const there = await search(recorded.block!, recorded.block!);
+    if (there) return there;
+    if (b.chain.logsFade && recorded.txHash) {
+      // The burn's log, from the recorded transaction's receipt, in the canonical block the record names.
+      const logs = ours(((await receiptOnChain(recorded.txHash)) as { logs?: LogJson[] } | null)?.logs ?? []);
+      if (logs.length > 1) throw new Stop(`${logs.length} BurnRequested logs for burn ${n} in ${recorded.txHash}`);
+      const l = logs[0];
+      const canonical = l ? await sepolia("block", () => rpc<{ hash: string } | null>("eth_getBlockByNumber", [qty(recorded.block!), false])) : null;
+      if (l && canonical && l.blockHash?.toLowerCase() === canonical.hash.toLowerCase() && Number(BigInt(l.blockNumber ?? "-1")) === recorded.block) return burnOfLog(l);
+    }
   }
-  return null;
+  return search(logSearchFrom(b.chain, b.deployBlock, to, onFirstRpc(b.chain)), to);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1951,12 +2016,14 @@ function burnLogChecks(logs: Log[] | undefined, b: Bridge, sender: Hex, v3Recipi
 /**
  * Settles the burns an earlier --send run left open in the record (hash set, block not): a mined
  * one is checked and completed, one the node still holds stops the run (PENDING), one that is
- * neither is marked dropped. Returns how many it found mined.
+ * neither is marked dropped. Returns how many it found mined. Its receipt comes from the archive
+ * RPCs where the first RPC forgets old ones (receiptOnChain), so that a burn mined long ago is not
+ * marked dropped there.
  */
 async function settleOpenBurns(b: Bridge): Promise<number | typeof PENDING> {
   let mined = 0;
   for (const entry of b.record.steps.filter((s) => s.kind === "burn" && s.txHash !== null && s.block === null)) {
-    const receipt = await sepolia("receipt", () => receiptOf(entry.txHash!, false));
+    const receipt = await receiptOnChain(entry.txHash!);
     if (receipt) {
       log(`     settling ${entry.txHash}, burned by an earlier run:`);
       await completeBurn(b, entry, receipt);
@@ -2685,13 +2752,22 @@ async function burnOnSepolia(d: Deployed, o: ReleaseRun): Promise<BurnToRelease 
       throw new Stop(`there is no burn ${n} on ${chain.title} (burnCount ${count}); a dry run of one that is not there yet takes --rehearse --amount <wtPOT> --to <h160>`);
     }
     const found = await findBurn(b, n, at.number, o.hint);
-    if (!found) throw new Stop(`burnCount is ${state.burnCount} at #${fmt(at.number)}, but no BurnRequested log of burn ${n} is there from #${fmt(b.deployBlock)}`);
+    if (!found) {
+      // A chain whose first RPC forgets old blocks' logs is searched logBlocks back at most there (findBurn).
+      const from = logSearchFrom(chain, b.deployBlock, at.number, onFirstRpc(chain));
+      if (from > b.deployBlock) {
+        throw new Stop(
+          `burnCount is ${state.burnCount} at #${fmt(at.number)}, but no BurnRequested log of burn ${n} is in the ${fmt(at.number - from)} blocks below it, as far back as ${new URL(RPC).host} is searched (it answers older blocks with none): its log is older than the RPC keeps; with ${NETWORKS[chain.network].rpcEnv} set to an RPC that keeps the minter's logs (publicnode's URL too, while it has them) the search goes back to #${fmt(b.deployBlock)}`,
+        );
+      }
+      throw new Stop(`burnCount is ${state.burnCount} at #${fmt(at.number)}, but no BurnRequested log of burn ${n} is there from #${fmt(b.deployBlock)}`);
+    }
     const final = found.block <= F;
     check(
       equalBytes(found.burnId, id) && found.block <= at.number,
       `BurnRequested(${n}) in #${fmt(found.block)} (${shortHex(found.txHash)}), ${final ? "final" : `${fmt(L - found.block)} blocks deep, not final yet`}: ${formatWtpot(found.amount)} from ${checksumAddress(found.from)} for ${checksumAddress(found.v3Recipient)} on V3, burn id ${shortHex(found.burnId)} (burnIdOf and the convention)`,
     );
-    const receipt = await sepolia("receipt", () => receiptOf(found.txHash, false));
+    const receipt = await receiptOnChain(found.txHash);
     const receiptHash = (receipt as (Receipt & { blockHash?: string }) | null)?.blockHash?.toLowerCase();
     check(
       receipt !== null &&
@@ -3124,7 +3200,10 @@ async function recentBurn(b: Bridge, n: bigint, from: number, to: number): Promi
  * block: a burn the record has released, from the record, marked releasedInRecord (the round reads
  * nothing on V3 for it); one the burn cache has, from the cache; any other from its BurnRequested log (recentBurn), between the last
  * handled burn's block and the latest, and into the cache once its block is final. A burn whose log
- * the RPC refuses or does not serve yet waits; the round goes on with the next.
+ * the RPC refuses or does not serve yet waits; the round goes on with the next. On a chain whose
+ * first RPC forgets old blocks' logs (wayback.ts logsFade), that search goes back logBlocks at most
+ * while it is in use (logSearchFrom): a burn the watcher never saw while its log was served waits as
+ * older than the RPC keeps, at the cost of a few requests a round, not one more every 10,000 blocks.
  */
 async function burnsSince(d: Deployed, heads: Heads, cache: BurnCache): Promise<WatchedBurn[]> {
   const latest = heads.latest;
@@ -3152,9 +3231,22 @@ async function burnsSince(d: Deployed, heads: Heads, cache: BurnCache): Promise<
     } else if (cached) {
       burn = cachedOf(n, cached);
     } else {
-      const found = await recentBurn(b, n, fromBlock, latest);
+      // A chain whose first RPC forgets old blocks' logs: searched logBlocks back at most while it is in use, every round alike.
+      const searchFrom = logSearchFrom(b.chain, fromBlock, latest, onFirstRpc(b.chain));
+      const found = await recentBurn(b, n, searchFrom, latest);
       if (found !== null && "refused" in found) {
         out.push({ burnNonce: n, amount: 0n, block: 0, payee: "?", onChain: null, missing: `the ${b.chain.title} RPC refuses eth_getLogs (${found.refused}) before its log is found; an RPC that keeps the minter's logs from #${fmt(fromBlock)} finds it (${NETWORKS[b.chain.network].rpcEnv})` });
+        continue;
+      }
+      if (found === null && searchFrom > fromBlock) {
+        out.push({
+          burnNonce: n,
+          amount: 0n,
+          block: 0,
+          payee: "?",
+          onChain: null,
+          missing: `burnCount is ${count} at #${fmt(countAt)}, but the RPC serves no BurnRequested log of it in the ${fmt(latest - searchFrom)} blocks below the latest, as far back as it is searched (it answers older blocks with none): its log is older than the RPC keeps, or not served yet; with ${NETWORKS[b.chain.network].rpcEnv} set to an RPC that keeps the minter's logs (publicnode's URL too, while it has them) the search goes back to #${fmt(fromBlock)}`,
+        });
         continue;
       }
       if (found === null) {
@@ -3315,7 +3407,7 @@ const reconcileMisses = new Map<string, number>();
  * ran), and the minter's BurnRequested log of burn n in it.
  */
 async function burnReceipt(b: Bridge, n: bigint, txHash: Hex, finalized: number): Promise<BurnReceipt | null> {
-  const receipt = (await sepolia("receipt", () => receiptOf(txHash, false))) as unknown as { status: string; blockNumber: string; blockHash?: string; transactionHash: string; logs?: LogJson[] } | null;
+  const receipt = (await receiptOnChain(txHash)) as unknown as { status: string; blockNumber: string; blockHash?: string; transactionHash: string; logs?: LogJson[] } | null;
   if (!receipt) return null;
   const status = Number(BigInt(receipt.status));
   const block = Number(BigInt(receipt.blockNumber));
@@ -3347,7 +3439,10 @@ async function burnReceipt(b: Bridge, n: bigint, txHash: Hex, finalized: number)
  * them), its transaction's receipt decides (missingBurnVerdict): in a final canonical block, its
  * BurnRequested log there is checked; above the finalized block, in a block not canonical yet, or
  * with the logs refused, a later round looks again; found nowhere RECONCILE_MISSES rounds in a row,
- * the release does not stand. The round's chain's releases alone (its chain id and minter).
+ * the release does not stand. The round's chain's releases alone (its chain id and minter). On a
+ * chain whose first RPC forgets old blocks' logs and receipts (wayback.ts logsFade), the logs are
+ * searched logBlocks below the finalized block at most, and the receipt comes from the archive RPCs
+ * once that RPC has none (receiptOnChain), so that a forgotten receipt is never a burn found nowhere.
  */
 async function reconcileFast(d: Deployed, h: Heads, send: boolean): Promise<{ checked: number; fatal: FatalStop | null }> {
   const { b } = d;
@@ -3360,7 +3455,7 @@ async function reconcileFast(d: Deployed, h: Heads, send: boolean): Promise<{ ch
     const label = burnLabel(b.chainId, n);
     const missKey = `${b.chainId}/${b.minter}/${n}`;
     const recorded: FinalBurn = { txHash: round.burn.txHash, blockHash: round.burn.blockHash ?? null, block: round.burn.block, payee: round.payee, amount: BigInt(round.amountNative), burnId: round.burn.burnId };
-    const found = await recentBurn(b, n, Math.max(b.deployBlock, round.burn.block - b.chain.reconcileBack), h.finalized);
+    const found = await recentBurn(b, n, logSearchFrom(b.chain, Math.max(b.deployBlock, round.burn.block - b.chain.reconcileBack), h.finalized, onFirstRpc(b.chain)), h.finalized);
     let verdict: { ok: boolean; why: string };
     if (found !== null && !("refused" in found)) {
       const canonical = await sepolia("block", () => rpc<{ hash: string } | null>("eth_getBlockByNumber", [qty(found.block), false]));

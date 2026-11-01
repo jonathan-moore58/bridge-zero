@@ -27,9 +27,10 @@ export const SEPOLIA_CHAIN_ID = 11_155_111n;
 // Arbitrum Sepolia's only about 64 (16 seconds), so Arbitrum's first RPC is its own endpoint (about
 // 4,096 blocks) and tenderly's gateway serves every block of both. Sepolia's are as they were.
 // Measured Nov 1 on the BSC testnet: publicnode first, the only public RPC that serves eth_getLogs
-// there (up to 50,000 blocks a call; its state about 10,000 blocks back, its receipts and logs
-// 60,000 to 90,000); the official endpoints serve no logs and 128 blocks of state but keep
-// receipts for 90 days and more, so they are the first archive, and thirdweb keeps old state.
+// there (up to 50,000 blocks a call; its state about 10,000 blocks back, its receipts and logs from
+// block 140,000,000 on, 84,000 to 102,000 blocks back while measured, and none before); the
+// official endpoints serve no logs and 128 blocks of state but keep receipts for 90 days and more,
+// so they are the first archive, and thirdweb keeps old state.
 // gasCap: the most gas a plan gives one transaction: EIP-7825's cap on Sepolia, and the same on the
 // rollups (Arbitrum allows 32M a transaction) and on BSC (publicnode's node refuses more), where
 // the largest step needs about 2.2M. tip: the least priority fee a network's validators include,

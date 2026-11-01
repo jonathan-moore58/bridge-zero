@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, describe, it } from "node:test";
-import { keccak256, RPC, topic, type Fees, type Log, type Receipt } from "../../contracts/script/lib/sepolia.mjs";
+import { CHAIN_ID, keccak256, RPC, topic, useNetwork, type Fees, type Log, type Receipt } from "../../contracts/script/lib/sepolia.mjs";
 import { bytesToHex, concatBytes, utf8, type Hex } from "./bytes.js";
 import {
   callAt,
@@ -30,6 +30,7 @@ import {
   notNewerIn,
   outcomeAtLatest,
   pruned,
+  prunedOn,
   raised,
   resetChecks,
   sendPlan,
@@ -330,6 +331,8 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
     txOnPrimary: boolean;
     /** The Sepolia RPC puts revert-like data on its pruned-state error. */
     prunedData?: boolean;
+    /** What the RPC in use answers for the old state instead (the BNB Smart Chain testnet's official endpoint, as that RPC). */
+    primaryError?: object;
     /** How sepolia.drpc.org fails a request for a while (it answers eth_chainId): no answer, or a rate limit. */
     archiveDown?: (method: string, params: unknown[]) => "offline" | "rate-limited" | undefined;
     /** How many times flaky.example fails eth_chainId before it answers Sepolia's. */
@@ -362,7 +365,8 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
       world.chainIdFailures -= 1;
       return { error: { code: 429, message: "Too Many Requests" } };
     }
-    if (method === "eth_chainId") return { result: "0xaa36a7" };
+    // The chain id of the network in use: Sepolia's, as before, unless a test switched to another.
+    if (method === "eth_chainId") return { result: `0x${CHAIN_ID.toString(16)}` };
     if (host === "sepolia.drpc.org" && world.archiveDown?.(method, params) === "rate-limited") return { error: { code: 429, message: "Too Many Requests" } };
     const tx = { from: "0xd9838a86cf83c28ee486544060d1ca4ca2971071", to: CLIENT, input: "0x1234", gas: "0x6a2a65", blockHash: world.txMined ? BLOCK_HASH : null, blockNumber: world.txMined ? OLD : null };
     if (method === "eth_getTransactionByHash") return { result: params[0] === TX && (!primary || world.txOnPrimary) ? tx : null };
@@ -373,6 +377,7 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
     if (method === "eth_call") {
       const [call, block] = params as [{ data: string; from?: string }, string];
       if (block === "latest") return client(world.latest, call.data);
+      if (primary && world.primaryError) return { error: world.primaryError };
       if (primary || !world.archiveState) return { error: primary && world.prunedData ? { ...PRUNED, data: "0x" } : PRUNED };
       if (call.from) return world.replay;
       return client(world.old ?? world.latest, call.data);
@@ -473,6 +478,25 @@ describe("transactions whose receipt or state the Sepolia RPC pruned (F3, F4)", 
     // A replay there is a revert only once an RPC that serves the state reverts it.
     reset({ prunedData: true, replay: { error: { code: 3, message: "execution reverted", data: `${NOT_NEWER}${word(2_726_491)}${word(2_727_000)}` } } });
     assert.equal((await importedNothing(entry(), receipt("0x0"), 0, 0x100000)).superseded, true);
+  });
+
+  it("ask the archives at once when the BNB Smart Chain testnet's official endpoint, as the RPC, answers \"missing trie node\" for a state older than its 128 blocks", async () => {
+    const missing = { code: -32000, message: "missing trie node" };
+    assert.ok(prunedOn("bsc-testnet", new Error(JSON.stringify(missing))));
+    for (const network of ["sepolia", "base-sepolia", "arbitrum-sepolia"]) assert.equal(prunedOn(network, new Error(JSON.stringify(missing))), false, `${network}: a node behind, asked again as before`);
+    assert.ok(transient(new Error(JSON.stringify(missing))));
+    assert.ok(prunedOn("bsc-testnet", new Error('{"code":-32603,"message":"state at block #140079602 is pruned"}')), "publicnode's words there");
+    assert.ok(prunedOn("sepolia", new Error(JSON.stringify(PRUNED))));
+    assert.equal(prunedOn("bsc-testnet", new Error('{"code":-32000,"message":"header not found"}')), false);
+    useNetwork("bsc-testnet");
+    try {
+      reset({ primaryError: missing });
+      const a = await callAt({ to: CLIENT, data: LATEST }, OLD, "client state");
+      assert.equal(a?.result, `0x${HEADER.slice(2)}${word(2_727_000)}`);
+      assert.deepEqual(world.asked.filter((x) => x.endsWith("eth_call")), [`${new URL(RPC).host} eth_call`, "sepolia.drpc.org eth_call"], "once, not ten times 3 s apart");
+    } finally {
+      useNetwork("sepolia");
+    }
   });
 
   it("read NotNewer wherever an RPC puts the revert data", () => {
