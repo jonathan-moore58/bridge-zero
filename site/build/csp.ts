@@ -1,7 +1,8 @@
 // The built pages' Content-Security-Policy: scripts, styles, fonts and images from the page itself,
 // and connections to the RPC nodes the page reads and nothing else. The bridge app also reads the
 // rollups' V3 light clients (its Network page), through the RPCs src/app/dests.ts gives each
-// destination: its policy adds exactly those; the status page reads no rollup and its policy has none.
+// destination shown (DESTS: a hidden one's RPCs are not allowed until it is shown): its policy adds
+// exactly those; the status page reads no rollup and its policy has none.
 
 import { DESTS } from "../src/app/dests.ts";
 import { MAINNET_SUBSTRATE_WS, SEPOLIA, V3_EVM, V3_SUBSTRATE_HTTP, V3_SUBSTRATE_WS } from "../src/lib/endpoints.ts";
