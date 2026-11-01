@@ -359,9 +359,9 @@ npm run kit -- check --dir ../fixtures/v3-testnet-kit
 # All checks passed: 41 passed, 0 failed.
 npm test
 # ℹ tests 403
-# ℹ pass 402
+# ℹ pass 403
 # ℹ fail 0
-# ℹ skipped 1
+# ℹ skipped 0
 
 cd ../contracts
 FOUNDRY_PROFILE=v3 forge build --skip test --skip script
@@ -399,8 +399,7 @@ contract entries, the vault's 11 slots, and their tampers (41 passed; [For build
 
 `FOUNDRY_PROFILE=v3 forge build` writes the V3 build of the vault, which its tests check; without
 it those tests are skipped. The 2 skipped tests are the Sepolia fork tests, which run with
-`SEPOLIA_FORK=1` against a Sepolia RPC. The relayer's skipped test checks the BNB Smart Chain
-testnet's deployment records, which its activation writes. forge installs solc 0.8.27 on first use.
+`SEPOLIA_FORK=1` against a Sepolia RPC. forge installs solc 0.8.27 on first use.
 
 [CI](.github/workflows/ci.yml) runs all of this on every push and pull request, on Linux: the
 contracts, the relayer with the ten fixture directories and the kit's fixture, and the site; its
@@ -581,9 +580,8 @@ with `npm run kit`.
 - CI since Oct 31: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) builds and tests the
   contracts, the relayer (with the ten fixture directories and the kit's fixture) and the site on
   every push and pull request.
-- Tests: 370 forge tests (the 2 Sepolia fork tests skipped), 403 relayer tests (one skipped until
-  the BNB Smart Chain testnet's records exist), 316 site tests and 432 fixture checks (391 with
-  `npm run check`, 41 with `npm run kit -- check`) pass, in CI and in
+- Tests: 370 forge tests (the 2 Sepolia fork tests skipped), 403 relayer tests, 316 site tests and
+  432 fixture checks (391 with `npm run check`, 41 with `npm run kit -- check`) pass, in CI and in
   [Verify it yourself](#verify-it-yourself).
 
 **Known limits**

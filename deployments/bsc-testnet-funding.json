@@ -1,0 +1,37 @@
+{
+  "network": "bsc-testnet",
+  "deployer": "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071",
+  "steps": {
+    "faucet": {
+      "kind": "faucet",
+      "chain": "bsc-testnet",
+      "chainId": 97,
+      "from": "0xBB06823A4e6762391230785F90D817dF8cF29dE9",
+      "to": "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071",
+      "value": "299997900000000000",
+      "txHash": "0x148259c0b8edaf139d87163732db1c29c5b29cae1891d55d9f078c6321639bd4",
+      "block": 140152968
+    },
+    "relayer": {
+      "kind": "relayer",
+      "chain": "bsc-testnet",
+      "chainId": 97,
+      "from": "0xD9838A86cF83C28Ee486544060D1cA4Ca2971071",
+      "to": "0xE94a82E2c7f38f777E8845A9d8c36B6be6a30257",
+      "call": "a transfer to bz-relayer 0xE94a82E2c7f38f777E8845A9d8c36B6be6a30257",
+      "value": "100000000000000000",
+      "data": "0x",
+      "nonce": 8,
+      "gasLimit": 21000,
+      "maxFee": "100000000",
+      "priorityFee": "100000000",
+      "txHash": "0x1d9717e8833c27da79ca1275af13b66890ccbf5ea9ac9c70c491c41f278233ab",
+      "signedAt": "2026-11-01T08:58:23.795Z",
+      "block": 140161541,
+      "status": 1,
+      "gasUsed": 21000,
+      "ok": true,
+      "effectiveGasPrice": "100000000"
+    }
+  }
+}

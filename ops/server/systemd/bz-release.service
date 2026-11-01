@@ -1,6 +1,6 @@
 # /etc/systemd/system/bz-release.service
 [Unit]
-Description=Bridge Zero release watcher: burns on Sepolia, Base Sepolia and Arbitrum Sepolia, released on V3 by committee members 1 and 2
+Description=Bridge Zero release watcher: burns on Sepolia, Base Sepolia, Arbitrum Sepolia and the BNB Smart Chain testnet, released on V3 by committee members 1 and 2
 Wants=network-online.target
 After=network-online.target time-sync.target
 # 12 starts an hour: room to wait out a committee lock that names a process id reused after a
@@ -16,7 +16,7 @@ WorkingDirectory=/home/ubuntu/bridge-zero/relayer
 Environment=HOME=/home/ubuntu
 Environment=PATH=/home/ubuntu/.foundry/bin:/usr/local/bin:/usr/bin:/bin
 Environment=ESBUILD_WORKER_THREADS=0
-ExecStart=/usr/local/bin/node --max-old-space-size=256 --import tsx src/release.ts release --watch 15 --network sepolia,base-sepolia,arbitrum-sepolia --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144 --send --member-keys 1:/home/ubuntu/.bridge-zero/committee/member-1.json,2:/home/ubuntu/.bridge-zero/committee/member-2.json --password-file /home/ubuntu/.foundry/bz-committee-server.pw
+ExecStart=/usr/local/bin/node --max-old-space-size=256 --import tsx src/release.ts release --watch 15 --network sepolia,base-sepolia,arbitrum-sepolia,bsc-testnet --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144 --send --member-keys 1:/home/ubuntu/.bridge-zero/committee/member-1.json,2:/home/ubuntu/.bridge-zero/committee/member-2.json --password-file /home/ubuntu/.foundry/bz-committee-server.pw
 # Exit 4 is a stop for good (the halt file, a key that does not open, an unserved release), which the
 # code says nothing may restart. Exit 1 (the committee's lock held, a refusal) and a crash restart a
 # minute later: the record settles what was submitted, and a dead holder's lock is taken over.

@@ -1,6 +1,6 @@
 # /etc/systemd/system/bz-rollups.timer
 [Unit]
-Description=Bridge Zero rollup relays every 20 minutes: a V3 set change the rollup clients lack within 20 minutes, a head when they are 1,800 blocks behind
+Description=Bridge Zero rollup relays every 20 minutes: a V3 set change the clients on the rollups and the BNB Smart Chain testnet lack within 20 minutes, a head when they are 1,800 blocks behind
 
 [Timer]
 # V3 changed its validator set at 1:54 and 7:54 AM and PM UTC until Oct 28, an hour later from Oct 29

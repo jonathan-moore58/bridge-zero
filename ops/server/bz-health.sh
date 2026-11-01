@@ -77,7 +77,7 @@ fi
 state=$(systemctl is-active bz-rollups.timer)
 if [ "$state" = active ]; then ok "bz-rollups.timer active"; else fail "bz-rollups.timer is $state: no rollup run is scheduled"; fi
 runs=$(journalctl -u bz-rollups --since=-7h -o cat --no-pager 2>/dev/null | grep -E '^rollup run [a-z-]+: exit [0-9]+$')
-for network in base-sepolia arbitrum-sepolia; do
+for network in base-sepolia arbitrum-sepolia bsc-testnet; do
   last=$(printf '%s\n' "$runs" | grep -F "rollup run $network: " | tail -n 1)
   code=${last##* }
   if [ -z "$last" ]; then

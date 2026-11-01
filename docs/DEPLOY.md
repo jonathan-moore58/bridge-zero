@@ -57,8 +57,9 @@ needs, and the tools check balances against the gas limit at their maximum fee.
 |---|---|
 | EVM deployer, on Sepolia | the light clients' 16 transactions took 118,743,558 gas and BridgeMinter and wtPOT 12,990,292: 0.000000135 ETH at about 1,000 wei per gas |
 | EVM deployer, on a rollup | 0.01 ETH covered the light client's 8 transactions (0.0000615 ETH on Base Sepolia, 0.000247 on Arbitrum Sepolia), the minter and wtPOT (0.0000094 and 0.0000376 ETH) and 0.008 ETH for the relayer's key |
-| Relayer | `--keep` in reserve (by default 0.05 ETH on Sepolia, 0.001 on a rollup) above what a run's plan costs at its maximum fee; on Sepolia a V3 set change takes about 2.39M gas, a head about 1.87M |
-| Auto-mint | `--keep` (by default 0.05 ETH on Sepolia, 0.0002 on a rollup) above each send at its maximum fee, and at most `--max-spend` a day (0.02 and 0.002 ETH); a mint takes about 0.6M gas at a header the client holds, about 2.5M with the import |
+| EVM deployer, on the BNB Smart Chain testnet | tBNB from a faucet, with no bridge from Sepolia: its 12 transactions (the light client's 8, the minter and wtPOT, and the two keys' funding) took 14,211,226 gas, 0.00142 tBNB at its 0.1 gwei, and sent 0.1 tBNB to the relayer's key and 0.05 to auto-mint's |
+| Relayer | `--keep` in reserve (by default 0.05 ETH on Sepolia, 0.001 on a rollup, 0.001 tBNB on the BNB Smart Chain testnet) above what a run's plan costs at its maximum fee; on Sepolia a V3 set change takes about 2.39M gas, a head about 1.87M |
+| Auto-mint | `--keep` (by default 0.05 ETH on Sepolia, 0.0002 on a rollup, 0.001 tBNB on the BNB Smart Chain testnet) above each send at its maximum fee, and at most `--max-spend` a day (0.02 and 0.002 ETH, 0.005 tBNB); a mint takes about 0.6M gas at a header the client holds, about 2.5M with the import |
 | V3 deployer | a little over 86 tPOT: the vault's storage deposit, 83.232 tPOT, with 2% above it as the limit, a fee of about 0.13, the existential deposit (0.1) and 1 tPOT the tool keeps |
 | The committee's multisig | up to 3.9415 tPOT of storage deposit for each release (20 tPOT covered the first five) |
 | Member 1 | 9.403 tPOT free to open a release, 9.27 of it returned when the release runs; 18.71 free to open one on another chain while one is open |
@@ -123,13 +124,13 @@ The tools read the records in `deployments/`, so a clone follows the live deploy
 With no key, from `relayer/`:
 
 ```sh
-npm run mint -- status                    # the minter, wtPOT and the vault's locks; --network base-sepolia|arbitrum-sepolia
+npm run mint -- status                    # the minter, wtPOT and the vault's locks; --network base-sepolia|arbitrum-sepolia|bsc-testnet
 npm run release -- status                 # the burns, their releases on V3, the committee's balances
 npm run v3-vault -- status                # the vault: every lock and release, and its accounting
 npm run relay -- --chain v3 --from 0xE94a82E2c7f38f777E8845A9d8c36B6be6a30257
 npm run relay -- --network base-sepolia --chain v3 --from 0xE94a82E2c7f38f777E8845A9d8c36B6be6a30257
-npm run automint -- --network sepolia,base-sepolia,arbitrum-sepolia
-npm run release -- release --watch 15 --rounds 1 --network sepolia,base-sepolia,arbitrum-sepolia --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144
+npm run automint -- --network sepolia,base-sepolia,arbitrum-sepolia,bsc-testnet
+npm run release -- release --watch 15 --rounds 1 --network sepolia,base-sepolia,arbitrum-sepolia,bsc-testnet --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144
 ```
 
 A relay dry run plans the next run and has the network's node run it, from the nonce and balance of
@@ -334,8 +335,8 @@ What else a chain may need, as the BNB Smart Chain testnet did:
   9 and 10 BridgeMinter and wtPOT, 11 the auto-mint key's funding, in that order and with nothing
   else sent first, the deployer's contracts land where they are on Base Sepolia and Arbitrum Sepolia.
 
-The BNB Smart Chain testnet is configured this way and is next on the roadmap, as a fourth
-destination: [`ops/bnb-activation.md`](../ops/bnb-activation.md) is its activation, step by step.
+The BNB Smart Chain testnet was added this way on Nov 1, as a fourth destination:
+[`ops/bnb-activation.md`](../ops/bnb-activation.md) is its activation, step by step.
 
 ## 4. Run it
 
@@ -350,7 +351,7 @@ npm run relay -- --chain v3 --send --watch 600 --account <relayer keystore> --pa
 npm run relay -- --chain mainnet --send --watch 600 --keep 0.02 --account <mainnet relayer keystore> --password-file <file>
 ```
 
-The rollups' clients, one run of each every 20 minutes: a run imports a set change the client lacks
+The rollups' clients and the BNB Smart Chain testnet's, one run of each every 20 minutes: a run imports a set change the client lacks
 at once and a head once the client is 1,800 V3 blocks (about 3 hours) behind, and sends nothing
 otherwise. V3 changes its set about every 6 hours, at times that moved each time it stopped making
 blocks (the README's [Known limits](../README.md#status)):
@@ -358,22 +359,24 @@ blocks (the README's [Known limits](../README.md#status)):
 ```sh
 npm run relay -- --network base-sepolia --chain v3 --send --head-every 1800 --account <relayer keystore> --password-file <file>
 npm run relay -- --network arbitrum-sepolia --chain v3 --send --head-every 1800 --account <relayer keystore> --password-file <file>
+npm run relay -- --network bsc-testnet --chain v3 --send --head-every 1800 --account <relayer keystore> --password-file <file>
 ```
 
 Auto-mint, a round every 15 seconds: each new lock, once V3 has finalized it and 90 seconds more,
 minted on the chain it names for the recipient it names, from a key that pays only the gas:
 
 ```sh
-npm run automint -- --network sepolia,base-sepolia,arbitrum-sepolia --send --watch 15 --grace 90 --min-amount 0.001 --max-spend sepolia=0.02,base-sepolia=0.002,arbitrum-sepolia=0.002 --keep sepolia=0.01,base-sepolia=0.0002,arbitrum-sepolia=0.0002 --account <auto-mint keystore> --password-file <file>
+npm run automint -- --network sepolia,base-sepolia,arbitrum-sepolia,bsc-testnet --send --watch 15 --grace 90 --min-amount 0.001 --max-spend sepolia=0.02,base-sepolia=0.002,arbitrum-sepolia=0.002,bsc-testnet=0.005 --keep sepolia=0.01,base-sepolia=0.0002,arbitrum-sepolia=0.0002,bsc-testnet=0.001 --account <auto-mint keystore> --password-file <file>
 ```
 
 The release watcher, a round every 15 seconds: each new burn gets every check of the release tool,
 then members 1 and 2 approve its release on V3. A burn of up to 1 tPOT goes in fast mode, once 3
 Sepolia blocks follow its own (on a rollup, 36 seconds of its blocks), while the fast releases not
-final yet stay within 1 tPOT across the chains; any other waits for its chain's finality:
+final yet stay within 1 tPOT across the chains; any other waits for its chain's finality, as every
+burn on the BNB Smart Chain testnet does (about a second):
 
 ```sh
-npm run release -- release --watch 15 --network sepolia,base-sepolia,arbitrum-sepolia --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144 --send --member-keys 1:<member-1.json>,2:<member-2.json> --password-file <file>
+npm run release -- release --watch 15 --network sepolia,base-sepolia,arbitrum-sepolia,bsc-testnet --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144 --send --member-keys 1:<member-1.json>,2:<member-2.json> --password-file <file>
 ```
 
 - **Records and restarts.** Each sender's record, history and lock are in `~/.bridge-zero`

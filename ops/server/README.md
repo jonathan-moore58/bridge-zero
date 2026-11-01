@@ -23,9 +23,9 @@ both from the relayer's key `0xE94a…0257`.
 |---|---|---|
 | `systemd/bz-relay-v3.service` | `/etc/systemd/system/` | the V3 relayer: `--chain v3 --send --watch 600`, key `bz-relayer`, into `GrandpaLightClient` #2 on Sepolia |
 | `systemd/bz-relay-mainnet.service` | `/etc/systemd/system/` | the old mainnet's relayer: `--chain mainnet --send --watch 600 --keep 0.02`, key `bz-relayer-mainnet`, into #1 on Sepolia |
-| `systemd/bz-release.service` | `/etc/systemd/system/` | the release watcher for Sepolia, Base Sepolia and Arbitrum Sepolia, with members 1 and 2 |
-| `systemd/bz-automint.service` | `/etc/systemd/system/` | auto-mint for the three chains, key `bz-automint` |
-| `systemd/bz-rollups.service`, `systemd/bz-rollups.timer`, `bz-rollups.sh` | the units in `/etc/systemd/system/`, the script in `/home/ubuntu/bz-ops/` | every 20 minutes (:00, :20 and :40), one relayer run for Base Sepolia, then one for Arbitrum Sepolia (key `bz-relayer`, `--head-every 1800`), each ended at 20 minutes: a V3 set change reaches both clients within about 20 minutes, a head about every 3 hours; a slot missed while the server was off runs when it is back |
+| `systemd/bz-release.service` | `/etc/systemd/system/` | the release watcher for Sepolia, Base Sepolia, Arbitrum Sepolia and the BNB Smart Chain testnet, with members 1 and 2 |
+| `systemd/bz-automint.service` | `/etc/systemd/system/` | auto-mint for the four chains, key `bz-automint` |
+| `systemd/bz-rollups.service`, `systemd/bz-rollups.timer`, `bz-rollups.sh` | the units in `/etc/systemd/system/`, the script in `/home/ubuntu/bz-ops/` | every 20 minutes (:00, :20 and :40), one relayer run for Base Sepolia, then one for Arbitrum Sepolia, then one for the BNB Smart Chain testnet (key `bz-relayer`, `--head-every 1800`), each ended at 20 minutes: a V3 set change reaches the three clients within about 20 minutes, a head about every 3 hours; a slot missed while the server was off runs when it is back |
 | `systemd/bz-health.service`, `systemd/bz-health.timer`, `bz-health.sh` | the units in `/etc/systemd/system/`, the script in `/home/ubuntu/bz-ops/` | a read-only check every 15 minutes: the units running, no halt file, each unit's last "Next" line on time, the rollup runs, the clock, memory and disk; it fails while a check FAILs, and can ping a heartbeat URL |
 | `systemd/journald-bridge-zero.conf` | `/etc/systemd/journald.conf.d/bridge-zero.conf` | the journal on disk, at most 2 GB: about 12 days of these logs (about 213,000 lines a day) |
 | `systemd/rsyslog-30-bridge-zero.conf` | `/etc/rsyslog.d/30-bridge-zero.conf` | optional: no second copy of the `bz-*` lines in `/var/log/syslog` |
@@ -131,8 +131,9 @@ node --import tsx src/relay-main.ts --chain v3 --from <bz-relayer's address>
 node --import tsx src/relay-main.ts --chain mainnet --keep 0.02 --from <bz-relayer-mainnet's address>
 node --import tsx src/relay-main.ts --network base-sepolia --chain v3 --head-every 1800 --from <bz-relayer's address>
 node --import tsx src/relay-main.ts --network arbitrum-sepolia --chain v3 --head-every 1800 --from <bz-relayer's address>
-node --import tsx src/release.ts release --watch 15 --rounds 1 --network sepolia,base-sepolia,arbitrum-sepolia --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144
-node --import tsx src/automint-main.ts --network sepolia,base-sepolia,arbitrum-sepolia --grace 90 --min-amount 0.001 --max-spend sepolia=0.02,base-sepolia=0.002,arbitrum-sepolia=0.002 --keep sepolia=0.01,base-sepolia=0.0002,arbitrum-sepolia=0.0002 --sender <bz-automint's address>
+node --import tsx src/relay-main.ts --network bsc-testnet --chain v3 --head-every 1800 --from <bz-relayer's address>
+node --import tsx src/release.ts release --watch 15 --rounds 1 --network sepolia,base-sepolia,arbitrum-sepolia,bsc-testnet --confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144
+node --import tsx src/automint-main.ts --network sepolia,base-sepolia,arbitrum-sepolia,bsc-testnet --grace 90 --min-amount 0.001 --max-spend sepolia=0.02,base-sepolia=0.002,arbitrum-sepolia=0.002,bsc-testnet=0.005 --keep sepolia=0.01,base-sepolia=0.0002,arbitrum-sepolia=0.0002,bsc-testnet=0.001 --sender <bz-automint's address>
 ```
 
 Healthy is exit code 0, or 3 while something is not final yet: a relayer prints `... is up to

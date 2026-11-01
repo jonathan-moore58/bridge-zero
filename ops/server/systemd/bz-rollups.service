@@ -1,6 +1,6 @@
 # /etc/systemd/system/bz-rollups.service
 [Unit]
-Description=Bridge Zero rollup relays: one relayer run for Base Sepolia, then one for Arbitrum Sepolia (key bz-relayer), 20 minutes at most each
+Description=Bridge Zero rollup relays: one relayer run for Base Sepolia, then one for Arbitrum Sepolia, then one for the BNB Smart Chain testnet (key bz-relayer), 20 minutes at most each
 Wants=network-online.target
 After=network-online.target time-sync.target
 
@@ -12,14 +12,15 @@ WorkingDirectory=/home/ubuntu/bridge-zero/relayer
 Environment=HOME=/home/ubuntu
 Environment=PATH=/home/ubuntu/.foundry/bin:/usr/local/bin:/usr/bin:/bin
 Environment=ESBUILD_WORKER_THREADS=0
-# bz-rollups.sh runs Base Sepolia, then Arbitrum Sepolia whatever the first ended with, each ended at
-# 20 minutes by timeout (SIGTERM to node and any cast, SIGKILL 30 s later), like the laptop's
-# Stop-Process -Force: a crash the next run reconciles from the record. It writes one
-# "rollup run <network>: exit <code>" line a run, and the service fails when a run ended with
-# anything but 0 (up to date or relayed) or 3 (a transaction still pending).
+# bz-rollups.sh runs Base Sepolia, then Arbitrum Sepolia, then the BNB Smart Chain testnet, whatever
+# the one before ended with, each ended at 20 minutes by timeout (SIGTERM to node and any cast,
+# SIGKILL 30 s later), like the laptop's Stop-Process -Force: a crash the next run reconciles from
+# the record. It writes one "rollup run <network>: exit <code>" line a run, and the service fails
+# when a run ended with anything but 0 (up to date or relayed) or 3 (a transaction still pending).
 ExecStart=/home/ubuntu/bz-ops/bz-rollups.sh
-# Both runs and their margins; the laptop task's limit was 45 minutes too.
-TimeoutStartSec=45min
+# Three runs of at most 20 minutes and their margins (45 minutes for the two rollups', the laptop
+# task's limit too).
+TimeoutStartSec=65min
 KillSignal=SIGTERM
 TimeoutStopSec=15
 # No core file: an abort would write the process's memory into the working directory, the checkout.

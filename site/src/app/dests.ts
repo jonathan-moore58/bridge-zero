@@ -200,17 +200,15 @@ const DESTS_ALL: readonly Dest[] = [
     rpcs: BSC_TESTNET,
     explorer: { name: "BscScan", url: "https://testnet.bscscan.com" },
     gas: { token: "tBNB", name: "tBNB" },
-    // Not deployed yet: deployments/bsc-testnet.json and bsc-testnet-bridge.json fill these in at the
-    // activation (the deployer's nonces 4, 5, 9 and 10 there, the rollups' addresses if nothing else came first).
-    lightClient: null,
-    provenBalance: null,
-    minter: null,
-    token: null,
+    lightClient: "0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6",
+    provenBalance: "0x40f4b03aa20d3e7ce2503c406a4fe4a46ba886f0",
+    // deployments/bsc-testnet-bridge.json (the deployer's nonces 9 and 10, BSC 140,162,374 and 140,162,400).
+    minter: "0xdc31a3bc1354545eeb985aad7b2aa662e9272348",
+    token: "0xe1130718c56de008b47c392c85895a1a605ba95e",
     record: "deployments/bsc-testnet.json and deployments/bsc-testnet-bridge.json",
     blockSeconds: 0.45,
     l1: "none",
-    // BridgeMinter's deployment block, from deployments/bsc-testnet-bridge.json at the activation.
-    minterFrom: 0,
+    minterFrom: 140_162_374,
     // The watcher waits for its finality, about a second: one speed (relayer/src/wayback.ts).
     fastConfirmations: null,
     // Fast finality (BEP-126): its finalized tag 2 blocks (0.9 s) below its latest at the median on Nov 1, 3 at most.
