@@ -79,9 +79,9 @@ RPC are `wss://test-node-v3.portaldot.dev` and `https://test-evm-rpc-v3.portaldo
 `SEPOLIA_RPC_URL`, `BASE_SEPOLIA_RPC_URL`, `ARBITRUM_SEPOLIA_RPC_URL` and `BSC_TESTNET_RPC_URL`
 replace a network's first RPC; `SEPOLIA_ARCHIVE_RPC_URLS` and the other networks'
 `..._ARCHIVE_RPC_URLS` (`BASE_SEPOLIA_`, `ARBITRUM_SEPOLIA_`, `BSC_TESTNET_`; comma separated) the
-RPCs asked for old receipts and state; `--rpc` and `--evm` the V3 node and its EVM RPC. Of a URL given
-this way only the host is printed, as a URL can carry a key. `ETHERSCAN_API_KEY` is read for source
-verification only.
+RPCs asked for old receipts and state; `--rpc` and `--evm` the V3 node and its EVM RPC. Of a URL
+given this way only the host is printed, as a URL can carry a key. `ETHERSCAN_API_KEY` is read for
+source verification only.
 
 ## 1. Build and test
 
@@ -321,8 +321,8 @@ What else a chain may need, as the BNB Smart Chain testnet did:
   about 8 to 11 hours, and then answers with none and no error (`logsFade` in `wayback.ts`).
 - An L1 is `"none"` in `L1_KIND`: no L1 part in a transaction.
 - Its `WAYBACK` entry says what final means there: an Ethereum epoch, a rollup's batch final on
-  Sepolia, or, on BSC, its validators' votes (fast finality, about a second), where the watcher is
-  left out of `--confirmations` and waits for finality.
+  Sepolia, or, on BSC, its validators' votes (fast finality, about a second): there the chain is
+  left out of the watcher's `--confirmations`, and it waits for finality.
 - A fresh checkpoint: `npm run capture` at V3's newest set change, and a `PLANS` entry naming it
   (`fixtures/v3-testnet-set75` for BSC). The relayer refuses a client more than `--scan-limit`
   (100,800) V3 blocks behind, so a checkpoint older than about a week needs a new capture, or that
