@@ -35,6 +35,7 @@ import {
   destState,
   explorerBlock,
   explorerTx,
+  gasFrom,
   lockKey,
   pickRows,
   refOf,
@@ -47,6 +48,7 @@ import {
   BURN_GAS,
   BURN_GAS_FULL,
   CH,
+  DESTS_NAMED,
   DESTS_WORD,
   FAST_BUDGET_LINE,
   LATER_CHAINS,
@@ -58,9 +60,12 @@ import {
   SLOW_RELEASE_MS,
   TIME,
   aboutMinutes,
+  andList,
   chainById,
+  destsNamedOf,
   fastWait,
   fromOf,
+  otherChainsOf,
   sendChain,
   timeOf,
   toOf,
@@ -554,6 +559,7 @@ test("the BNB Smart Chain testnet is configured and hidden: not in DESTS, a pick
   assert.equal(destOfLock(97n, ROLLUP_MINTER), null);
   assert.deepEqual(OTHER_CHAINS, ["two rollups"]);
   assert.equal(DESTS_WORD, "three");
+  assert.equal(DESTS_NAMED, "Sepolia and the two rollups");
   // A build never previews it: no import.meta.env outside vite's dev server, and in it only VITE_PREVIEW_DESTS names it.
   assert.deepEqual(
     shown(ALL_DESTS, HIDDEN, new Set(["bsc-testnet"])).map((d) => d.key),
@@ -612,6 +618,41 @@ test("its entry: chain 97 as viem knows it, its names, the text mark, BscScan, t
       assert.equal(BSC.minterFrom, b.steps.find((s: any) => s.kind === "deploy" && s.name === "BridgeMinter").block);
     }
   }
+});
+
+test("the gas each chain's words name: Sepolia ETH and each rollup's ETH as before, tBNB on the BNB Smart Chain testnet, where a visitor gets it, and auto-mint's chains", () => {
+  const three = ALL_DESTS.filter((d) => d.key !== "bsc-testnet");
+  // The three as the card, the review and the transfer screen have always said them: "in Base Sepolia ETH", "0.002 ETH".
+  assert.deepEqual(
+    three.map((d) => [d.key, d.gas.token, d.gas.name]),
+    [
+      ["sepolia", "ETH", "Sepolia ETH"],
+      ["base-sepolia", "ETH", "Base Sepolia ETH"],
+      ["arbitrum-sepolia", "ETH", "Arbitrum Sepolia ETH"],
+    ],
+  );
+  for (const d of three) assert.equal(d.gas.name, `${d.short} ETH`, d.key);
+  assert.deepEqual(BSC.gas, { token: "tBNB", name: "tBNB" });
+  // The symbol a wallet shows for each, as viem gives it to a wallet that adds the chain.
+  for (const [d, v] of [
+    [destOf("sepolia"), viemSepolia],
+    [destOf("base-sepolia"), viemBaseSepolia],
+    [destOf("arbitrum-sepolia"), viemArbitrumSepolia],
+    [BSC, viemBscTestnet],
+  ] as const) {
+    assert.equal(d.gas.token, v.nativeCurrency.symbol, d.key);
+  }
+  // A rollup's ETH comes through its own bridge from Sepolia, as before; tBNB from its faucets, with no bridge from Sepolia.
+  assert.equal(gasFrom(destOf("base-sepolia")), "Base Sepolia's own bridge takes Sepolia ETH there, and its public faucets give some");
+  assert.equal(gasFrom(destOf("arbitrum-sepolia")), "Arbitrum Sepolia's own bridge takes Sepolia ETH there, and its public faucets give some");
+  assert.equal(gasFrom(BSC), "BSC testnet's public faucets give tBNB");
+  // Auto-mint is one process for the chains shown: the three as before, and the four once the activation shows chain 97.
+  assert.equal(destsNamedOf(three), "Sepolia and the two rollups");
+  assert.equal(DESTS_NAMED, destsNamedOf(DESTS));
+  assert.deepEqual(otherChainsOf(ACTIVE), ["two rollups", "the BNB Smart Chain testnet"]);
+  assert.equal(destsNamedOf(ACTIVE), "Sepolia, the two rollups and the BNB Smart Chain testnet");
+  assert.equal(andList(["V3", "Sepolia", ...otherChainsOf(ACTIVE)]), "V3, Sepolia, two rollups and the BNB Smart Chain testnet");
+  assert.deepEqual([andList([]), andList(["V3"]), andList(["V3", "Sepolia"])], ["", "V3", "V3 and Sepolia"]);
 });
 
 test("one speed on the BNB Smart Chain testnet: its burns never fast on the transfer screen, and no Fast option nor fast release on the card there", () => {

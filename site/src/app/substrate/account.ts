@@ -135,12 +135,13 @@ export function checkRecipient(text: string, ctx: RecipientContext): RecipientCh
 
 /**
  * What the destination says of a recipient, as a caution, not a refusal: a contract (it has to be
- * able to hold wtPOT, and to burn it to come back), or an address with no transaction and no ETH yet
- * (the visitor should be sure they hold its key). An EIP-7702 delegation is a key's account.
+ * able to hold wtPOT, and to burn it to come back), or an address with no transaction and none of
+ * the chain's gas token yet (`coin`: ETH, tBNB on the BNB Smart Chain testnet), so the visitor
+ * should be sure they hold its key. An EIP-7702 delegation is a key's account.
  */
-export function recipientNote(code: string, txCount: bigint, balance: bigint, chain = "Sepolia"): string | null {
+export function recipientNote(code: string, txCount: bigint, balance: bigint, chain = "Sepolia", coin = "ETH"): string | null {
   const c = code.toLowerCase();
   if (c !== "0x" && !/^0xef0100[0-9a-f]{40}$/.test(c)) return `A contract on ${chain}: make sure it can hold wtPOT, and burn it to bring it back.`;
-  if (txCount === 0n && balance === 0n) return `No transactions and no ETH on ${chain} yet: make sure you hold this address's key.`;
+  if (txCount === 0n && balance === 0n) return `No transactions and no ${coin} on ${chain} yet: make sure you hold this address's key.`;
   return null;
 }

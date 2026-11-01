@@ -13,6 +13,7 @@
 
 import type { Hex } from "../lib/hex.ts";
 import type { Dest, DestKey } from "./dests.ts";
+import { DESTS_NAMED } from "./facts.ts";
 import type { LockSender } from "./model.ts";
 import type { NetState } from "./netstate.ts";
 
@@ -47,10 +48,12 @@ export const AUTO_MINT = {
   afterCatchUpMs: 3 * 60_000,
   /** While auto-mint's key has a transaction the chain has not mined, up to 15 minutes: it replaces a stuck one after 10. */
   pendingGraceMs: 15 * 60_000,
-  /** Its --max-spend on Sepolia: at most this much ETH of gas a day. */
-  dailyEth: "0.02",
-  /** Its --max-spend on each rollup (README, "Status"). */
-  rollupDailyEth: "0.002",
+  /**
+   * Its --max-spend on each chain, at most this much of the chain's gas token a day (Dest.gas): 0.02
+   * ETH on Sepolia and 0.002 on each rollup (ops/server/systemd/bz-automint.service), and 0.005 tBNB
+   * on the BNB Smart Chain testnet from its activation (ops/bnb-activation.md, step 6).
+   */
+  maxSpend: { sepolia: "0.02", "base-sepolia": "0.002", "arbitrum-sepolia": "0.002", "bsc-testnet": "0.005" } satisfies Readonly<Record<DestKey, string>>,
   /** How often the page reads used(nonce) and the Minted log while it waits. */
   pollMs: 10_000,
 } as const;
@@ -298,8 +301,8 @@ export function offerOf(d: Dest, behind: number, payee: string, cost: string): {
   }
   const runs =
     d.key === "sepolia"
-      ? `It runs on one machine and spends at most ${AUTO_MINT.dailyEth} ETH of gas a day: while that machine is off or the day's gas is spent, locks wait.`
-      : `It runs on one machine, for Sepolia and the two rollups, and spends at most ${AUTO_MINT.rollupDailyEth} ETH of gas a day on ${d.short}: while that machine is off or the day's gas is spent, locks wait.`;
+      ? `It runs on one machine and spends at most ${AUTO_MINT.maxSpend[d.key]} ${d.gas.token} of gas a day: while that machine is off or the day's gas is spent, locks wait.`
+      : `It runs on one machine, for ${DESTS_NAMED}, and spends at most ${AUTO_MINT.maxSpend[d.key]} ${d.gas.token} of gas a day on ${d.short}: while that machine is off or the day's gas is spent, locks wait.`;
   return {
     title: "Auto-mint hasn't minted it yet",
     text: `${runs} Your tPOT stays locked for you, and the lock does not expire. You can mint it yourself now: ${pays}, and it costs ${cost}.`,

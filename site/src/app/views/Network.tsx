@@ -16,7 +16,7 @@ import { registry, useField, type ChainHead, type Field, type LcState } from "..
 import { burnId } from "../../lib/proofs.ts";
 import { request } from "../../lib/rpc.ts";
 import { ROLLUPS, clientOf, destOf, destState, type Dest } from "../dests.ts";
-import { DESTS_WORD, FAST_CAP, IMPORT_GAS, LATER_CHAINS, OTHER_CHAINS, SPEED_NAME, V3_SCAN, timeOf } from "../facts.ts";
+import { DESTS_WORD, FAST_CAP, IMPORT_GAS, LATER_CHAINS, OTHER_CHAINS, SPEED_NAME, V3_SCAN, andList, timeOf } from "../facts.ts";
 import { RELAY_EVERY_MIN, relayAutoWait, setChangesText } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
@@ -61,11 +61,6 @@ function stamp(ms: number, ref = Date.now()): string {
   if (!Number.isFinite(ms)) return "";
   const day = (t: number) => new Date(t).toISOString().slice(0, 10);
   return Number.isFinite(ref) && day(ms) === day(ref) ? clockUtc(ms) : `${dayTime(ms)} UTC`;
-}
-
-function andList(items: string[]): string {
-  if (items.length < 2) return items.join("");
-  return `${items.slice(0, -1).join(", ")} and ${items.at(-1) ?? ""}`;
 }
 
 // ---------------------------------------------------------------------------------------------

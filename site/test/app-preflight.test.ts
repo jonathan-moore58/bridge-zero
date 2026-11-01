@@ -24,15 +24,15 @@ const TOKEN: Hex = "0x1fcbbd66922ac5aa20219a5c16c2591a76b4cb14";
 const ME: Hex = "0xd9838a86cf83c28ee486544060d1ca4ca2971071";
 const SEP: Endpoint = { id: "sep", label: "fake Sepolia", url: "https://sepolia.fake/" };
 const V3E: Endpoint = { id: "v3e", label: "fake V3 EVM", url: "https://v3-evm.fake/" };
-const env: SendEnv = { evm: [SEP], chainId: 11_155_111n, chain: "Sepolia", l1: "none", v3Evm: [V3E], vault: VAULT, minter: MINTER, token: TOKEN, registry };
+const env: SendEnv = { evm: [SEP], chainId: 11_155_111n, chain: "Sepolia", gas: { token: "ETH", name: "Sepolia ETH" }, l1: "none", v3Evm: [V3E], vault: VAULT, minter: MINTER, token: TOKEN, registry };
 
 /** The rollups' BridgeMinter and wtPOT, the same addresses on both (deployments/<network>-bridge.json). */
 const ROLLUP_MINTER: Hex = "0xdc31a3bc1354545eeb985aad7b2aa662e9272348";
 const ROLLUP_TOKEN: Hex = "0xe1130718c56de008b47c392c85895a1a605ba95e";
 const BASE: Endpoint = { id: "base", label: "fake Base Sepolia", url: "https://base-sepolia.fake/", logRange: 50_000 };
 const ARB: Endpoint = { id: "arb", label: "fake Arbitrum Sepolia", url: "https://arbitrum-sepolia.fake/" };
-const baseEnv: SendEnv = { ...env, evm: [BASE], chainId: 84_532n, chain: "Base Sepolia", l1: "op", minter: ROLLUP_MINTER, token: ROLLUP_TOKEN };
-const arbEnv: SendEnv = { ...env, evm: [ARB], chainId: 421_614n, chain: "Arbitrum Sepolia", l1: "arbitrum", minter: ROLLUP_MINTER, token: ROLLUP_TOKEN };
+const baseEnv: SendEnv = { ...env, evm: [BASE], chainId: 84_532n, chain: "Base Sepolia", gas: { token: "ETH", name: "Base Sepolia ETH" }, l1: "op", minter: ROLLUP_MINTER, token: ROLLUP_TOKEN };
+const arbEnv: SendEnv = { ...env, evm: [ARB], chainId: 421_614n, chain: "Arbitrum Sepolia", gas: { token: "ETH", name: "Arbitrum Sepolia ETH" }, l1: "arbitrum", minter: ROLLUP_MINTER, token: ROLLUP_TOKEN };
 
 const qty = (n: bigint): Hex => `0x${n.toString(16)}`;
 const ONE = 100_000_000_000_000n;
@@ -207,7 +207,7 @@ test("a burn names the sender's own address on V3, with Sepolia's fees and the t
 
 test("on the BNB Smart Chain testnet a burn's tip is at least 0.1 gwei, the least its validators include, whatever a node suggests", async () => {
   const BSC: Endpoint = { id: "bsc", label: "fake BSC testnet", url: "https://bsc-testnet.fake/", logRange: 50_000 };
-  const bscEnv: SendEnv = { ...env, evm: [BSC], chainId: 97n, chain: "BSC testnet", l1: "none", minTip: 100_000_000n, minter: ROLLUP_MINTER, token: ROLLUP_TOKEN };
+  const bscEnv: SendEnv = { ...env, evm: [BSC], chainId: 97n, chain: "BSC testnet", gas: { token: "tBNB", name: "tBNB" }, l1: "none", minTip: 100_000_000n, minter: ROLLUP_MINTER, token: ROLLUP_TOKEN };
   // Its base fee is 0; one RPC suggests 0.05 gwei, which its validators do not include.
   chains({}, { base: 0n, tip: 50_000_000n }, { ep: BSC, token: ROLLUP_TOKEN });
   const p = ok(await prepareBurn(bscEnv, ME, ONE / 1000n));
@@ -216,6 +216,11 @@ test("on the BNB Smart Chain testnet a burn's tip is at least 0.1 gwei, the leas
   // A node that suggests more is taken at its word.
   chains({}, { base: 0n, tip: 338_000_000n }, { ep: BSC, token: ROLLUP_TOKEN });
   assert.deepEqual(ok(await prepareBurn(bscEnv, ME, ONE / 1000n)).fees, { maxFeePerGas: 338_000_000n, maxPriorityFeePerGas: 338_000_000n });
+  // Its gas is paid in tBNB: too little of it stops the burn before the wallet, in tBNB.
+  chains({}, { base: 0n, tip: 50_000_000n, eth: 1000n }, { ep: BSC, token: ROLLUP_TOKEN });
+  const short = problemOf(await prepareBurn(bscEnv, ME, ONE / 1000n));
+  assert.equal(short.title, "Not enough tBNB");
+  assert.match(short.text, /^The burn's gas needs up to \S+ tBNB; you have \S+\. Nothing was burned\.$/);
   // Sepolia, which has no floor of its own, as before.
   chains();
   assert.deepEqual(ok(await prepareBurn(env, ME, ONE / 100n)).fees, { maxFeePerGas: 2n * 17n + SEPOLIA_MIN_TIP, maxPriorityFeePerGas: SEPOLIA_MIN_TIP });

@@ -9,7 +9,7 @@
 import { execSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { EVIDENCE_CHAINS, EVM_EVIDENCE_CHAINS, chainOfWord } from "../src/lib/evidence.ts";
+import { EVIDENCE_CHAINS, EVM_EVIDENCE_CHAINS, chainOfWord, withoutChainWord } from "../src/lib/evidence.ts";
 import { formatUnits } from "../src/lib/format.ts";
 import type {
   VerifyBlock,
@@ -141,11 +141,12 @@ function cells(body: string): string[] {
 
 /**
  * The evidence rows. A Sepolia row links its transaction on Etherscan, a Base Sepolia or Arbitrum
- * Sepolia row on Basescan or Arbiscan; a V3 row prints a shortened hash (an extrinsic's, or the
- * Ethereum hash of a transaction sent through V3's EVM RPC), resolved here against `v3Hashes` (the
- * full hashes deployments/ records). A row's chain is its explorer link's, else the one its Block
- * cell names ("Base 51,177,673", "V3 #231,112"), else Sepolia, whose first rows name none; a row
- * whose link and Block cell name two chains fails the build.
+ * Sepolia row on Basescan or Arbiscan, a BNB Smart Chain testnet row on BscScan; a V3 row prints a
+ * shortened hash (an extrinsic's, or the Ethereum hash of a transaction sent through V3's EVM RPC),
+ * resolved here against `v3Hashes` (the full hashes deployments/ records). A row's chain is its
+ * explorer link's, else the one its Block cell names ("Base 51,177,673", "V3 #231,112", "BSC
+ * 72,105,331"), else Sepolia, whose first rows name none; a row whose link and Block cell name two
+ * chains fails the build.
  */
 export function parseEvidence(readme: string, v3Hashes: string[] = []): EvidenceRow[] {
   const rows: EvidenceRow[] = [];
@@ -163,7 +164,7 @@ export function parseEvidence(readme: string, v3Hashes: string[] = []): Evidence
     const short = SHORT_HASH.exec(txCell);
     const blockText = blockCell.replace(/\]\(.*?\)/g, "]");
     const named = chainOfWord(blockText);
-    const blockDigits = /(\d[\d,]*)/.exec(blockText.replace(/\b(V3|Sepolia|Base|Arbitrum)\b/g, ""));
+    const blockDigits = /(\d[\d,]*)/.exec(withoutChainWord(blockText));
     if (!blockDigits?.[1] || (!linked && !short)) continue;
     if (evm && named && named !== evm.chain) fail("README.md", `evidence row ${m[1]} links its transaction on ${EVIDENCE_CHAINS[evm.chain].name}'s explorer and puts its block on ${EVIDENCE_CHAINS[named].name}`);
     const isV3 = !linked && named === "v3";

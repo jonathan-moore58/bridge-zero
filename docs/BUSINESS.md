@@ -118,7 +118,7 @@ What the testnets already show:
   ([README](../README.md#status)).
 - 128 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
   hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 370 forge tests, 403 relayer
-  tests, 314 site tests and 432 fixture checks pass, in CI on every push.
+  tests, 316 site tests and 432 fixture checks pass, in CI on every push.
 - The limits are written down, including the gaps while the laptop that ran them slept or was off,
   from Oct 24 to Oct 31 ([Known limits](../README.md#status),
   [what the minter trusts](BRIDGE.md#what-the-minter-trusts),

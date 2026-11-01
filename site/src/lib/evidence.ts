@@ -46,11 +46,17 @@ export function perChain(rows: readonly Pick<EvidenceRow, "chain">[]): string {
 /** The chains whose rows link their transaction: every one but V3. */
 export const EVM_EVIDENCE_CHAINS = (Object.keys(EVIDENCE_CHAINS) as EvidenceChain[]).filter((c) => c !== "v3") as Exclude<EvidenceChain, "v3">[];
 
+/** Every chain's word in the Block column, from the table, as one pattern: "Sepolia", "V3", "Base", "Arbitrum" or "BSC" (letters and digits only). */
+const WORDS = `\\b(${Object.values(EVIDENCE_CHAINS).map((c) => c.word).join("|")})\\b`;
+
 /** The chain a Block cell's word names ("Base 50,885,111"), or null for a cell that names none (the first Sepolia rows). */
 export function chainOfWord(blockCell: string): EvidenceChain | null {
-  const word = /\b(V3|Sepolia|Base|Arbitrum|BSC)\b/.exec(blockCell)?.[1];
+  const word = new RegExp(WORDS).exec(blockCell)?.[1];
   return (Object.keys(EVIDENCE_CHAINS) as EvidenceChain[]).find((c) => EVIDENCE_CHAINS[c].word === word) ?? null;
 }
+
+/** A Block cell without its chain's word, so that its first digits are the block's: "V3 #231,112" → " #231,112", not the 3 of "V3". */
+export const withoutChainWord = (blockCell: string): string => blockCell.replace(new RegExp(WORDS, "g"), "");
 
 /** A transaction on an EVM chain's explorer. */
 export const evidenceTxUrl = (chain: Exclude<EvidenceChain, "v3">, tx: string): string => `${EVIDENCE_CHAINS[chain].explorer}/tx/${tx}`;

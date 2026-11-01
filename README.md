@@ -371,8 +371,8 @@ forge test
 cd ../site
 npm ci
 npm run check
-# ℹ tests 288
-# ℹ pass 288
+# ℹ tests 316
+# ℹ pass 316
 # ℹ fail 0
 ```
 
@@ -582,7 +582,7 @@ with `npm run kit`.
   contracts, the relayer (with the ten fixture directories and the kit's fixture) and the site on
   every push and pull request.
 - Tests: 370 forge tests (the 2 Sepolia fork tests skipped), 403 relayer tests (one skipped until
-  the BNB Smart Chain testnet's records exist), 314 site tests and 432 fixture checks (391 with
+  the BNB Smart Chain testnet's records exist), 316 site tests and 432 fixture checks (391 with
   `npm run check`, 41 with `npm run kit -- check`) pass, in CI and in
   [Verify it yourself](#verify-it-yourself).
 
@@ -1552,7 +1552,7 @@ Lines on Nov 1, counted with `wc -l` (blank lines and comments included):
 
 | Code | Files | Lines |
 |---|---|---|
-| The project's own: `contracts/src` (without `trie/vendor/`), `contracts/test`, `contracts/script`, `relayer/src`, `site/src`, `site/build`, `site/test`, `ops` | 233 | 103,486 |
+| The project's own: `contracts/src` (without `trie/vendor/`), `contracts/test`, `contracts/script`, `relayer/src`, `site/src`, `site/build`, `site/test`, `ops` | 233 | 103,604 |
 | Vendored, unmodified: the Solidity of the four libraries in `contracts/lib/`, at the commits NOTICE.md pins | 149 | 62,200 |
 | Vendored and modified: `contracts/src/trie/vendor/PolkadotTrie.sol` | 1 | 176 |
 

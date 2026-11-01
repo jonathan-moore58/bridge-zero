@@ -6,7 +6,7 @@ import { useEffect, useState } from "preact/hooks";
 import { V3_EVM } from "../lib/chains.ts";
 import { checksum } from "../lib/display.ts";
 import { request } from "../lib/rpc.ts";
-import { deployed, destOf, type DestKey } from "./dests.ts";
+import { deployed, destOf, gasFrom, type DestKey } from "./dests.ts";
 import { ChainMark, walletMark } from "./marks.tsx";
 import { connectPolka, normalize, pickAccount, polka, polkaList } from "./polkadot.ts";
 import { useBox } from "./store.ts";
@@ -367,13 +367,13 @@ function ethUse(use: EthUse, dest: DestKey): string {
   const d = destOf(dest);
   switch (use) {
     case "fill":
-      return `Its mint is sent on ${d.short} from an Ethereum wallet such as MetaMask, with ${d.short} ETH for gas, and that wallet's address can fill in the recipient.`;
+      return `Its mint is sent on ${d.short} from an Ethereum wallet such as MetaMask, with ${d.gas.name} for gas, and that wallet's address can fill in the recipient.`;
     case "mint":
-      return `The mint is a ${d.short} transaction: you send it from an Ethereum wallet such as MetaMask, with ${d.short} ETH for its gas, about ${d.mintGas.gas} M gas.`;
+      return `The mint is a ${d.short} transaction: you send it from an Ethereum wallet such as MetaMask, with ${d.gas.name} for its gas, about ${d.mintGas.gas} M gas.`;
     case "burn":
-      return `The way back's burn is a ${d.short} transaction: you send it from an Ethereum wallet such as MetaMask, with ${d.short} ETH for its gas.`;
+      return `The way back's burn is a ${d.short} transaction: you send it from an Ethereum wallet such as MetaMask, with ${d.gas.name} for its gas.`;
     case "send":
-      return `The mint you send yourself and the way back's burn are ${d.short} transactions, sent from an Ethereum wallet such as MetaMask, with ${d.short} ETH for gas.`;
+      return `The mint you send yourself and the way back's burn are ${d.short} transactions, sent from an Ethereum wallet such as MetaMask, with ${d.gas.name} for gas.`;
   }
 }
 
@@ -395,7 +395,7 @@ export function openNoEthWallet(use: EthUse = "send", dest: DestKey = "sepolia")
           <Icon id="i-external" />
         </a>
         <p class="sheet-foot">
-          {dest === "sepolia" ? "Any public Sepolia faucet gives Sepolia ETH." : `${destOf(dest).short}'s own bridge takes Sepolia ETH there, and its public faucets give some.`} On a phone,
+          {dest === "sepolia" ? "Any public Sepolia faucet gives Sepolia ETH." : `${gasFrom(destOf(dest))}.`} On a phone,
           open this page in the MetaMask app's browser.
         </p>
       </div>

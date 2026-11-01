@@ -138,14 +138,33 @@ export const countWord = (n: number): string => ["no", "one", "two", "three", "f
 export const DESTS_WORD = countWord(DESTS.length);
 
 /**
- * The chains besides V3 and Sepolia, as the pages name them: the rollups by their count ("two
- * rollups"), and any other destination shown by its name (the BNB Smart Chain testnet, an L1).
+ * The chains of `dests` besides V3 and Sepolia, as the pages name them: the rollups by their count
+ * ("two rollups"), and any other destination by its name (the BNB Smart Chain testnet, an L1).
  */
-export const OTHER_CHAINS: readonly string[] = (() => {
-  const others = DESTS.filter((d) => d.key !== "sepolia");
+export function otherChainsOf(dests: readonly Dest[]): string[] {
+  const others = dests.filter((d) => d.key !== "sepolia");
   const rollups = others.filter((d) => d.finality.kind === "batch").length;
   return [...(rollups > 0 ? [`${countWord(rollups)} rollup${rollups === 1 ? "" : "s"}`] : []), ...others.filter((d) => d.finality.kind !== "batch").map((d) => `the ${d.full}`)];
-})();
+}
+
+/** The chains besides V3 and Sepolia that the app shows: ["two rollups"] while the BNB Smart Chain testnet is hidden. */
+export const OTHER_CHAINS: readonly string[] = otherChainsOf(DESTS);
+
+/** Items in running text: "a", "a and b", "a, b and c". */
+export function andList(items: readonly string[]): string {
+  if (items.length < 2) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items.at(-1) ?? ""}`;
+}
+
+/**
+ * The destinations of `dests` named in running text, each of the others as otherChainsOf names it,
+ * with "the": "Sepolia and the two rollups"; once the BNB Smart Chain testnet is shown, "Sepolia,
+ * the two rollups and the BNB Smart Chain testnet".
+ */
+export const destsNamedOf = (dests: readonly Dest[]): string => andList(["Sepolia", ...otherChainsOf(dests).map((c) => (c.startsWith("the ") ? c : `the ${c}`))]);
+
+/** The destinations the app shows, named: auto-mint is one process for them all ("one for Sepolia and the two rollups"). */
+export const DESTS_NAMED = destsNamedOf(DESTS);
 
 /**
  * What a lock from a Polkadot wallet takes besides the amount, out of the balance the card shows,

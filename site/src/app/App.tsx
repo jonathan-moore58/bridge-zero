@@ -199,7 +199,7 @@ function WalletMenu({ address, name, icon, balances, p, polkaFirst, onClose }: M
     );
   };
   const b = balances;
-  // wtPOT and ETH as read on the bridge card's destination (wallet.ts, balancesOn).
+  // wtPOT and the gas token (ETH, or tBNB) as read on the bridge card's destination (wallet.ts, balancesOn).
   const on = destOf(b?.dest ?? "sepolia");
   const polkaTop = polkaFirst && p.status === "on" && p.account !== null;
   return (
@@ -225,7 +225,7 @@ function WalletMenu({ address, name, icon, balances, p, polkaFirst, onClose }: M
       <dl class="menu__bals">
         <BalanceRow mark="portaldot" token="tPOT" where="on V3" value={b ? tokenNum(b.tpot, 14) : undefined} />
         <BalanceRow mark={on.mark} token="wtPOT" where={`on ${on.short}`} value={b ? tokenNum(b.wtpot, 14) : undefined} />
-        <BalanceRow mark={on.mark} token="ETH" where={`on ${on.short}, for gas`} value={b ? tokenNum(b.eth, 18) : undefined} />
+        <BalanceRow mark={on.mark} token={on.gas.token} where={`on ${on.short}, for gas`} value={b ? tokenNum(b.eth, 18) : undefined} />
       </dl>
       <div class="menu__sep" role="separator" />
       <button class="menu__item" role="menuitem" type="button" onClick={act(addV3, ["Portaldot V3 testnet added", "Chain 420420777, tPOT. Your wallet may call it an unrecognised network; that is expected."])}>

@@ -968,7 +968,7 @@ function mintedBy(by: Hex | null, me: string | null): string {
 }
 
 /** The visitor's own mint on `d`, its light client `behind` V3's set by that many changes: its gas as the card states it, and Base's L1 data fee. */
-const mintCost = (d: Dest, behind: number): string => `≈ ${mintGasText(d, behind)} M gas in ${d.short} ETH${d.l1 === "op" ? ", plus an L1 data fee" : ""}`;
+const mintCost = (d: Dest, behind: number): string => `≈ ${mintGasText(d, behind)} M gas in ${d.gas.name}${d.l1 === "op" ? ", plus an L1 data fee" : ""}`;
 
 /** The offer of the visitor's own mint on `d` for the lock's `recipient` (handoff.ts, offerOf), its light client `behind` V3's set by that many changes this lock waits for. */
 const offerFor = (recipient: Hex, d: Dest, behind: number): NonNullable<TxState["offer"]> => offerOf(d, behind, short(checksum(recipient)), mintCost(d, behind));
@@ -1086,7 +1086,7 @@ function liveIn(x: LockTransfer, now: number, evm: string | null, read: LockRead
       M.sub = behind > 0 ? "Auto-mint waits for the relayer · you can send the mint" : "Auto-mint hasn't minted it yet · you can send the mint";
       needs = evm
         ? { action: "Mint it yourself", note: `Your wallet asks for the mint on ${d.short}, ${mintCost(d, behind)}. It pays ${short(checksum(x.recipient))}.` }
-        : { action: "Connect an Ethereum wallet to mint", note: `Any Ethereum wallet with ${d.short} ETH can send the mint: it pays the lock's recipient, whoever sends it.` };
+        : { action: "Connect an Ethereum wallet to mint", note: `Any Ethereum wallet with ${d.gas.name} can send the mint: it pays the lock's recipient, whoever sends it.` };
       offer = offerFor(x.recipient, d, behind);
     } else {
       M.st = "needs";
@@ -1094,7 +1094,7 @@ function liveIn(x: LockTransfer, now: number, evm: string | null, read: LockRead
       // A Polkadot wallet's lock is minted from an Ethereum wallet: connected first.
       needs =
         sub && !evm
-          ? { action: "Connect an Ethereum wallet to mint", note: `Any Ethereum wallet with ${d.short} ETH can send the mint, ${gas}: it pays ${short(checksum(x.recipient))}, whoever sends it.` }
+          ? { action: "Connect an Ethereum wallet to mint", note: `Any Ethereum wallet with ${d.gas.name} can send the mint, ${gas}: it pays ${short(checksum(x.recipient))}, whoever sends it.` }
           : needsOf(route, d);
     }
   } else if (mint.stage === "asking") {
@@ -1323,7 +1323,7 @@ function chainIn(x: ChainLock, now: number, evm: string | null, read: LockRead):
     M.sub = behind > 0 ? "Auto-mint waits for the relayer · you can send the mint" : "Auto-mint hasn't minted it yet · you can send the mint";
     needs = evm
       ? { action: "Mint it yourself", note: `Your wallet asks for the mint on ${d.short}, ${mintCost(d, behind)}. It pays ${short(checksum(x.recipient))}.` }
-      : { action: "Connect an Ethereum wallet to mint", note: `Any Ethereum wallet with ${d.short} ETH can send the mint.` };
+      : { action: "Connect an Ethereum wallet to mint", note: `Any Ethereum wallet with ${d.gas.name} can send the mint.` };
     offer = offerFor(x.recipient, d, behind);
   } else if (x.final === true) {
     M.st = "needs";

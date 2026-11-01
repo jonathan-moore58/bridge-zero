@@ -5,11 +5,12 @@
 // back from Base Sepolia and Arbitrum Sepolia"). And the BNB Smart Chain testnet, configured and
 // hidden (HIDDEN) until its contracts are deployed and its first round trip is recorded. Each has its
 // chain id and names, its mark (./marks.tsx), two or more public RPCs (../lib/endpoints.ts), its
-// explorer, its V3 light client and ProvenBalance, its minter and wtPOT, null until they are
-// deployed, and what the sends and the transfer screen need of it: its block time, how it charges for
-// L1, where its minter's logs start, the confirmations fast mode reads, its finality, the least
-// priority fee its validators include and its measured costs. Kept apart from the build's records so
-// that the tests import it; they check every address here against deployments/.
+// explorer, the token its gas is paid in, its V3 light client and ProvenBalance, its minter and
+// wtPOT, null until they are deployed, and what the sends and the transfer screen need of it: its
+// block time, how it charges for L1, where its minter's logs start, the confirmations fast mode
+// reads, its finality, the least priority fee its validators include and its measured costs. Kept
+// apart from the build's records so that the tests import it; they check every address here
+// against deployments/.
 
 import { ARBITRUM_SEPOLIA, BASE_SEPOLIA, BSC_TESTNET, SEPOLIA } from "../lib/endpoints.ts";
 import type { Hex } from "../lib/hex.ts";
@@ -53,6 +54,12 @@ export interface Dest {
   /** The public RPCs the page reads it through, in order: the Content-Security-Policy allows these. */
   rpcs: readonly Endpoint[];
   explorer: { name: string; url: string };
+  /**
+   * The token its gas is paid in, as the app writes it: `token` after an amount ("0.002 ETH"),
+   * `name` in running text ("in Base Sepolia ETH", the ETH on that chain; "in tBNB", the BNB Smart
+   * Chain testnet's own, as its wallets and BscScan name it).
+   */
+  gas: { token: "ETH" | "tBNB"; name: string };
   /** GrandpaLightClient #2, which follows the V3 testnet. On Sepolia 0x3897…0ab6 is the old mainnet's client; on the rollups it is V3's. Null until it is deployed. */
   lightClient: Hex | null;
   /** ProvenBalance #2, bound to that client. Null until it is deployed. */
@@ -105,6 +112,7 @@ const DESTS_ALL: readonly Dest[] = [
     mark: "ethereum",
     rpcs: SEPOLIA,
     explorer: { name: "Etherscan", url: "https://sepolia.etherscan.io" },
+    gas: { token: "ETH", name: "Sepolia ETH" },
     lightClient: "0x447171c4885ad725ee4772e8e3c228adee50dcb0",
     provenBalance: "0x5b41d227248dc4775ef1061f2dfbf7136ccead3c",
     minter: "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e",
@@ -132,6 +140,7 @@ const DESTS_ALL: readonly Dest[] = [
     mark: "base",
     rpcs: BASE_SEPOLIA,
     explorer: { name: "Basescan", url: "https://sepolia.basescan.org" },
+    gas: { token: "ETH", name: "Base Sepolia ETH" },
     lightClient: "0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6",
     provenBalance: "0x40f4b03aa20d3e7ce2503c406a4fe4a46ba886f0",
     // deployments/base-sepolia-bridge.json (the deployer's nonces 9 and 10, Base 51,063,602 and 51,063,630).
@@ -160,6 +169,7 @@ const DESTS_ALL: readonly Dest[] = [
     mark: "arbitrum",
     rpcs: ARBITRUM_SEPOLIA,
     explorer: { name: "Arbiscan", url: "https://sepolia.arbiscan.io" },
+    gas: { token: "ETH", name: "Arbitrum Sepolia ETH" },
     lightClient: "0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6",
     provenBalance: "0x40f4b03aa20d3e7ce2503c406a4fe4a46ba886f0",
     // deployments/arbitrum-sepolia-bridge.json (the deployer's nonces 9 and 10, Arbitrum 323,463,305 and 323,463,329).
@@ -189,6 +199,7 @@ const DESTS_ALL: readonly Dest[] = [
     mark: "bnb",
     rpcs: BSC_TESTNET,
     explorer: { name: "BscScan", url: "https://testnet.bscscan.com" },
+    gas: { token: "tBNB", name: "tBNB" },
     // Not deployed yet: deployments/bsc-testnet.json and bsc-testnet-bridge.json fill these in at the
     // activation (the deployer's nonces 4, 5, 9 and 10 there, the rollups' addresses if nothing else came first).
     lightClient: null,
@@ -305,6 +316,14 @@ export function clientOf(d: Dest): { lightClient: Hex; provenBalance: Hex } {
   if (!d.lightClient || !d.provenBalance) throw new Error(`${d.full} has no V3 light client yet`);
   return { lightClient: d.lightClient, provenBalance: d.provenBalance };
 }
+
+/**
+ * Where a visitor gets gas on `d`, a destination other than Sepolia (whose sheets name its faucets in
+ * their own words), Bridge Zero having no faucet of its own: a rollup's own bridge takes Sepolia ETH
+ * there; a chain with a token of its own (the BNB Smart Chain testnet's tBNB) has its public faucets.
+ */
+export const gasFrom = (d: Dest): string =>
+  d.gas.token === "ETH" ? `${d.short}'s own bridge takes Sepolia ETH there, and its public faucets give some` : `${d.short}'s public faucets give ${d.gas.name}`;
 
 /** A transaction, a block or an address on a destination's explorer. */
 export const explorerTx = (d: Dest, hash: string): string => `${d.explorer.url}/tx/${hash}`;

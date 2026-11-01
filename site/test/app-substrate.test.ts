@@ -565,4 +565,7 @@ test("the recipient on a rollup: its own minter and wtPOT are refused, and the w
   assert.equal(checkRecipient(MINTER, ctx).ok, true);
   assert.equal(recipientNote("0x6080", 0n, 0n, "Arbitrum Sepolia"), "A contract on Arbitrum Sepolia: make sure it can hold wtPOT, and burn it to bring it back.");
   assert.equal(recipientNote("0x", 0n, 0n, "Base Sepolia"), "No transactions and no ETH on Base Sepolia yet: make sure you hold this address's key.");
+  assert.equal(recipientNote("0x", 0n, 0n, "Base Sepolia", "ETH"), recipientNote("0x", 0n, 0n, "Base Sepolia"));
+  // The BNB Smart Chain testnet's gas token is its own (dests.ts, gas).
+  assert.equal(recipientNote("0x", 0n, 0n, "BSC testnet", "tBNB"), "No transactions and no tBNB on BSC testnet yet: make sure you hold this address's key.");
 });

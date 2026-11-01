@@ -20,7 +20,7 @@ import {
   readmeTimingSection,
 } from "../build/records.ts";
 import { ALL_DESTS } from "../src/app/dests.ts";
-import { EVIDENCE_CHAINS, chainOfWord, evidenceCell, perChain, type EvidenceChain } from "../src/lib/evidence.ts";
+import { EVIDENCE_CHAINS, chainOfWord, evidenceCell, perChain, withoutChainWord, type EvidenceChain } from "../src/lib/evidence.ts";
 import { formatDuration, formatInt, formatUnits } from "../src/lib/format.ts";
 import { checksumAddress } from "../src/lib/hex.ts";
 import { keccak256 } from "../src/lib/hashes.ts";
@@ -696,6 +696,9 @@ test("the evidence chains link where the app links them: Etherscan, Basescan and
   assert.equal(chainOfWord("V3 [#231,112]"), "v3");
   assert.equal(chainOfWord("BSC 72,105,331"), "bsc-testnet");
   assert.equal(chainOfWord("11,934,329"), null);
+  // Every chain's word, from the one table: the block's digits are what is left, not the 3 of "V3".
+  for (const c of Object.values(EVIDENCE_CHAINS)) assert.equal(withoutChainWord(`${c.word} 1,234`), " 1,234", c.word);
+  assert.equal(withoutChainWord("V3 [#231,112]"), " [#231,112]");
   const tx = `0x${"ab".repeat(32)}` as const;
   // A BNB Smart Chain testnet row, once its first round trip is recorded, links its transaction on BscScan; the README has none yet, and the count names no such chain.
   const bsc = parseEvidence(`| 7 | A burn | [\`0xabababab…\`](https://testnet.bscscan.com/tx/${tx}) | BSC 72,105,331 | success |`);

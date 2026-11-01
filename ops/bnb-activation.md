@@ -401,16 +401,24 @@ The server's `deployments/v3-testnet.json` has a release round for chain 97 with
   `rollupTime` and the card's strip state with a chain's run (Oct 28, the rollups'); until then
   both state Sepolia's run there as an estimate. Optionally first a local check with the owner's
   wallet: `VITE_PREVIEW_DESTS=bsc-testnet npm run dev`.
+- Its words need no change in the app: it names its gas tBNB (`gas` in its entry), auto-mint's cap
+  there 0.005 tBNB a day (`AUTO_MINT.maxSpend` in `handoff.ts`, which `test/app-handoff.test.ts`
+  checks against step 6's `--max-spend`: change both together), and auto-mint one process "for
+  Sepolia, the two rollups and the BNB Smart Chain testnet" once it is shown (`DESTS_NAMED` in
+  `facts.ts`). The tests that pin the three chains as the ones shown (in `test/app-dests.test.ts`
+  the hidden chain's test, and in `test/app-handoff.test.ts` the offer on Base Sepolia, "for
+  Sepolia and the two rollups") take the four.
 - The server's `deployments/v3-testnet.json` (with lock n's entry from the laptop's copy), and the
   BNB Smart Chain testnet's relay and auto-mint histories copied into `deployments/`, as for the
   rollups.
 - README: the evidence rows (a new section, "More chains: the BNB Smart Chain testnet"), each
   linked on BscScan with `BSC <block>` in its Block cell (`site/src/lib/evidence.ts`), and the
-  count of the rows on each chain that `site/test/records.test.ts` reads; the Roadmap's "More EVM
-  chains" (done), the Status and Known limits (publicnode's logs and receipts of recent blocks
-  only, and a burn the watcher never saw while its log was served waiting for an RPC that keeps
-  them; 1.85M and 1.70M gas at 0.1 gwei; the watcher's one speed there), the plan and the
-  Development log; `site/README.md`.
+  count of the rows on each chain that `site/test/records.test.ts` reads, where the two lines that
+  find no such row yet go (the rows make them fail); the Roadmap's "More EVM chains" (done), the
+  Status and Known limits (publicnode's logs and receipts of recent blocks only, and a burn the
+  watcher never saw while its log was served waiting for an RPC that keeps them; 1.85M and 1.70M
+  gas at 0.1 gwei; the watcher's one speed there), the plan and the Development log;
+  `site/README.md`.
 
 ## If something goes wrong
 

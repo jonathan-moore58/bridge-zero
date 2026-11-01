@@ -16,13 +16,15 @@ import { evmValue, keyControlled, sepoliaFees, upFront, v3Fees, withMargin, type
 
 /**
  * A transfer's destination as the checks take it: its endpoints, its chain id and its name in the
- * page's words, how it charges for L1, its BridgeMinter and wtPOT; the vault and V3's EVM endpoints;
- * and the contracts' errors, which name a revert.
+ * page's words, the token its gas is paid in, how it charges for L1, its BridgeMinter and wtPOT; the
+ * vault and V3's EVM endpoints; and the contracts' errors, which name a revert.
  */
 export interface SendEnv {
   evm: Endpoint[];
   chainId: bigint;
   chain: string;
+  /** Its gas token, as ./dests.ts gives it: "ETH" after an amount, "Base Sepolia ETH" in running text ("tBNB" and "tBNB" on the BNB Smart Chain testnet). */
+  gas: { token: string; name: string };
   l1: L1Kind;
   /** The least priority fee its validators include (wei), when it has one: feesNow's floor. */
   minTip?: bigint;
@@ -207,9 +209,10 @@ export async function prepareLock(env: SendEnv, from: Hex, amount: bigint): Prom
  * BridgeMinter, so the V3 recipient is the sender's own 20-byte address. The sender has to be an
  * address a key controls (the committee pays a burn's sender on V3 only then), hold the wtPOT there,
  * the vault's outstanding tPOT has to cover the release (one vault backs wtPOT on every chain), the
- * dry run has to pass, and the sender has to have the ETH for its gas there, and on a rollup for its
- * L1 part: Arbitrum's L1 gas goes into the gas limit once more, Base's L1 data fee into what the
- * balance has to cover, as the relayer's burn sends them (README, "A burn on a rollup").
+ * dry run has to pass, and the sender has to have the chain's gas token (ETH, or tBNB) for its gas
+ * there, and on a rollup for its L1 part: Arbitrum's L1 gas goes into the gas limit once more,
+ * Base's L1 data fee into what the balance has to cover, as the relayer's burn sends them (README,
+ * "A burn on a rollup").
  */
 export async function prepareBurn(env: SendEnv, from: Hex, amount: bigint): Promise<Prep> {
   const data = encodeCall("burn(uint256,address)", [amount, from]);
@@ -244,7 +247,7 @@ export async function prepareBurn(env: SendEnv, from: Hex, amount: bigint): Prom
   const need = upFront(0n, gas, fees) + besides;
   if (eth < need) {
     const what = besides > 0n ? "gas and its L1 data fee need" : "gas needs";
-    return problem(`Not enough ${env.chain} ETH`, `The burn's ${what} up to ${tokens(need, 18)} ETH; you have ${tokens(eth, 18)}. Nothing was burned.`);
+    return problem(`Not enough ${env.gas.name}`, `The burn's ${what} up to ${tokens(need, 18)} ${env.gas.token}; you have ${tokens(eth, 18)}. Nothing was burned.`);
   }
   const { maxFeePerGas, maxPriorityFeePerGas } = fees;
   return { data, value: 0n, gas, fees: { maxFeePerGas, maxPriorityFeePerGas }, estimate, returns: word(call.result), need, balance: eth, cost: estimate * (fees.base + maxPriorityFeePerGas) + besides, l1, head, nonce };

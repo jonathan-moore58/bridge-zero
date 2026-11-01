@@ -100,13 +100,13 @@ const evmOf = (d: Dest): Endpoint[] => (d.key === "sepolia" ? SEPOLIA : [...d.rp
 
 const sendEnvs = new Map<DestKey, SendEnv>();
 
-/** A destination's BridgeMinter and wtPOT, its endpoints and L1 rule, and the vault, for preflight.ts. */
+/** A destination's BridgeMinter and wtPOT, its endpoints, gas token and L1 rule, and the vault, for preflight.ts. */
 function sendEnv(key: DestKey): SendEnv {
   let e = sendEnvs.get(key);
   if (!e) {
     const d = destOf(key);
     const { minter, token } = deployed(d);
-    e = { evm: evmOf(d), chainId: BigInt(d.chainId), chain: d.short, l1: d.l1, ...(d.minTip === undefined ? {} : { minTip: d.minTip }), v3Evm: V3_EVM, vault: VAULT, minter, token, registry };
+    e = { evm: evmOf(d), chainId: BigInt(d.chainId), chain: d.short, gas: d.gas, l1: d.l1, ...(d.minTip === undefined ? {} : { minTip: d.minTip }), v3Evm: V3_EVM, vault: VAULT, minter, token, registry };
     sendEnvs.set(key, e);
   }
   return e;
@@ -936,7 +936,7 @@ async function signMint(job: Job, id: string, fresh: MintPlan | null): Promise<v
   if (eth < need) {
     patchIn(id, { mint: null });
     const of = besides > 0n ? "gas and its L1 data fee need" : "gas needs";
-    fail(id, "refused", `Not enough ${d.short} ETH`, `This transaction's ${of} up to ${tokens(need, 18)} ETH, and ${short(from)} has ${tokens(eth, 18)}. Your tPOT stays locked for you; the lock does not expire.`);
+    fail(id, "refused", `Not enough ${d.gas.name}`, `This transaction's ${of} up to ${tokens(need, 18)} ${d.gas.token}, and ${short(from)} has ${tokens(eth, 18)}. Your tPOT stays locked for you; the lock does not expire.`);
     return;
   }
   const twin = mintElsewhere(id);

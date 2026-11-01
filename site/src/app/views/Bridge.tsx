@@ -12,9 +12,10 @@ import type { Hex } from "../../lib/hex.ts";
 import { CALLS_PER_TX } from "../../lib/proof/plan.ts";
 import { request } from "../../lib/rpc.ts";
 import { openWalletPicker } from "../connect.tsx";
-import { SENDS, burnKey, deployed, destOf, destState, lockKey, pickRows, type Dest, type DestKey, type PickRow } from "../dests.ts";
+import { SENDS, burnKey, deployed, destOf, destState, gasFrom, lockKey, pickRows, type Dest, type DestKey, type PickRow } from "../dests.ts";
 import {
   CH,
+  DESTS_NAMED,
   DESTS_WORD,
   FAST_BUDGET_LINE,
   FAST_CAP,
@@ -150,7 +151,7 @@ interface Facts {
   sub: boolean;
   /** The way in below auto-mint's minimum. */
   below: boolean;
-  /** The way in, minted by auto-mint: a lock of its minimum or more (handoff.ts). Otherwise the visitor mints it, with the destination's ETH. */
+  /** The way in, minted by auto-mint: a lock of its minimum or more (handoff.ts). Otherwise the visitor mints it, with the destination's gas token (Dest.gas). */
   auto: boolean;
   /** The visitor's own transaction on the destination is part of this transfer: the burn, or a mint auto-mint does not send. */
   ethNeeded: boolean;
@@ -257,7 +258,7 @@ function useRecipientNote(address: Hex | null, d: Dest): string | null | undefin
         request<string>(evm, "eth_getBalance", [address, "latest"]),
       ]).then(
         ([code, count, balance]) => {
-          notes.set(key, recipientNote(code.result, BigInt(count.result), BigInt(balance.result), d.short));
+          notes.set(key, recipientNote(code.result, BigInt(count.result), BigInt(balance.result), d.short, d.gas.token));
           if (live) bump((n) => n + 1);
         },
         () => undefined,
@@ -460,12 +461,12 @@ function openGetEth(dir: Dir, address: string, d: Dest): void {
       const e = b?.dest === d.key ? b.eth : null;
       if (e && e > 0n) {
         closeSheet(true);
-        toast("verify", `${d.short} ETH found`, `${fmt(Number(e) / 1e18)} ETH on ${d.short}. You can bridge now.`);
-      } else toast("info", `No ${d.short} ETH yet`, "A faucet can take a minute. This page also checks on its own every 30 s.");
+        toast("verify", `${d.gas.name} found`, `${fmt(Number(e) / 1e18)} ${d.gas.token} on ${d.short}. You can bridge now.`);
+      } else toast("info", `No ${d.gas.name} yet`, "A faucet can take a minute. This page also checks on its own every 30 s.");
     });
   };
   openSheet({
-    title: `Get ${d.short} ETH`,
+    title: `Get ${d.gas.name}`,
     body: (
       <div class="sheet-stack">
         <div class="empty-mark" aria-hidden="true">
@@ -473,11 +474,9 @@ function openGetEth(dir: Dir, address: string, d: Dest): void {
         </div>
         <p class="sheet-lead">
           {inDir
-            ? `You send the mint on ${d.short} yourself, so you pay its gas: about ${d.mintGas.gas} M gas${l1Note(d)}, in ${d.short} ETH.`
-            : `The burn is a ${d.short} transaction: about ${d.burnGas.gas} k gas${l1Note(d)}, in ${d.short} ETH.`}{" "}
-          {d.key === "sepolia"
-            ? "Bridge Zero has no faucet of its own; any public Sepolia faucet works."
-            : `Bridge Zero has no faucet of its own: ${d.short}'s own bridge takes Sepolia ETH there, and its public faucets give some.`}
+            ? `You send the mint on ${d.short} yourself, so you pay its gas: about ${d.mintGas.gas} M gas${l1Note(d)}, in ${d.gas.name}.`
+            : `The burn is a ${d.short} transaction: about ${d.burnGas.gas} k gas${l1Note(d)}, in ${d.gas.name}.`}{" "}
+          {d.key === "sepolia" ? "Bridge Zero has no faucet of its own; any public Sepolia faucet works." : `Bridge Zero has no faucet of its own: ${gasFrom(d)}.`}
         </p>
         <div class="kv">
           <dt class="kv__k">Send it to</dt>
@@ -486,7 +485,7 @@ function openGetEth(dir: Dir, address: string, d: Dest): void {
           </dd>
         </div>
         <button class="btn btn--primary btn--lg btn--block" type="button" data-autofocus onClick={check}>
-          I have {d.short} ETH, check again
+          I have {d.gas.name}, check again
         </button>
         <p class="sheet-foot">Your balance updates here on its own. {inDir ? "Lock once you have it, so the mint doesn't wait on you." : ""}</p>
       </div>
@@ -714,7 +713,7 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
             <>
               <Nb>≈ {behind ? mintGas(d, behind) : d.mintGas.gas} M gas</Nb>{" "}
               <Nb>
-                in {d.short} ETH{l1Note(d)}
+                in {d.gas.name}{l1Note(d)}
               </Nb>
             </>,
           )}
@@ -728,7 +727,7 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
         <>
           <Nb>≈ {d.burnGas.gas} k gas</Nb>{" "}
           <Nb>
-            in {d.short} ETH{l1Note(d)}
+            in {d.gas.name}{l1Note(d)}
           </Nb>
         </>,
       )}
@@ -881,7 +880,7 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
             <p class="rnote">
               <Icon id="i-info" cls="i--14" />
               <span>
-                If auto-mint has not minted it within 5 minutes of your lock, this page offers you the mint: any Ethereum wallet with {d.short} ETH can send it.
+                If auto-mint has not minted it within 5 minutes of your lock, this page offers you the mint: any Ethereum wallet with {d.gas.name} can send it.
                 Auto-mint takes locks of {tpot(AUTO_MINT.min, 3)} tPOT or more.
                 {/* While the light client reads behind V3's set, the live note below says so instead. */}
                 {d.key === "sepolia" || wait ? null : ` ${relayAfterChange(d, "auto-mint", `the light client on ${d.short}`)}: a lock made meanwhile is minted after that.`}
@@ -892,14 +891,14 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
               <Icon id="i-info" cls="i--14" />
               <span>
                 Auto-mint does not see locks from Polkadot wallets yet, so you send the mint on {d.short} from {sub.ethWallet ?? "your Ethereum wallet"}: about{" "}
-                {d.mintGas.gas} M gas in {d.short} ETH. It pays the recipient above.
+                {d.mintGas.gas} M gas in {d.gas.name}. It pays the recipient above.
               </span>
             </p>
           ) : inDir ? (
             <p class="rnote">
               <Icon id="i-info" cls="i--14" />
               <span>
-                Below auto-mint's {tpot(AUTO_MINT.min, 3)} tPOT minimum: you mint it on {d.short}, about {d.mintGas.gas} M gas in {d.short} ETH{l1Note(d)}.
+                Below auto-mint's {tpot(AUTO_MINT.min, 3)} tPOT minimum: you mint it on {d.short}, about {d.mintGas.gas} M gas in {d.gas.name}{l1Note(d)}.
               </span>
             </p>
           ) : null}
@@ -1157,12 +1156,12 @@ function subAction(k: Facts, f: Form, w: WalletState, p: PolkaState, net: NetSta
   if (!k.value) return { label: <span>Enter an amount</span>, hint: "", disabled: true };
   const d = k.d;
   // Auto-mint does not mint this lock (handoff.ts: below its minimum): its mint is the visitor's,
-  // sent from an Ethereum wallet with the destination's ETH, so that comes first.
+  // sent from an Ethereum wallet with the destination's gas token, so that comes first.
   if (!k.auto && k.noEth) {
     const why = k.below
-      ? `Below ${tpot(AUTO_MINT.min, 3)} tPOT auto-mint skips the lock, so you send its mint on ${d.short}: about ${d.mintGas.gas} M gas in ${d.short} ETH, from an Ethereum wallet.`
-      : `Auto-mint does not see locks from Polkadot wallets yet, so you send the mint on ${d.short}: about ${d.mintGas.gas} M gas in ${d.short} ETH, from an Ethereum wallet such as MetaMask.`;
-    if (w.status === "on" && w.address) return { label: <span>Get {d.short} ETH first</span>, hint: why, warn: true, disabled: true };
+      ? `Below ${tpot(AUTO_MINT.min, 3)} tPOT auto-mint skips the lock, so you send its mint on ${d.short}: about ${d.mintGas.gas} M gas in ${d.gas.name}, from an Ethereum wallet.`
+      : `Auto-mint does not see locks from Polkadot wallets yet, so you send the mint on ${d.short}: about ${d.mintGas.gas} M gas in ${d.gas.name}, from an Ethereum wallet such as MetaMask.`;
+    if (w.status === "on" && w.address) return { label: <span>Get {d.gas.name} first</span>, hint: why, warn: true, disabled: true };
     return {
       label: (
         <>
@@ -1278,11 +1277,11 @@ function action(
   if (k.short) return { label: <span>Not enough {from.token}</span>, hint: "", disabled: true };
   if (k.noEth) {
     return {
-      label: <span>Get {d.short} ETH first</span>,
+      label: <span>Get {d.gas.name} first</span>,
       hint:
         dir === "in"
-          ? `Below ${tpot(AUTO_MINT.min, 3)} tPOT you send the mint yourself: ≈ ${d.mintGas.gas} M gas in ${d.short} ETH${l1Note(d)}. Get some before you lock, or lock ${tpot(AUTO_MINT.min, 3)} tPOT or more and auto-mint mints it for you.`
-          : `The burn needs ≈ ${d.burnGas.gas} k gas in ${d.short} ETH${l1Note(d)}.`,
+          ? `Below ${tpot(AUTO_MINT.min, 3)} tPOT you send the mint yourself: ≈ ${d.mintGas.gas} M gas in ${d.gas.name}${l1Note(d)}. Get some before you lock, or lock ${tpot(AUTO_MINT.min, 3)} tPOT or more and auto-mint mints it for you.`
+          : `The burn needs ≈ ${d.burnGas.gas} k gas in ${d.gas.name}${l1Note(d)}.`,
       warn: true,
       disabled: true,
     };
@@ -1339,7 +1338,7 @@ function Notice({ k, f, net }: { k: Facts; f: Form; net: NetState }) {
       k.auto
         ? // Auto-mint imports no change itself: a lock after the client's latest header waits for the relayer's import (relayer/src/automint.ts).
           relayNotice(d, net.behind, timeOf(d.key, "auto")[0])
-        : `You can lock and mint now: your mint imports ${one ? "the change" : `the ${net.behind} changes`} first, through Multicall3${txs > 1 ? `, in ${txs} transactions` : ""}, for about ${fmt(IMPORT_GAS * net.behind, 1)} M gas more (≈ ${mintGas(d, net.behind)} M in all, in ${d.short} ETH). Nothing waits for the relayer.`,
+        : `You can lock and mint now: your mint imports ${one ? "the change" : `the ${net.behind} changes`} first, through Multicall3${txs > 1 ? `, in ${txs} transactions` : ""}, for about ${fmt(IMPORT_GAS * net.behind, 1)} M gas more (≈ ${mintGas(d, net.behind)} M in all, in ${d.gas.name}). Nothing waits for the relayer.`,
     ];
   } else if (k.dir === "in" && net.key === "paused") {
     n = ["notice--revert", "i-alert", "The light client is paused by its admin", "Mints are refused until it resumes. Nothing you hold is affected. Burns still work."];
@@ -1643,8 +1642,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               {d.short} checks 2 of 2 V3 validator signatures, a storage proof of your lock and its nonce. It still trusts V3's validator set (2 keys on the testnet),
               V3's sudo key and the light client's admin.{" "}
               {d.key === "sepolia"
-                ? `Auto-mint is the operator's process: ${inWords(timeOf(d.key, "auto")[0])} after your lock it sends the mint from its own key and pays the gas, at most ${AUTO_MINT.dailyEth} ETH a day, on one machine.`
-                : `Auto-mint is the operator's process, one for Sepolia and the two rollups: ${inWords(timeOf(d.key, "auto")[0])} after your lock it sends the mint on ${d.short} from its own key and pays the gas, at most ${AUTO_MINT.rollupDailyEth} ETH a day there, on one machine. ${relayAfterChange(d, "it", "this client")}.`}{" "}
+                ? `Auto-mint is the operator's process: ${inWords(timeOf(d.key, "auto")[0])} after your lock it sends the mint from its own key and pays the gas, at most ${AUTO_MINT.maxSpend[d.key]} ${d.gas.token} a day, on one machine.`
+                : `Auto-mint is the operator's process, one for ${DESTS_NAMED}: ${inWords(timeOf(d.key, "auto")[0])} after your lock it sends the mint on ${d.short} from its own key and pays the gas, at most ${AUTO_MINT.maxSpend[d.key]} ${d.gas.token} a day there, on one machine. ${relayAfterChange(d, "it", "this client")}.`}{" "}
               It can only mint what your lock commits to. Anyone can still send the mint: if auto-mint has not minted it within 5 minutes, this page offers it to
               you.{" "}
               {AUTO_MINT.substrate
@@ -1837,7 +1836,7 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                             {d.burnGas.used
                               ? `${d.burnGas.run} needed ${d.burnGas.full} gas to run and used ${d.burnGas.used}, after the refund for burning its sender's whole balance`
                               : `${d.burnGas.run} used ${d.burnGas.full} gas`}
-                            {d.burnGas.note ? `, ${d.burnGas.note}` : ""}, paid in {d.short} ETH. No approval step is needed.
+                            {d.burnGas.note ? `, ${d.burnGas.note}` : ""}, paid in {d.gas.name}. No approval step is needed.
                           </Tip>
                         </>
                       )}
@@ -1856,8 +1855,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                             <Tip id="tip-mint" label="About the mint gas">
                               {d.mintGas.run} used {d.mintGas.full} gas{d.mintGas.note ? `, ${d.mintGas.note}` : ""}.{" "}
                               {k.below
-                                ? `Below auto-mint's ${tpot(AUTO_MINT.min, 3)} tPOT minimum you send the mint, so you pay its gas in ${d.short} ETH${l1Note(d)}.`
-                                : `Auto-mint does not see locks from Polkadot wallets yet: you send the mint from an Ethereum wallet, so you pay its gas in ${d.short} ETH.`}
+                                ? `Below auto-mint's ${tpot(AUTO_MINT.min, 3)} tPOT minimum you send the mint, so you pay its gas in ${d.gas.name}${l1Note(d)}.`
+                                : `Auto-mint does not see locks from Polkadot wallets yet: you send the mint from an Ethereum wallet, so you pay its gas in ${d.gas.name}.`}
                             </Tip>
                           </>
                         ) : (
@@ -1906,11 +1905,11 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                 {k.ethNeeded ? (
                   <li class={`need ${k.noEth ? "is-miss" : "is-ok"}`}>
                     <Icon id={k.noEth ? "i-alert" : "i-check"} cls="i--14" />
-                    <span class="need__label">ETH for the {dir === "in" ? "mint" : "burn"}</span>
+                    <span class="need__label">{d.gas.token} for the {dir === "in" ? "mint" : "burn"}</span>
                     <span class="need__val mono">{k.eth === null ? "—" : fmt(k.eth, 3)}</span>
                     {k.noEth && w.address ? (
                       <button class="text-link need__fix" type="button" onClick={() => openGetEth(dir, w.address ?? "", d)}>
-                        Get {d.short} ETH
+                        Get {d.gas.name}
                       </button>
                     ) : null}
                   </li>
