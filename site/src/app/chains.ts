@@ -1,7 +1,7 @@
 // The bridge's chains as viem defines them, for the wallet layer (wallet.ts), each with a transport
 // to the endpoints the page's Content-Security-Policy allows (vite.config.ts), never a chain's
-// default RPC: V3, and the destinations of ./dests.ts the app shows (Sepolia, the two rollups, and
-// the BNB Smart Chain testnet once it is no longer hidden), which the bridge sends on. The page's own
+// default RPC: V3, and the destinations of ./dests.ts the app shows (Sepolia, the two rollups and,
+// since Nov 1, the BNB Smart Chain testnet), which the bridge sends on. The page's own
 // reads go through ../lib/rpc.ts; these serve wagmi's.
 
 import { defineChain, fallback, http, type Chain } from "viem";

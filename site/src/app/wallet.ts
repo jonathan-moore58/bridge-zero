@@ -123,7 +123,7 @@ function browserStorage() {
 }
 
 const config = createConfig({
-  // V3, and the destinations the bridge sends on (./dests.ts DESTS): Sepolia, Base Sepolia and Arbitrum Sepolia, and no hidden one.
+  // V3, and the destinations the bridge sends on (./dests.ts DESTS): Sepolia, Base Sepolia, Arbitrum Sepolia and the BNB Smart Chain testnet, and no hidden one.
   chains: WALLET_CHAINS,
   // window.ethereum, for a wallet that does not announce itself; EIP-6963 adds a connector for each
   // wallet that does. WalletConnect, for a phone wallet without an in-app browser, would be one more

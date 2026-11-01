@@ -146,7 +146,7 @@ test("no clock in the handoff: a lock at any time of day, the times V3 changed s
 });
 
 test("the relayer runs every 10 minutes for Sepolia's light client and every 20 for each rollup's: once V3 has changed set, the client is at the new set within about that long, usually on Sepolia", () => {
-  // The BNB Smart Chain testnet's, hidden until its activation, on the rollups' timer from then (ops/bnb-activation.md).
+  // The BNB Smart Chain testnet's, on the rollups' timer since its activation (ops/bnb-activation.md).
   assert.deepEqual(RELAY_EVERY_MIN, { sepolia: 10, "base-sepolia": 20, "arbitrum-sepolia": 20, "bsc-testnet": 20 });
   for (const d of ALL_DESTS) assert.ok(RELAY_EVERY_MIN[d.key] > 0, d.key);
   // Sepolia's relayer holds a set change while the base fee is above its gate, and runs 10 minutes after the last run ended: usually.
@@ -317,10 +317,10 @@ test("the transfer screen's foot and the offer of the visitor's own mint say the
     title: "Auto-mint hasn't minted it yet",
     text: "It runs on one machine and spends at most 0.02 ETH of gas a day: while that machine is off or the day's gas is spent, locks wait. Your tPOT stays locked for you, and the lock does not expire. You can mint it yourself now: any address can send the mint, it pays 0xAbCd…1234, and it costs ≈ 2.39 M gas in Sepolia ETH.",
   });
-  assert.match(offerOf(BASE, 0, "0xAbCd…1234", "x").text, /^It runs on one machine, for Sepolia and the two rollups, and spends at most 0\.002 ETH of gas a day on Base Sepolia/);
+  assert.match(offerOf(BASE, 0, "0xAbCd…1234", "x").text, /^It runs on one machine, for Sepolia, the two rollups and the BNB Smart Chain testnet, and spends at most 0\.002 ETH of gas a day on Base Sepolia/);
 });
 
-test("auto-mint's cap on each chain is its --max-spend there, in that chain's gas token: the server's unit on the three, the runbook's 0.005 tBNB on the BNB Smart Chain testnet", () => {
+test("auto-mint's cap on each chain is its --max-spend there, in that chain's gas token: the server's unit and the runbook's on the four, 0.005 tBNB on the BNB Smart Chain testnet", () => {
   const repo = join(here, "..", "..");
   /** A command line's --max-spend, chain by chain. */
   const spends = (line: string): Record<string, string> => {
@@ -329,7 +329,7 @@ test("auto-mint's cap on each chain is its --max-spend there, in that chain's ga
     return Object.fromEntries(list.split(",").map((pair) => pair.split("=")));
   };
   const execOf = (text: string): string => text.split(/\r?\n/).find((l) => l.trim().startsWith("ExecStart=") && l.includes("src/automint-main.ts")) ?? "";
-  // The unit the server runs: the three chains, as the page has always said them (0.02 ETH on Sepolia, 0.002 on each rollup).
+  // The unit the server runs: the four chains, the three as the page has always said them (0.02 ETH on Sepolia, 0.002 on each rollup) and 0.005 tBNB on the BNB Smart Chain testnet.
   const unit = spends(execOf(readFileSync(join(repo, "ops", "server", "systemd", "bz-automint.service"), "utf8")));
   for (const d of DESTS) assert.equal(AUTO_MINT.maxSpend[d.key], unit[d.key], d.key);
   for (const [key, value] of Object.entries(unit)) assert.equal(AUTO_MINT.maxSpend[key as DestKey], value, key);

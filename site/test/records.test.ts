@@ -487,9 +487,10 @@ test("the roadmap is the README's, with plans and no promises", () => {
   const rm = r.roadmap;
   assert.ok(rm);
   assert.match(rm.intro, /^Plans, not promises/);
-  // What comes next first, then the later groups in the README's order, however many it has: the
+  // What comes next first (the three months after the event, since the app took the BNB Smart Chain
+  // testnet on Nov 1), then the later groups in the README's order, however many it has: the
   // README's third group ("Planned after the check-in") must not stop the page from building.
-  assert.match(rm.groups[0]?.title ?? "", /^Next\b/);
+  assert.match(rm.groups[0]?.title ?? "", /^Nov 10 to Feb 9\b/);
   assert.ok(rm.groups.length >= 2 && rm.groups.every((g) => g.title && g.items.length > 0));
   const text = [rm.intro, ...rm.groups.flatMap((g) => [g.title, ...g.items.map((i) => `${i.lead ?? ""} ${i.text}`)])].join(" ");
   assert.doesNotMatch(text, /\bwill\b|coming soon/i);
@@ -688,8 +689,8 @@ test("the status page's evidence list: every row of the README from 1 to the las
   );
 });
 
-test("the evidence chains link where the app links them: Etherscan, Basescan and Arbiscan, BscScan for the hidden BNB Smart Chain testnet, and V3's blocks on the Node Console", () => {
-  // Each configured destination's own explorer (src/app/dests.ts), the hidden ones' too.
+test("the evidence chains link where the app links them: Etherscan, Basescan and Arbiscan, BscScan for the BNB Smart Chain testnet, and V3's blocks on the Node Console", () => {
+  // Each configured destination's own explorer (src/app/dests.ts), shown or hidden.
   for (const d of ALL_DESTS) assert.equal(EVIDENCE_CHAINS[d.key].explorer, d.explorer.url, d.full);
   assert.equal(chainOfWord("Base 51,177,673"), "base-sepolia");
   assert.equal(chainOfWord("Arbitrum 323,663,335"), "arbitrum-sepolia");

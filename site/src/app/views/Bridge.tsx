@@ -30,6 +30,7 @@ import {
   V3_RPC,
   chainById,
   fromOf,
+  runDayOf,
   timeOf,
   toOf,
   type ChainFace,
@@ -931,9 +932,9 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
   const sep = d.key === "sepolia";
   // A rollup's first lock and burn, which the strip links to (./dests.ts firsts, README rows 98 to 113); none before a chain's first round trip.
   const firsts = sep ? null : d.firsts;
-  // Auto-mint's time as the card states it: Sepolia's run of Oct 27, a rollup's own of Oct 28 (facts.ts, ROLLUP_RUNS).
+  // Auto-mint's time as the card states it: Sepolia's run of Oct 27, each other chain's own (facts.ts, ROLLUP_RUNS): the rollups' of Oct 28, the BNB Smart Chain testnet's of Nov 1.
   const autoTime = timeParts(timeOf(d.key, "auto")[0].replace(/^≈ /, ""));
-  // A chain with no run of its own yet (the BNB Smart Chain testnet's) states Sepolia's, an estimate, and says so as the card does.
+  // A chain with no run of its own yet states Sepolia's, an estimate, and says so as the card does.
   const autoEst = timeOf(d.key, "auto")[1].startsWith("est.") ? timeOf(d.key, "auto")[1] : null;
   return (
     <aside class="proof" aria-labelledby="proof-title" data-dir={dir}>
@@ -1069,7 +1070,7 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
                   {autoTime[0]}
                   <span class="unit">{autoTime[1]}</span>
                 </span>
-                <span class="fact__text">{sep ? "lock to mint, sent by auto-mint · measured Oct 27" : `lock to mint, sent by auto-mint · ${autoEst ?? `measured on ${d.short}, Oct 28`}`}</span>
+                <span class="fact__text">{sep ? "lock to mint, sent by auto-mint · measured Oct 27" : `lock to mint, sent by auto-mint · ${autoEst ?? `measured on ${d.short}, ${runDayOf(d.key)}`}`}</span>
               </li>
             ) : (
               <li class="fact">

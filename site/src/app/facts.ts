@@ -66,25 +66,33 @@ export const AUTO_TIME = ["≈ 2½ min", "auto-mint, measured Oct 27"] as const;
 /** A rollup: a destination other than Sepolia. */
 export type RollupKey = Exclude<DestKey, "sepolia">;
 
+/** A measured run: auto-mint's seconds from the lock's V3 block to the mint's block, fast mode's from the burn's block to the release's (null where none timed the chain), the standard way back's where it was timed, and the day. */
+type RollupRun = { auto: number; fast: number | null; std?: number; on: string };
+
 /**
- * The rollups' runs, in seconds by the block timestamps: the owner's wallet in the app on Oct 28
- * (README rows 114 to 126, "The app: the first transfers from the owner's own wallet"). Auto-mint
- * minted lock 6 on Base Sepolia 139 s after its V3 block (rows 117 and 118) and lock 7 on Arbitrum
- * Sepolia 133 s after its (rows 119 and 120), 90 s of each auto-mint's grace (handoff.ts). The
- * watcher released Arbitrum Sepolia's burn 1 in fast mode 105 s after the burn's block (rows 121
- * to 123).
+ * The runs on the destinations other than Sepolia, in seconds by the block timestamps. On the
+ * rollups, the owner's wallet in the app on Oct 28 (README rows 114 to 126, "The app: the first
+ * transfers from the owner's own wallet"): auto-mint minted lock 6 on Base Sepolia 139 s after its
+ * V3 block (rows 117 and 118) and lock 7 on Arbitrum Sepolia 133 s after its (rows 119 and 120),
+ * 90 s of each auto-mint's grace (handoff.ts), and the watcher released Arbitrum Sepolia's burn 1 in
+ * fast mode 105 s after the burn's block (rows 121 to 123).
  * Base Sepolia's burn 1 took 905 s (rows 124 to 126): it waited while Arbitrum Sepolia's release
  * held the watcher's fast budget (README, after row 126), so it times that wait, not the chain:
- * `fast` is null there. The BNB Smart Chain testnet has no run until its first round trip is
- * recorded (./dests.ts, HIDDEN): rollupTime then states estimates there.
+ * `fast` is null there. On the BNB Smart Chain testnet, its first round trip on Nov 1 (rows 145 to
+ * 149): auto-mint minted lock 8 125 s after its V3 block, and the watcher released burn 0 46 s
+ * after the burn's block, once the burn was final there (one speed: no fast mode on that chain).
  */
 export const ROLLUP_RUNS = {
-  "base-sepolia": { auto: 139, fast: null },
-  "arbitrum-sepolia": { auto: 133, fast: 105 },
-} as const satisfies Partial<Record<RollupKey, { auto: number; fast: number | null }>>;
+  "base-sepolia": { auto: 139, fast: null, on: "Oct 28" },
+  "arbitrum-sepolia": { auto: 133, fast: 105, on: "Oct 28" },
+  "bsc-testnet": { auto: 125, fast: null, std: 46, on: "Nov 1" },
+} as const satisfies Partial<Record<RollupKey, RollupRun>>;
 
 /** A destination's run (ROLLUP_RUNS), if one was recorded there. */
-const runOf = (dest: RollupKey): { auto: number; fast: number | null } | undefined => (ROLLUP_RUNS as Partial<Record<RollupKey, { auto: number; fast: number | null }>>)[dest];
+const runOf = (dest: RollupKey): RollupRun | undefined => (ROLLUP_RUNS as Partial<Record<RollupKey, RollupRun>>)[dest];
+
+/** The day auto-mint's time on `dest` was measured, as the card's strip states it: Sepolia's run of Oct 27 (AUTO_TIME), each other chain's own (ROLLUP_RUNS); null where none ran yet. */
+export const runDayOf = (dest: DestKey): string | null => (dest === "sepolia" ? "Oct 27" : (runOf(dest)?.on ?? null));
 
 /** Fast on a rollup while the budget is free: the one run that timed it, Arbitrum Sepolia's burn 1. */
 const ROLLUP_FAST = { seconds: ROLLUP_RUNS["arbitrum-sepolia"].fast, on: "arbitrum-sepolia" } as const;
@@ -102,22 +110,23 @@ export function aboutMinutes(seconds: number): string {
 
 /**
  * The rollups' times. Auto-mint's is each chain's run (ROLLUP_RUNS) and the lock's own block, as
- * Sepolia's is (AUTO_TIME): about 2½ minutes on Base Sepolia and 2¼ on Arbitrum Sepolia. Fast reads
+ * Sepolia's is (AUTO_TIME): about 2½ minutes on Base Sepolia, 2¼ on Arbitrum Sepolia and on the BNB
+ * Smart Chain testnet. Fast reads
  * 36 s of either chain's blocks (180 or 144), then the watcher's round and the two approvals on V3:
  * Arbitrum Sepolia's run, which Base Sepolia's would take too while the budget is free. The mint
  * yourself is lock 1's 48 s (its V3 steps, and a mint a rollup takes in under a second rather than
  * Sepolia's 15 s): no rollup has run it yet. Standard waits for the batch's finality on Sepolia, the
  * chain's own as measured on Oct 28 (./dests.ts, finality: about 20 minutes of Base Sepolia, 17.5 of
  * Arbitrum Sepolia), then about a minute of the watcher's round and the approvals: about 21 and 19
- * minutes. A destination with no run yet (the BNB Smart Chain testnet's before its first round
- * trip) states auto-mint's time as measured on Sepolia, an estimate; it has one speed (./dests.ts,
- * fastConfirmations null), so no fast time of it is shown.
+ * minutes. A destination with no run yet states auto-mint's time as measured on Sepolia, an
+ * estimate. The BNB Smart Chain testnet has one speed (./dests.ts, fastConfirmations null), so no
+ * fast time of it is shown.
  */
 function rollupTime(dest: RollupKey, mode: "in" | "auto" | "fast"): readonly [string, string] {
   if (mode === "in") return ["≈ 48 s", "as measured on Sepolia, Oct 20"];
   const run = runOf(dest);
-  if (mode === "auto") return run ? [aboutMinutes(run.auto + V3_BLOCK_S), "auto-mint, measured Oct 28"] : [AUTO_TIME[0], "est., as measured on Sepolia"];
-  if (run && run.fast !== null) return [`≈ ${run.fast} s`, "measured Oct 28"];
+  if (mode === "auto") return run ? [aboutMinutes(run.auto + V3_BLOCK_S), `auto-mint, measured ${run.on}`] : [AUTO_TIME[0], "est., as measured on Sepolia"];
+  if (run && run.fast !== null) return [`≈ ${run.fast} s`, `measured ${run.on}`];
   return [`≈ ${ROLLUP_FAST.seconds} s`, `est., as measured on ${destOf(ROLLUP_FAST.on).short}`];
 }
 
@@ -125,8 +134,11 @@ function rollupTime(dest: RollupKey, mode: "in" | "auto" | "fast"): readonly [st
 export function timeOf(dest: DestKey, mode: "in" | "auto" | Speed): readonly [string, string] {
   if (dest === "sepolia") return mode === "auto" ? AUTO_TIME : TIME[mode];
   const d = destOf(dest, ALL_DESTS);
-  // A chain final in about a second (its validators' votes): the release is the watcher's round and the two approvals, about a minute.
-  if (mode === "std" && d.finality.kind === "votes") return ["≈ 1 min", "est., final in about a second, then the watcher"];
+  // A chain final in about a second (its validators' votes): the release is the watcher's round and the two approvals, about a minute, and its run where one timed it.
+  if (mode === "std" && d.finality.kind === "votes") {
+    const run = runOf(dest);
+    return run?.std !== undefined ? [`≈ ${run.std} s`, `measured ${run.on}`] : ["≈ 1 min", "est., final in about a second, then the watcher"];
+  }
   if (mode === "std") return [`≈ ${Math.round(d.finality.seconds / 60 + 1)} min`, "est., its batch final on Sepolia"];
   return rollupTime(dest, mode);
 }
@@ -134,7 +146,7 @@ export function timeOf(dest: DestKey, mode: "in" | "auto" | Speed): readonly [st
 /** A count in words, as the pages write it ("the three chains"); digits above nine. */
 export const countWord = (n: number): string => ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"][n] ?? String(n);
 
-/** The destinations the app shows, in words: "three" while Sepolia and the two rollups are shown. */
+/** The destinations the app shows, in words: "four", Sepolia, the two rollups and the BNB Smart Chain testnet. */
 export const DESTS_WORD = countWord(DESTS.length);
 
 /**
@@ -147,7 +159,7 @@ export function otherChainsOf(dests: readonly Dest[]): string[] {
   return [...(rollups > 0 ? [`${countWord(rollups)} rollup${rollups === 1 ? "" : "s"}`] : []), ...others.filter((d) => d.finality.kind !== "batch").map((d) => `the ${d.full}`)];
 }
 
-/** The chains besides V3 and Sepolia that the app shows: ["two rollups"] while the BNB Smart Chain testnet is hidden. */
+/** The chains besides V3 and Sepolia that the app shows: ["two rollups", "the BNB Smart Chain testnet"]. */
 export const OTHER_CHAINS: readonly string[] = otherChainsOf(DESTS);
 
 /** Items in running text: "a", "a and b", "a, b and c". */
@@ -163,7 +175,7 @@ export function andList(items: readonly string[]): string {
  */
 export const destsNamedOf = (dests: readonly Dest[]): string => andList(["Sepolia", ...otherChainsOf(dests).map((c) => (c.startsWith("the ") ? c : `the ${c}`))]);
 
-/** The destinations the app shows, named: auto-mint is one process for them all ("one for Sepolia and the two rollups"). */
+/** The destinations the app shows, named: auto-mint is one process for them all ("for Sepolia, the two rollups and the BNB Smart Chain testnet"). */
 export const DESTS_NAMED = destsNamedOf(DESTS);
 
 /**
@@ -247,9 +259,10 @@ export const BURN_GAS_FULL = destOf("sepolia").burnGas.full;
 /**
  * Passed the whole deploy, import and proof sequence in a simulation on Oct 24 (README, Roadmap),
  * with nothing deployed on them yet. Base Sepolia and Arbitrum Sepolia, which passed it too, have the
- * V3 light client live since Oct 27 and are destinations now (./dests.ts).
+ * V3 light client live since Oct 27, and the BNB Smart Chain testnet since Nov 1: destinations now
+ * (./dests.ts).
  */
-export const LATER_CHAINS = ["OP Sepolia", "Polygon Amoy", "BNB Smart Chain testnet", "Avalanche Fuji"];
+export const LATER_CHAINS = ["OP Sepolia", "Polygon Amoy", "Avalanche Fuji"];
 
 export const V3_SCAN = "https://scanner-testnet-v3.portaldot.dev";
 export const V3_RPC = "https://test-evm-rpc-v3.portaldot.dev";

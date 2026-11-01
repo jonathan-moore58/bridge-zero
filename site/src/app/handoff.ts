@@ -1,8 +1,9 @@
 // The way in's mint, handed to auto-mint: the operator's process that mints every new lock of at
 // least 0.001 tPOT for its committed recipient, from its own key, about 90 s after V3 finalized the
 // lock (README, "Auto-mint: lock 2, minted for its recipient"; relayer/src/automint.ts), on the
-// chain the lock names: one process serves Sepolia, Base Sepolia and Arbitrum Sepolia since Oct 28,
-// with the same minimum and grace (it minted locks 4 and 5, README rows 106 and 107). The page does
+// chain the lock names: one process serves Sepolia, Base Sepolia and Arbitrum Sepolia since Oct 28
+// and the BNB Smart Chain testnet since Nov 1, with the same minimum and grace (it minted locks 4
+// and 5, README rows 106 and 107, and lock 8, row 146). The page does
 // not ask the wallet for that mint: it waits, and offers the visitor's own mint only when auto-mint
 // has not minted it in a while. A lock can wait for the relayer too: auto-mint imports no
 // validator-set change itself. While a chain's light client is behind V3's set, auto-mint mints a

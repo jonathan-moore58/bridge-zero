@@ -1,5 +1,5 @@
 // The Verify page's lists and words, apart from the checks themselves (proof-verify.test.ts): the
-// picker's transfers from the records (six locks and four burns, each group newest first), a lock
+// picker's transfers from the records (seven locks and five burns, each group newest first), a lock
 // past them as read from V3 (its log not read, none, or minted by used(n)), what the "Another lock
 // or burn" field takes, the ids the page goes by and the destination the top bar shows
 // on it, each step's title, the verdict of a run (Verified only when every check passed on the mint
@@ -23,6 +23,7 @@ test("the picker lists the recorded locks and burns from the records, each group
   assert.deepEqual(
     locks.map((r) => [r.id, r.dest, r.label, r.done]),
     [
+      ["lock-8", "bsc-testnet", "Lock 8", true],
       ["lock-5", "arbitrum-sepolia", "Lock 5", true],
       ["lock-4", "base-sepolia", "Lock 4", true],
       ["lock-3", "sepolia", "Lock 3", true],
@@ -42,6 +43,7 @@ test("the picker lists the recorded locks and burns from the records, each group
   assert.deepEqual(
     burns.map((r) => [r.id, r.label, r.done]),
     [
+      ["burn-bsc-testnet-0", "Burn 0 on BSC testnet", true],
       ["burn-arbitrum-sepolia-0", "Burn 0 on Arbitrum Sepolia", true],
       ["burn-base-sepolia-0", "Burn 0 on Base Sepolia", true],
       ["burn-1", "Burn 1", true],

@@ -15,7 +15,7 @@ import { registry } from "../../lib/live.ts";
 import { request, SubstrateClient, type Endpoint } from "../../lib/rpc.ts";
 import { decodeTimestampInherent } from "../../lib/scale.ts";
 import { DESTS, burnKey, deployed, destOf, destOfLock, explorerAddress, lockKey, selectable, type DestKey } from "../dests.ts";
-import { SPEED_NAME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
+import { DESTS_NAMED, SPEED_NAME, fromOf, toOf, type Dir, type Speed } from "../facts.ts";
 import { handoffOf } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import { caughtUpOf } from "../net.ts";
@@ -813,7 +813,7 @@ function ReadNotice({ mine }: { mine: Found }) {
   if (locks.state === "error" && burns.state === "error") {
     n = ["i-server", "Could not read your transfers", "Neither Portaldot V3 nor the chains it bridges to answered. The recorded runs are below; this page asks again every 2 min."];
   } else if (locks.state === "loading" || burns.state === "loading") {
-    n = ["i-refresh", "Reading your transfers", "Locks from the vault's logs on V3, burns from BridgeMinter's logs on Sepolia, Base Sepolia and Arbitrum Sepolia."];
+    n = ["i-refresh", "Reading your transfers", `Locks from the vault's logs on V3, burns from BridgeMinter's logs on ${DESTS_NAMED}.`];
   } else if (locks.state === "error") {
     n = ["i-server", "Could not read your locks", "Portaldot V3 did not answer. Your burns are read from the chains they were made on; this page asks again every 2 min."];
   } else if (burns.state === "error") {
@@ -943,7 +943,7 @@ export function ActivityView({ route }: { route: Route }) {
             </p>
           ) : (
             <p class="page__lead">
-              Locks, mints, burns and releases for <span class="mono">{who}</span>, read from V3, Sepolia, Base Sepolia and Arbitrum Sepolia. Locks made with the command-line tools
+              Locks, mints, burns and releases for <span class="mono">{who}</span>, read from V3, {DESTS_NAMED}. Locks made with the command-line tools
               appear here too.
               {other ? (
                 <>

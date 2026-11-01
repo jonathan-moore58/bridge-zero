@@ -9,8 +9,8 @@ contract can use Portaldot state without a trusted relayer: trust rests on the
 Portaldot validator set.
 
 **The bridge app: [jonathan-moore58.github.io/bridge-zero/app](https://jonathan-moore58.github.io/bridge-zero/app/)**. Lock
-tPOT on the Portaldot V3 testnet and receive wtPOT on Sepolia, Base Sepolia or Arbitrum Sepolia,
-and burn it back, from MetaMask or a Polkadot wallet. Its Verify tab checks any transfer in your
+tPOT on the Portaldot V3 testnet and receive wtPOT on Sepolia, Base Sepolia, Arbitrum Sepolia or
+the BNB Smart Chain testnet, and burn it back, from MetaMask or a Polkadot wallet. Its Verify tab checks any transfer in your
 browser: V3's validator signatures, the lock's storage proof, and the destination contract's
 verdict.
 
@@ -32,7 +32,7 @@ Three layers, each live on testnets; the rows are the [evidence](#evidence).
 
 | Layer | What it is | Live |
 |---|---|---|
-| **The app** | [The bridge app](https://jonathan-moore58.github.io/bridge-zero/app/): lock tPOT on V3 and receive wtPOT on Sepolia, Base Sepolia or Arbitrum Sepolia, burn it back, and verify any transfer in the browser. [The status page](https://jonathan-moore58.github.io/bridge-zero/) reads the light clients, the vault and the bridge from the chains. | Public since Oct 31; its first transfers, from the owner's own wallet with the app run locally, on Oct 28 (rows 114 to 126) |
+| **The app** | [The bridge app](https://jonathan-moore58.github.io/bridge-zero/app/): lock tPOT on V3 and receive wtPOT on Sepolia, Base Sepolia, Arbitrum Sepolia or the BNB Smart Chain testnet, burn it back, and verify any transfer in the browser. [The status page](https://jonathan-moore58.github.io/bridge-zero/) reads the light clients, the vault and the bridge from the chains. | Public since Oct 31; its first transfers, from the owner's own wallet with the app run locally, on Oct 28 (rows 114 to 126) |
 | **The proof kit and the data bridge** | `GrandpaLightClient` on four EVM chains, which accepts a V3 header only with the V3 validators' signatures, checked in Solidity; the storage-proof libraries; `BridgeMinter` and wtPOT, which mint only a lock proven from the vault's storage; and the [proof kit](#for-builders), through which any contract reads proven V3 balances, asset balances, NFT owners and contract slots. | On Sepolia since Oct 17 (rows 1 to 8), its first proven mint on Oct 19 (row 32); on Base Sepolia and Arbitrum Sepolia since Oct 27 (rows 59 to 82); the kit on Sepolia since Oct 31 (rows 127 and 128); on the BNB Smart Chain testnet since Nov 1, both ways (rows 129 to 149) |
 | **Operations** | The relayers that keep each light client at its chain's validator set, auto-mint, the release watcher of the 2-of-3 committee, the rollups' relay runs and a health check, as services on a small cloud server ([ops/server/](ops/server)), and [the deployment guide](docs/DEPLOY.md). | On the server since Oct 31, 17:45 UTC; before that on a laptop, with gaps while it slept or was off ([Known limits](#status)) |
 
@@ -66,8 +66,6 @@ validators and sudo key trusted:
   through the app (Oct 28); the Verify page, the app made public, the proof kit on Sepolia, the
   server, CI and the rollups' contracts source-verified (Oct 31); the BNB Smart Chain testnet as a
   fourth destination, both ways, back in 46 seconds at its finality (Nov 1).
-- **By Nov 6, the code freeze (04:00 UTC):** the BNB Smart Chain testnet in the app, which does not
-  offer it yet.
 - **Nov 10 to Feb 9:** the steps in the table, with a v2 vault and minter (a bridge fee, fast-fill
   for the way in), the proof kit as packages and Base as the first mainnet; the
   [roadmap](#roadmap) has each.
@@ -126,7 +124,7 @@ BLAKE2F precompile.
 | **The proof kit** (rows 127 and 128) | Sepolia [`0x2ea6…1fA9`](https://sepolia.etherscan.io/address/0x2ea65F28Df54b66Beb4c23498a35457382ea1fA9) (`PortaldotStateReader`) and [`0x24aB…8d23`](https://sepolia.etherscan.io/address/0x24aB41ed794eB788B434485BA12fcAB441508d23) (`ProvenAssetGate`) | Oct 31: a stateless contract through which any contract reads V3 state that the light client finalized, at a block it imported: an account's balance, an asset balance, an NFT's owner, a contract's code hash and its slots. Source-verified, with no owner and no admin. Asked by `eth_call`, it returned the deployer's V3 account at #264,729 (159.47 tPOT free) for 452,621 gas, and the vault's `commitments[1]`, lock 1's commitment, for 877,450. The example gate records holders of a V3 asset on top of it ([For builders](#for-builders)). |
 | **The V3 light client and the bridge on Base Sepolia and Arbitrum Sepolia** (rows 59 to 82 and 88 to 126) | Base Sepolia [`0x3897…0ab6`](https://sepolia.basescan.org/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) and Arbitrum Sepolia [`0x3897…0ab6`](https://sepolia.arbiscan.io/address/0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6) (`GrandpaLightClient` #2 on each) | Oct 27: the same contracts, from the same build as on Sepolia, on two rollups that settle on Sepolia. On each, the client verified V3 block #214,510 with both V3 validators' signatures and proved an account balance from its state root (rows 68 and 76), then the relayer imported V3's validator-set change 59 → 60 and a newer head (rows 79 to 82). Later the same day the relayer brought both clients to V3's set 62, and `BridgeMinter` and wtPOT were deployed on both, at `0xdc31…2348` and `0xE113…A95e`, bound to the same V3 vault (rows 88 to 97); on Oct 28 one auto-mint process minted lock 4 on Base Sepolia and lock 5 on Arbitrum Sepolia, each first mint binding the vault (rows 98 to 107, [the way in](#more-chains-the-way-in-to-base-sepolia-and-arbitrum-sepolia)): one V3 vault now backs wtPOT on three chains. The same day the release tool and its watcher took the rollups' burns too: 0.001 wtPOT was burned on each (rows 108 and 109), and the watcher released both on V3, each burn final on its rollup (rows 110 to 113, [the way back](#more-chains-the-way-back-from-base-sepolia-and-arbitrum-sepolia)). Later that day the owner's own wallet used both routes through the app (rows 114 to 126, the next row). All eight contracts on each rollup, the four libraries, the client, `ProvenBalance` #2, `BridgeMinter` and wtPOT, are source-verified on Basescan and Arbiscan. On Sepolia, `0x3897…0ab6` is the old-mainnet client. |
 | **The app: the owner's own wallet, both ways on both rollups** (rows 114 to 126) | Base Sepolia mint [`0x7d9e535d…`](https://sepolia.basescan.org/tx/0x7d9e535d7f32073f6a6c732a029ab93a86f66b0d14709b58fdc70602db88bf45) and Arbitrum Sepolia mint [`0xb351c94b…`](https://sepolia.arbiscan.io/tx/0xb351c94bec2f70343aba90344b73a766fc68a26a475d6814feaaed7cff57e5fa); the releases in V3 blocks [#231,461](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/231461) (Base Sepolia's burn) and [#231,273](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/231273) (Arbitrum Sepolia's) | Oct 28, from the app run locally: the owner's MetaMask wallet locked 1 tPOT on V3 for each rollup, and auto-mint minted each, the mint's block 139 and 133 seconds after the lock's. The wallet burned both, and the watcher released them on V3 in fast mode: 105 seconds from Arbitrum Sepolia's burn block to the release's, and 905 seconds from Base Sepolia's, which waited for the shared fast budget ([the app's first transfers](#the-app-the-first-transfers-from-the-owners-own-wallet)). |
-| **The BNB Smart Chain testnet, both ways** (rows 129 to 149) | BNB Smart Chain testnet mint [`0x81f73eb9…`](https://testnet.bscscan.com/tx/0x81f73eb92d43381f8ced3f8e4866f455f32811cc053b68b2c8ac6242ab93eea5) and burn [`0x0a904a75…`](https://testnet.bscscan.com/tx/0x0a904a7576e38b1e6a21a48fc3bf2717cd15ae83ecd049e777bda614f61a92e3); the release in V3 block [#275,615](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/275615) | Nov 1: the same contracts at the same addresses on a chain that is not a rollup of Sepolia and finalizes its blocks in about a second. Auto-mint minted lock 8 there, binding the vault, the mint's block 125 seconds after the lock's; the deployer burned it back, and the watcher released it on V3 once the burn was final there, 46 seconds from the burn's block to the release's, with no fast mode ([the BNB Smart Chain testnet](#more-chains-the-bnb-smart-chain-testnet)). The app does not offer the chain yet. |
+| **The BNB Smart Chain testnet, both ways** (rows 129 to 149) | BNB Smart Chain testnet mint [`0x81f73eb9…`](https://testnet.bscscan.com/tx/0x81f73eb92d43381f8ced3f8e4866f455f32811cc053b68b2c8ac6242ab93eea5) and burn [`0x0a904a75…`](https://testnet.bscscan.com/tx/0x0a904a7576e38b1e6a21a48fc3bf2717cd15ae83ecd049e777bda614f61a92e3); the release in V3 block [#275,615](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/275615) | Nov 1: the same contracts at the same addresses on a chain that is not a rollup of Sepolia and finalizes its blocks in about a second. Auto-mint minted lock 8 there, binding the vault, the mint's block 125 seconds after the lock's; the deployer burned it back, and the watcher released it on V3 once the burn was final there, 46 seconds from the burn's block to the release's, with no fast mode ([the BNB Smart Chain testnet](#more-chains-the-bnb-smart-chain-testnet)). The app offers it as a fourth destination. |
 | The vault and lock 0 | V3 testnet: vault `0xa02EE16EB03d2cf1aeF199F7658FB8c8E3188ffd`, lock transaction `0x2516e421d29e5bcb0032253dc66db87acc3cc5b22b021252fcb7c2cfdad56051` (block #101,009) | 1 tPOT locked for Sepolia; the vault stores the commitment `0x9eba08c9…41e23435` that the mint proved. The official V3 testnet explorer shows the [deployment](https://scanner-testnet-v3.portaldot.dev/#/extrinsics/100955-1) and [lock 0's event](https://scanner-testnet-v3.portaldot.dev/#/events/101009-4); the Portaldot Node Console shows the [deployment block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/100955) and the [lock's block](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/101009), and [cast](#verify-it-yourself) reads the vault. |
 | **The way back** (rows 47 to 51, trusted) | Sepolia burn [`0x42d70ae9…`](https://sepolia.etherscan.io/tx/0x42d70ae96cd010ed114a62178b88bf2cfcfe85933448aa6010c4f0d1b22dc1d7); the release in V3 block [#117,701](https://node-console.portaldot.dev/?rpc=wss%3A%2F%2Ftest-node-v3.portaldot.dev#/explorer/query/117701) | 0.5 wtPOT burned on Sepolia for `0xD983…1071` on V3; 2 of the 3 committee members approved the release through pallet-multisig, and the vault paid that address 0.5 tPOT once, for that burn id. No contract checks the release against the burn: the committee is trusted, and on the testnet one operator holds all three of its keys. |
 | **The way back in 84 seconds** (rows 56 to 58, trusted, fast mode) | Sepolia burn [`0x4e5f4c6e…`](https://sepolia.etherscan.io/tx/0x4e5f4c6e6f8fe2e85cf3bf146aaffa6d12d5eccb5d032db8d0989d66b886c262); the release in V3 block [#173,062](https://scanner-testnet-v3.portaldot.dev/#/extrinsics/173062-1) | Burn 1, Oct 24: 0.1 wtPOT burned on Sepolia for `0xD983…1071` on V3, and released to it by the auto-release watcher with 3 confirmations instead of Sepolia's finality; the release's block 84 seconds after the burn's by the block timestamps. The same trusted committee, for burns of up to 1 tPOT; a reorg deeper than 3 blocks could undo a burn after its release. |
@@ -559,10 +557,10 @@ with `npm run kit`.
   20-minute relay runs (rows 142 to 144). Auto-mint minted lock 8 there, binding the vault, the
   mint's block 125 seconds after the lock's, and the watcher released burn 0 on V3 once it was final
   there, 46 seconds from the burn's block to the release's (rows 145 to 149,
-  [the BNB Smart Chain testnet](#more-chains-the-bnb-smart-chain-testnet)). The app does not offer
-  the chain yet.
+  [the BNB Smart Chain testnet](#more-chains-the-bnb-smart-chain-testnet)). The app offers it as a
+  fourth destination.
 - The bridge app, [jonathan-moore58.github.io/bridge-zero/app](https://jonathan-moore58.github.io/bridge-zero/app/) (`site/app/`), since Oct 31:
-  lock and burn on the three chains from MetaMask or a Polkadot wallet, auto-mint's handoff with a
+  lock and burn on the four chains from MetaMask or a Polkadot wallet, auto-mint's handoff with a
   mint built in the browser as the fallback (not run on chain yet), each transfer followed to its
   receipt, and a Verify tab that checks any transfer's signatures and proofs in the browser.
 - The status page, [jonathan-moore58.github.io/bridge-zero](https://jonathan-moore58.github.io/bridge-zero/) (`site/`): both light
@@ -696,11 +694,6 @@ the bridge is for, the fees it could charge, its running costs and the three mon
 event are in [docs/BUSINESS.md](docs/BUSINESS.md): month 1 from Nov 10, month 2 from Dec 10, month
 3 from Jan 10 to Feb 9.
 
-**Next, before Nov 6**
-
-- The BNB Smart Chain testnet in the app: on chain both ways since Nov 1 (rows 129 to 149), and a
-  destination the app offers once it shows it.
-
 **Nov 10 to Feb 9: the three months after the event**
 
 - **LP fast-fill, the first part of a liquidity engine.** A liquidity provider pays a burn's
@@ -765,8 +758,9 @@ event are in [docs/BUSINESS.md](docs/BUSINESS.md): month 1 from Nov 10, month 2 
 - **A web app for the bridge.** Lock and burn from a wallet, with auto-mint's mint in between, and a
   Verify page that checks any transfer's signatures and proofs in the browser: public since Oct 31.
   Its first transfers, from the owner's own wallet, ran on Oct 28 (rows 117 to 126, after its
-  funding in rows 114 to 116). Its fallback, a mint sent from the wallet with the proofs built in
-  the browser, has not run on chain yet.
+  funding in rows 114 to 116). It offers four destinations: Sepolia, the two rollups and the BNB
+  Smart Chain testnet, the last after its first round trip on Nov 1 (rows 129 to 149). Its fallback,
+  a mint sent from the wallet with the proofs built in the browser, has not run on chain yet.
 - **A faster way back.** Fast mode, in which the committee releases a burn of up to 1 tPOT after 3
   Sepolia confirmations instead of Sepolia's finality, a trade-off it states, and the auto-release
   watcher, which runs both approvals as soon as a burn qualifies. On Oct 24 it released burn 1 on
@@ -890,7 +884,8 @@ From the git history, in UTC (the time zone Etherscan shows). Rows are the [evid
   and the auto-mint key's funding by 09:06 (rows 129 to 141). The server's units took the chain
   from 09:20, and the relayer's first run there brought the client to V3's set 77 at 09:23 (rows
   142 to 144). Lock 8 at 09:25:42, minted by auto-mint at 09:27:46; burn 0 at 09:30:07, released on
-  V3 by the watcher at 09:30:54 (rows 145 to 149).
+  V3 by the watcher at 09:30:54 (rows 145 to 149). The app shows it as a fourth destination, with
+  its measured times, 125 seconds in and 46 back.
 
 ## Evidence
 
@@ -1674,7 +1669,7 @@ Lines on Nov 1, counted with `wc -l` (blank lines and comments included):
 
 | Code | Files | Lines |
 |---|---|---|
-| The project's own: `contracts/src` (without `trie/vendor/`), `contracts/test`, `contracts/script`, `relayer/src`, `site/src`, `site/build`, `site/test`, `ops` | 233 | 103,604 |
+| The project's own: `contracts/src` (without `trie/vendor/`), `contracts/test`, `contracts/script`, `relayer/src`, `site/src`, `site/build`, `site/test`, `ops` | 233 | 103,713 |
 | Vendored, unmodified: the Solidity of the four libraries in `contracts/lib/`, at the commits NOTICE.md pins | 149 | 62,200 |
 | Vendored and modified: `contracts/src/trie/vendor/PolkadotTrie.sol` | 1 | 176 |
 

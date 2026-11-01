@@ -273,12 +273,43 @@ test("the BNB Smart Chain testnet's RPCs: publicnode searches 50,000 blocks of l
   assert.ok(found);
 });
 
-test("the BNB Smart Chain testnet's records: none until deployments/ has them, and the build reads on without them", () => {
+test("the BNB Smart Chain testnet's records: none while deployments/ had none, read as the rollups' are since Nov 1, and its card reads them", () => {
   assert.equal(records.rollups["bsc-testnet"] === null, !existsSync(join(repo, "deployments", "bsc-testnet.json")));
   assert.equal(records.rollupRuns["bsc-testnet"] === null, !existsSync(join(repo, "deployments", "bsc-testnet-bridge.json")));
+  const bsc = records.rollups["bsc-testnet"];
+  const runs = records.rollupRuns["bsc-testnet"];
+  assert.ok(bsc && runs, "deployments/bsc-testnet.json and deployments/bsc-testnet-bridge.json");
+  assert.equal(bsc.chainId, 97);
+  assert.equal(bsc.lightClient, LC);
+  assert.equal(bsc.lightClient, destOf("bsc-testnet").lightClient);
+  assert.equal(bsc.provenBalance, destOf("bsc-testnet").provenBalance);
+  // The client's creation and checkpoint (README rows 134 and 136), then the relayer's first run from the server (rows 142 to 144): the set changes 75 → 76 → 77, then a head.
+  assert.equal(bsc.deployBlock, 140_161_377);
+  assert.equal(bsc.init?.block, 140_161_424);
+  assert.deepEqual(
+    bsc.imports.slice(0, 3).map((i) => [i.number, i.setBefore, i.setAfter]),
+    [
+      [270_477, 75, 76],
+      [274_059, 76, 77],
+      [275_530, 77, 77],
+    ],
+  );
+  // The fallback is the newest import the records hold, as on the rollups.
+  const last = bsc.imports.at(-1)!;
+  assert.deepEqual(recordedClient(bsc, 2)?.value, { setId: BigInt(last.setAfter), latestHash: last.hash, latestNumber: last.number, threshold: 2, paused: null, halted: null, admin: null, keys: 2 });
+  // Its minter's first mint, lock 8's by auto-mint, and burn 0 (rows 146 and 147).
+  assert.equal(runs.minter, destOf("bsc-testnet").minter);
+  assert.deepEqual(
+    runs.mints.slice(0, 1).map((m) => [m.nonce, m.txHash, m.block]),
+    [[8, "0x81f73eb92d43381f8ced3f8e4866f455f32811cc053b68b2c8ac6242ab93eea5", 140_165_449]],
+  );
+  assert.deepEqual(
+    runs.burns.slice(0, 1).map((b) => [b.burnNonce, b.txHash, b.block, b.burnId]),
+    [["0", "0x0a904a7576e38b1e6a21a48fc3bf2717cd15ae83ecd049e777bda614f61a92e3", 140_165_763, "0xf38d1b6cd1e6d5a6fbe5b1f8238646147194891702fd9e164d9b6ad450454773"]],
+  );
   assert.ok(records.rollups["base-sepolia"] && records.rollups["arbitrum-sepolia"], "the rollups' as before");
   assert.ok(records.rollupRuns["base-sepolia"] && records.rollupRuns["arbitrum-sepolia"]);
-  assert.ok(!ROLLUPS.some((d) => d.key === "bsc-testnet"), "hidden: no card reads it");
+  assert.ok(ROLLUPS.some((d) => d.key === "bsc-testnet"), "shown: its card reads it");
 });
 
 test("Base Sepolia: an import 230,000 blocks back is found in 50,000-block windows from the head, newest first, never through sepolia.base.org", async () => {

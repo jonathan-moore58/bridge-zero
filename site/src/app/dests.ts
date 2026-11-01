@@ -2,15 +2,15 @@
 // where the V3 light client is live since Oct 27 (README, "More chains"), BridgeMinter and wtPOT
 // deployed since Oct 27, 20:56 to 20:58 UTC (deployments/<network>-bridge.json), and the app sends
 // since Oct 28, as auto-mint and the release watcher serve them (README, "the way in to" and "the way
-// back from Base Sepolia and Arbitrum Sepolia"). And the BNB Smart Chain testnet, configured and
-// hidden (HIDDEN) until its contracts are deployed and its first round trip is recorded. Each has its
-// chain id and names, its mark (./marks.tsx), two or more public RPCs (../lib/endpoints.ts), its
-// explorer, the token its gas is paid in, its V3 light client and ProvenBalance, its minter and
-// wtPOT, null until they are deployed, and what the sends and the transfer screen need of it: its
-// block time, how it charges for L1, where its minter's logs start, the confirmations fast mode
-// reads, its finality, the least priority fee its validators include and its measured costs. Kept
-// apart from the build's records so that the tests import it; they check every address here
-// against deployments/.
+// back from Base Sepolia and Arbitrum Sepolia"). And the BNB Smart Chain testnet since Nov 1, when
+// its contracts were deployed and its first round trip ran (README, "More chains: the BNB Smart
+// Chain testnet"). Each has its chain id and names, its mark (./marks.tsx), two or more public RPCs
+// (../lib/endpoints.ts), its explorer, the token its gas is paid in, its V3 light client and
+// ProvenBalance, its minter and wtPOT, null until they are deployed, and what the sends and the
+// transfer screen need of it: its block time, how it charges for L1, where its minter's logs start,
+// the confirmations fast mode reads, its finality, the least priority fee its validators include and
+// its measured costs. Kept apart from the build's records so that the tests import it; they check
+// every address here against deployments/.
 
 import { ARBITRUM_SEPOLIA, BASE_SEPOLIA, BSC_TESTNET, SEPOLIA } from "../lib/endpoints.ts";
 import type { Hex } from "../lib/hex.ts";
@@ -215,21 +215,21 @@ const DESTS_ALL: readonly Dest[] = [
     finality: { kind: "votes", seconds: 1, blocks: 2, range: "0.9 to 1.4 s" },
     // 0.1 gwei: the least its validators include (one RPC suggests 0.05 gwei, which is never mined).
     minTip: 100_000_000n,
-    firsts: null,
-    // Measured on a local fork of the chain on Nov 1 (its EVM, real V3 proofs of lock 4): its first
-    // receipts replace them once recorded.
-    mintGas: { gas: "2.66", full: "2,661,628", run: "A first mint on a fork of the chain", note: "which bound the vault too" },
-    burnGas: { gas: "62", full: "62,422", used: "52,822", run: "A burn on a fork of the chain" },
+    // README rows 146 and 147.
+    firsts: { lock: 8, burn: 0 },
+    // Rows 146 and 147, burn 0 the same contract and call as on the rollups.
+    mintGas: { gas: "2.66", full: "2,658,627", run: "Lock 8's mint", note: "the first there, which bound the vault too" },
+    burnGas: { gas: "62", full: "62,517", used: "52,822", run: "Burn 0" },
   },
 ];
 
 /**
  * Configured destinations not shown yet: none of the app's pickers, wagmi's chains, the page's
- * Content-Security-Policy nor the Network page names them. The BNB Smart Chain testnet, until its
- * first round trip is recorded; activation is removing it here. In the dev server only,
+ * Content-Security-Policy nor the Network page names them. None since Nov 1, when the BNB Smart
+ * Chain testnet's first round trip was recorded and it left this set. In the dev server only,
  * VITE_PREVIEW_DESTS (comma separated) shows one for a local check; a build never does.
  */
-export const HIDDEN: ReadonlySet<DestKey> = new Set<DestKey>(["bsc-testnet"]);
+export const HIDDEN: ReadonlySet<DestKey> = new Set<DestKey>([]);
 
 /** vite's import.meta.env: the dev server's DEV and VITE_* values; DEV false in a build, and no env at all in Node and the tests. */
 const viteEnv = (import.meta as unknown as { env?: { DEV?: boolean; VITE_PREVIEW_DESTS?: string } }).env;
@@ -256,8 +256,8 @@ export const ROLLUPS = rollupsOf(DESTS);
  * each with its own minter and wtPOT in the proof planner, the sends, the review, auto-mint and the
  * release watcher, and its own balance read, recipient, token mark, costs and strip on the card. A
  * chain joins this set only together with all of them: Base Sepolia and Arbitrum Sepolia since
- * Oct 28. The BNB Smart Chain testnet's sends are wired too, and it joins once HIDDEN no longer holds
- * it: a hidden destination is no one's to pick, nor a deep link's (#/bridge?dest=...).
+ * Oct 28, the BNB Smart Chain testnet since Nov 1. A hidden destination (HIDDEN) is no one's to
+ * pick, nor a deep link's (#/bridge?dest=...).
  */
 const SENDS_ALL: readonly DestKey[] = ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"];
 export const SENDS: ReadonlySet<DestKey> = new Set<DestKey>(SENDS_ALL.filter((k) => DESTS.some((d) => d.key === k)));

@@ -3,10 +3,11 @@
 // and screens take of it (its block time, its L1 rule, where its minter's logs start, its fast
 // confirmations, its finality and its costs) against the records and the relayer's rules, the ids a
 // lock or a burn goes by on each, the chain each send goes out on, and the chain picker's rows:
-// Sepolia, Base Sepolia and Arbitrum Sepolia live and pickable, and a destination pickable only
-// once the app sends to it (SENDS). And the BNB Smart Chain testnet, configured and hidden (HIDDEN):
-// in no picker, wagmi chain nor Content-Security-Policy, its entry as measured on Nov 1, and how it
-// shows once its records fill it in and the flag is gone. Offline.
+// Sepolia, Base Sepolia, Arbitrum Sepolia and the BNB Smart Chain testnet live and pickable, and a
+// destination pickable only once the app sends to it (SENDS). And the BNB Smart Chain testnet, shown
+// since its first round trip on Nov 1: its entry as measured that day, its records, and the flag
+// that hid it until then (HIDDEN), which keeps a destination it holds out of every picker, wagmi
+// chain and the Content-Security-Policy. Offline.
 
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
@@ -62,10 +63,12 @@ import {
   aboutMinutes,
   andList,
   chainById,
+  countWord,
   destsNamedOf,
   fastWait,
   fromOf,
   otherChainsOf,
+  runDayOf,
   sendChain,
   timeOf,
   toOf,
@@ -81,13 +84,14 @@ const lower = (a: string) => a.toLowerCase();
 const SEP = readJson("deployments/sepolia.json");
 const SEP_BRIDGE = readJson("deployments/sepolia-bridge.json");
 
-test("three destinations: Sepolia, then Base Sepolia and Arbitrum Sepolia, each with its chain id, names, mark and explorer", () => {
+test("four destinations: Sepolia, then Base Sepolia, Arbitrum Sepolia and the BNB Smart Chain testnet, each with its chain id, names, mark and explorer", () => {
   assert.deepEqual(
     DESTS.map((d) => [d.key, d.chainId, d.name, d.sub, d.full, d.short, d.mark]),
     [
       ["sepolia", 11155111, "Ethereum", "Sepolia", "Ethereum Sepolia", "Sepolia", "ethereum"],
       ["base-sepolia", 84532, "Base", "Sepolia", "Base Sepolia", "Base Sepolia", "base"],
       ["arbitrum-sepolia", 421614, "Arbitrum", "Sepolia", "Arbitrum Sepolia", "Arbitrum Sepolia", "arbitrum"],
+      ["bsc-testnet", 97, "BNB Smart Chain", "testnet", "BNB Smart Chain testnet", "BSC testnet", "bnb"],
     ],
   );
   // The chain ids and explorers viem knows these chains by.
@@ -95,13 +99,15 @@ test("three destinations: Sepolia, then Base Sepolia and Arbitrum Sepolia, each 
     [destOf("sepolia"), viemSepolia],
     [destOf("base-sepolia"), viemBaseSepolia],
     [destOf("arbitrum-sepolia"), viemArbitrumSepolia],
+    [destOf("bsc-testnet"), viemBscTestnet],
   ] as const) {
     assert.equal(d.chainId, v.id, d.full);
     assert.equal(d.explorer.url, v.blockExplorers.default.url, d.full);
   }
+  // Every destination but Sepolia, in the config's order: the Network page has a card for each one's client.
   assert.deepEqual(
     ROLLUPS.map((d) => d.key),
-    ["base-sepolia", "arbitrum-sepolia"],
+    ["base-sepolia", "arbitrum-sepolia", "bsc-testnet"],
   );
 });
 
@@ -156,7 +162,7 @@ test("each rollup's BridgeMinter and wtPOT are its bridge record's, bound to its
   }
 });
 
-test("two or more public RPCs each, over https and distinct; the CSP adds exactly the rollups' to the app's page", () => {
+test("two or more public RPCs each, over https and distinct; the CSP adds exactly the rollups' and the BNB Smart Chain testnet's to the app's page", () => {
   for (const d of DESTS) {
     assert.ok(d.rpcs.length >= 2, d.full);
     assert.equal(new Set(d.rpcs.map((e) => new URL(e.url).host)).size, d.rpcs.length, d.full);
@@ -167,6 +173,8 @@ test("two or more public RPCs each, over https and distinct; the CSP adds exactl
     "https://sepolia.base.org",
     "https://sepolia-rollup.arbitrum.io/rpc",
     "https://arbitrum-sepolia-rpc.publicnode.com",
+    "https://bsc-testnet-rpc.publicnode.com",
+    "https://bsc-testnet.bnbchain.org",
   ]);
   assert.deepEqual(connectOf(true), [...BRIDGE_NODES, ...ROLLUP_NODES]);
   // The status page reads no rollup.
@@ -188,41 +196,49 @@ test("two or more public RPCs each, over https and distinct; the CSP adds exactl
   assert.ok(cspPolicy(true).includes("img-src 'self' data:"), "the marks are served with the page");
 });
 
-test("wagmi's chains: V3, Sepolia and the two rollups, each read through the page's own RPCs", () => {
+test("wagmi's chains: V3, Sepolia, the two rollups and the BNB Smart Chain testnet, each read through the page's own RPCs", () => {
   assert.deepEqual(
-    [v3.id, sepolia.id, baseSepolia.id, arbitrumSepolia.id],
-    [420420777, 11155111, 84532, 421614],
+    [v3.id, sepolia.id, baseSepolia.id, arbitrumSepolia.id, bscTestnet.id],
+    [420420777, 11155111, 84532, 421614, 97],
+  );
+  assert.deepEqual(
+    WALLET_CHAINS.map((c) => c.id),
+    [420420777, 11155111, 84532, 421614, 97],
   );
   assert.deepEqual(baseSepolia.rpcUrls.default.http, destOf("base-sepolia").rpcs.map((e) => e.url));
   assert.deepEqual(arbitrumSepolia.rpcUrls.default.http, destOf("arbitrum-sepolia").rpcs.map((e) => e.url));
-  assert.deepEqual(Object.keys(transports).map(Number).sort((a, b) => a - b), [84532, 421614, 11155111, 420420777]);
+  assert.deepEqual(bscTestnet.rpcUrls.default.http, destOf("bsc-testnet").rpcs.map((e) => e.url));
+  assert.deepEqual(Object.keys(transports).map(Number).sort((a, b) => a - b), [97, 84532, 421614, 11155111, 420420777]);
 });
 
-test("the app sends to all three since Oct 28: Sepolia, Base Sepolia and Arbitrum Sepolia are live and pickable", () => {
+test("the app sends to all four: Sepolia, Base Sepolia and Arbitrum Sepolia since Oct 28, the BNB Smart Chain testnet since Nov 1, each live and pickable", () => {
   assert.deepEqual(
     DESTS.map((d) => [d.key, destState(d), selectable(d)]),
     [
       ["sepolia", "live", true],
       ["base-sepolia", "live", true],
       ["arbitrum-sepolia", "live", true],
+      ["bsc-testnet", "live", true],
     ],
   );
   // Each with its own minter and wtPOT, balance read, recipient, token mark, costs and strip.
-  assert.deepEqual([...SENDS], ["sepolia", "base-sepolia", "arbitrum-sepolia"]);
+  assert.deepEqual([...SENDS], ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"]);
 });
 
-test("Receive on, the way in: V3 turns the card round, Sepolia is the current one, and either rollup can be picked", () => {
+test("Receive on, the way in: V3 turns the card round, Sepolia is the current one, and either rollup or the BNB Smart Chain testnet can be picked", () => {
   assert.deepEqual(pickRows("to", "in", "sepolia"), [
     { key: "v3", state: "open", to: { dir: "back", dest: "sepolia" } },
     { key: "sepolia", state: "current", to: null },
     { key: "base-sepolia", state: "open", to: { dir: "in", dest: "base-sepolia" } },
     { key: "arbitrum-sepolia", state: "open", to: { dir: "in", dest: "arbitrum-sepolia" } },
+    { key: "bsc-testnet", state: "open", to: { dir: "in", dest: "bsc-testnet" } },
   ]);
   // With Base Sepolia chosen, it is the current one and Sepolia can be picked back.
   assert.deepEqual(pickRows("to", "in", "base-sepolia").slice(1), [
     { key: "sepolia", state: "open", to: { dir: "in", dest: "sepolia" } },
     { key: "base-sepolia", state: "current", to: null },
     { key: "arbitrum-sepolia", state: "open", to: { dir: "in", dest: "arbitrum-sepolia" } },
+    { key: "bsc-testnet", state: "open", to: { dir: "in", dest: "bsc-testnet" } },
   ]);
 });
 
@@ -232,6 +248,7 @@ test("Send from, the way in: V3 is the current one; a destination turns the card
     { key: "sepolia", state: "open", to: { dir: "back", dest: "sepolia" } },
     { key: "base-sepolia", state: "open", to: { dir: "back", dest: "base-sepolia" } },
     { key: "arbitrum-sepolia", state: "open", to: { dir: "back", dest: "arbitrum-sepolia" } },
+    { key: "bsc-testnet", state: "open", to: { dir: "back", dest: "bsc-testnet" } },
   ]);
   // The way back from Arbitrum Sepolia: it is the current one, and V3 is received on.
   assert.deepEqual(pickRows("from", "back", "arbitrum-sepolia"), [
@@ -239,6 +256,7 @@ test("Send from, the way in: V3 is the current one; a destination turns the card
     { key: "sepolia", state: "open", to: { dir: "back", dest: "sepolia" } },
     { key: "base-sepolia", state: "open", to: { dir: "back", dest: "base-sepolia" } },
     { key: "arbitrum-sepolia", state: "current", to: null },
+    { key: "bsc-testnet", state: "open", to: { dir: "back", dest: "bsc-testnet" } },
   ]);
   // The way back mirrors it: Sepolia is sent from, V3 receives.
   assert.deepEqual(pickRows("from", "back", "sepolia").slice(0, 2), [
@@ -286,6 +304,7 @@ test("a deployed minter does not make a rollup pickable: only a destination the 
     { key: "sepolia", state: "current", to: null },
     { key: "base-sepolia", state: "open", to: { dir: "in", dest: "base-sepolia" } },
     { key: "arbitrum-sepolia", state: "soon", to: null },
+    { key: "bsc-testnet", state: "soon", to: null },
   ]);
   assert.deepEqual(pickRows("to", "in", "base-sepolia", DESTS, sends).slice(1, 3), [
     { key: "sepolia", state: "open", to: { dir: "in", dest: "sepolia" } },
@@ -301,8 +320,8 @@ test("the wallet button names a rollup a wallet is on", () => {
   assert.equal(destByChainId(null), null);
 });
 
-test("the later chains no longer list the two rollups the V3 light client is live on", () => {
-  assert.deepEqual(LATER_CHAINS, ["OP Sepolia", "Polygon Amoy", "BNB Smart Chain testnet", "Avalanche Fuji"]);
+test("the later chains no longer list the two rollups and the BNB Smart Chain testnet, which the V3 light client is live on", () => {
+  assert.deepEqual(LATER_CHAINS, ["OP Sepolia", "Polygon Amoy", "Avalanche Fuji"]);
   for (const d of ROLLUPS) assert.ok(!LATER_CHAINS.includes(d.full), d.full);
 });
 
@@ -320,16 +339,17 @@ const autoMintOf = (key: DestKey, lock: number): any =>
     .map((l) => JSON.parse(l))
     .find((e) => e.kind === "result" && e.lock === String(lock) && e.outcome === "minted");
 
-test("each chain's block time, L1 rule and fast confirmations: the release watcher's 3, 180 and 144, the same 36 s on each", () => {
+test("each chain's block time, L1 rule and fast confirmations: the release watcher's 3, 180 and 144, the same 36 s on each, and none on the BNB Smart Chain testnet, which has one speed", () => {
   assert.deepEqual(
     DESTS.map((d) => [d.key, d.blockSeconds, d.l1, d.fastConfirmations]),
     [
       ["sepolia", 12, "none", 3],
       ["base-sepolia", 0.2, "op", 180],
       ["arbitrum-sepolia", 0.25, "arbitrum", 144],
+      ["bsc-testnet", 0.45, "none", null],
     ],
   );
-  for (const d of DESTS) assert.equal(Math.round(fastConfirmationsOf(d) * d.blockSeconds), 36, d.full);
+  for (const d of DESTS.filter((x) => x.fastConfirmations !== null)) assert.equal(Math.round(fastConfirmationsOf(d) * d.blockSeconds), 36, d.full);
   // The watcher as it runs since Oct 28 (README, "the way back from Base Sepolia and Arbitrum Sepolia").
   assert.ok(README.includes("--confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144 --send"));
   // The relayer's tools charge L1 the same way (relayer/src/l1.ts, L1_KIND).
@@ -347,18 +367,27 @@ test("where each minter's logs start: its deployment block, as its bridge record
 
 test("finality: Sepolia's as the watcher measured it, a rollup's its batch final on Sepolia, the blocks inside the range its finalized tag was measured at", () => {
   assert.deepEqual(destOf("sepolia").finality, { kind: "ethereum", seconds: SEPOLIA_FINALITY.median, blocks: SEPOLIA_FINALITY.blocks, range: SEPOLIA_FINALITY.range });
-  for (const d of ROLLUPS) assert.equal(d.finality.kind, "batch", d.full);
+  // The rollups' is their batch final on Sepolia; the BNB Smart Chain testnet's is its validators' votes, as its entry has it (below).
+  assert.deepEqual(
+    ROLLUPS.map((d) => [d.key, d.finality.kind]),
+    [
+      ["base-sepolia", "batch"],
+      ["arbitrum-sepolia", "batch"],
+      ["bsc-testnet", "votes"],
+    ],
+  );
+  const batch = ROLLUPS.filter((d) => d.finality.kind === "batch");
   // README, "Final, on a rollup": Base Sepolia's finalized block 5,800 to 6,700 of its 0.2 s blocks below its latest, Arbitrum Sepolia's 3,800 to 4,500 of its 0.25 s blocks.
   assert.match(README, /about 20 minutes after a block: Base Sepolia's finalized block was 5,800 to\s+6,700 of its 0\.2 s blocks below its latest, Arbitrum Sepolia's 3,800 to 4,500 of its 0\.25 s\s+blocks/);
   const measured: Record<string, readonly [number, number]> = { "base-sepolia": [5_800, 6_700], "arbitrum-sepolia": [3_800, 4_500] };
-  for (const d of ROLLUPS) {
+  for (const d of batch) {
     const [lo, hi] = measured[d.key] ?? [0, 0];
     assert.ok(d.finality.blocks >= lo && d.finality.blocks <= hi, `${d.full}: ${d.finality.blocks} blocks, measured ${lo} to ${hi}`);
     // The countdown's seconds are those blocks' time.
     assert.equal(d.finality.seconds, d.finality.blocks * d.blockSeconds, d.full);
   }
   assert.deepEqual(
-    ROLLUPS.map((d) => [d.key, d.finality.blocks, d.finality.seconds]),
+    batch.map((d) => [d.key, d.finality.blocks, d.finality.seconds]),
     [
       ["base-sepolia", 6_000, 1_200],
       ["arbitrum-sepolia", 4_200, 1_050],
@@ -372,10 +401,11 @@ test("the costs each card states are the chain's own recorded mint and burn", ()
   assert.deepEqual([MINT_GAS, MINT_GAS_FULL, BURN_GAS, BURN_GAS_FULL], ["2.39", "2,391,069", "61", "61,434"]);
   assert.equal(sep.mintGas.full, Number(stepOf("sepolia", "mint", "1").gasUsed).toLocaleString("en-US"));
   assert.equal(sep.burnGas.full, Number(stepOf("sepolia", "burn", "1").gasUsed).toLocaleString("en-US"));
-  // The rollups': auto-mint's first mint there (locks 4 and 5, which bound the vault) and burn 0.
+  // The rollups' and the BNB Smart Chain testnet's: auto-mint's first mint there (locks 4, 5 and 8, which bound the vault) and burn 0.
   for (const [key, lock] of [
     ["base-sepolia", 4],
     ["arbitrum-sepolia", 5],
+    ["bsc-testnet", 8],
   ] as const) {
     const d = destOf(key);
     const mint = autoMintOf(key, lock);
@@ -448,23 +478,24 @@ test("each destination's explorer links its transactions and blocks", () => {
   assert.equal(explorerTx(destOf("sepolia"), h), `https://sepolia.etherscan.io/tx/${h}`);
 });
 
-test("the times the card states: Sepolia's as measured, unchanged; a rollup's as measured on Oct 28 where it ran, and an estimate said so where it did not", () => {
+test("the times the card states: Sepolia's as measured, unchanged; each other chain's as measured where it ran, on Oct 28 on the rollups and on Nov 1 on the BNB Smart Chain testnet, and an estimate said so where it did not", () => {
   assert.deepEqual(timeOf("sepolia", "in"), TIME.in);
   assert.deepEqual(timeOf("sepolia", "fast"), ["≈ 84 s", "measured Oct 24"]);
   assert.deepEqual(timeOf("sepolia", "std"), ["≈ 17 min", "est., with the watcher"]);
   assert.deepEqual(timeOf("sepolia", "auto"), AUTO_TIME);
-  // Auto-mint: each rollup's own run, 139 s and 133 s from the lock's V3 block, with the lock's own block (about 6 s), as Sepolia's 144 s is.
+  // Auto-mint: each chain's own run, 139 s and 133 s on the rollups and 125 s on the BNB Smart Chain testnet from the lock's V3 block, with the lock's own block (about 6 s), as Sepolia's 144 s is.
   assert.deepEqual(timeOf("base-sepolia", "auto"), ["≈ 2½ min", "auto-mint, measured Oct 28"]);
   assert.deepEqual(timeOf("arbitrum-sepolia", "auto"), ["≈ 2¼ min", "auto-mint, measured Oct 28"]);
+  assert.deepEqual(timeOf("bsc-testnet", "auto"), ["≈ 2¼ min", "auto-mint, measured Nov 1"]);
   assert.equal(aboutMinutes(144 + 6), AUTO_TIME[0], "the same rounding gives Sepolia's");
   // Fast: Arbitrum Sepolia's burn 1, 105 s; Base Sepolia's burn 1 waited for the fast budget, so its time is Arbitrum Sepolia's, said to be.
   assert.deepEqual(timeOf("arbitrum-sepolia", "fast"), ["≈ 105 s", "measured Oct 28"]);
   assert.deepEqual(timeOf("base-sepolia", "fast"), ["≈ 105 s", "est., as measured on Arbitrum Sepolia"]);
-  for (const d of ROLLUPS) {
-    // No rollup has timed a mint sent by its locker, nor a release after finality.
-    assert.match(timeOf(d.key, "in")[1], /^as measured on Sepolia/, d.key);
-    assert.match(timeOf(d.key, "std")[1], /^est\./, d.key);
-  }
+  // No chain but Sepolia has timed a mint sent by its locker.
+  for (const d of ROLLUPS) assert.match(timeOf(d.key, "in")[1], /^as measured on Sepolia/, d.key);
+  // Nor a rollup a release after finality; the BNB Smart Chain testnet has, burn 0's 46 s.
+  for (const key of ["base-sepolia", "arbitrum-sepolia"] as const) assert.match(timeOf(key, "std")[1], /^est\./, key);
+  assert.deepEqual(timeOf("bsc-testnet", "std"), ["≈ 46 s", "measured Nov 1"]);
   // Standard: the chain's own finality, then about a minute of the watcher's round and the approvals.
   assert.equal(timeOf("base-sepolia", "std")[0], "≈ 21 min");
   assert.equal(timeOf("arbitrum-sepolia", "std")[0], "≈ 19 min");
@@ -515,60 +546,75 @@ test("the fast budget: before a burn that goes Fast is signed, one line that it 
 });
 
 // ---------------------------------------------------------------------------------------------
-// The BNB Smart Chain testnet: configured, and hidden until its first round trip is recorded
+// The BNB Smart Chain testnet: shown since its first round trip on Nov 1, and the flag that hid it until then
 
 const BSC = destOf("bsc-testnet", ALL_DESTS);
 const ROLLUP_MINTER: Hex = "0xdc31a3bc1354545eeb985aad7b2aa662e9272348";
 const ROLLUP_TOKEN: Hex = "0xe1130718c56de008b47c392c85895a1a605ba95e";
-/** The config as its activation leaves it: the records' addresses in its entry (the rollups', if its deployer's nonces 4, 5, 9 and 10 make them), and no flag. */
-const ACTIVE = shown(
-  ALL_DESTS.map((d): Dest =>
-    d.key === "bsc-testnet" ? { ...d, lightClient: "0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6", provenBalance: "0x40f4b03aa20d3e7ce2503c406a4fe4a46ba886f0", minter: ROLLUP_MINTER, token: ROLLUP_TOKEN, minterFrom: 1 } : d,
-  ),
-  new Set(),
-);
-/** Its sends then: every configured destination's (dests.ts SENDS_ALL). */
-const ACTIVE_SENDS: ReadonlySet<DestKey> = new Set<DestKey>(["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"]);
+/** HIDDEN as it stood until the first round trip, holding chain 97: the destinations it left shown, and their sends (dests.ts SENDS_ALL less the hidden one). */
+const HID: ReadonlySet<DestKey> = new Set<DestKey>(["bsc-testnet"]);
+const BEFORE = shown(ALL_DESTS, HID);
+const BEFORE_SENDS: ReadonlySet<DestKey> = new Set<DestKey>(["sepolia", "base-sepolia", "arbitrum-sepolia"]);
 
-test("the BNB Smart Chain testnet is configured and hidden: not in DESTS, a picker, wagmi's chains, the transports or the CSP", () => {
+test("the BNB Smart Chain testnet is shown since Nov 1: in DESTS, both pickers, wagmi's chains, the transports and the CSP; HIDDEN keeps a destination it holds out of them all", () => {
   assert.deepEqual(
     ALL_DESTS.map((d) => d.key),
     ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"],
   );
-  assert.deepEqual([...HIDDEN], ["bsc-testnet"]);
+  assert.deepEqual([...HIDDEN], []);
   assert.deepEqual(
     DESTS.map((d) => d.key),
-    ["sepolia", "base-sepolia", "arbitrum-sepolia"],
+    ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"],
   );
-  assert.throws(() => destOf("bsc-testnet"), /no destination bsc-testnet/);
-  // Its sends are wired (dests.ts SENDS_ALL), and join SENDS once HIDDEN no longer holds it: no deep link picks it before.
-  assert.ok(!SENDS.has("bsc-testnet"));
+  assert.equal(destOf("bsc-testnet"), BSC);
+  // Its sends are wired (dests.ts SENDS_ALL), and in SENDS since HIDDEN no longer holds it: a deep link picks it too.
+  assert.ok(SENDS.has("bsc-testnet"));
   assert.match(readFileSync(join(here, "..", "src", "app", "dests.ts"), "utf8"), /const SENDS_ALL: readonly DestKey\[\] = \["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"\];/);
-  for (const side of ["from", "to"] as const) for (const dir of ["in", "back"] as const) assert.ok(pickRows(side, dir, "sepolia").every((r) => r.key !== "bsc-testnet"), `${side} ${dir}`);
+  for (const side of ["from", "to"] as const) for (const dir of ["in", "back"] as const) assert.equal(pickRows(side, dir, "sepolia").find((r) => r.key === "bsc-testnet")?.state, "open", `${side} ${dir}`);
   assert.deepEqual(
     WALLET_CHAINS.map((c) => c.id),
-    [420420777, 11155111, 84532, 421614],
+    [420420777, 11155111, 84532, 421614, 97],
   );
-  assert.ok(!Object.keys(transports).map(Number).includes(97));
+  assert.ok(Object.keys(transports).map(Number).includes(97));
   for (const e of BSC.rpcs) {
-    assert.ok(!ROLLUP_NODES.includes(e.url), e.url);
-    assert.ok(!cspPolicy(true).includes(new URL(e.url).host), e.url);
+    assert.ok(ROLLUP_NODES.includes(e.url), e.url);
+    assert.ok(cspPolicy(true).includes(new URL(e.url).host), e.url);
   }
-  assert.equal(destByChainId(97), null);
-  assert.equal(refOf("burn-bsc-testnet-0"), null, "no route to a hidden chain's burn");
-  assert.equal(destOfLock(97n, ROLLUP_MINTER), null);
-  assert.deepEqual(OTHER_CHAINS, ["two rollups"]);
-  assert.equal(DESTS_WORD, "three");
-  assert.equal(DESTS_NAMED, "Sepolia and the two rollups");
+  assert.equal(destByChainId(97), BSC);
+  assert.deepEqual(refOf("burn-bsc-testnet-0"), { dir: "back", n: 0, dest: "bsc-testnet" }, "the route to its burn");
+  assert.equal(destOfLock(97n, ROLLUP_MINTER), BSC);
+  assert.deepEqual(OTHER_CHAINS, ["two rollups", "the BNB Smart Chain testnet"]);
+  assert.equal(DESTS_WORD, "four");
+  assert.equal(DESTS_NAMED, "Sepolia, the two rollups and the BNB Smart Chain testnet");
+  // HIDDEN as it held chain 97 before its first round trip: the three shown, no picker row, route or lock of it, and the words of the three.
+  assert.deepEqual(
+    BEFORE.map((d) => d.key),
+    ["sepolia", "base-sepolia", "arbitrum-sepolia"],
+  );
+  assert.throws(() => destOf("bsc-testnet", BEFORE), /no destination bsc-testnet/);
+  for (const side of ["from", "to"] as const) for (const dir of ["in", "back"] as const) assert.ok(pickRows(side, dir, "sepolia", BEFORE, BEFORE_SENDS).every((r) => r.key !== "bsc-testnet"), `${side} ${dir}`);
+  assert.equal(destByChainId(97, BEFORE), null);
+  assert.equal(refOf("burn-bsc-testnet-0", BEFORE), null, "no route to a hidden chain's burn");
+  assert.equal(destOfLock(97n, ROLLUP_MINTER, BEFORE, BEFORE_SENDS), null);
+  assert.deepEqual(otherChainsOf(BEFORE), ["two rollups"]);
+  assert.equal(countWord(BEFORE.length), "three");
+  assert.equal(destsNamedOf(BEFORE), "Sepolia and the two rollups");
+  // wagmi's chains, the transports and the CSP take DESTS' chains and RPCs: a destination HIDDEN holds is in none of them.
+  assert.deepEqual(
+    WALLET_CHAINS.map((c) => c.id),
+    [v3.id, ...DESTS.map((d) => d.chainId)],
+  );
+  assert.deepEqual(Object.keys(transports).map(Number).sort((a, b) => a - b), [v3.id, ...DESTS.map((d) => d.chainId)].sort((a, b) => a - b));
+  assert.deepEqual(ROLLUP_NODES, rollupsOf(DESTS).flatMap((d) => d.rpcs.map((e) => e.url)));
   // A build never previews it: no import.meta.env outside vite's dev server, and in it only VITE_PREVIEW_DESTS names it.
   assert.deepEqual(
-    shown(ALL_DESTS, HIDDEN, new Set(["bsc-testnet"])).map((d) => d.key),
+    shown(ALL_DESTS, HID, new Set(["bsc-testnet"])).map((d) => d.key),
     ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"],
   );
   assert.deepEqual(shown(ALL_DESTS, HIDDEN).map((d) => d.key), DESTS.map((d) => d.key));
 });
 
-test("its entry: chain 97 as viem knows it, its names, the text mark, BscScan, the RPCs of Nov 1, fast finality and one speed, the 0.1 gwei tip", () => {
+test("its entry: chain 97 as viem knows it, its names, the text mark, BscScan, the RPCs of Nov 1, fast finality and one speed, the 0.1 gwei tip, its records' addresses and its first round trip", () => {
   assert.deepEqual([BSC.chainId, BSC.name, BSC.sub, BSC.full, BSC.short, BSC.mark], [97, "BNB Smart Chain", "testnet", "BNB Smart Chain testnet", "BSC testnet", "bnb"]);
   assert.equal(viemBscTestnet.id, 97);
   assert.equal(bscTestnet.id, 97);
@@ -584,40 +630,52 @@ test("its entry: chain 97 as viem knows it, its names, the text mark, BscScan, t
       ["https://bsc-testnet.bnbchain.org", 8, 0],
     ],
   );
-  assert.deepEqual([BSC.blockSeconds, BSC.l1, BSC.fastConfirmations, BSC.minTip, BSC.firsts], [0.45, "none", null, 100_000_000n, null]);
+  assert.deepEqual([BSC.blockSeconds, BSC.l1, BSC.fastConfirmations, BSC.minTip, BSC.firsts], [0.45, "none", null, 100_000_000n, { lock: 8, burn: 0 }]);
   assert.deepEqual(BSC.finality, { kind: "votes", seconds: 1, blocks: 2, range: "0.9 to 1.4 s" });
   assert.equal(fastConfirmationsOf(BSC), 0);
   // The relayer's tools have the same rules (relayer/src/l1.ts, wayback.ts).
   assert.ok(readFileSync(join(repo, "relayer", "src", "l1.ts"), "utf8").includes(`"bsc-testnet": "none"`));
   assert.match(readFileSync(join(repo, "relayer", "src", "wayback.ts"), "utf8"), /network: "bsc-testnet",[\s\S]*?blockSeconds: 0\.45,/);
-  assert.equal(timeOf("bsc-testnet", "std")[0], "≈ 1 min");
-  // No run of its own until its first round trip (facts.ts, ROLLUP_RUNS): auto-mint's time is Sepolia's run, said to be an estimate, on the card and in the strip.
-  assert.equal("bsc-testnet" in ROLLUP_RUNS, false);
-  assert.deepEqual(timeOf("bsc-testnet", "auto"), [AUTO_TIME[0], "est., as measured on Sepolia"]);
+  // Its first round trip as measured (facts.ts, ROLLUP_RUNS; README rows 145 to 149): auto-mint minted lock 8 125 s after the lock's V3 block, and the watcher released burn 0 46 s after the burn's block, at its finality; one speed, no fast run.
+  assert.deepEqual(ROLLUP_RUNS["bsc-testnet"], { auto: 125, fast: null, std: 46, on: "Nov 1" });
+  const section = README.replace(/\s+/g, " ").split("### More chains: the BNB Smart Chain testnet")[1] ?? "";
+  assert.ok(section.length > 0, "the README's section on the BNB Smart Chain testnet");
+  assert.equal(Number(/The mint's block came (\d+) seconds after the lock's by the block timestamps/.exec(section)?.[1]), ROLLUP_RUNS["bsc-testnet"].auto);
+  assert.equal(Number(/the release's block came (\d+) seconds after the burn's/.exec(section)?.[1]), ROLLUP_RUNS["bsc-testnet"].std);
+  assert.deepEqual(timeOf("bsc-testnet", "auto"), ["≈ 2¼ min", "auto-mint, measured Nov 1"]);
+  assert.deepEqual(timeOf("bsc-testnet", "std"), ["≈ 46 s", "measured Nov 1"]);
   assert.deepEqual(timeOf("bsc-testnet", "in"), ["≈ 48 s", "as measured on Sepolia, Oct 20"]);
-  assert.match(readFileSync(join(here, "..", "src", "app", "views", "Bridge.tsx"), "utf8"), /`lock to mint, sent by auto-mint · \$\{autoEst \?\? `measured on \$\{d\.short\}, Oct 28`\}`/);
-  // Its costs as measured on a fork of the chain until its first receipts: the rollups' gas schedule.
-  assert.deepEqual([BSC.mintGas.gas, BSC.mintGas.full, BSC.burnGas.gas, BSC.burnGas.used], ["2.66", "2,661,628", "62", "52,822"]);
-  // Not deployed: every address from its records at the activation, which the test then checks.
-  const records = ["deployments/bsc-testnet.json", "deployments/bsc-testnet-bridge.json"].map((f) => existsSync(join(repo, f)));
-  if (records.every((x) => !x)) {
-    assert.deepEqual([BSC.lightClient, BSC.provenBalance, BSC.minter, BSC.token, BSC.minterFrom], [null, null, null, null, 0]);
-    assert.equal(destState(BSC), "soon");
-    assert.equal(selectable(BSC), false);
-    assert.throws(() => clientOf(BSC), /BNB Smart Chain testnet has no V3 light client yet/);
-    assert.throws(() => deployed(BSC), /BNB Smart Chain testnet has no BridgeMinter and wtPOT yet/);
-  } else {
-    const lc = readJson("deployments/bsc-testnet.json");
-    assert.equal(lc.chainId, 97);
-    assert.equal(BSC.lightClient, lower(lc.contracts["GrandpaLightClient #2"]));
-    assert.equal(BSC.provenBalance, lower(lc.contracts["ProvenBalance #2"]));
-    if (records[1]) {
-      const b = readJson("deployments/bsc-testnet-bridge.json");
-      assert.equal(BSC.minter, lower(b.contracts.BridgeMinter));
-      assert.equal(BSC.token, lower(b.contracts.WrappedTPOT));
-      assert.equal(BSC.minterFrom, b.steps.find((s: any) => s.kind === "deploy" && s.name === "BridgeMinter").block);
-    }
-  }
+  // The strip under the card names the day of each chain's own run (facts.ts, runDayOf): Sepolia's Oct 27, the rollups' Oct 28, its Nov 1.
+  assert.match(readFileSync(join(here, "..", "src", "app", "views", "Bridge.tsx"), "utf8"), /`lock to mint, sent by auto-mint · \$\{autoEst \?\? `measured on \$\{d\.short\}, \$\{runDayOf\(d\.key\)\}`\}`/);
+  assert.deepEqual(
+    DESTS.map((d) => runDayOf(d.key)),
+    ["Oct 27", "Oct 28", "Oct 28", "Nov 1"],
+  );
+  // Its costs from its first round trip's receipts, lock 8's mint and burn 0 (README rows 146 and 147), the rollups' gas schedule: the records check them with the rollups' (above).
+  assert.deepEqual([BSC.mintGas.gas, BSC.mintGas.full, BSC.burnGas.gas, BSC.burnGas.used], ["2.66", "2,658,627", "62", "52,822"]);
+  // Deployed on Nov 1 at the rollups' addresses: every address is its records', and its minter's logs start at BridgeMinter's deployment block.
+  const lc = readJson("deployments/bsc-testnet.json");
+  assert.equal(lc.chainId, 97);
+  assert.equal(BSC.lightClient, lower(lc.contracts["GrandpaLightClient #2"]));
+  assert.equal(BSC.provenBalance, lower(lc.contracts["ProvenBalance #2"]));
+  const b = readJson("deployments/bsc-testnet-bridge.json");
+  assert.equal(b.chainId, 97);
+  assert.equal(BSC.minter, lower(b.contracts.BridgeMinter));
+  assert.equal(BSC.token, lower(b.contracts.WrappedTPOT));
+  assert.equal(BSC.minterFrom, b.steps.find((s: any) => s.kind === "deploy" && s.name === "BridgeMinter").block);
+  assert.deepEqual(
+    [BSC.lightClient, BSC.provenBalance, BSC.minter, BSC.token, BSC.minterFrom],
+    [destOf("base-sepolia").lightClient, destOf("base-sepolia").provenBalance, ROLLUP_MINTER, ROLLUP_TOKEN, 140_162_374],
+  );
+  assert.equal(destState(BSC), "live");
+  assert.equal(selectable(BSC), true);
+  assert.deepEqual(clientOf(BSC), { lightClient: lower(lc.contracts["GrandpaLightClient #2"]), provenBalance: lower(lc.contracts["ProvenBalance #2"]) });
+  assert.deepEqual(deployed(BSC), { minter: ROLLUP_MINTER, token: ROLLUP_TOKEN });
+  // Its firsts, as the records have them: lock 8, the first lock to chain 97, and burn 0 there, released on V3.
+  const v3Record = readJson("deployments/v3-testnet.json");
+  assert.equal(Math.min(...v3Record.locks.filter((l: any) => l.dstChainId === "97" && l.status === "locked").map((l: any) => Number(l.vaultNonce))), BSC.firsts?.lock);
+  assert.equal(stepOf("bsc-testnet", "burn", String(BSC.firsts?.burn))?.burn.burnId, "0xf38d1b6cd1e6d5a6fbe5b1f8238646147194891702fd9e164d9b6ad450454773");
+  assert.equal(v3Record.releases.find((r: any) => r.burn?.chainId === "97" && r.burn.burnNonce === String(BSC.firsts?.burn))?.status, "released");
 });
 
 test("the gas each chain's words name: Sepolia ETH and each rollup's ETH as before, tBNB on the BNB Smart Chain testnet, where a visitor gets it, and auto-mint's chains", () => {
@@ -646,12 +704,12 @@ test("the gas each chain's words name: Sepolia ETH and each rollup's ETH as befo
   assert.equal(gasFrom(destOf("base-sepolia")), "Base Sepolia's own bridge takes Sepolia ETH there, and its public faucets give some");
   assert.equal(gasFrom(destOf("arbitrum-sepolia")), "Arbitrum Sepolia's own bridge takes Sepolia ETH there, and its public faucets give some");
   assert.equal(gasFrom(BSC), "BSC testnet's public faucets give tBNB");
-  // Auto-mint is one process for the chains shown: the three as before, and the four once the activation shows chain 97.
+  // Auto-mint is one process for the chains shown: the four since the activation showed chain 97, the three before it.
   assert.equal(destsNamedOf(three), "Sepolia and the two rollups");
   assert.equal(DESTS_NAMED, destsNamedOf(DESTS));
-  assert.deepEqual(otherChainsOf(ACTIVE), ["two rollups", "the BNB Smart Chain testnet"]);
-  assert.equal(destsNamedOf(ACTIVE), "Sepolia, the two rollups and the BNB Smart Chain testnet");
-  assert.equal(andList(["V3", "Sepolia", ...otherChainsOf(ACTIVE)]), "V3, Sepolia, two rollups and the BNB Smart Chain testnet");
+  assert.deepEqual(otherChainsOf(DESTS), ["two rollups", "the BNB Smart Chain testnet"]);
+  assert.equal(destsNamedOf(DESTS), "Sepolia, the two rollups and the BNB Smart Chain testnet");
+  assert.equal(andList(["V3", "Sepolia", ...otherChainsOf(DESTS)]), "V3, Sepolia, two rollups and the BNB Smart Chain testnet");
   assert.deepEqual([andList([]), andList(["V3"]), andList(["V3", "Sepolia"])], ["", "V3", "V3 and Sepolia"]);
 });
 
@@ -676,26 +734,28 @@ test("one speed on the BNB Smart Chain testnet: its burns never fast on the tran
   for (const key of ["sepolia", "base-sepolia", "arbitrum-sepolia"] as const) assert.notEqual(destOf(key).fastConfirmations, null, key);
 });
 
-test("as its activation leaves it: picked on either side, its lock told from the rollups' by chain id 97, its burns' ids", () => {
-  const rows = pickRows("to", "in", "sepolia", ACTIVE, ACTIVE_SENDS);
+test("as shown since Nov 1: picked on either side, its lock told from the rollups' by chain id 97, its burns' ids", () => {
+  const rows = pickRows("to", "in", "sepolia");
   assert.deepEqual(rows.find((r) => r.key === "bsc-testnet"), { key: "bsc-testnet", state: "open", to: { dir: "in", dest: "bsc-testnet" } });
-  assert.deepEqual(pickRows("from", "back", "bsc-testnet", ACTIVE, ACTIVE_SENDS).find((r) => r.key === "bsc-testnet"), { key: "bsc-testnet", state: "current", to: null });
-  // Still hidden (SENDS as it stands), its row would be listed and not pickable.
-  assert.equal(pickRows("to", "in", "sepolia", ACTIVE).find((r) => r.key === "bsc-testnet")?.state, "soon");
+  assert.deepEqual(pickRows("from", "back", "bsc-testnet").find((r) => r.key === "bsc-testnet"), { key: "bsc-testnet", state: "current", to: null });
+  // With sends that lack it, as while HIDDEN held it, its row would be listed and not pickable: deployed, not sent to.
+  assert.equal(pickRows("to", "in", "sepolia", DESTS, BEFORE_SENDS).find((r) => r.key === "bsc-testnet")?.state, "soon");
+  assert.equal(destState(BSC, BEFORE_SENDS), "ready");
+  assert.equal(selectable(BSC, BEFORE_SENDS), false);
   // One minter address on three chains: the chain id tells them apart.
-  assert.equal(destOfLock(97n, ROLLUP_MINTER, ACTIVE, ACTIVE_SENDS)?.key, "bsc-testnet");
-  assert.equal(destOfLock(84_532n, ROLLUP_MINTER, ACTIVE, ACTIVE_SENDS)?.key, "base-sepolia");
-  assert.equal(destOfLock(421_614n, ROLLUP_MINTER, ACTIVE, ACTIVE_SENDS)?.key, "arbitrum-sepolia");
-  assert.equal(destOfLock(97n, "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e", ACTIVE, ACTIVE_SENDS), null);
+  assert.equal(destOfLock(97n, ROLLUP_MINTER)?.key, "bsc-testnet");
+  assert.equal(destOfLock(84_532n, ROLLUP_MINTER)?.key, "base-sepolia");
+  assert.equal(destOfLock(421_614n, ROLLUP_MINTER)?.key, "arbitrum-sepolia");
+  assert.equal(destOfLock(97n, "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e"), null);
   assert.equal(burnKey("bsc-testnet", 0), "burn-bsc-testnet-0");
-  assert.deepEqual(refOf("burn-bsc-testnet-0", ACTIVE), { dir: "back", n: 0, dest: "bsc-testnet" });
-  assert.deepEqual(refOf(burnKey("bsc-testnet", 12), ACTIVE), { dir: "back", n: 12, dest: "bsc-testnet" });
+  assert.deepEqual(refOf("burn-bsc-testnet-0"), { dir: "back", n: 0, dest: "bsc-testnet" });
+  assert.deepEqual(refOf(burnKey("bsc-testnet", 12)), { dir: "back", n: 12, dest: "bsc-testnet" });
   assert.deepEqual(
-    rollupsOf(ACTIVE).map((d) => d.key),
+    rollupsOf(DESTS).map((d) => d.key),
     ["base-sepolia", "arbitrum-sepolia", "bsc-testnet"],
   );
-  assert.deepEqual(deployed(destOf("bsc-testnet", ACTIVE)), { minter: ROLLUP_MINTER, token: ROLLUP_TOKEN });
-  assert.equal(explorerTx(destOf("bsc-testnet", ACTIVE), `0x${"ab".repeat(32)}`), `https://testnet.bscscan.com/tx/0x${"ab".repeat(32)}`);
+  assert.deepEqual(deployed(destOf("bsc-testnet")), { minter: ROLLUP_MINTER, token: ROLLUP_TOKEN });
+  assert.equal(explorerTx(destOf("bsc-testnet"), `0x${"ab".repeat(32)}`), `https://testnet.bscscan.com/tx/0x${"ab".repeat(32)}`);
 });
 
 test("its mark is a text mark, BNB, with no image shipped or listed: BNB Chain asks for approval before its logo is used", () => {

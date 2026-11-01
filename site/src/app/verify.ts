@@ -55,7 +55,7 @@ export function verifyEnv(key: DestKey): VerifyEnv {
     lightClient: clientOf(d).lightClient,
     minter: deployed(d).minter,
     clientFrom: sep ? LC.v3.deployBlock : (records.rollups[key]?.deployBlock ?? d.minterFrom),
-    // One key deployed the three chains' contracts and initialized each V3 client (deployments/<network>-bridge.json).
+    // One key deployed every chain's contracts and initialized each V3 client (deployments/<network>-bridge.json).
     deployer: records.sepolia.deployer,
     explorer: { name: d.explorer.name, tx: (h) => explorerTx(d, h), address: (a) => explorerAddress(d, a), block: (b) => explorerBlock(d, b) },
   };
