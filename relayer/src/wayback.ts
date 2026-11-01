@@ -152,6 +152,23 @@ export const WAYBACK: Record<NetworkName, WaybackChain> = {
   },
 };
 
+/**
+ * On a chain whose first RPC answers old blocks with no logs and no error (logsFade): why the logs a
+ * search found do not account for what the minter's views say, `burns` BurnRequested logs against
+ * burnCount() and, when both are given, the mints less the burns against the token's total supply;
+ * null when they do, and always elsewhere (a search that falls short fails its check there, as
+ * before). The status commands then read the views instead of the logs.
+ */
+export function fadedLogs(chain: Pick<WaybackChain, "logsFade">, found: { burns: number; supply?: bigint }, views: { burnCount: bigint; totalSupply?: bigint }): string | null {
+  if (!chain.logsFade) return null;
+  const short = BigInt(found.burns) < views.burnCount;
+  const supply = found.supply !== undefined && views.totalSupply !== undefined && found.supply !== views.totalSupply;
+  if (!short && !supply) return null;
+  const what = [`${found.burns} BurnRequested log${found.burns === 1 ? "" : "s"} for ${views.burnCount} burn${views.burnCount === 1n ? "" : "s"}`];
+  if (supply) what.push(`a supply of ${found.supply} base units for ${views.totalSupply}`);
+  return `its logs give ${what.join(" and ")}: it keeps the logs of recent blocks only, and answers older ones with none`;
+}
+
 /** The chains a minter is on, in the order of sepolia.mjs NETWORKS. */
 export const WAYBACK_NETWORKS = Object.keys(WAYBACK) as NetworkName[];
 

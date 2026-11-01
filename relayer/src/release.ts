@@ -227,8 +227,8 @@
 // the least its validators include (a lower --priority-fee is refused). Its public RPC that serves
 // eth_getLogs (publicnode) keeps them for about 8 to 11 hours and then answers with none, and no
 // error: status reads the views when the logs show fewer burns than burnCount, and the watcher finds
-// an older burn only through an RPC that keeps the minter's logs (BSC_TESTNET_RPC_URL). release --watch takes several chains,
-// comma separated, and serves them from one process, a round for one chain after the other, each
+// an older burn only through an RPC that keeps the minter's logs (BSC_TESTNET_RPC_URL).
+// release --watch takes several chains, comma separated, and serves them from one process, a round for one chain after the other, each
 // with its own wait (a chain whose RPC fails backs off alone), its own round count (--rounds n is n
 // rounds of each chain, and the exit code the worst of each chain's last round's) and burn cache
 // (release-watch-<multisig>.<network>.burns.json; Sepolia's as before); --confirmations takes one
@@ -384,6 +384,7 @@ import {
   burnOn,
   chainIdOf,
   confirmationsBy,
+  fadedLogs,
   fastExposure,
   fastReleasesOf,
   otherFastChains,
@@ -3895,9 +3896,9 @@ async function statusCommand(o: Common & { network: NetworkName }): Promise<numb
   log(`${NET.title} block ${fmt(L)} (finalized ${fmt(F)}): BridgeMinter ${checksumAddress(hexToBytes(b.minter))}, ${state.burnCount} burn${state.burnCount === 1n ? "" : "s"}; wtPOT total supply ${formatWtpot(state.totalSupply)}`);
   let found = await sepoliaLogs({ address: b.minter, topics: [BURN_REQUESTED_TOPIC] }, b.deployBlock, L);
   // A chain whose RPC answers old blocks with no logs and no error (wayback.ts logsFade): fewer logs than burns means some are gone.
-  if (NET.logsFade && !("refused" in found)) {
-    const n = found.logs.filter((x) => x.address.toLowerCase() === b.minter).length;
-    if (BigInt(n) < state.burnCount) found = { refused: `it returned ${n} BurnRequested log${n === 1 ? "" : "s"} for ${state.burnCount} burns: it keeps the logs of recent blocks only, and answers older ones with none` };
+  if (!("refused" in found)) {
+    const faded = fadedLogs(NET, { burns: found.logs.filter((x) => x.address.toLowerCase() === b.minter).length }, { burnCount: state.burnCount });
+    if (faded) found = { refused: faded };
   }
   const burns: { burnNonce: bigint; burnId: Uint8Array; burn: BurnOnChain | null; source: string }[] = [];
   if ("refused" in found) {

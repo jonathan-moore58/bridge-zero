@@ -270,7 +270,7 @@ const DEFAULT_MIN_AMOUNT = "0.001";
 /** --max-spend, in ETH: the most our mined transactions may cost over SPEND_WINDOW_MS. */
 const DEFAULT_MAX_SPEND = "0.02";
 const MAX_REPLACE_AFTER_MINUTES = 1_440;
-/** The relayer's priority fee (sepolia.mjs feesAt): 1,000 wei, above what most Sepolia blocks pay; a network with a tip of its own (NETWORKS tip, BSC's 0.1 gwei) takes that instead (main). */
+/** The relayer's priority fee (sepolia.mjs feesAt): 1,000 wei, above what most Sepolia blocks pay; a network with a tip of its own (NETWORKS tip, BSC's 0.1 gwei) takes that instead (priorityFeeOn). */
 const DEFAULT_TIP = 1_000n;
 /** The lowest max fee feesAt sets (0.01 gwei). */
 const MIN_MAX_FEE = 10_000_000n;

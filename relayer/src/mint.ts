@@ -219,7 +219,7 @@ import {
   uintWord,
   type LogJson,
 } from "./vault.js";
-import { WAYBACK } from "./wayback.js";
+import { fadedLogs, WAYBACK } from "./wayback.js";
 import {
   CAP,
   NETWORK,
@@ -2703,11 +2703,8 @@ async function status(o: Common): Promise<number> {
       const burnLogs = of(minterLogs, BURN_REQUESTED_TOPIC);
       const supply =
         of(minterLogs, MINTED_TOPIC).reduce((sum, l) => sum + decodeMinted(l).amount, 0n) - burnLogs.reduce((sum, l) => sum + decodeBurnRequested(l).amount, 0n);
-      if (BigInt(burnLogs.length) < bridge.burnCount || supply !== bridge.totalSupply) {
-        minterLogs = {
-          refused: `its logs give ${burnLogs.length} of ${bridge.burnCount} burns and a supply of ${formatWtpot(supply)} for ${formatWtpot(bridge.totalSupply)}: it keeps the logs of recent blocks only, and answers older ones with none`,
-        };
-      }
+      const faded = fadedLogs(WAYBACK[BRIDGE_NETWORK], { burns: burnLogs.length, supply }, { burnCount: bridge.burnCount, totalSupply: bridge.totalSupply });
+      if (faded) minterLogs = { refused: faded };
     }
     const releaseState = async (id: Uint8Array, amount: bigint | null) => {
       const flag = await evm.word(vault.address, releasedSlot(id), tagV3);

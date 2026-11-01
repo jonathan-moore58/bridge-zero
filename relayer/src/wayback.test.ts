@@ -25,6 +25,7 @@ import {
   burnOn,
   chainIdOf,
   confirmationsBy,
+  fadedLogs,
   fastExposure,
   fastReleasesOf,
   otherFastChains,
@@ -247,6 +248,17 @@ describe("each chain's burns and releases, kept apart", () => {
     assert.equal(ids[1], "0x9890de419e811a71bd9e8f16963d616b7f746ec284d8ce03813d2508cfe80522");
     // The BNB Smart Chain testnet's burn 0, when its minter is at the rollups' address: the third id.
     assert.equal(bytesToHex(burnId(97n, minter, 0n)), "0xf38d1b6cd1e6d5a6fbe5b1f8238646147194891702fd9e164d9b6ad450454773");
+  });
+
+  it("reads the views where the BNB Smart Chain testnet's RPC has let old logs fade, and nowhere else", () => {
+    const views = { burnCount: 3n, totalSupply: 5n };
+    // publicnode keeps about 8 to 11 hours of logs, then answers with none and no error.
+    assert.match(fadedLogs(WAYBACK["bsc-testnet"], { burns: 1 }, views) ?? "", /^its logs give 1 BurnRequested log for 3 burns: it keeps the logs of recent blocks only/);
+    assert.match(fadedLogs(WAYBACK["bsc-testnet"], { burns: 3, supply: 4n }, views) ?? "", /3 BurnRequested logs for 3 burns and a supply of 4 base units for 5/);
+    assert.equal(fadedLogs(WAYBACK["bsc-testnet"], { burns: 3, supply: 5n }, views), null, "the logs account for the views");
+    assert.equal(fadedLogs(WAYBACK["bsc-testnet"], { burns: 3 }, views), null, "no supply to compare");
+    // Elsewhere a search that falls short fails its check, as before.
+    for (const network of ["sepolia", "base-sepolia", "arbitrum-sepolia"] as const) assert.equal(fadedLogs(WAYBACK[network], { burns: 0, supply: 0n }, views), null, network);
   });
 
   it("knows a state an RPC no longer serves, Arbitrum's words and the others'", () => {

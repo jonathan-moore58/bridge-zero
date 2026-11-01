@@ -117,7 +117,7 @@ What the testnets already show:
   watcher has run since Oct 24; both have run on a cloud server since Oct 31
   ([README](../README.md#status)).
 - 128 numbered transactions are in the README's [evidence](../README.md#evidence), each with its
-  hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 370 forge tests, 395 relayer
+  hash, on Sepolia, the V3 testnet, Base Sepolia and Arbitrum Sepolia; 370 forge tests, 396 relayer
   tests, 295 site tests and 432 fixture checks pass, in CI on every push.
 - The limits are written down, including the gaps while the laptop that ran them slept or was off,
   from Oct 24 to Oct 31 ([Known limits](../README.md#status),
