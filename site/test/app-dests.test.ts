@@ -4,7 +4,9 @@
 // confirmations, its finality and its costs) against the records and the relayer's rules, the ids a
 // lock or a burn goes by on each, the chain each send goes out on, and the chain picker's rows:
 // Sepolia, Base Sepolia and Arbitrum Sepolia live and pickable, and a destination pickable only
-// once the app sends to it (SENDS). Offline.
+// once the app sends to it (SENDS). And the BNB Smart Chain testnet, configured and hidden (HIDDEN):
+// in no picker, wagmi chain nor Content-Security-Policy, its entry as measured on Nov 1, and how it
+// shows once its records fill it in and the flag is gone. Offline.
 
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
@@ -12,13 +14,19 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { getContractAddress } from "viem";
-import { arbitrumSepolia as viemArbitrumSepolia, baseSepolia as viemBaseSepolia, sepolia as viemSepolia } from "viem/chains";
+import { arbitrumSepolia as viemArbitrumSepolia, baseSepolia as viemBaseSepolia, bscTestnet as viemBscTestnet, sepolia as viemSepolia } from "viem/chains";
 import { BRIDGE_NODES, ROLLUP_NODES, connectOf, cspPolicy } from "../build/csp.ts";
-import { arbitrumSepolia, baseSepolia, sepolia, transports, v3, viemChain } from "../src/app/chains.ts";
+import { WALLET_CHAINS, arbitrumSepolia, baseSepolia, bscTestnet, sepolia, transports, v3, viemChain } from "../src/app/chains.ts";
 import {
+  ALL_DESTS,
   DESTS,
+  HIDDEN,
   ROLLUPS,
   SENDS,
+  clientOf,
+  fastConfirmationsOf,
+  rollupsOf,
+  shown,
   burnKey,
   deployed,
   destByChainId,
@@ -34,7 +42,7 @@ import {
   type Dest,
   type DestKey,
 } from "../src/app/dests.ts";
-import { AUTO_TIME, BURN_GAS, BURN_GAS_FULL, CH, LATER_CHAINS, MINT_GAS, MINT_GAS_FULL, SEPOLIA_FINALITY, TIME, chainById, fromOf, sendChain, timeOf, toOf } from "../src/app/facts.ts";
+import { AUTO_TIME, BURN_GAS, BURN_GAS_FULL, CH, DESTS_WORD, LATER_CHAINS, MINT_GAS, MINT_GAS_FULL, OTHER_CHAINS, SEPOLIA_FINALITY, TIME, chainById, fromOf, sendChain, timeOf, toOf } from "../src/app/facts.ts";
 import type { Hex } from "../src/lib/hex.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -291,7 +299,7 @@ test("each chain's block time, L1 rule and fast confirmations: the release watch
       ["arbitrum-sepolia", 0.25, "arbitrum", 144],
     ],
   );
-  for (const d of DESTS) assert.equal(Math.round(d.fastConfirmations * d.blockSeconds), 36, d.full);
+  for (const d of DESTS) assert.equal(Math.round(fastConfirmationsOf(d) * d.blockSeconds), 36, d.full);
   // The watcher as it runs since Oct 28 (README, "the way back from Base Sepolia and Arbitrum Sepolia").
   assert.ok(README.includes("--confirmations sepolia=3,base-sepolia=180,arbitrum-sepolia=144 --send"));
   // The relayer's tools charge L1 the same way (relayer/src/l1.ts, L1_KIND).
@@ -308,7 +316,8 @@ test("where each minter's logs start: its deployment block, as its bridge record
 });
 
 test("finality: Sepolia's as the watcher measured it, a rollup's its batch final on Sepolia, the blocks inside the range its finalized tag was measured at", () => {
-  assert.deepEqual(destOf("sepolia").finality, { seconds: SEPOLIA_FINALITY.median, blocks: SEPOLIA_FINALITY.blocks, range: SEPOLIA_FINALITY.range });
+  assert.deepEqual(destOf("sepolia").finality, { kind: "ethereum", seconds: SEPOLIA_FINALITY.median, blocks: SEPOLIA_FINALITY.blocks, range: SEPOLIA_FINALITY.range });
+  for (const d of ROLLUPS) assert.equal(d.finality.kind, "batch", d.full);
   // README, "Final, on a rollup": Base Sepolia's finalized block 5,800 to 6,700 of its 0.2 s blocks below its latest, Arbitrum Sepolia's 3,800 to 4,500 of its 0.25 s blocks.
   assert.match(README, /about 20 minutes after a block: Base Sepolia's finalized block was 5,800 to\s+6,700 of its 0\.2 s blocks below its latest, Arbitrum Sepolia's 3,800 to 4,500 of its 0\.25 s\s+blocks/);
   const measured: Record<string, readonly [number, number]> = { "base-sepolia": [5_800, 6_700], "arbitrum-sepolia": [3_800, 4_500] };
@@ -421,4 +430,135 @@ test("the times the card states: Sepolia's as measured, unchanged; a rollup's as
   // Standard: the chain's own finality, then about a minute of the watcher's round and the approvals.
   assert.equal(timeOf("base-sepolia", "std")[0], "≈ 21 min");
   assert.equal(timeOf("arbitrum-sepolia", "std")[0], "≈ 19 min");
+});
+
+// ---------------------------------------------------------------------------------------------
+// The BNB Smart Chain testnet: configured, and hidden until its first round trip is recorded
+
+const BSC = destOf("bsc-testnet", ALL_DESTS);
+const ROLLUP_MINTER: Hex = "0xdc31a3bc1354545eeb985aad7b2aa662e9272348";
+const ROLLUP_TOKEN: Hex = "0xe1130718c56de008b47c392c85895a1a605ba95e";
+/** The config as its activation leaves it: the records' addresses in its entry (the rollups', if its deployer's nonces 4, 5, 9 and 10 make them), and no flag. */
+const ACTIVE = shown(
+  ALL_DESTS.map((d): Dest =>
+    d.key === "bsc-testnet" ? { ...d, lightClient: "0x389781d4856f0a9f3266ca6e76be6c7b7cfe0ab6", provenBalance: "0x40f4b03aa20d3e7ce2503c406a4fe4a46ba886f0", minter: ROLLUP_MINTER, token: ROLLUP_TOKEN, minterFrom: 1 } : d,
+  ),
+  new Set(),
+);
+/** Its sends then: every configured destination's (dests.ts SENDS_ALL). */
+const ACTIVE_SENDS: ReadonlySet<DestKey> = new Set<DestKey>(["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"]);
+
+test("the BNB Smart Chain testnet is configured and hidden: not in DESTS, a picker, wagmi's chains, the transports or the CSP", () => {
+  assert.deepEqual(
+    ALL_DESTS.map((d) => d.key),
+    ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"],
+  );
+  assert.deepEqual([...HIDDEN], ["bsc-testnet"]);
+  assert.deepEqual(
+    DESTS.map((d) => d.key),
+    ["sepolia", "base-sepolia", "arbitrum-sepolia"],
+  );
+  assert.throws(() => destOf("bsc-testnet"), /no destination bsc-testnet/);
+  // Its sends are wired (dests.ts SENDS_ALL), and join SENDS once HIDDEN no longer holds it: no deep link picks it before.
+  assert.ok(!SENDS.has("bsc-testnet"));
+  assert.match(readFileSync(join(here, "..", "src", "app", "dests.ts"), "utf8"), /const SENDS_ALL: readonly DestKey\[\] = \["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"\];/);
+  for (const side of ["from", "to"] as const) for (const dir of ["in", "back"] as const) assert.ok(pickRows(side, dir, "sepolia").every((r) => r.key !== "bsc-testnet"), `${side} ${dir}`);
+  assert.deepEqual(
+    WALLET_CHAINS.map((c) => c.id),
+    [420420777, 11155111, 84532, 421614],
+  );
+  assert.ok(!Object.keys(transports).map(Number).includes(97));
+  for (const e of BSC.rpcs) {
+    assert.ok(!ROLLUP_NODES.includes(e.url), e.url);
+    assert.ok(!cspPolicy(true).includes(new URL(e.url).host), e.url);
+  }
+  assert.equal(destByChainId(97), null);
+  assert.equal(refOf("burn-bsc-testnet-0"), null, "no route to a hidden chain's burn");
+  assert.equal(destOfLock(97n, ROLLUP_MINTER), null);
+  assert.deepEqual(OTHER_CHAINS, ["two rollups"]);
+  assert.equal(DESTS_WORD, "three");
+  // A build never previews it: no import.meta.env outside vite's dev server, and in it only VITE_PREVIEW_DESTS names it.
+  assert.deepEqual(
+    shown(ALL_DESTS, HIDDEN, new Set(["bsc-testnet"])).map((d) => d.key),
+    ["sepolia", "base-sepolia", "arbitrum-sepolia", "bsc-testnet"],
+  );
+  assert.deepEqual(shown(ALL_DESTS, HIDDEN).map((d) => d.key), DESTS.map((d) => d.key));
+});
+
+test("its entry: chain 97 as viem knows it, its names, the text mark, BscScan, the RPCs of Nov 1, fast finality and one speed, the 0.1 gwei tip", () => {
+  assert.deepEqual([BSC.chainId, BSC.name, BSC.sub, BSC.full, BSC.short, BSC.mark], [97, "BNB Smart Chain", "testnet", "BNB Smart Chain testnet", "BSC testnet", "bnb"]);
+  assert.equal(viemBscTestnet.id, 97);
+  assert.equal(bscTestnet.id, 97);
+  assert.deepEqual(bscTestnet.rpcUrls.default.http, BSC.rpcs.map((e) => e.url));
+  assert.equal(BSC.explorer.url, "https://testnet.bscscan.com");
+  assert.equal(BSC.explorer.url, viemBscTestnet.blockExplorers.default.url);
+  assert.equal(viemChain("bsc-testnet").id, 97);
+  // publicnode, the only public RPC that serves its logs, first; the official endpoint keeps receipts and serves no logs.
+  assert.deepEqual(
+    BSC.rpcs.map((e) => [e.url, e.batch, e.logRange]),
+    [
+      ["https://bsc-testnet-rpc.publicnode.com", 8, 50_000],
+      ["https://bsc-testnet.bnbchain.org", 8, 0],
+    ],
+  );
+  assert.deepEqual([BSC.blockSeconds, BSC.l1, BSC.fastConfirmations, BSC.minTip, BSC.firsts], [0.45, "none", null, 100_000_000n, null]);
+  assert.deepEqual(BSC.finality, { kind: "votes", seconds: 1, blocks: 2, range: "0.9 to 1.4 s" });
+  assert.equal(fastConfirmationsOf(BSC), 0);
+  // The relayer's tools have the same rules (relayer/src/l1.ts, wayback.ts).
+  assert.ok(readFileSync(join(repo, "relayer", "src", "l1.ts"), "utf8").includes(`"bsc-testnet": "none"`));
+  assert.match(readFileSync(join(repo, "relayer", "src", "wayback.ts"), "utf8"), /network: "bsc-testnet",[\s\S]*?blockSeconds: 0\.45,/);
+  assert.equal(timeOf("bsc-testnet", "std")[0], "≈ 1 min");
+  // Its costs as measured on a fork of the chain until its first receipts: the rollups' gas schedule.
+  assert.deepEqual([BSC.mintGas.gas, BSC.mintGas.full, BSC.burnGas.gas, BSC.burnGas.used], ["2.66", "2,661,628", "62", "52,822"]);
+  // Not deployed: every address from its records at the activation, which the test then checks.
+  const records = ["deployments/bsc-testnet.json", "deployments/bsc-testnet-bridge.json"].map((f) => existsSync(join(repo, f)));
+  if (records.every((x) => !x)) {
+    assert.deepEqual([BSC.lightClient, BSC.provenBalance, BSC.minter, BSC.token, BSC.minterFrom], [null, null, null, null, 0]);
+    assert.equal(destState(BSC), "soon");
+    assert.equal(selectable(BSC), false);
+    assert.throws(() => clientOf(BSC), /BNB Smart Chain testnet has no V3 light client yet/);
+    assert.throws(() => deployed(BSC), /BNB Smart Chain testnet has no BridgeMinter and wtPOT yet/);
+  } else {
+    const lc = readJson("deployments/bsc-testnet.json");
+    assert.equal(lc.chainId, 97);
+    assert.equal(BSC.lightClient, lower(lc.contracts["GrandpaLightClient #2"]));
+    assert.equal(BSC.provenBalance, lower(lc.contracts["ProvenBalance #2"]));
+    if (records[1]) {
+      const b = readJson("deployments/bsc-testnet-bridge.json");
+      assert.equal(BSC.minter, lower(b.contracts.BridgeMinter));
+      assert.equal(BSC.token, lower(b.contracts.WrappedTPOT));
+      assert.equal(BSC.minterFrom, b.steps.find((s: any) => s.kind === "deploy" && s.name === "BridgeMinter").block);
+    }
+  }
+});
+
+test("as its activation leaves it: picked on either side, its lock told from the rollups' by chain id 97, its burns' ids", () => {
+  const rows = pickRows("to", "in", "sepolia", ACTIVE, ACTIVE_SENDS);
+  assert.deepEqual(rows.find((r) => r.key === "bsc-testnet"), { key: "bsc-testnet", state: "open", to: { dir: "in", dest: "bsc-testnet" } });
+  assert.deepEqual(pickRows("from", "back", "bsc-testnet", ACTIVE, ACTIVE_SENDS).find((r) => r.key === "bsc-testnet"), { key: "bsc-testnet", state: "current", to: null });
+  // Still hidden (SENDS as it stands), its row would be listed and not pickable.
+  assert.equal(pickRows("to", "in", "sepolia", ACTIVE).find((r) => r.key === "bsc-testnet")?.state, "soon");
+  // One minter address on three chains: the chain id tells them apart.
+  assert.equal(destOfLock(97n, ROLLUP_MINTER, ACTIVE, ACTIVE_SENDS)?.key, "bsc-testnet");
+  assert.equal(destOfLock(84_532n, ROLLUP_MINTER, ACTIVE, ACTIVE_SENDS)?.key, "base-sepolia");
+  assert.equal(destOfLock(421_614n, ROLLUP_MINTER, ACTIVE, ACTIVE_SENDS)?.key, "arbitrum-sepolia");
+  assert.equal(destOfLock(97n, "0x8287b3baf205ca8456f98346f13064aa7fcdcb9e", ACTIVE, ACTIVE_SENDS), null);
+  assert.equal(burnKey("bsc-testnet", 0), "burn-bsc-testnet-0");
+  assert.deepEqual(refOf("burn-bsc-testnet-0", ACTIVE), { dir: "back", n: 0, dest: "bsc-testnet" });
+  assert.deepEqual(refOf(burnKey("bsc-testnet", 12), ACTIVE), { dir: "back", n: 12, dest: "bsc-testnet" });
+  assert.deepEqual(
+    rollupsOf(ACTIVE).map((d) => d.key),
+    ["base-sepolia", "arbitrum-sepolia", "bsc-testnet"],
+  );
+  assert.deepEqual(deployed(destOf("bsc-testnet", ACTIVE)), { minter: ROLLUP_MINTER, token: ROLLUP_TOKEN });
+  assert.equal(explorerTx(destOf("bsc-testnet", ACTIVE), `0x${"ab".repeat(32)}`), `https://testnet.bscscan.com/tx/0x${"ab".repeat(32)}`);
+});
+
+test("its mark is a text mark, BNB, with no image shipped or listed: BNB Chain asks for approval before its logo is used", () => {
+  const marks = readFileSync(join(here, "..", "src", "app", "marks.tsx"), "utf8");
+  assert.match(marks, /bnb: "BNB"/);
+  assert.doesNotMatch(marks, /import \w+ from "\.\/marks\/bnb/i);
+  assert.ok(!existsSync(join(here, "..", "src", "app", "marks", "bnb.svg")) && !existsSync(join(here, "..", "src", "app", "marks", "bnb.png")));
+  assert.doesNotMatch(readFileSync(join(repo, "NOTICE.md"), "utf8"), /BNB/);
+  assert.match(readFileSync(join(here, "..", "src", "app", "styles", "v3.css"), "utf8"), /\.mark\[data-mark="bnb"\] \.mark__letter text \{/);
 });

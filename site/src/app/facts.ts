@@ -3,7 +3,7 @@
 // The destinations, Sepolia and the rollups, are configured in ./dests.ts.
 
 import { V3_CHAIN_ID } from "../lib/endpoints.ts";
-import { DESTS, destOf, type Dest, type DestKey, type MarkKey } from "./dests.ts";
+import { ALL_DESTS, DESTS, destOf, type Dest, type DestKey, type MarkKey } from "./dests.ts";
 import type { Dir, Speed } from "./model.ts";
 
 export type { Dir, Speed };
@@ -83,9 +83,28 @@ const ROLLUP_TIME: Record<"in" | "auto" | "fast", readonly [string, string]> = {
 /** How long a transfer to or from `dest` usually takes, and where that comes from: the way in sent by its locker or by auto-mint, or a burn's release speed. */
 export function timeOf(dest: DestKey, mode: "in" | "auto" | Speed): readonly [string, string] {
   if (dest === "sepolia") return mode === "auto" ? AUTO_TIME : TIME[mode];
-  if (mode === "std") return [`≈ ${Math.round(destOf(dest).finality.seconds / 60 + 1)} min`, "est., its batch final on Sepolia"];
+  const d = destOf(dest, ALL_DESTS);
+  // A chain final in about a second (its validators' votes): the release is the watcher's round and the two approvals, about a minute.
+  if (mode === "std" && d.finality.kind === "votes") return ["≈ 1 min", "est., final in about a second, then the watcher"];
+  if (mode === "std") return [`≈ ${Math.round(d.finality.seconds / 60 + 1)} min`, "est., its batch final on Sepolia"];
   return ROLLUP_TIME[mode];
 }
+
+/** A count in words, as the pages write it ("the three chains"); digits above nine. */
+export const countWord = (n: number): string => ["no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"][n] ?? String(n);
+
+/** The destinations the app shows, in words: "three" while Sepolia and the two rollups are shown. */
+export const DESTS_WORD = countWord(DESTS.length);
+
+/**
+ * The chains besides V3 and Sepolia, as the pages name them: the rollups by their count ("two
+ * rollups"), and any other destination shown by its name (the BNB Smart Chain testnet, an L1).
+ */
+export const OTHER_CHAINS: readonly string[] = (() => {
+  const others = DESTS.filter((d) => d.key !== "sepolia");
+  const rollups = others.filter((d) => d.finality.kind === "batch").length;
+  return [...(rollups > 0 ? [`${countWord(rollups)} rollup${rollups === 1 ? "" : "s"}`] : []), ...others.filter((d) => d.finality.kind !== "batch").map((d) => `the ${d.full}`)];
+})();
 
 /**
  * What a lock from a Polkadot wallet takes besides the amount, out of the balance the card shows,

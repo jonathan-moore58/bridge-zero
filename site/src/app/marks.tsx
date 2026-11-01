@@ -10,7 +10,9 @@
 // half the chip (its App Icons rule), Arbitrum's is its kit's all-white logomark for dark grounds,
 // and the wallet button's status dot stays clear of both. SubWallet's mark is held back (its kit is
 // for partners only) and its file is not imported, so the build does not ship it; SubWallet shows the
-// generic wallet icon, as before.
+// generic wallet icon, as before. The BNB Smart Chain testnet shows a neutral text mark, "BNB", in the
+// app's own type, and no image: BNB Chain's brand guidelines (read Nov 1) ask projects to seek its
+// approval before using the logo, so none is shipped or listed in NOTICE.md until that is granted.
 
 import type { MarkKey } from "./dests.ts";
 import arbitrum from "./marks/arbitrum.svg";
@@ -24,8 +26,8 @@ import talisman from "./marks/talisman.svg";
 /** The chains' marks the page ships; a chain missing here shows its initial. */
 const CHAIN: Partial<Record<MarkKey, string>> = { portaldot, ethereum, base, arbitrum };
 
-/** The letter a chain's chip shows while its mark is held back. */
-const INITIAL: Record<MarkKey, string> = { portaldot: "P", ethereum: "E", base: "B", arbitrum: "A" };
+/** The letter a chain's chip shows while its mark is held back; the BNB Smart Chain's text mark, three letters (v3.css sets them smaller). */
+const INITIAL: Record<MarkKey, string> = { portaldot: "P", ethereum: "E", base: "B", arbitrum: "A", bnb: "BNB" };
 
 /** A chain's mark in the app's round chip, or its initial while the mark is held back; `cls` sets its size (mark--28 and so on). */
 export function ChainMark({ mark, cls = "" }: { mark: MarkKey; cls?: string }) {

@@ -12,7 +12,7 @@ import { loadClientCrypto } from "../lib/proof/grandpa.ts";
 import { planMint } from "../lib/proof/plan.ts";
 import { keyHistory, verifyBurn, verifyMinted, verifyUnminted, type BurnTarget, type DestEnv, type Looked, type MintedLock, type Run, type UnmintedLock, type VerifyEnv } from "../lib/proof/verify.ts";
 import { request, type Endpoint } from "../lib/rpc.ts";
-import { DESTS, burnKey, deployed, destByChainId, destOf, explorerAddress, explorerBlock, explorerTx, lockKey, refOf, selectable, type DestKey } from "./dests.ts";
+import { DESTS, burnKey, clientOf, deployed, destByChainId, destOf, explorerAddress, explorerBlock, explorerTx, lockKey, refOf, selectable, type DestKey } from "./dests.ts";
 import { planEnv } from "./sends.ts";
 import { findBurn, findLock, findMint, v3BlockTime, type ChainLock } from "./transfers.ts";
 import { headOf, histories, setRun, type VerifyHead } from "./verify-runs.ts";
@@ -54,7 +54,7 @@ export function verifyEnv(key: DestKey): VerifyEnv {
     history: rpcs,
     archive: sep ? [...TENDERLY, ...SEP.filter((e) => e.id !== "tenderly")] : key === "base-sepolia" ? [...d.rpcs] : [],
     logs: sep ? SEP_LOGS : [...d.rpcs],
-    lightClient: d.lightClient,
+    lightClient: clientOf(d).lightClient,
     minter: deployed(d).minter,
     clientFrom: sep ? LC.v3.deployBlock : (records.rollups[key]?.deployBlock ?? d.minterFrom),
     // One key deployed the three chains' contracts and initialized each V3 client (deployments/<network>-bridge.json).

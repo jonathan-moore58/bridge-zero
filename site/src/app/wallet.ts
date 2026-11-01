@@ -28,7 +28,7 @@ import { encodeCall } from "../lib/abi.ts";
 import { SEPOLIA_HISTORY, V3_EVM } from "../lib/chains.ts";
 import type { Hex } from "../lib/hex.ts";
 import { request } from "../lib/rpc.ts";
-import { arbitrumSepolia, baseSepolia, sepolia, transports, v3, viemChain } from "./chains.ts";
+import { WALLET_CHAINS, transports, v3, viemChain } from "./chains.ts";
 import { deployed, destOf, type DestKey } from "./dests.ts";
 import { CH, type ChainKey } from "./facts.ts";
 import { Box } from "./store.ts";
@@ -123,8 +123,8 @@ function browserStorage() {
 }
 
 const config = createConfig({
-  // V3, and the destinations the bridge sends on (./dests.ts): Sepolia, Base Sepolia and Arbitrum Sepolia.
-  chains: [v3, sepolia, baseSepolia, arbitrumSepolia],
+  // V3, and the destinations the bridge sends on (./dests.ts DESTS): Sepolia, Base Sepolia and Arbitrum Sepolia, and no hidden one.
+  chains: WALLET_CHAINS,
   // window.ethereum, for a wallet that does not announce itself; EIP-6963 adds a connector for each
   // wallet that does. WalletConnect, for a phone wallet without an in-app browser, would be one more
   // connector here (walletConnect from @wagmi/connectors), with the owner's Reown project id and its

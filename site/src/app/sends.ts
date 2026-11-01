@@ -30,7 +30,7 @@ import { V3Reader } from "../lib/proof/v3.ts";
 import { request, type Endpoint } from "../lib/rpc.ts";
 import { decodeTimestampInherent } from "../lib/scale.ts";
 import { connectThen } from "./connect.tsx";
-import { deployed, destOf, type Dest, type DestKey } from "./dests.ts";
+import { clientOf, deployed, destOf, type Dest, type DestKey } from "./dests.ts";
 import { sendChain, type ChainKey } from "./facts.ts";
 import { AUTO_MINT, autoMints } from "./handoff.ts";
 import { decodeJournal, encodeJournal, JOURNAL_KEY, mergeJournal } from "./journal.ts";
@@ -106,7 +106,7 @@ function sendEnv(key: DestKey): SendEnv {
   if (!e) {
     const d = destOf(key);
     const { minter, token } = deployed(d);
-    e = { evm: evmOf(d), chainId: BigInt(d.chainId), chain: d.short, l1: d.l1, v3Evm: V3_EVM, vault: VAULT, minter, token, registry };
+    e = { evm: evmOf(d), chainId: BigInt(d.chainId), chain: d.short, l1: d.l1, ...(d.minTip === undefined ? {} : { minTip: d.minTip }), v3Evm: V3_EVM, vault: VAULT, minter, token, registry };
     sendEnvs.set(key, e);
   }
   return e;
@@ -124,7 +124,7 @@ export function planEnv(key: DestKey): ProofEnv {
   let e = planEnvs.get(key);
   if (!e) {
     const d = destOf(key);
-    e = { ...proofEnv(), sepolia: [...d.rpcs], lightClient: d.lightClient, minter: deployed(d).minter, sepoliaChainId: BigInt(d.chainId), l1: d.l1, chain: d.short };
+    e = { ...proofEnv(), sepolia: [...d.rpcs], lightClient: clientOf(d).lightClient, minter: deployed(d).minter, sepoliaChainId: BigInt(d.chainId), l1: d.l1, chain: d.short };
     planEnvs.set(key, e);
   }
   return e;
@@ -927,7 +927,7 @@ async function signMint(job: Job, id: string, fresh: MintPlan | null): Promise<v
   if (!tx || tx.gasLimit === null || !from) return say(id, null);
   const gas = tx.gasLimit;
   const evm = evmOf(d);
-  const got = await patiently(job, id, d.short, () => Promise.all([feesNow(evm, d.short), balanceOn(evm, from), nextNonce(evm, from)]));
+  const got = await patiently(job, id, d.short, () => Promise.all([feesNow(evm, d.short, d.minTip), balanceOn(evm, from), nextNonce(evm, from)]));
   if (!got) return;
   const [{ maxFeePerGas, maxPriorityFeePerGas }, eth, next] = got.value;
   const fees = { maxFeePerGas, maxPriorityFeePerGas };
@@ -1177,7 +1177,7 @@ export function startBurn(amountText: string, reviewed: string, dest: DestKey): 
     doneAt: null,
     failure: null,
     note: null,
-    speed: watcherSpeed(amount),
+    speed: watcherSpeed(amount, destOf(dest)),
     fallback: false,
     burn: { stage: "asking" },
     burnNonce: null,
@@ -1318,7 +1318,8 @@ async function followRelease(job: Job, id: string): Promise<void> {
       const confirmations = Math.max(0, h.value.latest - block);
       const final = h.value.finalized >= block;
       patchBack(id, (x) => {
-        const qualifies = final || (x.speed === "fast" && confirmations >= d.fastConfirmations);
+        // One speed where the watcher waits for finality (fastConfirmations null): a fast burn there qualifies when final, as a standard one does.
+        const qualifies = final || (x.speed === "fast" && d.fastConfirmations !== null && confirmations >= d.fastConfirmations);
         return { depth: { confirmations, final, qualifiedAt: x.depth.qualifiedAt ?? (qualifies ? Date.now() : null) } };
       });
     }

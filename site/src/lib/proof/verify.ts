@@ -109,12 +109,13 @@ const topicOf = (v: bigint): Hex => `0x${v.toString(16).padStart(64, "0")}`;
 const qty = (v: number): Hex => `0x${Math.max(0, v).toString(16)}`;
 const json = (v: unknown): string => JSON.stringify(v, (_k, x) => (typeof x === "bigint" ? x.toString() : x), 1);
 
-/** An endpoint as a chip names it: publicnode, tenderly, sepolia.base.org, arbitrum.io, test-node-v3. */
+/** An endpoint as a chip names it: publicnode, tenderly, sepolia.base.org, arbitrum.io, bnbchain.org, test-node-v3. */
 export function nodeName(label: string): string {
   if (/publicnode/.test(label)) return "publicnode";
   if (/tenderly/.test(label)) return "tenderly";
   if (/drpc/.test(label)) return "drpc";
   if (/arbitrum\.io/.test(label)) return "arbitrum.io";
+  if (/bnbchain\.org/.test(label)) return "bnbchain.org";
   if (/test-node-v3/.test(label)) return "test-node-v3";
   if (/test-evm-rpc-v3/.test(label)) return "V3 EVM RPC";
   return label.replace(/^https?:\/\/|^wss?:\/\//, "");

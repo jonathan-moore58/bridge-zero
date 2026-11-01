@@ -91,7 +91,7 @@ export const amountText = (v: bigint): string => formatUnits(v, DECIMALS).replac
  * its chain's finality. Whether it did, or fell back to finality because its fast budget (one for
  * the three chains) was in use, is its record, not the chain's.
  */
-export const watcherSpeed = (amount: bigint): Speed => (toTokens(amount) <= FAST_CAP ? "fast" : "std");
+export const watcherSpeed = (amount: bigint, d?: Dest): Speed => (toTokens(amount) <= FAST_CAP && d?.fastConfirmations !== null ? "fast" : "std");
 
 // ---------------------------------------------------------------------------------------------
 // The recorded runs
@@ -617,7 +617,7 @@ async function mintOf(key: DestKey, nonce: number, since: number | null = null):
       if (typeof r.result.from === "string" && /^0x[0-9a-fA-F]{40}$/.test(r.result.from)) mint.from = r.result.from.toLowerCase() as Hex;
       // importAndMint imports the block through the destination's V3 light client first, in the same transaction.
       for (const l of r.result.logs) {
-        const h = same(l.address, d.lightClient) ? registry.decodeLog(l) : null;
+        const h = d.lightClient !== null && same(l.address, d.lightClient) ? registry.decodeLog(l) : null;
         if (h?.name !== "HeaderImported" || !same(argOf(h, "blockHash"), hash)) continue;
         const n = argOf(h, "number");
         const set = argOf(h, "setId");

@@ -11,7 +11,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
-import { burnKey, deployed, destOf, destOfLock, lockKey, refOf, type DestKey } from "../src/app/dests.ts";
+import { burnKey, clientOf, deployed, destOf, destOfLock, lockKey, refOf, type DestKey } from "../src/app/dests.ts";
 import { lockData } from "../src/app/substrate/call.ts";
 import { burnedOf, lockedOf, type ReceiptLog } from "../src/app/txmath.ts";
 import { encodeCall } from "../src/lib/abi.ts";
@@ -56,7 +56,7 @@ function planEnvOf(key: DestKey): ProofEnv {
   return {
     sepolia: [...d.rpcs],
     v3: undefined as unknown as SubstrateClient,
-    lightClient: d.lightClient,
+    lightClient: clientOf(d).lightClient,
     minter: deployed(d).minter,
     vault: VAULT,
     multicall: "0xca11bde05977b3631167028862be2a173976ca11",

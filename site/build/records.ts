@@ -33,6 +33,7 @@ import type {
   Roadmap,
   RollupClientFacts,
   RollupMint,
+  RollupNetwork,
   RollupRuns,
   RunStep,
 } from "../src/lib/records-types.ts";
@@ -110,10 +111,11 @@ function initOf(steps: Json[], name: string, file: string): { tx: Hex; block: nu
 /** A row of an evidence table: number, what it shows, transaction, block, result. */
 const ROW = /^\|\s*\**(\d+)\**\s*\|(.+)\|\s*$/;
 const ETHERSCAN_TX = /\(https:\/\/sepolia\.etherscan\.io\/tx\/(0x[0-9a-fA-F]{64})\)/;
-/** A rollup row links its transaction on the rollup's explorer (README, "More chains"). */
-const ROLLUP_TX: readonly (readonly [RegExp, "base-sepolia" | "arbitrum-sepolia"])[] = [
+/** A rollup row links its transaction on the rollup's explorer (README, "More chains"); a BNB Smart Chain testnet row on BscScan's. */
+const ROLLUP_TX: readonly (readonly [RegExp, RollupNetwork])[] = [
   [/\(https:\/\/sepolia\.basescan\.org\/tx\/(0x[0-9a-fA-F]{64})\)/, "base-sepolia"],
   [/\(https:\/\/sepolia\.arbiscan\.io\/tx\/(0x[0-9a-fA-F]{64})\)/, "arbitrum-sepolia"],
+  [/\(https:\/\/testnet\.bscscan\.com\/tx\/(0x[0-9a-fA-F]{64})\)/, "bsc-testnet"],
 ];
 const SHORT_HASH = /`(0x[0-9a-fA-F]+)…([0-9a-fA-F]+)`/;
 
@@ -459,9 +461,9 @@ function readRelayHistories(root: string, dir: string): { files: string[]; entri
 
 /**
  * An auto-mint history: one file per chain and sender, automint-<network>-<sender>.jsonl, the network
- * the chain its mints are on (sepolia, base-sepolia or arbitrum-sepolia), the sender in lowercase.
+ * the chain its mints are on (sepolia, base-sepolia, arbitrum-sepolia or bsc-testnet), the sender in lowercase.
  */
-const AUTOMINT_FILE = /^automint-(sepolia|base-sepolia|arbitrum-sepolia)-(0x[0-9a-f]{40})\.jsonl$/;
+const AUTOMINT_FILE = /^automint-(sepolia|base-sepolia|arbitrum-sepolia|bsc-testnet)-(0x[0-9a-f]{40})\.jsonl$/;
 
 /** A lock auto-mint minted: the amount and recipient its attempt line gives (null when the history lacks that line), the mint's transaction, the chain it was minted on (the history's network) and the history's file name. */
 export interface AutoMint {
@@ -741,8 +743,11 @@ function latestImportOf(relay: RelayEntry | null, relayFile: string, mints: Json
   return best;
 }
 
-/** The rollups where the V3 light client was deployed (README, "More chains"), and their chain ids. */
-const ROLLUPS = { "base-sepolia": 84532, "arbitrum-sepolia": 421614 } as const;
+/** The rollups where the V3 light client was deployed (README, "More chains"), and the BNB Smart Chain testnet, and their chain ids: each read when deployments/ has its record. */
+const ROLLUPS: Record<RollupNetwork, number> = { "base-sepolia": 84532, "arbitrum-sepolia": 421614, "bsc-testnet": 97 };
+const ROLLUP_NETWORKS = Object.keys(ROLLUPS) as RollupNetwork[];
+/** Each destination's value of `read`, by network. */
+const byRollup = <T>(read: (network: RollupNetwork) => T): Record<RollupNetwork, T> => Object.fromEntries(ROLLUP_NETWORKS.map((k) => [k, read(k)])) as Record<RollupNetwork, T>;
 
 /**
  * The V3 light client on a rollup, by the records: deployments/<network>.json for the addresses and
@@ -1421,10 +1426,10 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
   if (abi.errors.length < 20 || abi.events.length < 8) fail("contracts/src", "fewer errors or events than expected");
 
   // The bridge on the rollups, and every lock with its mint: Sepolia's mint steps, else auto-mint's history on the lock's chain.
-  const rollupRuns: Records["rollupRuns"] = { "base-sepolia": readRollupRuns(root, automintDir, "base-sepolia"), "arbitrum-sepolia": readRollupRuns(root, automintDir, "arbitrum-sepolia") };
+  const rollupRuns: Records["rollupRuns"] = byRollup((k) => readRollupRuns(root, automintDir, k));
   const autoMintsByChain = new Map<number, { mints: RollupMint[] }>([
     [11155111, { mints: autoMintsOf(root, automintDir, "sepolia") }],
-    ...(Object.keys(ROLLUPS) as (keyof typeof ROLLUPS)[]).map((k): [number, { mints: RollupMint[] }] => [ROLLUPS[k], { mints: rollupRuns[k]?.mints ?? [] }]),
+    ...ROLLUP_NETWORKS.map((k): [number, { mints: RollupMint[] }] => [ROLLUPS[k], { mints: rollupRuns[k]?.mints ?? [] }]),
   ]);
 
   // The README's recorded outputs against deployments/ at this build: wtPOT, the vault, the burns.
@@ -1452,7 +1457,7 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
     bridge,
     attacks,
     lightClients,
-    rollups: { "base-sepolia": readRollup(root, relayDir, "base-sepolia"), "arbitrum-sepolia": readRollup(root, relayDir, "arbitrum-sepolia") },
+    rollups: byRollup((k) => readRollup(root, relayDir, k)),
     rollupRuns,
     relay: { files: relay.files, entries: relayEntries },
     locks: recordedLocks(locks, okMints, autoMintsByChain),

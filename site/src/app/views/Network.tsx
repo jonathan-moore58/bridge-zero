@@ -14,8 +14,8 @@ import { lagMinutes, setsBehind, type ClientState } from "../../lib/lc-read.ts";
 import { registry, useField, type ChainHead, type Field, type LcState } from "../../lib/live.ts";
 import { burnId } from "../../lib/proofs.ts";
 import { request } from "../../lib/rpc.ts";
-import { ROLLUPS, destOf, destState, type Dest } from "../dests.ts";
-import { FAST_CAP, IMPORT_GAS, LATER_CHAINS, SPEED_NAME, V3_SCAN, timeOf } from "../facts.ts";
+import { ROLLUPS, clientOf, destOf, destState, type Dest } from "../dests.ts";
+import { DESTS_WORD, FAST_CAP, IMPORT_GAS, LATER_CHAINS, OTHER_CHAINS, SPEED_NAME, V3_SCAN, timeOf } from "../facts.ts";
 import { RELAY_AFTER_CHANGE_MS, SET_CHANGES_TEXT } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
@@ -810,13 +810,13 @@ function RollupLcCard({ d }: { d: Dest & { key: RollupKey } }) {
         <div>
           <dt>V3 light client</dt>
           <dd>
-            <Addr full={checksum(d.lightClient)} href={scan(d.lightClient)} label={`${d.full} V3 light client address`} />
+            <Addr full={checksum(clientOf(d).lightClient)} href={scan(clientOf(d).lightClient)} label={`${d.full} V3 light client address`} />
           </dd>
         </div>
         <div>
           <dt>ProvenBalance</dt>
           <dd>
-            <Addr full={checksum(d.provenBalance)} href={scan(d.provenBalance)} label={`${d.full} ProvenBalance address`} />
+            <Addr full={checksum(clientOf(d).provenBalance)} href={scan(clientOf(d).provenBalance)} label={`${d.full} ProvenBalance address`} />
           </dd>
         </div>
         {d.minter && d.token ? (
@@ -1064,9 +1064,9 @@ function RelayerCard() {
   );
 }
 
-/** Fast's confirmations on each chain, in its own blocks: "3 Sepolia, 180 Base Sepolia or 144 Arbitrum Sepolia blocks". */
+/** Fast's confirmations on each chain that has a fast mode, in its own blocks: "3 Sepolia, 180 Base Sepolia or 144 Arbitrum Sepolia blocks". */
 const FAST_BLOCKS = (() => {
-  const each = [destOf("sepolia"), ...ROLLUPS].map((d) => `${num(d.fastConfirmations)} ${d.short}`);
+  const each = [destOf("sepolia"), ...ROLLUPS].flatMap((d) => (d.fastConfirmations === null ? [] : [`${num(d.fastConfirmations)} ${d.short}`]));
   return `${each.slice(0, -1).join(", ")} or ${each.at(-1) ?? ""} blocks`;
 })();
 
@@ -1102,7 +1102,7 @@ function WatcherCard({ waiting }: { waiting: Waiting }) {
           <span class="nlist__v">
             A round every 15 s, on one machine{" "}
             <span class="dim">
-              · releases after {FAST_BLOCKS} (36 s) · ≤ {FAST_CAP} tPOT per burn · ≤ {FAST_CAP} tPOT in flight before finality, across the three chains
+              · releases after {FAST_BLOCKS} (36 s) · ≤ {FAST_CAP} tPOT per burn · ≤ {FAST_CAP} tPOT in flight before finality, across the {DESTS_WORD} chains
             </span>
           </span>
           {/* Whether the watcher runs right now is not something this page can read: its settings, not its state. */}
@@ -1381,7 +1381,7 @@ function VaultCard({ phone, waiting, rollups }: { phone: boolean; waiting: Waiti
           <Icon id="i-clock" />
           <div>
             <p class="notice__title">{fmt(tok(v.outstanding - supply))} tPOT in the vault is not wtPOT yet</p>
-            <p>A burn waiting for its release, or a lock waiting for its mint, on any of the three chains.</p>
+            <p>A burn waiting for its release, or a lock waiting for its mint, on any of the {DESTS_WORD} chains.</p>
           </div>
         </div>
       );
@@ -1497,6 +1497,7 @@ const EVIDENCE_CHAINS = [
   ["v3", "V3"],
   ["base-sepolia", "Base Sepolia"],
   ["arbitrum-sepolia", "Arbitrum Sepolia"],
+  ["bsc-testnet", "BNB Smart Chain testnet"],
 ] as const;
 
 function ContractsCard({ phone }: { phone: boolean }) {
@@ -1614,12 +1615,10 @@ function PageNotice({ net }: { net: NetState }) {
 
 export function NetworkView({ net }: { net: NetState }) {
   const phone = usePhone();
-  const [base, arbitrum] = ROLLUPS;
-  // wtPOT and the burns on each rollup: the vault backs all three chains' wtPOT.
-  const supplies = [
-    { ...useRollupSupply("base-sepolia"), d: destOf("base-sepolia") },
-    { ...useRollupSupply("arbitrum-sepolia"), d: destOf("arbitrum-sepolia") },
-  ];
+  // Each rollup's client card, in turn in the first and the second column (the BNB Smart Chain testnet's too, once shown).
+  const cards = (column: 0 | 1) => ROLLUPS.filter((_, i) => i % 2 === column).map((d) => <RollupLcCard key={d.key} d={d} />);
+  // wtPOT and the burns on each chain besides Sepolia: the vault backs every chain's wtPOT. ROLLUPS is fixed, so the hooks run in one order.
+  const supplies = ROLLUPS.map((d) => ({ ...useRollupSupply(d.key), d }));
   const waiting = withRollups(useWaiting(), supplies);
   const down = useDown(net);
   // The rollups' clients, and their wtPOT and burns, are read while this page is open.
@@ -1630,8 +1629,8 @@ export function NetworkView({ net }: { net: NetState }) {
     : down.v3
       ? "Read live · Portaldot V3 not answering"
       : net.key === "checking"
-        ? "Reading V3, Sepolia and two rollups"
-        : "Read live · V3, Sepolia and two rollups";
+        ? `Reading ${andList(["V3", "Sepolia", ...OTHER_CHAINS])}`
+        : `Read live · ${andList(["V3", "Sepolia", ...OTHER_CHAINS])}`;
   return (
     <div class="page">
       <header class="page__head">
@@ -1639,7 +1638,7 @@ export function NetworkView({ net }: { net: NetState }) {
           <p class="eyebrow page__eyebrow">{eyebrow}</p>
           <h1 class="page__title">Network</h1>
           <p class="page__lead">
-            The light client every mint uses and the relayer that keeps it current, the same client on two rollups, kept at V3's validator set by the relayer after each set change, the committee that runs the way back, the vault against wtPOT on all three chains, and the contracts. Each card says when its values were read.
+            The light client every mint uses and the relayer that keeps it current, the same client on {andList([...OTHER_CHAINS])}, kept at V3's validator set by the relayer after each set change, the committee that runs the way back, the vault against wtPOT on all {DESTS_WORD} chains, and the contracts. Each card says when its values were read.
           </p>
         </div>
       </header>
@@ -1650,13 +1649,13 @@ export function NetworkView({ net }: { net: NetState }) {
         <div class="ncols">
           <div class="ncol">
             <LcCard which="v3" />
-            {base ? <RollupLcCard d={base} /> : null}
+            {cards(0)}
             <WatcherCard waiting={waiting} />
             <VaultCard phone={phone} waiting={waiting} rollups={supplies} />
           </div>
           <div class="ncol">
             <RelayerCard />
-            {arbitrum ? <RollupLcCard d={arbitrum} /> : null}
+            {cards(1)}
             <CommitteeCard phone={phone} />
             <LcCard which="mainnet" quiet />
           </div>

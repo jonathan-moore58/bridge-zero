@@ -3,12 +3,15 @@
 
 export type Hex = `0x${string}`;
 
+/** The destinations other than Sepolia: the two rollups, and the BNB Smart Chain testnet once deployments/ has its records. */
+export type RollupNetwork = "base-sepolia" | "arbitrum-sepolia" | "bsc-testnet";
+
 /** One row of the README's evidence tables. `what` and `result` keep their inline markdown. */
 export interface EvidenceRow {
   n: number;
   what: string;
-  chain: "sepolia" | "v3" | "base-sepolia" | "arbitrum-sepolia";
-  /** The full transaction or extrinsic hash: from the explorer link (Etherscan, Basescan, Arbiscan), or matched in deployments/ for a V3 row. */
+  chain: "sepolia" | "v3" | RollupNetwork;
+  /** The full transaction or extrinsic hash: from the explorer link (Etherscan, Basescan, Arbiscan, BscScan), or matched in deployments/ for a V3 row. */
   tx: Hex | null;
   /** The hash as the README prints it. */
   txText: string;
@@ -291,7 +294,7 @@ export interface Roadmap {
 
 /** A rollup where the V3 light client is live, by the records: deployments/<network>.json and the relayer's relay-<network>-<sender>.jsonl. */
 export interface RollupClientFacts {
-  network: "base-sepolia" | "arbitrum-sepolia";
+  network: RollupNetwork;
   chainId: number;
   /** deployments/<network>.json */
   from: string;
@@ -333,7 +336,7 @@ export interface RollupMint {
 
 /** The bridge on a rollup, by the records: deployments/<network>-bridge.json and auto-mint's automint-<network>-<sender>.jsonl. */
 export interface RollupRuns {
-  network: "base-sepolia" | "arbitrum-sepolia";
+  network: RollupNetwork;
   /** deployments/<network>-bridge.json */
   from: string;
   minter: Hex;
@@ -401,10 +404,10 @@ export interface Records {
   bridge: BridgeRun;
   attacks: Attack[];
   lightClients: { mainnet: LightClientFacts; v3: LightClientFacts };
-  /** The V3 light client on the rollups, each when deployments/ has its record. */
-  rollups: { "base-sepolia": RollupClientFacts | null; "arbitrum-sepolia": RollupClientFacts | null };
-  /** The bridge's runs on the rollups, each when deployments/ has its bridge record: what the app serves without searching a rollup's logs. */
-  rollupRuns: { "base-sepolia": RollupRuns | null; "arbitrum-sepolia": RollupRuns | null };
+  /** The V3 light client on the rollups and the BNB Smart Chain testnet, each when deployments/ has its record (null until then). */
+  rollups: Record<RollupNetwork, RollupClientFacts | null>;
+  /** The bridge's runs there, each when deployments/ has its bridge record: what the app serves without searching a chain's logs. */
+  rollupRuns: Record<RollupNetwork, RollupRuns | null>;
   /** Every sender's history in deployments/, merged: `files` are their paths, `entries` their transactions, each once. */
   relay: { files: string[]; entries: RelayEntry[] };
   /** The locks deployments/v3-testnet.json holds as locked, by nonce, each with its mint where the records name one. */

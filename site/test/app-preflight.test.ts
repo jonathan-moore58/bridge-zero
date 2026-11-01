@@ -205,6 +205,22 @@ test("a burn names the sender's own address on V3, with Sepolia's fees and the t
   assert.ok(seen.every((s) => !/^(eth_send|eth_sign|personal_|wallet_)/.test(s.method)));
 });
 
+test("on the BNB Smart Chain testnet a burn's tip is at least 0.1 gwei, the least its validators include, whatever a node suggests", async () => {
+  const BSC: Endpoint = { id: "bsc", label: "fake BSC testnet", url: "https://bsc-testnet.fake/", logRange: 50_000 };
+  const bscEnv: SendEnv = { ...env, evm: [BSC], chainId: 97n, chain: "BSC testnet", l1: "none", minTip: 100_000_000n, minter: ROLLUP_MINTER, token: ROLLUP_TOKEN };
+  // Its base fee is 0; one RPC suggests 0.05 gwei, which its validators do not include.
+  chains({}, { base: 0n, tip: 50_000_000n }, { ep: BSC, token: ROLLUP_TOKEN });
+  const p = ok(await prepareBurn(bscEnv, ME, ONE / 1000n));
+  assert.deepEqual(p.fees, { maxFeePerGas: 100_000_000n, maxPriorityFeePerGas: 100_000_000n });
+  assert.equal(p.l1.fee, 0n, "no L1 part");
+  // A node that suggests more is taken at its word.
+  chains({}, { base: 0n, tip: 338_000_000n }, { ep: BSC, token: ROLLUP_TOKEN });
+  assert.deepEqual(ok(await prepareBurn(bscEnv, ME, ONE / 1000n)).fees, { maxFeePerGas: 338_000_000n, maxPriorityFeePerGas: 338_000_000n });
+  // Sepolia, which has no floor of its own, as before.
+  chains();
+  assert.deepEqual(ok(await prepareBurn(env, ME, ONE / 100n)).fees, { maxFeePerGas: 2n * 17n + SEPOLIA_MIN_TIP, maxPriorityFeePerGas: SEPOLIA_MIN_TIP });
+});
+
 test("an EIP-7702 delegation burns; a contract does not, as the committee pays no contract's address", async () => {
   chains({}, { code: `0xef0100${"12".repeat(20)}` });
   ok(await prepareBurn(env, ME, ONE / 100n));

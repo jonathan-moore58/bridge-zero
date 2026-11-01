@@ -4,8 +4,11 @@
 
 import { setsBehind } from "../lib/lc-read.ts";
 import { useField } from "../lib/live.ts";
-import { destOf, type DestKey } from "./dests.ts";
+import { ALL_DESTS, destOf, rollupsOf, type DestKey, type RollupKey } from "./dests.ts";
 import { useRollup } from "./rollups.ts";
+
+/** Every configured destination's client but Sepolia's, in the config's order: the hooks below run for each, in this order, on every render. */
+const ROLLUP_KEYS: readonly RollupKey[] = rollupsOf(ALL_DESTS).map((d) => d.key);
 
 export type NetKey = "checking" | "ready" | "relay" | "paused" | "rpc";
 
@@ -26,11 +29,10 @@ export interface NetState {
 export function useNet(dest: DestKey = "sepolia"): NetState {
   const lc = useField("lc.v3");
   const chain = useField("chain.v3");
-  // Both rollups' fields, whichever the card shows: the hooks run in the same order on every render.
-  const base = useRollup("base-sepolia");
-  const arbitrum = useRollup("arbitrum-sepolia");
+  // Every rollup's field, whichever the card shows: the hooks run in the same order on every render.
+  const rollups = new Map(ROLLUP_KEYS.map((k) => [k, useRollup(k)] as const));
   const d = destOf(dest);
-  const client = dest === "sepolia" ? lc : dest === "base-sepolia" ? base : arbitrum;
+  const client = dest === "sepolia" ? lc : rollups.get(dest)!;
   // Sepolia's client is "the V3 light client", as the status page has always named it; a rollup's names its chain.
   const on = dest === "sepolia" ? "" : ` on ${d.short}`;
   const v3Down = chain.status === "recorded" || chain.status === "error";

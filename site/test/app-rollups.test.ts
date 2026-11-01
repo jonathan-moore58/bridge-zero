@@ -9,13 +9,14 @@
 // with every relayer run.
 
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { encodeAbiParameters, parseAbiParameters, type Hex as ViemHex } from "viem";
 import { buildRecords } from "../build/records.ts";
 import { ROLLUPS, destOf } from "../src/app/dests.ts";
-import { ARBITRUM_SEPOLIA, BASE_SEPOLIA } from "../src/lib/endpoints.ts";
+import { ARBITRUM_SEPOLIA, BASE_SEPOLIA, BSC_TESTNET } from "../src/lib/endpoints.ts";
 import { nextField, type Field } from "../src/lib/field.ts";
 import { selector } from "../src/lib/hashes.ts";
 import type { Hex } from "../src/lib/hex.ts";
@@ -251,6 +252,33 @@ test("each rollup RPC's log range is the one measured: the public nodes 50,000 b
     ],
   );
   assert.ok(200 < MIN_LOG_RANGE && MIN_LOG_RANGE <= 50_000);
+});
+
+test("the BNB Smart Chain testnet's RPCs: publicnode searches 50,000 blocks of logs, the official endpoint none (it serves no logs), so a search never asks it", async () => {
+  assert.deepEqual(
+    BSC_TESTNET.map((e: Endpoint) => [e.url, e.logRange ?? null]),
+    [
+      ["https://bsc-testnet-rpc.publicnode.com", 50_000],
+      ["https://bsc-testnet.bnbchain.org", 0],
+    ],
+  );
+  assert.ok(0 < MIN_LOG_RANGE);
+  // A search over its endpoints goes to publicnode alone, in its windows.
+  fakeNodes((url, c) => {
+    assert.equal(url, "https://bsc-testnet-rpc.publicnode.com", `${c.method} went to ${url}`);
+    return { result: [] };
+  });
+  const found = await searchLogs(BSC_TESTNET, { address: "0xdc31a3bc1354545eeb985aad7b2aa662e9272348", topics: [] }, 140_000_000, 140_090_000, { first: true });
+  assert.ok(posts.length >= 1 && posts.every((p) => p.url === "https://bsc-testnet-rpc.publicnode.com"));
+  assert.ok(found);
+});
+
+test("the BNB Smart Chain testnet's records: none until deployments/ has them, and the build reads on without them", () => {
+  assert.equal(records.rollups["bsc-testnet"] === null, !existsSync(join(repo, "deployments", "bsc-testnet.json")));
+  assert.equal(records.rollupRuns["bsc-testnet"] === null, !existsSync(join(repo, "deployments", "bsc-testnet-bridge.json")));
+  assert.ok(records.rollups["base-sepolia"] && records.rollups["arbitrum-sepolia"], "the rollups' as before");
+  assert.ok(records.rollupRuns["base-sepolia"] && records.rollupRuns["arbitrum-sepolia"]);
+  assert.ok(!ROLLUPS.some((d) => d.key === "bsc-testnet"), "hidden: no card reads it");
 });
 
 test("Base Sepolia: an import 230,000 blocks back is found in 50,000-block windows from the head, newest first, never through sepolia.base.org", async () => {

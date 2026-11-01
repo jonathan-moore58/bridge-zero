@@ -24,6 +24,8 @@ export interface SendEnv {
   chainId: bigint;
   chain: string;
   l1: L1Kind;
+  /** The least priority fee its validators include (wei), when it has one: feesNow's floor. */
+  minTip?: bigint;
   v3Evm: Endpoint[];
   vault: Hex;
   minter: Hex;
@@ -84,15 +86,20 @@ export async function dry(endpoints: Endpoint[], method: "eth_call" | "eth_estim
   throw new AllFailed(method, problems);
 }
 
-/** A destination's fees now: its latest block's base fee and the node's priority fee, by Sepolia's rule (txmath.ts, sepoliaFees). */
-export async function feesNow(endpoints: Endpoint[], chain = "Sepolia"): Promise<Fees & { base: bigint }> {
+/**
+ * A destination's fees now: its latest block's base fee and the node's priority fee, by Sepolia's rule
+ * (txmath.ts, sepoliaFees), the tip at least `minTip`: the least its validators include, where one
+ * RPC suggests less (on the BNB Smart Chain testnet thirdweb answers 0.05 gwei, and 0.1 is mined).
+ */
+export async function feesNow(endpoints: Endpoint[], chain = "Sepolia", minTip = 0n): Promise<Fees & { base: bigint }> {
   const [block, tip] = await Promise.all([
     request<{ baseFeePerGas?: Hex } | null>(endpoints, "eth_getBlockByNumber", ["latest", false], { accept: (r) => r !== null }),
     request<Hex>(endpoints, "eth_maxPriorityFeePerGas", []),
   ]);
   const base = block.result?.baseFeePerGas;
   if (!base) throw new Error(`${chain}'s latest block carries no base fee`);
-  return { ...sepoliaFees(BigInt(base), BigInt(tip.result)), base: BigInt(base) };
+  const suggested = BigInt(tip.result);
+  return { ...sepoliaFees(BigInt(base), suggested > minTip ? suggested : minTip), base: BigInt(base) };
 }
 
 export const balanceOn = async (endpoints: Endpoint[], address: Hex): Promise<bigint> => BigInt((await request<Hex>(endpoints, "eth_getBalance", [address, "latest"])).result);
@@ -212,7 +219,7 @@ export async function prepareBurn(env: SendEnv, from: Hex, amount: bigint): Prom
     request<Hex>(env.evm, "eth_call", [{ to: env.token, data: encodeCall("balanceOf(address)", [from]) }, "latest"]).then((a) => word(a.result)),
     dry(env.evm, "eth_call", tx, env.registry),
     dry(env.evm, "eth_estimateGas", tx, env.registry),
-    feesNow(env.evm, env.chain),
+    feesNow(env.evm, env.chain, env.minTip),
     balanceOn(env.evm, from),
     request<Hex>(env.v3Evm, "eth_call", [{ to: env.vault, data: encodeCall("outstanding()") }, "latest"]).then((a) => word(a.result)),
     readL1(env.evm, env.l1, env.minter, data),

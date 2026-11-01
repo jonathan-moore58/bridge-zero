@@ -15,6 +15,7 @@ import { openWalletPicker } from "../connect.tsx";
 import { SENDS, burnKey, deployed, destOf, destState, lockKey, pickRows, type Dest, type DestKey, type PickRow } from "../dests.ts";
 import {
   CH,
+  DESTS_WORD,
   FAST_CAP,
   IMPORT_GAS,
   LATER_CHAINS,
@@ -87,6 +88,10 @@ function timeParts(t: string): [string, string] {
  */
 function backWords(d: Dest): { confs: string; final: string; reorg: string } {
   if (d.key === "sepolia") return { confs: "3 Sepolia confirmations", final: "Sepolia finality", reorg: "A reorg deeper than 3 blocks could undo the burn" };
+  // Final in about a second by its validators' votes: one speed, and no fast release a reorg could undo.
+  if (d.finality.kind === "votes") {
+    return { confs: `${d.short}'s finality`, final: `${d.short}'s finality (its validators' votes, about a second)`, reorg: `A burn is released only once ${d.short}'s validators have finalized it` };
+  }
   return {
     confs: `${d.fastConfirmations} ${d.short} blocks (36 s)`,
     final: `${d.short}'s finality (its batch final on Sepolia)`,
@@ -186,7 +191,8 @@ function work(dir: Dir, f: Form, w: WalletState, p: PolkaState): Facts {
   // The burn carries no speed: the watcher releases a burn of up to 1 tPOT fast (while no other fast
   // release waits for finality), and a larger one after its chain's finality. So the card shows the
   // speed the amount gets; it offers no choice the watcher would not honour.
-  const speed: Speed = value > FAST_CAP ? "std" : "fast";
+  // One speed where the watcher waits for finality (the BNB Smart Chain testnet's, about a second).
+  const speed: Speed = value > FAST_CAP || d.fastConfirmations === null ? "std" : "fast";
   let max = "0";
   if (raw != null) max = dir === "back" ? units(raw, 14) : String(Math.max(0, Math.floor(((bal ?? 0) - room) * 100) / 100));
   const { minter, token } = deployed(d);
@@ -857,7 +863,7 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
                 {SPEED_NAME[k.speed]}{" "}
                 <span class="kv__note">
                   · {k.speed === "fast" ? (d.key === "sepolia" ? "after 3 confirmations" : `after ${d.fastConfirmations} blocks`) : `after ${d.key === "sepolia" ? "Sepolia finality" : `${d.short}'s finality`}`} ·
-                  set by the amount
+                  {d.fastConfirmations === null ? " one speed there" : " set by the amount"}
                 </span>
               </dd>
             </div>
@@ -943,9 +949,6 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
 // ---------------------------------------------------------------------------------------------
 // The card
 
-/** A rollup's first lock and burn, which the strip links to (README rows 98 to 113): lock 4 and burn 0 on Base Sepolia, lock 5 and burn 0 on Arbitrum Sepolia. */
-const FIRSTS: Record<Exclude<DestKey, "sepolia">, { lock: number; burn: number }> = { "base-sepolia": { lock: 4, burn: 0 }, "arbitrum-sepolia": { lock: 5, burn: 0 } };
-
 /**
  * The strip under the card: what each way trusts, and its recorded numbers, for the card's
  * destination `d`; the way in's time is auto-mint's when it mints the card's lock (`auto`). Sepolia's
@@ -955,14 +958,15 @@ const FIRSTS: Record<Exclude<DestKey, "sepolia">, { lock: number; burn: number }
 function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
   const back = dir === "back";
   const sep = d.key === "sepolia";
-  const firsts = sep ? null : FIRSTS[d.key as Exclude<DestKey, "sepolia">];
+  // A rollup's first lock and burn, which the strip links to (./dests.ts firsts, README rows 98 to 113); none before a chain's first round trip.
+  const firsts = sep ? null : d.firsts;
   return (
     <aside class="proof" aria-labelledby="proof-title" data-dir={dir}>
       <div class="proof__head">
         <h2 class="proof__title" id="proof-title">
           What each way trusts
         </h2>
-        <span class="badge badge--sm proof__rec">{sep ? "Recorded Oct 20 · Oct 24" : "Recorded Oct 27 · Oct 28"}</span>
+        <span class="badge badge--sm proof__rec">{sep ? "Recorded Oct 20 · Oct 24" : d.finality.kind === "batch" ? "Recorded Oct 27 · Oct 28" : "Measured Nov 1"}</span>
       </div>
       <div class="lanes">
         <div class="lanes__node">
@@ -1033,33 +1037,50 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
             </>
           ) : (
             <>
-              <li class="fact">
-                <a class="fact__link" href="#/network">
-                  <span class="fact__num">
-                    {d.fastConfirmations}
-                    <span class="unit">blocks</span>
-                  </span>
-                  <span class="fact__text">
-                    of {d.short} before a Fast release: 36 s at {d.blockSeconds} s each, as long as Sepolia's 3 confirmations
-                  </span>
-                </a>
-              </li>
-              <li class="fact">
-                <a class="fact__link" href={`#/receipt/${burnKey(d.key, firsts?.burn ?? 0)}`}>
-                  <span class="fact__num">
-                    <span class="fact__approx">≈</span>
-                    {Math.round(d.finality.seconds / 60)}
-                    <span class="unit">min</span>
-                  </span>
-                  <span class="fact__text">for a burn to be final on {d.short}, its batch final on Sepolia · burn 0, released at finality Oct 28</span>
-                </a>
-              </li>
+              {d.fastConfirmations === null ? (
+                <li class="fact">
+                  <a class="fact__link" href="#/network">
+                    <span class="fact__num">
+                      <span class="fact__approx">≈</span>
+                      {d.finality.seconds}
+                      <span class="unit">s</span>
+                    </span>
+                    <span class="fact__text">
+                      for a burn to be final on {d.short}: its validators' votes (fast finality), {d.finality.range} on Nov 1 · one speed, the watcher's next round
+                    </span>
+                  </a>
+                </li>
+              ) : (
+                <>
+                  <li class="fact">
+                    <a class="fact__link" href="#/network">
+                      <span class="fact__num">
+                        {d.fastConfirmations}
+                        <span class="unit">blocks</span>
+                      </span>
+                      <span class="fact__text">
+                        of {d.short} before a Fast release: 36 s at {d.blockSeconds} s each, as long as Sepolia's 3 confirmations
+                      </span>
+                    </a>
+                  </li>
+                  <li class="fact">
+                    <a class="fact__link" href={`#/receipt/${burnKey(d.key, firsts?.burn ?? 0)}`}>
+                      <span class="fact__num">
+                        <span class="fact__approx">≈</span>
+                        {Math.round(d.finality.seconds / 60)}
+                        <span class="unit">min</span>
+                      </span>
+                      <span class="fact__text">for a burn to be final on {d.short}, its batch final on Sepolia · burn 0, released at finality Oct 28</span>
+                    </a>
+                  </li>
+                </>
+              )}
               <li class="fact">
                 <a class="fact__link" href="#/network">
                   <span class="fact__num">
                     <span class="fact__approx">≤</span>1<span class="unit">tPOT</span>
                   </span>
-                  <span class="fact__text">per Fast burn, and 1 tPOT in all across the three chains before finality; larger burns go Standard</span>
+                  <span class="fact__text">per Fast burn, and 1 tPOT in all across the {DESTS_WORD} chains before finality; larger burns go Standard</span>
                 </a>
               </li>
             </>

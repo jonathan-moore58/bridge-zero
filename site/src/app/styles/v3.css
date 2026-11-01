@@ -877,6 +877,12 @@
   fill: var(--text-2);
 }
 
+/* The BNB Smart Chain's text mark: three letters where an initial has one. */
+.mark[data-mark="bnb"] .mark__letter text {
+  font-size: 7px;
+  letter-spacing: -0.02em;
+}
+
 /* The pair of chips on a transfer: the front one keeps its own edge inside the ring in the surface colour. */
 .pairmark .mark--logo:first-child {
   box-shadow: inset 0 0 0 1px var(--line-2), 0 0 0 2px var(--ink-2);

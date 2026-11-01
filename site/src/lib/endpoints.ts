@@ -46,3 +46,15 @@ export const ARBITRUM_SEPOLIA: Endpoint[] = [
   { id: "arbitrum-official", label: "sepolia-rollup.arbitrum.io", url: "https://sepolia-rollup.arbitrum.io/rpc", batch: 8 },
   { id: "arbitrum-publicnode", label: "arbitrum-sepolia-rpc.publicnode.com", url: "https://arbitrum-sepolia-rpc.publicnode.com", batch: 8, logRange: 50_000 },
 ];
+
+/**
+ * The BNB Smart Chain testnet (chain 97), measured on Nov 1, 2026: both answered eth_chainId, a batch
+ * of eight and a CORS preflight from the page's origin. The public node first: the only public RPC
+ * there that serves eth_getLogs, up to 50,000 blocks a call, though it keeps logs and receipts only
+ * about 8 to 11 hours (older logs come back empty). Then the official endpoint, which serves no logs
+ * at all (`logRange` 0 keeps it out of every log search) but keeps receipts for 90 days and more.
+ */
+export const BSC_TESTNET: Endpoint[] = [
+  { id: "bsc-publicnode", label: "bsc-testnet-rpc.publicnode.com", url: "https://bsc-testnet-rpc.publicnode.com", batch: 8, logRange: 50_000 },
+  { id: "bsc-official", label: "bsc-testnet.bnbchain.org", url: "https://bsc-testnet.bnbchain.org", batch: 8, logRange: 0 },
+];

@@ -9,7 +9,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { nodeConsoleBlock, records } from "../../lib/chains.ts";
 import { checksum } from "../../lib/display.ts";
 import type { Hex } from "../../lib/records-types.ts";
-import { deployed, destOf, explorerAddress, explorerBlock, explorerTx, type Dest, type DestKey } from "../dests.ts";
+import { deployed, destOf, explorerAddress, explorerBlock, explorerTx, fastConfirmationsOf, type Dest, type DestKey } from "../dests.ts";
 import { FAST_CAP, IMPORT_GAS, SPEED_NAME, fromOf, mintGasText, timeOf, toOf, type ChainInfo, type Dir, type Speed } from "../facts.ts";
 import { AUTO_MINT, autoMints, handoffOf, handoffProgress, mintDueAt, relayWait, utcClock, type RelayWait } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
@@ -177,10 +177,17 @@ function trustOf(d: Dest) {
         ]
       : [
           "trust",
-          `Fast releases after ${d.fastConfirmations} blocks, 36 s, before its batch is final on Sepolia. A restart or a failover of ${d.short}'s sequencer that drops them could undo the burn after the release.`,
+          `Fast releases after ${fastConfirmationsOf(d)} blocks, 36 s, before its batch is final on Sepolia. A restart or a failover of ${d.short}'s sequencer that drops them could undo the burn after the release.`,
           "Before its batch is final · a sequencer restart could undo it",
         ],
-    finality: ["verify", sep ? "Waits until Sepolia cannot revert the burn." : `Waits until ${d.short}'s batch is final on Sepolia: then nothing can revert the burn.`],
+    finality: [
+      "verify",
+      sep
+        ? "Waits until Sepolia cannot revert the burn."
+        : d.finality.kind === "votes"
+          ? `Waits until ${d.short}'s validators have finalized the burn, about a second: then nothing can revert it.`
+          : `Waits until ${d.short}'s batch is final on Sepolia: then nothing can revert the burn.`,
+    ],
     release: ["trust", "Trusted: 2 of 3 members approve. Nothing on V3 checks the burn."],
   } as const satisfies Record<string, Trust>;
 }
@@ -606,7 +613,7 @@ export function TrustPanel({
           <dd class="kv__v">
             {speed === "fast" ? (
               <>
-                Fast <span class="kv__note">· after {d.fastConfirmations} confirmations, up to {FAST_CAP} tPOT</span>
+                Fast <span class="kv__note">· after {fastConfirmationsOf(d)} confirmations, up to {FAST_CAP} tPOT</span>
               </>
             ) : speed === null ? (
               <>
@@ -691,9 +698,11 @@ const liveCountdown = (prefix: string, blocks: number, d: Dest): Line => countdo
 
 const finalityAhead = (prefix: string, d: Dest) => {
   const [t, src] = timeOf(d.key, "std");
-  return d.key === "sepolia" ? `${prefix}Sepolia finality, ${d.finality.range} · ${t} in all, ${src}` : `${prefix}${d.short}'s finality, its batch final on Sepolia, ${d.finality.range} · ${t} in all, est.`;
+  if (d.key === "sepolia") return `${prefix}Sepolia finality, ${d.finality.range} · ${t} in all, ${src}`;
+  if (d.finality.kind === "votes") return `${prefix}${d.short}'s finality, its validators' votes, ${d.finality.range} · ${t} in all, est.`;
+  return `${prefix}${d.short}'s finality, its batch final on Sepolia, ${d.finality.range} · ${t} in all, est.`;
 };
-const releaseAhead = (fast: boolean, d: Dest) => (fast ? `After ${d.fastConfirmations} confirmations · nothing to sign` : "About a minute after finality, by the watcher · nothing to sign");
+const releaseAhead = (fast: boolean, d: Dest) => (fast ? `After ${fastConfirmationsOf(d)} confirmations · nothing to sign` : "About a minute after finality, by the watcher · nothing to sign");
 /** Burn 0's, on its replay: released by hand, before the watcher existed. */
 const RECORDED_FINALITY = `${STD_RUN.finLabel} · ${dur(STD_RUN.total)} in all, released by hand (burn ${STD_RUN.burn}, Oct 20)`;
 const RECORDED_RELEASE = `${STD_RUN.relLabel} after finality · nothing to sign`;
@@ -1186,7 +1195,7 @@ function liveIn(x: LockTransfer, now: number, evm: string | null, behind: number
  * on a rollup), drawn as three dots, each a third of them.
  */
 function confsStep(x: Step, d: Dest, block: number, c: number, qualified: boolean): void {
-  const n = d.fastConfirmations;
+  const n = Math.max(1, fastConfirmationsOf(d));
   const k = qualified ? n : Math.min(n, Math.max(0, c));
   x.st = qualified ? "done" : "active";
   x.p = k / n;
@@ -1223,10 +1232,10 @@ function liveBack(x: BurnTransfer, now: number): TxState {
     if (fast) B.time = secs(Math.max(0, (burned.minedAt - x.startedAt) / 1000));
   }
 
-  const qualified = depth.qualifiedAt !== null || (fast ? depth.confirmations >= d.fastConfirmations : depth.final);
+  const qualified = depth.qualifiedAt !== null || (fast ? depth.confirmations >= fastConfirmationsOf(d) : depth.final);
   let mid: Step;
   if (fast) {
-    mid = step("confs", `${d.fastConfirmations} confirmations`, TRUST.confs);
+    mid = step("confs", `${fastConfirmationsOf(d)} confirmations`, TRUST.confs);
     mid.keep = true;
     if (!burned) mid.sub = "Then the watcher, every 15 s, qualifies the burn";
     else confsStep(mid, d, burned.block, depth.confirmations, qualified);
@@ -1395,8 +1404,8 @@ function chainBack(x: ChainBurn, now: number): TxState {
   const h = x.heads;
   const depth = h ? Math.max(0, h.latest - x.block) : 0;
   const final = h !== null && h.finalized >= x.block;
-  const qualified = h !== null && (final || (fast && depth >= d.fastConfirmations));
-  const mid = fast ? step("confs", `${d.fastConfirmations} confirmations`, TRUST.confs) : step("finality", `${d.short} finality`, TRUST.finality);
+  const qualified = h !== null && (final || (fast && depth >= fastConfirmationsOf(d)));
+  const mid = fast ? step("confs", `${fastConfirmationsOf(d)} confirmations`, TRUST.confs) : step("finality", `${d.short} finality`, TRUST.finality);
   mid.keep = fast;
   if (!h) {
     mid.st = "active";

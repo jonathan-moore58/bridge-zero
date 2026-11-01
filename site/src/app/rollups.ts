@@ -1,4 +1,5 @@
-// The V3 light client on the rollups of ./dests.ts, read live for the Network page and for the
+// The V3 light client on the rollups of ./dests.ts (every destination shown but Sepolia: the BNB
+// Smart Chain testnet too, once it is shown), read live for the Network page and for the
 // status of a page about a rollup (net.ts, App.tsx): its set, its latest header, its threshold and
 // pause flags (../lib/lc-read.ts), every 30 s while the page is open and the tab visible. And the
 // bridge there, for the Network page's vault card: wtPOT's supply on each rollup, its minter's
@@ -13,10 +14,10 @@ import type { Hex } from "../lib/hex.ts";
 import { readClient, recordedClient, searchImport, type ClientState } from "../lib/lc-read.ts";
 import { burnId } from "../lib/proofs.ts";
 import { request } from "../lib/rpc.ts";
-import { ROLLUPS, deployed, destOf, type Dest } from "./dests.ts";
+import { ROLLUPS, clientOf, deployed, destOf, type Dest, type RollupKey } from "./dests.ts";
 import { Box, useBox } from "./store.ts";
 
-export type RollupKey = "base-sepolia" | "arbitrum-sepolia";
+export type { RollupKey };
 
 /** V3's validator set has had 2 keys since the rollup clients' checkpoint (set 59): the recorded threshold is theirs. */
 const V3_KEYS = records.lightClients.v3.fixtureSet.keys.length;
@@ -38,7 +39,7 @@ function boxOf(key: RollupKey): Box<Field<ClientState>> {
 
 async function readOne(d: Dest, key: RollupKey): Promise<void> {
   const b = boxOf(key);
-  b.set(await nextField(b.get(), () => readClient([...d.rpcs], d.lightClient), recorded(key)));
+  b.set(await nextField(b.get(), () => readClient([...d.rpcs], clientOf(d).lightClient), recorded(key)));
 }
 
 let lastRead = 0;
@@ -110,7 +111,7 @@ export function lookImport(key: RollupKey, c: ClientState): Promise<ImportLookup
     try {
       const head = Number(BigInt((await request<string>([...d.rpcs], "eth_blockNumber", [])).result));
       const from = facts?.latestImport?.block ?? facts?.deployBlock ?? 0;
-      const r = await searchImport([...d.rpcs], d.lightClient, c.latestHash, from, head);
+      const r = await searchImport([...d.rpcs], clientOf(d).lightClient, c.latestHash, from, head);
       if ("before" in r) return { before: r.before.at, block: r.before.block };
       return { at: r.found.at, what: what(r.found.signedBy, c.setId), tx: r.found.tx, block: r.found.block };
     } catch {

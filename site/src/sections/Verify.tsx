@@ -1,8 +1,10 @@
 import { useState } from "preact/hooks";
 import { Chevron, Doc, GitHub, Shield, Terminal } from "../components/icons.tsx";
 import { CopyButton, ExtLink, Md, SectionHead } from "../components/ui.tsx";
+import { ALL_DESTS } from "../app/dests.ts";
 import { etherscanTx, records, REPO, repoFile, repoTree } from "../lib/chains.ts";
 import { shortHex } from "../lib/hex.ts";
+import type { RollupNetwork } from "../lib/records-types.ts";
 
 const V = records.verify;
 
@@ -18,8 +20,8 @@ const LINKS = [
 /** The groups shown before "show all": the light clients, the thresholds, the state roots, the minter. */
 const FIRST_GROUPS = 4;
 
-/** The explorers the README links the rollups' evidence rows to. */
-const ROLLUP_SCAN = { "base-sepolia": "https://sepolia.basescan.org", "arbitrum-sepolia": "https://sepolia.arbiscan.io" } as const;
+/** The explorers the README links the other chains' evidence rows to: each destination's own (../app/dests.ts), the hidden ones' too. */
+const ROLLUP_SCAN = Object.fromEntries(ALL_DESTS.filter((d) => d.key !== "sepolia").map((d) => [d.key, d.explorer.url])) as Record<RollupNetwork, string>;
 
 /**
  * A command, wrapped only between its words: a flag such as --rpc-url or a variable stays whole on
