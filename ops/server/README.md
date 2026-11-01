@@ -208,7 +208,7 @@ nothing starts elsewhere: its units start at boot with `--send`.
 - **A code update:**
 
   ```sh
-  sudo systemctl stop bz-rollups.timer; while systemctl is-active --quiet bz-rollups.service; do sleep 10; done
+  sudo systemctl stop bz-rollups.timer; while [ "$(systemctl is-active bz-rollups.service)" = activating ]; do sleep 10; done
   ~/bz-ops/bz-stop-at-idle.sh bz-release && ~/bz-ops/bz-stop-at-idle.sh bz-automint && ~/bz-ops/bz-stop-at-idle.sh bz-relay-v3 && ~/bz-ops/bz-stop-at-idle.sh bz-relay-mainnet && echo "all four stopped"
   cd ~/bridge-zero && live=~/bz-ops/v3-testnet.live.$(date +%Y%m%d-%H%M).json && cp -p deployments/v3-testnet.json "$live"
   git pull --ff-only || { git checkout -- deployments/v3-testnet.json && git pull --ff-only; }
