@@ -22,19 +22,18 @@ export interface EvidenceChainInfo {
 }
 
 /**
- * In the order the evidence starts on each: Sepolia, V3, then the rollups. And the BNB Smart Chain
- * testnet, whose rows the README has once its first round trip is recorded (hidden in the app until
- * then: ../app/dests.ts, HIDDEN); a chain with no row is not counted.
+ * In the order the evidence starts on each: Sepolia, V3, the rollups, then the BNB Smart Chain
+ * testnet (rows 129 to 149, Nov 1); a chain with no row is not counted.
  */
 export const EVIDENCE_CHAINS: Readonly<Record<EvidenceChain, EvidenceChainInfo>> = {
   sepolia: { name: "Sepolia", short: "Sepolia", word: "Sepolia", explorer: "https://sepolia.etherscan.io" },
   v3: { name: "Portaldot V3 testnet", short: "V3", word: "V3", explorer: "https://node-console.portaldot.dev" },
   "base-sepolia": { name: "Base Sepolia", short: "Base Sepolia", word: "Base", explorer: "https://sepolia.basescan.org" },
   "arbitrum-sepolia": { name: "Arbitrum Sepolia", short: "Arbitrum Sepolia", word: "Arbitrum", explorer: "https://sepolia.arbiscan.io" },
-  "bsc-testnet": { name: "BNB Smart Chain testnet", short: "BNB Smart Chain testnet", word: "BSC", explorer: "https://testnet.bscscan.com" },
+  "bsc-testnet": { name: "BNB Smart Chain testnet", short: "the BNB Smart Chain testnet", word: "BSC", explorer: "https://testnet.bscscan.com" },
 };
 
-/** How many rows are on each chain, as the README counts them: "58 on Sepolia, 22 on V3, 24 on Base Sepolia and 24 on Arbitrum Sepolia". */
+/** How many rows are on each chain, as the README counts them: "58 on Sepolia, 25 on V3, 24 on Base Sepolia, 24 on Arbitrum Sepolia and 18 on the BNB Smart Chain testnet". */
 export function perChain(rows: readonly Pick<EvidenceRow, "chain">[]): string {
   const parts = (Object.keys(EVIDENCE_CHAINS) as EvidenceChain[]).flatMap((c) => {
     const n = rows.filter((r) => r.chain === c).length;

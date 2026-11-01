@@ -435,13 +435,13 @@ test("the rollups' runs, which the app serves without searching their logs: auto
   }
 });
 
-test("every recorded lock with its mint, which the Verify page lists and checks: six locks, lock 3 held at #222,687, locks 4 and 5 on the rollups", () => {
+test("every recorded lock with its mint, which the Verify page lists and checks: seven locks, lock 3 held at #222,687, locks 4 and 5 on the rollups, lock 8 on the BNB Smart Chain testnet", () => {
   const v3 = JSON.parse(readFileSync(join(repo, "deployments", "v3-testnet.json"), "utf8"));
   const locked = (v3.locks as { status: string }[]).filter((l) => l.status === "locked");
   assert.equal(r.locks.length, locked.length);
   assert.deepEqual(
     r.locks.map((l) => l.nonce),
-    [0, 1, 2, 3, 4, 5],
+    [0, 1, 2, 3, 4, 5, 8],
   );
   const SEP = 11155111;
   assert.deepEqual(
@@ -453,12 +453,13 @@ test("every recorded lock with its mint, which the Verify page lists and checks:
       [3, "substrate", SEP, SEP, "0xb6e2a07b2a60cde09552b347c47674ab1979429963f7fdeb659bc4eaacf36f56", 12_007_927, "held", 222_687],
       [4, "evm", 84532, 84532, "0x0f300c8e34173d8d789605b3596cc7b3e9c869c3e2a7498114937bcf8769122e", 51_159_736, "head", 225_845],
       [5, "evm", 421614, 421614, "0x4443486b03deaff4f8b232bce4bdd091a8f4accaa46b0d14a5f060b39f2aea7d", 323_534_868, "head", 225_852],
+      [8, "evm", 97, 97, "0x81f73eb92d43381f8ced3f8e4866f455f32811cc053b68b2c8ac6242ab93eea5", 140_165_449, "head", 275_580],
     ],
   );
   // Locks 0 and 1 by the mint tool (sepolia-bridge.json), the rest by auto-mint's histories.
   assert.deepEqual(
     r.locks.map((l) => l.mint?.from.replace(/-0x[0-9a-f]{40}\.jsonl$/, "")),
-    ["deployments/sepolia-bridge.json", "deployments/sepolia-bridge.json", "deployments/automint-sepolia", "deployments/automint-sepolia", "deployments/automint-base-sepolia", "deployments/automint-arbitrum-sepolia"],
+    ["deployments/sepolia-bridge.json", "deployments/sepolia-bridge.json", "deployments/automint-sepolia", "deployments/automint-sepolia", "deployments/automint-base-sepolia", "deployments/automint-arbitrum-sepolia", "deployments/automint-bsc-testnet"],
   );
   // Each against the V3 record and the auto-mint histories: the lock's fields, and its commitment recomputed for the chain it names.
   for (const l of r.locks) {
@@ -659,12 +660,12 @@ test("the status page's evidence list: every row of the README from 1 to the las
   }
   // The rollups' rows are all there: their deployments, relays, mints, burns and fundings.
   for (const n of [61, 68, 76, 82, 88, 97, 100, 107, 115, 116, 118, 120, 121, 124]) assert.notEqual(rows.find((x) => x.n === n)?.chain, "sepolia", `row ${n}`);
-  // The README's own count, "The evidence tables number 128 transactions: 58 on Sepolia, 22 on V3 (…), 24 on Base Sepolia and 24 on Arbitrum Sepolia."
-  const said = /The \[evidence tables\]\(#evidence\) number (\d+) transactions: (\d+) on Sepolia, (\d+) on V3 \([^)]*\), (\d+) on Base Sepolia and (\d+) on Arbitrum Sepolia/.exec(md.replace(/\s+/g, " "));
+  // The README's own count, "The evidence tables number 149 transactions: 58 on Sepolia, 25 on V3 (…), 24 on Base Sepolia, 24 on Arbitrum Sepolia and 18 on the BNB Smart Chain testnet."
+  const said = /The \[evidence tables\]\(#evidence\) number (\d+) transactions: (\d+) on Sepolia, (\d+) on V3 \([^)]*\), (\d+) on Base Sepolia, (\d+) on Arbitrum Sepolia and (\d+) on the BNB Smart Chain testnet/.exec(md.replace(/\s+/g, " "));
   assert.ok(said, "the README counts its rows");
   const count = (c: EvidenceChain) => rows.filter((x) => x.chain === c).length;
-  assert.deepEqual(said.slice(1).map(Number), [rows.length, count("sepolia"), count("v3"), count("base-sepolia"), count("arbitrum-sepolia")]);
-  assert.equal(perChain(rows), `${count("sepolia")} on Sepolia, ${count("v3")} on V3, ${count("base-sepolia")} on Base Sepolia and ${count("arbitrum-sepolia")} on Arbitrum Sepolia`);
+  assert.deepEqual(said.slice(1).map(Number), [rows.length, count("sepolia"), count("v3"), count("base-sepolia"), count("arbitrum-sepolia"), count("bsc-testnet")]);
+  assert.equal(perChain(rows), `${count("sepolia")} on Sepolia, ${count("v3")} on V3, ${count("base-sepolia")} on Base Sepolia, ${count("arbitrum-sepolia")} on Arbitrum Sepolia and ${count("bsc-testnet")} on the BNB Smart Chain testnet`);
   // A V3 row's hash would stay as the README prints it only while no record in deployments/ holds it in full: none does.
   const held = new Set<string>();
   for (const f of readdirSync(join(repo, "deployments"))) for (const h of readFileSync(join(repo, "deployments", f), "utf8").matchAll(/0x[0-9a-fA-F]{64}/g)) held.add(h[0].toLowerCase());
@@ -700,12 +701,12 @@ test("the evidence chains link where the app links them: Etherscan, Basescan and
   for (const c of Object.values(EVIDENCE_CHAINS)) assert.equal(withoutChainWord(`${c.word} 1,234`), " 1,234", c.word);
   assert.equal(withoutChainWord("V3 [#231,112]"), " [#231,112]");
   const tx = `0x${"ab".repeat(32)}` as const;
-  // A BNB Smart Chain testnet row, once its first round trip is recorded, links its transaction on BscScan; the README has none yet, and the count names no such chain.
+  // A BNB Smart Chain testnet row links its transaction on BscScan; the README's 18 there, rows 129 to 144, 146 and 147, are its deployment and its first round trip, and the count names the chain.
   const bsc = parseEvidence(`| 7 | A burn | [\`0xabababab…\`](https://testnet.bscscan.com/tx/${tx}) | BSC 72,105,331 | success |`);
   assert.deepEqual(bsc.map((x) => [x.n, x.chain, x.tx, x.block]), [[7, "bsc-testnet", tx, 72_105_331]]);
   assert.deepEqual(evidenceCell(bsc[0]!).hash, { text: "0xababab…abab", href: `https://testnet.bscscan.com/tx/${tx}`, title: "BNB Smart Chain testnet, block 72,105,331" });
-  assert.equal(r.evidence.filter((x) => x.chain === "bsc-testnet").length, 0);
-  assert.ok(!perChain(r.evidence).includes("BNB Smart Chain"), perChain(r.evidence));
+  assert.deepEqual(r.evidence.filter((x) => x.chain === "bsc-testnet").map((x) => x.n), [...Array.from({ length: 16 }, (_, i) => 129 + i), 146, 147]);
+  assert.ok(perChain(r.evidence).endsWith(" and 18 on the BNB Smart Chain testnet"), perChain(r.evidence));
   assert.deepEqual(evidenceCell({ chain: "arbitrum-sepolia", tx, txText: "0xabababab…", block: 323_663_335, blockUrl: null }), {
     where: { text: "Arbitrum 323,663,335", href: null, title: "Arbitrum Sepolia" },
     hash: { text: "0xababab…abab", href: `https://sepolia.arbiscan.io/tx/${tx}`, title: "Arbitrum Sepolia, block 323,663,335" },
