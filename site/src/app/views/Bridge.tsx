@@ -992,7 +992,7 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
             <p class="lane__label">
               <Icon id="i-users" cls="i--14" />
               <span>
-                <strong>Trusted</strong> · 2-of-3 committee<span class="lane__more"> releases · fast {timeOf(d.key, "fast")[0]}</span>
+                <strong>Trusted</strong> · 2-of-3 committee<span class="lane__more"> releases · {d.fastConfirmations === null ? timeOf(d.key, "std")[0] : `fast ${timeOf(d.key, "fast")[0]}`}</span>
               </span>
             </p>
           </div>
@@ -1461,7 +1461,12 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
   const words = backWords(d);
   const stdTime = timeParts(timeOf(d.key, "std")[0]);
   const fastTime = timeParts(timeOf(d.key, "fast")[0]);
-  const explainSpeed = () => toast("info", "The amount sets the speed", `Up to 1 tPOT goes Fast, after ${words.confs}. More goes Standard, after ${words.final}.`);
+  // One speed where the watcher waits for finality (the BNB Smart Chain testnet's, about a second): no Fast option, whatever the amount.
+  const oneSpeed = d.fastConfirmations === null;
+  const explainSpeed = () =>
+    oneSpeed
+      ? toast("info", `One speed on ${d.short}`, `Every burn is released after ${words.final}, whatever the amount.`)
+      : toast("info", "The amount sets the speed", `Up to 1 tPOT goes Fast, after ${words.confs}. More goes Standard, after ${words.final}.`);
 
   // The line under the amount: only before an amount is in, to say what 1 token becomes.
   const subShown = !(k.ready && k.value > 0 && !k.short);
@@ -1714,12 +1719,20 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               </p>
             </div>
             <Tip id="tip-back" label="About the committee">
-              Two of the three committee members must approve the release on V3. Both speeds are trusted. The amount sets the speed: Fast releases after {words.confs},
-              before finality, up to 1 tPOT per burn and up to 1 tPOT in all across fast releases whose burn is not final yet, on every chain; a larger burn goes
-              Standard, after finality. {words.reorg} after V3 has released, which would break the 1:1 backing. On the testnet one operator holds all three keys,
-              and the watcher that sends their approvals runs on one machine: while it is off, burns wait. Once sent, a burn cannot be cancelled.
+              Two of the three committee members must approve the release on V3.{" "}
+              {oneSpeed ? (
+                <>The release is trusted. One speed on {d.short}: the watcher releases a burn of any amount after {words.final}.</>
+              ) : (
+                <>
+                  Both speeds are trusted. The amount sets the speed: Fast releases after {words.confs}, before finality, up to 1 tPOT per burn and up to 1 tPOT in
+                  all across fast releases whose burn is not final yet, on every chain; a larger burn goes Standard, after finality. {words.reorg} after V3 has
+                  released, which would break the 1:1 backing.
+                </>
+              )}{" "}
+              On the testnet one operator holds all three keys, and the watcher that sends their approvals runs on one machine: while it is off, burns wait. Once
+              sent, a burn cannot be cancelled.
             </Tip>
-            <div class="speed" role="radiogroup" aria-readonly="true" aria-label="Release speed, set by the amount">
+            <div class="speed" role="radiogroup" aria-readonly="true" aria-label={oneSpeed ? `Release speed: one speed on ${d.short}` : "Release speed, set by the amount"}>
               <button class="opt opt--row" type="button" role="radio" id="opt-std" aria-checked={k.speed === "std"} tabIndex={k.speed === "std" ? 0 : -1} onClick={explainSpeed}>
                 <span class="opt__head">
                   <span class="opt__icon" aria-hidden="true">
@@ -1736,33 +1749,35 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
                 </span>
                 <span class="opt__src">{timeOf(d.key, "std")[1]}</span>
               </button>
-              <button
-                class="opt opt--row"
-                type="button"
-                role="radio"
-                id="opt-fast"
-                aria-checked={k.speed === "fast"}
-                aria-disabled={!k.fastOK}
-                tabIndex={k.speed === "fast" ? 0 : -1}
-                onClick={explainSpeed}
-              >
-                <span class="opt__head">
-                  <span class="opt__icon" aria-hidden="true">
-                    <Icon id="i-bolt" />
+              {oneSpeed ? null : (
+                <button
+                  class="opt opt--row"
+                  type="button"
+                  role="radio"
+                  id="opt-fast"
+                  aria-checked={k.speed === "fast"}
+                  aria-disabled={!k.fastOK}
+                  tabIndex={k.speed === "fast" ? 0 : -1}
+                  onClick={explainSpeed}
+                >
+                  <span class="opt__head">
+                    <span class="opt__icon" aria-hidden="true">
+                      <Icon id="i-bolt" />
+                    </span>
+                    <span class="opt__title">Fast</span>
+                    <span class="opt__time">
+                      {fastTime[0]}
+                      <span class="unit">{fastTime[1]}</span>
+                    </span>
                   </span>
-                  <span class="opt__title">Fast</span>
-                  <span class="opt__time">
-                    {fastTime[0]}
-                    <span class="unit">{fastTime[1]}</span>
+                  <span class="opt__meta">
+                    <span>{k.fastOK ? "≤ 1 tPOT" : "Over the 1 tPOT cap"}</span>
                   </span>
-                </span>
-                <span class="opt__meta">
-                  <span>{k.fastOK ? "≤ 1 tPOT" : "Over the 1 tPOT cap"}</span>
-                </span>
-                <span class="opt__src">{timeOf(d.key, "fast")[1]}</span>
-              </button>
+                  <span class="opt__src">{timeOf(d.key, "fast")[1]}</span>
+                </button>
+              )}
             </div>
-            <p class="speed__fix" hidden={k.fastOK || dir !== "back"}>
+            <p class="speed__fix" hidden={k.fastOK || dir !== "back" || oneSpeed}>
               <span>Fast takes up to 1 tPOT per burn.</span>{" "}
               <button
                 class="text-link"

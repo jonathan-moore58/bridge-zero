@@ -1310,7 +1310,7 @@ function chainHead(x: ChainTransfer, id: string): Head {
   const d = destOf(x.dest);
   return {
     dest: x.dest,
-    mode: x.dir === "in" ? "in" : watcherSpeed(x.amount),
+    mode: x.dir === "in" ? "in" : watcherSpeed(x.amount, d),
     amount: toTokens(x.amount),
     amountText: amountText(x.amount),
     label: x.dir === "in" ? `Lock ${x.nonce}` : d.key === "sepolia" ? `Burn ${x.n}` : `Burn ${x.n} on ${d.short}`,
@@ -1395,7 +1395,8 @@ function chainBack(x: ChainBurn, now: number): TxState {
   const amt = fmt(toTokens(x.amount));
   const d = destOf(x.dest);
   const TRUST = trustOf(d);
-  const fast = watcherSpeed(x.amount) === "fast";
+  // One speed where the watcher waits for finality (the BNB Smart Chain testnet's): its burns are never fast.
+  const fast = watcherSpeed(x.amount, d) === "fast";
   const B = step("burn", `Burn on ${d.short}`, TRUST.burn);
   B.st = "done";
   B.sub = `${amt} wtPOT burned in ${d.short} block #${num(x.block)}`;

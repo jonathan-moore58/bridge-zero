@@ -532,6 +532,25 @@ test("its entry: chain 97 as viem knows it, its names, the text mark, BscScan, t
   }
 });
 
+test("one speed on the BNB Smart Chain testnet: its burns never fast on the transfer screen, and no Fast option nor fast release on the card there", () => {
+  // transfers.ts watcherSpeed: Fast up to the cap where the destination has fast confirmations; a call without one would take every chain's as fast.
+  const transfers = readFileSync(join(here, "..", "src", "app", "transfers.ts"), "utf8");
+  assert.match(transfers, /export const watcherSpeed = \(amount: bigint, d\?: Dest\): Speed => \(toTokens\(amount\) <= FAST_CAP && d\?\.fastConfirmations !== null \? "fast" : "std"\);/);
+  const tx = readFileSync(join(here, "..", "src", "app", "views", "Tx.tsx"), "utf8");
+  assert.match(tx, /mode: x\.dir === "in" \? "in" : watcherSpeed\(x\.amount, d\),/);
+  assert.match(tx, /const fast = watcherSpeed\(x\.amount, d\) === "fast";/);
+  for (const src of [tx, readFileSync(join(here, "..", "src", "app", "sends.ts"), "utf8")]) assert.doesNotMatch(src, /watcherSpeed\([^,()]+\)/, "every call names the destination");
+  const bridge = readFileSync(join(here, "..", "src", "app", "views", "Bridge.tsx"), "utf8");
+  assert.match(bridge, /const oneSpeed = d\.fastConfirmations === null;/);
+  assert.match(bridge, /\{oneSpeed \? null : \(\s*<button[^>]*?id="opt-fast"/);
+  assert.match(bridge, /<p class="speed__fix" hidden=\{k\.fastOK \|\| dir !== "back" \|\| oneSpeed\}>/);
+  assert.match(bridge, /\{oneSpeed \? \(\s*<>The release is trusted\. One speed on \{d\.short\}: the watcher releases a burn of any amount after \{words\.final\}\.<\/>/);
+  assert.match(bridge, /releases · \{d\.fastConfirmations === null \? timeOf\(d\.key, "std"\)\[0\] : `fast \$\{timeOf\(d\.key, "fast"\)\[0\]\}`\}/);
+  assert.equal(destOf("bsc-testnet", ALL_DESTS).fastConfirmations, null);
+  // The three as before: Fast up to 1 tPOT on each.
+  for (const key of ["sepolia", "base-sepolia", "arbitrum-sepolia"] as const) assert.notEqual(destOf(key).fastConfirmations, null, key);
+});
+
 test("as its activation leaves it: picked on either side, its lock told from the rollups' by chain id 97, its burns' ids", () => {
   const rows = pickRows("to", "in", "sepolia", ACTIVE, ACTIVE_SENDS);
   assert.deepEqual(rows.find((r) => r.key === "bsc-testnet"), { key: "bsc-testnet", state: "open", to: { dir: "in", dest: "bsc-testnet" } });
