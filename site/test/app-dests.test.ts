@@ -42,7 +42,30 @@ import {
   type Dest,
   type DestKey,
 } from "../src/app/dests.ts";
-import { AUTO_TIME, BURN_GAS, BURN_GAS_FULL, CH, DESTS_WORD, LATER_CHAINS, MINT_GAS, MINT_GAS_FULL, OTHER_CHAINS, SEPOLIA_FINALITY, TIME, chainById, fromOf, sendChain, timeOf, toOf } from "../src/app/facts.ts";
+import {
+  AUTO_TIME,
+  BURN_GAS,
+  BURN_GAS_FULL,
+  CH,
+  DESTS_WORD,
+  FAST_BUDGET_LINE,
+  LATER_CHAINS,
+  MINT_GAS,
+  MINT_GAS_FULL,
+  OTHER_CHAINS,
+  ROLLUP_RUNS,
+  SEPOLIA_FINALITY,
+  SLOW_RELEASE_MS,
+  TIME,
+  aboutMinutes,
+  chainById,
+  fastWait,
+  fromOf,
+  sendChain,
+  timeOf,
+  toOf,
+} from "../src/app/facts.ts";
+import { SEPOLIA, SEPOLIA_HISTORY, SEPOLIA_LOGS } from "../src/lib/endpoints.ts";
 import type { Hex } from "../src/lib/hex.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -145,7 +168,6 @@ test("two or more public RPCs each, over https and distinct; the CSP adds exactl
   assert.deepEqual(connectOf(false), BRIDGE_NODES);
   assert.deepEqual(BRIDGE_NODES, [
     "https://ethereum-sepolia-rpc.publicnode.com",
-    "https://sepolia.drpc.org",
     "https://sepolia.gateway.tenderly.co",
     "https://test-evm-rpc-v3.portaldot.dev",
     "https://test-node-v3.portaldot.dev",
@@ -155,6 +177,9 @@ test("two or more public RPCs each, over https and distinct; the CSP adds exactl
   const connect = (p: string) => (p.split("; ").find((x) => x.startsWith("connect-src ")) ?? "").split(" ").slice(1);
   assert.deepEqual(connect(cspPolicy(true)), connectOf(true));
   assert.deepEqual(connect(cspPolicy(false)), BRIDGE_NODES);
+  // sepolia.drpc.org's free plan refuses Sepolia since Oct 28: no list reads it, and neither page's policy lets it connect.
+  for (const list of [SEPOLIA, SEPOLIA_HISTORY, SEPOLIA_LOGS]) assert.ok(!list.some((e) => /drpc/.test(e.url)), list.map((e) => e.url).join(", "));
+  for (const app of [true, false]) assert.ok(!cspPolicy(app).includes("drpc"), `the ${app ? "app's" : "status page's"} policy`);
   assert.ok(cspPolicy(true).includes("img-src 'self' data:"), "the marks are served with the page");
 });
 
@@ -418,18 +443,70 @@ test("each destination's explorer links its transactions and blocks", () => {
   assert.equal(explorerTx(destOf("sepolia"), h), `https://sepolia.etherscan.io/tx/${h}`);
 });
 
-test("the times the card states: Sepolia's as measured, unchanged; a rollup's as estimated, and said so", () => {
+test("the times the card states: Sepolia's as measured, unchanged; a rollup's as measured on Oct 28 where it ran, and an estimate said so where it did not", () => {
   assert.deepEqual(timeOf("sepolia", "in"), TIME.in);
   assert.deepEqual(timeOf("sepolia", "fast"), ["≈ 84 s", "measured Oct 24"]);
   assert.deepEqual(timeOf("sepolia", "std"), ["≈ 17 min", "est., with the watcher"]);
   assert.deepEqual(timeOf("sepolia", "auto"), AUTO_TIME);
+  // Auto-mint: each rollup's own run, 139 s and 133 s from the lock's V3 block, with the lock's own block (about 6 s), as Sepolia's 144 s is.
+  assert.deepEqual(timeOf("base-sepolia", "auto"), ["≈ 2½ min", "auto-mint, measured Oct 28"]);
+  assert.deepEqual(timeOf("arbitrum-sepolia", "auto"), ["≈ 2¼ min", "auto-mint, measured Oct 28"]);
+  assert.equal(aboutMinutes(144 + 6), AUTO_TIME[0], "the same rounding gives Sepolia's");
+  // Fast: Arbitrum Sepolia's burn 1, 105 s; Base Sepolia's burn 1 waited for the fast budget, so its time is Arbitrum Sepolia's, said to be.
+  assert.deepEqual(timeOf("arbitrum-sepolia", "fast"), ["≈ 105 s", "measured Oct 28"]);
+  assert.deepEqual(timeOf("base-sepolia", "fast"), ["≈ 105 s", "est., as measured on Arbitrum Sepolia"]);
   for (const d of ROLLUPS) {
-    for (const mode of ["in", "auto", "fast", "std"] as const) assert.match(timeOf(d.key, mode)[1], /^(est\.|as measured on Sepolia)/, `${d.key} ${mode}`);
-    assert.equal(timeOf(d.key, "auto")[0], AUTO_TIME[0]);
+    // No rollup has timed a mint sent by its locker, nor a release after finality.
+    assert.match(timeOf(d.key, "in")[1], /^as measured on Sepolia/, d.key);
+    assert.match(timeOf(d.key, "std")[1], /^est\./, d.key);
   }
   // Standard: the chain's own finality, then about a minute of the watcher's round and the approvals.
   assert.equal(timeOf("base-sepolia", "std")[0], "≈ 21 min");
   assert.equal(timeOf("arbitrum-sepolia", "std")[0], "≈ 19 min");
+  // The strip under the card states auto-mint's time as the card does, from timeOf: each rollup's own run, not Sepolia's of Oct 27.
+  const bridge = readFileSync(join(here, "..", "src", "app", "views", "Bridge.tsx"), "utf8");
+  const from = bridge.indexOf("function ProofStrip(");
+  const to = bridge.indexOf("function ChainButton(");
+  assert.ok(from > 0 && to > from, "Bridge.tsx's ProofStrip");
+  const strip = bridge.slice(from, to);
+  assert.ok(strip.includes('timeOf(d.key, "auto")'), "the strip reads auto-mint's time from timeOf");
+  assert.ok(!strip.includes("2½") && !strip.includes("as measured on Sepolia, Oct 27"), "no time of Sepolia's run stands for a rollup's");
+});
+
+test("the rollups' runs are the README's: lock 6 and lock 7 minted 139 s and 133 s after their V3 blocks, Arbitrum Sepolia's burn 1 released 105 s after its block", () => {
+  const readme = readFileSync(join(repo, "README.md"), "utf8").replace(/\s+/g, " ");
+  const app = readme.slice(readme.indexOf("### The app: the first transfers from the owner's own wallet"));
+  assert.ok(app.length > 0 && app.length < readme.length, "the README's section on the app's first transfers");
+  const run = (re: RegExp) => Number(re.exec(app)?.[1]);
+  assert.equal(run(/lock 6's V3 block is stamped \d\d:\d\d:\d\d and its mint's Base Sepolia block \d\d:\d\d:\d\d, (\d+) seconds/), ROLLUP_RUNS["base-sepolia"].auto);
+  assert.equal(run(/lock 7's V3 block \d\d:\d\d:\d\d and its mint's Arbitrum Sepolia block \d\d:\d\d:\d\d, (\d+) seconds/), ROLLUP_RUNS["arbitrum-sepolia"].auto);
+  assert.equal(run(/\| \*\*123\*\* \|[^|]*; (\d+) seconds after the burn's block\*\* \|/), ROLLUP_RUNS["arbitrum-sepolia"].fast);
+  // Base Sepolia's burn 1 waited for the fast budget: its 905 s are not a chain's time.
+  assert.match(app, /From Base Sepolia it took 905 seconds, .* because the fast budget was full/);
+  assert.equal(ROLLUP_RUNS["base-sepolia"].fast, null);
+});
+
+test("the fast budget: before a burn that goes Fast is signed, one line that it is shared; on the transfer screen, why a fast burn waits past Fast's usual time", () => {
+  assert.equal(FAST_BUDGET_LINE, "Fast mode shares one 1 tPOT budget across all chains: while another fast release is in flight, your burn can wait for finality.");
+  const arb = destOf("arbitrum-sepolia");
+  const t0 = 1_793_186_433_000;
+  const waiting = { qualifiedAt: t0, final: false, approvals: 0, released: false };
+  // Within Fast's usual time and the watcher's rounds: nothing to say.
+  assert.equal(fastWait(arb, waiting, t0 + SLOW_RELEASE_MS), null);
+  const late = fastWait(arb, waiting, t0 + SLOW_RELEASE_MS + 1);
+  // Its times keep to one line: no-break spaces inside "≈ 105 s" and "≈ 19 min".
+  assert.equal(
+    late?.replace(/\u00a0/g, " "),
+    "Fast usually takes ≈ 105 s. Fast mode shares one 1 tPOT budget across all chains: while another fast release holds it, your burn waits until that release's burn is final, or yours is (≈ 19 min, as Standard). Releases also wait while the committee's watcher, on one machine, is off.",
+  );
+  assert.ok(late?.includes("≈\u00a019\u00a0min") && late.includes("≈\u00a0105\u00a0s"));
+  // A burn read from the chains, whose approvals the page does not read, is said the same way.
+  assert.equal(fastWait(arb, { ...waiting, approvals: null }, t0 + 10 * 60_000), late);
+  assert.match(fastWait(destOf("sepolia"), waiting, t0 + 10 * 60_000)?.replace(/\u00a0/g, " ") ?? "", /^Fast usually takes ≈ 84 s\. .* \(≈ 17 min, as Standard\)\./);
+  // Base Sepolia's Fast is Arbitrum Sepolia's run, which its card calls an estimate: so does the note.
+  assert.match(fastWait(destOf("base-sepolia"), waiting, t0 + 10 * 60_000)?.replace(/\u00a0/g, " ") ?? "", /^Fast usually takes ≈ 105 s \(est\.\)\. .* \(≈ 21 min, as Standard\)\./);
+  // Not late: released, a member has approved, not qualified yet, or final on its chain, where the budget no longer holds it.
+  for (const done of [{ released: true }, { approvals: 1 }, { qualifiedAt: null }, { final: true }]) assert.equal(fastWait(arb, { ...waiting, ...done }, t0 + 10 * 60_000), null, JSON.stringify(done));
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -508,6 +585,11 @@ test("its entry: chain 97 as viem knows it, its names, the text mark, BscScan, t
   assert.ok(readFileSync(join(repo, "relayer", "src", "l1.ts"), "utf8").includes(`"bsc-testnet": "none"`));
   assert.match(readFileSync(join(repo, "relayer", "src", "wayback.ts"), "utf8"), /network: "bsc-testnet",[\s\S]*?blockSeconds: 0\.45,/);
   assert.equal(timeOf("bsc-testnet", "std")[0], "≈ 1 min");
+  // No run of its own until its first round trip (facts.ts, ROLLUP_RUNS): auto-mint's time is Sepolia's run, said to be an estimate, on the card and in the strip.
+  assert.equal("bsc-testnet" in ROLLUP_RUNS, false);
+  assert.deepEqual(timeOf("bsc-testnet", "auto"), [AUTO_TIME[0], "est., as measured on Sepolia"]);
+  assert.deepEqual(timeOf("bsc-testnet", "in"), ["≈ 48 s", "as measured on Sepolia, Oct 20"]);
+  assert.match(readFileSync(join(here, "..", "src", "app", "views", "Bridge.tsx"), "utf8"), /`lock to mint, sent by auto-mint · \$\{autoEst \?\? `measured on \$\{d\.short\}, Oct 28`\}`/);
   // Its costs as measured on a fork of the chain until its first receipts: the rollups' gas schedule.
   assert.deepEqual([BSC.mintGas.gas, BSC.mintGas.full, BSC.burnGas.gas, BSC.burnGas.used], ["2.66", "2,661,628", "62", "52,822"]);
   // Not deployed: every address from its records at the activation, which the test then checks.
@@ -546,6 +628,8 @@ test("one speed on the BNB Smart Chain testnet: its burns never fast on the tran
   assert.match(bridge, /<p class="speed__fix" hidden=\{k\.fastOK \|\| dir !== "back" \|\| oneSpeed\}>/);
   assert.match(bridge, /\{oneSpeed \? \(\s*<>The release is trusted\. One speed on \{d\.short\}: the watcher releases a burn of any amount after \{words\.final\}\.<\/>/);
   assert.match(bridge, /releases · \{d\.fastConfirmations === null \? timeOf\(d\.key, "std"\)\[0\] : `fast \$\{timeOf\(d\.key, "fast"\)\[0\]\}`\}/);
+  // Nor the fast budget's line under the speed tiles (facts.ts, FAST_BUDGET_LINE): no burn there goes Fast.
+  assert.match(bridge, /<p class="speed__note" hidden=\{!k\.fastOK \|\| dir !== "back" \|\| oneSpeed\}>\s*\{FAST_BUDGET_LINE\}/);
   assert.equal(destOf("bsc-testnet", ALL_DESTS).fastConfirmations, null);
   // The three as before: Fast up to 1 tPOT on each.
   for (const key of ["sepolia", "base-sepolia", "arbitrum-sepolia"] as const) assert.notEqual(destOf(key).fastConfirmations, null, key);

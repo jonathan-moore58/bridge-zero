@@ -1,0 +1,60 @@
+{
+  "network": "portaldot-v3-testnet",
+  "chainId": 420420777,
+  "note": "README rows 114, 117 and 119, sent on Oct 28 (UTC) and recorded by no tool when they were sent: the owner's wallet funded by the deployer's EVM account, and locks 6 and 7, which the bridge app sent from that wallet. Each was read back from V3's EVM RPC with eth_getBlockByNumber and eth_getTransactionReceipt: its block holds this one transaction, and a lock's receipt the vault's Locked log. txHash is the Ethereum transaction's hash, which the README prints shortened.",
+  "rpc": "https://test-evm-rpc-v3.portaldot.dev",
+  "readAt": "2026-10-31T20:53:28Z",
+  "transactions": [
+    {
+      "row": 114,
+      "what": "the owner's wallet funded by the deployer's EVM account",
+      "txHash": "0x6b06421f2a62c9638ff5003e0a72fe197e8cec1016aa7620c0ea779cdd04ba45",
+      "from": "0xd9838a86cf83c28ee486544060d1ca4ca2971071",
+      "to": "0xc6e997a757f0be410714ed04b869efa1aee32011",
+      "nonce": 5,
+      "value": "12000000000000000000",
+      "block": {
+        "number": 231112,
+        "hash": "0x16c3217688a6419a5fb7046c31b6e7e7ea19d8600353f2de5542f8ac4ee94973",
+        "timestamp": "2026-10-28T11:05:36Z"
+      },
+      "status": 1
+    },
+    {
+      "row": 117,
+      "what": "lock 6, sent by the bridge app from the owner's wallet",
+      "txHash": "0x6b31b8a9f9ddf7cc214428145de5b4a0be052c766b28f5e2114e9bf3186d5455",
+      "from": "0xc6e997a757f0be410714ed04b869efa1aee32011",
+      "to": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+      "nonce": 0,
+      "value": "1000000000000000000",
+      "block": {
+        "number": 231125,
+        "hash": "0xdf8810e945a621b758f6cf97c5a1b782abd4581294d09cd5f7542ef9e3bb73c3",
+        "timestamp": "2026-10-28T11:06:54Z"
+      },
+      "status": 1,
+      "vaultNonce": 6,
+      "dstChainId": "84532",
+      "commitment": "0x37ab67caa8a82a06f81ff7e1c8a6bce8fe1588ddd2c50d087c32cef6d2531f1d"
+    },
+    {
+      "row": 119,
+      "what": "lock 7, sent by the bridge app from the owner's wallet",
+      "txHash": "0xd125ef4449e433235f3c805070aa45241dba12c94ccb21bafd2c94bf4277224b",
+      "from": "0xc6e997a757f0be410714ed04b869efa1aee32011",
+      "to": "0xa02ee16eb03d2cf1aef199f7658fb8c8e3188ffd",
+      "nonce": 1,
+      "value": "1000000000000000000",
+      "block": {
+        "number": 231170,
+        "hash": "0xd54f739af45502cc994d82292fffeb509c4d822c7ecec70ef49dd521e2b41d12",
+        "timestamp": "2026-10-28T11:11:24Z"
+      },
+      "status": 1,
+      "vaultNonce": 7,
+      "dstChainId": "421614",
+      "commitment": "0xbe308b6f60bfdcd1c3e507fdf625f2d8fc455d55965f35e83f275d954803061a"
+    }
+  ]
+}

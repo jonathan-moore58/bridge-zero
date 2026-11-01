@@ -37,6 +37,7 @@ as a check that passed. `build/records.ts` reads, at build time,
 | `deployments/relay-sepolia-*.jsonl` | every sender's history, merged: each client's latest run (one sender's) and newest import (with the mints' bundle blocks), the fallback for its state |
 | `deployments/base-sepolia-bridge.json`, `arbitrum-sepolia-bridge.json`, `automint-<rollup>-*.jsonl` | each rollup's burns and the locks auto-mint minted there: the bridge app serves them (lock 4's and lock 5's mints, burn 0 on each rollup and its release) without searching the rollup's logs, and the Network page's recorded wtPOT supply there |
 | `deployments/automint-*.jsonl` | auto-mint's histories, one for each chain (Sepolia, Base Sepolia, Arbitrum Sepolia): the locks it minted, counted in the totals with the amount and recipient each mint's attempt line gives (the V3 record's when that line is missing); Sepolia's in its wtPOT, every chain's in the vault's |
+| `deployments/v3-app-transfers.json` | the full hashes of the README's V3 rows that no tool recorded when they were sent (rows 114, 117 and 119), for the evidence list, beside the V3 record's |
 | `fixtures/v3-testnet-hero/`, `fixtures/v3-testnet-lock1/` | the bundles lock 0 and lock 1 were minted with: header, precommits, signers hint, proofs |
 | `fixtures/mainnet/finality-proof-head.json`, `fixtures/probe/*.json` | the old mainnet's 10 keys (fallback for `authorities(setId)`), block times, sudo keys |
 | `README.md` | the evidence rows, the "Verify it yourself" commands with the outputs it records, and the roadmap, in its words |
@@ -65,7 +66,7 @@ from the block (`chain_getBlock`), Sepolia's from the mint receipt's logs.
 | Chain | Endpoint | Used for |
 |---|---|---|
 | Sepolia | `https://ethereum-sepolia-rpc.publicnode.com` | every state read, `eth_call` of the reverted mints |
-| Sepolia | `https://sepolia.drpc.org`, `https://sepolia.gateway.tenderly.co` | fallbacks; old receipts and transactions (the public node keeps about a day); `eth_getLogs` for the old-mainnet client's latest import, from the relayer's latest recorded one on (tenderly first) |
+| Sepolia | `https://sepolia.gateway.tenderly.co` | the fallback; old receipts and transactions (the public node keeps about a day); `eth_getLogs` for the old-mainnet client's latest import, from the relayer's latest recorded one on (tenderly first) |
 | V3 testnet | `https://test-evm-rpc-v3.portaldot.dev` | the vault: `outstanding`, `commitments(n)`, slot 1, the `Locked` logs (each in the one block the records put it in), `released(burnId)` |
 | V3 testnet | `https://test-node-v3.portaldot.dev`, then `wss://` | the finalized head, `Grandpa.CurrentSetId`, and lock 1's block |
 | Old mainnet | `wss://mainnet.portaldot.io` | the head and set, over WebSocket: the node serves no HTTP |
@@ -77,13 +78,15 @@ the HTTP endpoints send `Access-Control-Allow-Origin` for any origin. The rollup
 `eth_chainId` (84532 and 421614), a batch of eight `eth_call`s and a CORS preflight on Oct 28,
 2026; they are the ones `src/app/dests.ts` gives each destination. A Content-Security-Policy in
 each built page (`build/csp.ts`) allows connections to these endpoints only, the rollups' on the
-bridge app's page alone, and scripts, styles and fonts from the page itself.
+bridge app's page alone, and scripts, styles and fonts from the page itself. `sepolia.drpc.org` was
+a Sepolia fallback: its free plan refuses Sepolia since Oct 28, so neither page reads it and
+neither policy allows it.
 
 Calls made to one endpoint within a few milliseconds of each other go out as one JSON-RPC batch
-(up to 8 calls; 3 for drpc's free plan; none for the V3 node's HTTP endpoint, which refuses
-batches), and the requests leave the browser's CORS preflight cache alone, so a page load costs a
-few requests per node. An endpoint that answers a batch with anything but a batch answer gets its
-calls one by one from then on.
+(up to 8 calls; none for the V3 node's HTTP endpoint, which refuses batches), and the requests
+leave the browser's CORS preflight cache alone, so a page load costs a few requests per node. An
+endpoint that answers a batch with anything but a batch answer gets its calls one by one from then
+on.
 
 ## Design
 

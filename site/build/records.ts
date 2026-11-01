@@ -9,6 +9,7 @@
 import { execSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
+import { EVIDENCE_CHAINS, EVM_EVIDENCE_CHAINS, chainOfWord } from "../src/lib/evidence.ts";
 import { formatUnits } from "../src/lib/format.ts";
 import type {
   VerifyBlock,
@@ -110,13 +111,13 @@ function initOf(steps: Json[], name: string, file: string): { tx: Hex; block: nu
 
 /** A row of an evidence table: number, what it shows, transaction, block, result. */
 const ROW = /^\|\s*\**(\d+)\**\s*\|(.+)\|\s*$/;
-const ETHERSCAN_TX = /\(https:\/\/sepolia\.etherscan\.io\/tx\/(0x[0-9a-fA-F]{64})\)/;
-/** A rollup row links its transaction on the rollup's explorer (README, "More chains"); a BNB Smart Chain testnet row on BscScan's. */
-const ROLLUP_TX: readonly (readonly [RegExp, RollupNetwork])[] = [
-  [/\(https:\/\/sepolia\.basescan\.org\/tx\/(0x[0-9a-fA-F]{64})\)/, "base-sepolia"],
-  [/\(https:\/\/sepolia\.arbiscan\.io\/tx\/(0x[0-9a-fA-F]{64})\)/, "arbitrum-sepolia"],
-  [/\(https:\/\/testnet\.bscscan\.com\/tx\/(0x[0-9a-fA-F]{64})\)/, "bsc-testnet"],
-];
+/**
+ * A row on an EVM chain links its transaction on that chain's explorer (src/lib/evidence.ts):
+ * Etherscan for Sepolia, Basescan and Arbiscan for the rollups (README, "More chains"), BscScan for
+ * the BNB Smart Chain testnet.
+ */
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+const EVM_TX = EVM_EVIDENCE_CHAINS.map((chain) => [new RegExp(`\\(${escapeRe(EVIDENCE_CHAINS[chain].explorer)}/tx/(0x[0-9a-fA-F]{64})\\)`), chain] as const);
 const SHORT_HASH = /`(0x[0-9a-fA-F]+)…([0-9a-fA-F]+)`/;
 
 /** Splits a table row's cells, keeping the pipes inside code spans and links. */
@@ -140,8 +141,11 @@ function cells(body: string): string[] {
 
 /**
  * The evidence rows. A Sepolia row links its transaction on Etherscan, a Base Sepolia or Arbitrum
- * Sepolia row on Basescan or Arbiscan; a V3 row prints a shortened extrinsic hash, resolved here
- * against `v3Hashes` (the full hashes deployments/ records).
+ * Sepolia row on Basescan or Arbiscan; a V3 row prints a shortened hash (an extrinsic's, or the
+ * Ethereum hash of a transaction sent through V3's EVM RPC), resolved here against `v3Hashes` (the
+ * full hashes deployments/ records). A row's chain is its explorer link's, else the one its Block
+ * cell names ("Base 51,177,673", "V3 #231,112"), else Sepolia, whose first rows name none; a row
+ * whose link and Block cell name two chains fails the build.
  */
 export function parseEvidence(readme: string, v3Hashes: string[] = []): EvidenceRow[] {
   const rows: EvidenceRow[] = [];
@@ -154,13 +158,15 @@ export function parseEvidence(readme: string, v3Hashes: string[] = []): Evidence
     const parts = cells(m[2] ?? "");
     if (parts.length !== 4) continue;
     const [what, txCell, blockCell, result] = parts as [string, string, string, string];
-    const eth = ETHERSCAN_TX.exec(txCell);
-    const rollup = eth ? null : (ROLLUP_TX.map(([re, chain]) => ({ hit: re.exec(txCell), chain })).find((x) => x.hit) ?? null);
-    const linked = eth ?? rollup?.hit ?? null;
+    const evm = EVM_TX.map(([re, chain]) => ({ hit: re.exec(txCell), chain })).find((x) => x.hit) ?? null;
+    const linked = evm?.hit ?? null;
     const short = SHORT_HASH.exec(txCell);
-    const blockDigits = /(\d[\d,]*)/.exec(blockCell.replace(/\]\(.*?\)/g, "]").replace(/\b(V3|Sepolia|Base|Arbitrum)\b/g, ""));
+    const blockText = blockCell.replace(/\]\(.*?\)/g, "]");
+    const named = chainOfWord(blockText);
+    const blockDigits = /(\d[\d,]*)/.exec(blockText.replace(/\b(V3|Sepolia|Base|Arbitrum)\b/g, ""));
     if (!blockDigits?.[1] || (!linked && !short)) continue;
-    const isV3 = !linked && /\bV3\b/.test(blockCell);
+    if (evm && named && named !== evm.chain) fail("README.md", `evidence row ${m[1]} links its transaction on ${EVIDENCE_CHAINS[evm.chain].name}'s explorer and puts its block on ${EVIDENCE_CHAINS[named].name}`);
+    const isV3 = !linked && named === "v3";
     let tx: Hex | null = linked?.[1] ? (linked[1].toLowerCase() as Hex) : null;
     if (!tx && short && isV3) {
       const head = (short[1] ?? "").toLowerCase();
@@ -172,7 +178,7 @@ export function parseEvidence(readme: string, v3Hashes: string[] = []): Evidence
     rows.push({
       n: Number(m[1]),
       what: stripBold(what),
-      chain: rollup ? rollup.chain : isV3 ? "v3" : "sepolia",
+      chain: evm ? evm.chain : (named ?? "sepolia"),
       tx,
       txText: (linked ? /`([^`]+)`/.exec(txCell)?.[1] : short?.[0]?.replace(/`/g, "")) ?? "",
       block: Number(blockDigits[1].replace(/,/g, "")),
@@ -986,10 +992,14 @@ export function buildRecords(root: string, relayDir = join(root, "deployments"),
   const lock0 = locks.find((l) => vaultNonceOf(l) === 0 && l.status === "locked") ?? fail(V3F, "no lock 0");
   const committee = obj(vault.committee, V3F, "vault.committee");
 
-  // README evidence, with the V3 rows' extrinsic hashes resolved against the V3 record
+  // README evidence, with the V3 rows' hashes resolved against the V3 record, and against
+  // deployments/v3-app-transfers.json where the checkout has it: the V3 transactions no tool
+  // recorded when they were sent (rows 114, 117 and 119), read back from V3's EVM RPC
   if (!existsSync(join(root, "README.md"))) fail("README.md", "missing");
   const readme = readFileSync(join(root, "README.md"), "utf8");
-  const v3Hashes = [...JSON.stringify(v3).matchAll(/0x[0-9a-fA-F]{64}/g)].map((m) => m[0]);
+  const APP_TX = "deployments/v3-app-transfers.json";
+  const v3Records = existsSync(join(root, APP_TX)) ? [v3, readJson(root, APP_TX)] : [v3];
+  const v3Hashes = v3Records.flatMap((j) => [...JSON.stringify(j).matchAll(/0x[0-9a-fA-F]{64}/g)].map((m) => m[0]));
   const evidence = parseEvidence(readme, v3Hashes);
   const rowOf = (tx: string) => evidence.find((r) => r.tx === tx.toLowerCase())?.n ?? null;
 

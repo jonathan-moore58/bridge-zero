@@ -10,9 +10,9 @@ import { sha512 } from "@noble/hashes/sha2.js";
 import { bytesToHex, concatBytes, hexToBytes, type Hex } from "../src/lib/hex.ts";
 import { MULTICALL3, MULTICALL3_CODE_HASH } from "../src/lib/proof/calldata.ts";
 import { clientCrypto } from "../src/lib/proof/grandpa.ts";
-import { decodeFinalityProof, encodeCompact, encodeRpcHeader } from "../src/lib/proof/scale.ts";
+import { decodeFinalityProof, decodeU64, encodeCompact, encodeRpcHeader, type RpcHeader } from "../src/lib/proof/scale.ts";
 import { codeHash, dryCall, estimateGas, heldHeader, overGasCap, readClient, readMinter, revertOf, simulate, TX_GAS_CAP } from "../src/lib/proof/sepolia.ts";
-import { nextV3SetChange, V3Error, V3Moved, V3Reader } from "../src/lib/proof/v3.ts";
+import { SET_CHANGE_GUESS, V3Error, V3Moved, V3Reader } from "../src/lib/proof/v3.ts";
 import { AllFailed } from "../src/lib/rpc.ts";
 import {
   B,
@@ -24,6 +24,7 @@ import {
   MINTER,
   MULTICALL_FAILED,
   proveFrom,
+  readJson,
   registry,
   restoreFetch,
   revertData,
@@ -32,6 +33,7 @@ import {
   S1,
   S2,
   type Chains,
+  type V3Block,
 } from "./fake-chains.ts";
 
 const crypto = clientCrypto(ed25519, sha512);
@@ -281,10 +283,63 @@ test("setChanges: a block that changes no set, or a node with no proof, is no se
   await assert.rejects(reader.setChanges({ number: 118_123, setId: 33n, keys, activatedAt: null }, 1, crypto), V3Error);
 });
 
-test("nextV3SetChange: V3's fixed schedule, every 6 hours at 01:54:06, 07:54:06, 13:54:06 and 19:54:06 UTC", () => {
-  const t = (iso: string) => Date.parse(iso);
-  assert.equal(nextV3SetChange(t("2026-10-26T17:40:00Z")), t("2026-10-26T19:54:06Z"));
-  assert.equal(nextV3SetChange(t("2026-10-26T19:54:06Z")), t("2026-10-27T01:54:06Z"));
-  assert.equal(nextV3SetChange(t("2026-10-26T23:59:59Z")), t("2026-10-27T01:54:06Z"));
-  assert.equal(nextV3SetChange(t("2026-10-27T00:00:00Z")), t("2026-10-27T01:54:06Z"));
+// ---------------------------------------------------------------------------------------------
+// After V3's stall of Oct 31 (fixtures/v3-set-75.json): set 74 began at #264,729 and ended at
+// #266,908, 2,179 blocks later, where a set had lasted about 3,580; set 75 still runs.
+
+const AFTER = readJson("site/test/fixtures/v3-set-75.json");
+const blockOf = (b: { number: number; hash: Hex; header: RpcHeader; proveFinality: Hex; setId: Hex }): V3Block => ({
+  number: b.number,
+  hash: b.hash,
+  header: b.header,
+  setId: decodeU64(hexToBytes(b.setId), "Grandpa.CurrentSetId"),
+  proof: b.proveFinality,
+});
+/** #266,908, the change from set 74 to 75, and #268,496, a block of set 75 with the node's latest justification. */
+const C75 = blockOf(AFTER.change);
+const L75 = blockOf(AFTER.later);
+
+test("after V3's stall: set 74 ran 2,179 blocks, so the guess 3,500 blocks in lands in set 75, whose justification does not verify under set 74; the ask at the block after the client's finds #266,908", async (t) => {
+  assert.equal(SET_CHANGE_GUESS, 3_500);
+  assert.deepEqual([C75.number, C75.setId, L75.number, L75.setId], [266_908, 75n, 268_496, 75n]);
+  const c = chains();
+  c.v3.add(C75, L75);
+  c.v3.prove = proveFrom([C75, L75]);
+  const asks = () => c.seen.filter((s) => s.method === "grandpa_proveFinality").map((s) => s.params[0]);
+  const reader = new V3Reader(c.env.v3);
+  const keys = KEYS.map((k) => hexToBytes(k));
+  // A client whose latest header is #264,729, the block that began set 74 (the proof kit's), with V3 finalized to #268,496.
+  const search = () => reader.setChanges({ number: 264_729, setId: 74n, keys, activatedAt: 264_729 }, 1, crypto, L75.number);
+  const [found] = await search();
+  assert.deepEqual([found?.number, found?.hash, found?.setId, found?.asked, found?.unknownHeaders], [266_908, C75.hash, 74n, 264_730, 1]);
+  // V3's two keys again, as in every set since the checkpoint.
+  assert.deepEqual(found?.next.map(bytesToHex), KEYS);
+  // One request more than with a set of the usual length: #268,229 first, then the block after the client's.
+  assert.deepEqual(asks(), [268_229, 264_730]);
+  // No time of day goes in: the same answers at the change's own time (18:54:06 UTC) and at one of the
+  // times V3 changed set before Oct 28 (19:54:06 UTC), for the same asks.
+  for (const now of [Date.UTC(2026, 9, 31, 18, 54, 6), Date.UTC(2026, 9, 31, 19, 54, 6)]) {
+    t.mock.timers.enable({ apis: ["Date"], now });
+    c.seen.length = 0;
+    assert.deepEqual(await search(), [found]);
+    assert.deepEqual(asks(), [268_229, 264_730]);
+    t.mock.timers.reset();
+  }
+  // The Verify page's walk: the change at the block the client names as set 75's start, checked under set 74.
+  const walked = await reader.changeAt(266_908, 74n, keys, crypto);
+  assert.deepEqual([walked.number, walked.setId, walked.asked, walked.unknownHeaders], [266_908, 74n, 266_908, 0]);
+  // Under any other set id the same signatures do not verify: the set's id decides, never the clock.
+  await assert.rejects(reader.changeAt(266_908, 75n, keys, crypto), /does not verify under set 75/);
+});
+
+test("after V3's stall: from set 75, which V3 has not ended, the search finds no change and says so, at the guess and at the block after the client's", async () => {
+  const c = chains();
+  c.v3.add(C75, L75);
+  c.v3.prove = proveFrom([C75, L75]);
+  const reader = new V3Reader(c.env.v3);
+  const keys = KEYS.map((k) => hexToBytes(k));
+  await assert.rejects(
+    reader.setChanges({ number: 266_908, setId: 75n, keys, activatedAt: 266_908 }, 1, crypto, L75.number),
+    /no set change of set 75 found after #266,908: #268,496: #268,496 changes no set: the set is still in force; #266,909: #268,496 changes no set/,
+  );
 });

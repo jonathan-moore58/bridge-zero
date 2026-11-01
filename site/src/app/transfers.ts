@@ -420,7 +420,7 @@ const VAULT_FROM = records.bridge.vault.deployBlock.number;
  * (deployments/sepolia-bridge.json, "BridgeMinter deploy"). A rollup's: its minter's deployment (./dests.ts).
  */
 const MINTER_FROM = records.bridge.mint.block ?? destOf("sepolia").minterFrom;
-/** Blocks per eth_getLogs window when no Sepolia endpoint takes the whole range: drpc's cap, as the relayer reads. */
+/** Blocks per eth_getLogs window when no Sepolia endpoint takes the whole range: the relayer's window (relayer/src/bridge.ts, LOG_WINDOW). */
 const LOG_WINDOW = 10_000;
 /** Past this many windows the read stops rather than send hundreds of requests. */
 const MAX_WINDOWS = 60;

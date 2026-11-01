@@ -7,21 +7,21 @@ import type { Endpoint } from "./rpc.ts";
 export const SEPOLIA_CHAIN_ID = 11155111n;
 export const V3_CHAIN_ID = 420420777n;
 
-// `batch`: the most calls sent in one JSON-RPC batch (drpc's free plan takes 3; the Substrate node's
-// HTTP endpoint takes none, so it has no batch size).
+// `batch`: the most calls sent in one JSON-RPC batch (the Substrate node's HTTP endpoint takes none,
+// so it has no batch size). sepolia.drpc.org is no longer read: its free plan refuses Sepolia since
+// Oct 28, so every call to it failed and the browser logged the refusals.
 const publicnode: Endpoint = { id: "publicnode", label: "ethereum-sepolia-rpc.publicnode.com", url: "https://ethereum-sepolia-rpc.publicnode.com", batch: 8 };
-const drpc: Endpoint = { id: "drpc", label: "sepolia.drpc.org", url: "https://sepolia.drpc.org", batch: 3 };
 const tenderly: Endpoint = { id: "tenderly", label: "sepolia.gateway.tenderly.co", url: "https://sepolia.gateway.tenderly.co", batch: 8 };
 
-/** State reads: the public node first. */
-export const SEPOLIA: Endpoint[] = [publicnode, drpc, tenderly];
-/** Older transactions and receipts: the public node keeps about a day of them, so the others follow. */
-export const SEPOLIA_HISTORY: Endpoint[] = [publicnode, drpc, tenderly];
+/** State reads: the public node first, then tenderly. */
+export const SEPOLIA: Endpoint[] = [publicnode, tenderly];
+/** Older transactions and receipts: the public node keeps about a day of them, so tenderly follows. */
+export const SEPOLIA_HISTORY: Endpoint[] = [publicnode, tenderly];
 /**
  * eth_getLogs from the relayer's latest recorded import on: tenderly serves wide ranges; the public
- * node takes up to 50,000 blocks (about a week of Sepolia) and drpc up to 10,000.
+ * node takes up to 50,000 blocks (about a week of Sepolia).
  */
-export const SEPOLIA_LOGS: Endpoint[] = [tenderly, publicnode, drpc];
+export const SEPOLIA_LOGS: Endpoint[] = [tenderly, publicnode];
 
 export const V3_EVM: Endpoint[] = [{ id: "v3-evm", label: "test-evm-rpc-v3.portaldot.dev", url: "https://test-evm-rpc-v3.portaldot.dev", batch: 8 }];
 export const V3_SUBSTRATE_HTTP: Endpoint = { id: "v3-http", label: "test-node-v3.portaldot.dev", url: "https://test-node-v3.portaldot.dev" };

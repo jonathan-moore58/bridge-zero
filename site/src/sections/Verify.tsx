@@ -1,10 +1,8 @@
 import { useState } from "preact/hooks";
 import { Chevron, Doc, GitHub, Shield, Terminal } from "../components/icons.tsx";
 import { CopyButton, ExtLink, Md, SectionHead } from "../components/ui.tsx";
-import { ALL_DESTS } from "../app/dests.ts";
-import { etherscanTx, records, REPO, repoFile, repoTree } from "../lib/chains.ts";
-import { shortHex } from "../lib/hex.ts";
-import type { RollupNetwork } from "../lib/records-types.ts";
+import { records, REPO, repoFile, repoTree } from "../lib/chains.ts";
+import { evidenceCell, perChain, type CellLine } from "../lib/evidence.ts";
 
 const V = records.verify;
 
@@ -20,8 +18,21 @@ const LINKS = [
 /** The groups shown before "show all": the light clients, the thresholds, the state roots, the minter. */
 const FIRST_GROUPS = 4;
 
-/** The explorers the README links the other chains' evidence rows to: each destination's own (../app/dests.ts), the hidden ones' too. */
-const ROLLUP_SCAN = Object.fromEntries(ALL_DESTS.filter((d) => d.key !== "sepolia").map((d) => [d.key, d.explorer.url])) as Record<RollupNetwork, string>;
+/** How many of the evidence rows are on each chain: "58 on Sepolia, 22 on V3, …". */
+const PER_CHAIN = perChain(records.evidence);
+
+/** A line of an evidence row's transaction: its chain and block, or its hash; a link where it has one (lib/evidence.ts, evidenceCell). */
+function CellText({ line, cls }: { line: CellLine; cls: string }) {
+  return line.href ? (
+    <ExtLink href={line.href} class={cls} title={line.title}>
+      {line.text}
+    </ExtLink>
+  ) : (
+    <span class={cls} title={line.title}>
+      {line.text}
+    </span>
+  );
+}
 
 /**
  * A command, wrapped only between its words: a flag such as --rpc-url or a variable stays whole on
@@ -152,32 +163,31 @@ export function Verify() {
           </button>
           <div id="evidence-list" hidden={!showAll}>
             {showAll && (
-              <ol class="evlist">
-                {records.evidence.map((r) => (
-                  <li class={`evrow ${/revert/.test(r.result) ? "is-revert" : ""} ${r.n === records.bridge.row ? "is-hero" : ""}`} key={r.n}>
-                    <span class="evrow__n num">{r.n}</span>
-                    <span class="evrow__what small">
-                      <Md text={r.what} />
-                    </span>
-                    <span class="evrow__tx">
-                      {r.chain !== "v3" && r.tx ? (
-                        <ExtLink href={r.chain === "sepolia" ? etherscanTx(r.tx) : `${ROLLUP_SCAN[r.chain]}/tx/${r.tx}`} class="mono small">
-                          {shortHex(r.tx, 6, 4)}
-                        </ExtLink>
-                      ) : r.blockUrl ? (
-                        <ExtLink href={r.blockUrl} class="mono small" title="We found no indexed explorer for the V3 testnet: the Node Console shows the block">
-                          V3 #{r.block.toLocaleString("en-US")}
-                        </ExtLink>
-                      ) : (
-                        <span class="mono small">{r.txText}</span>
-                      )}
-                    </span>
-                    <span class="evrow__res small">
-                      <Md text={r.result} />
-                    </span>
-                  </li>
-                ))}
-              </ol>
+              <>
+                <p class="evlist__lead small dim">
+                  {PER_CHAIN}. Each row names its chain and block, and links its transaction on that chain's explorer; a V3 row links its block on the Node Console.
+                </p>
+                <ol class="evlist">
+                  {records.evidence.map((r) => {
+                    const c = evidenceCell(r);
+                    return (
+                      <li class={`evrow ${/revert/.test(r.result) ? "is-revert" : ""} ${r.n === records.bridge.row ? "is-hero" : ""}`} key={r.n} data-chain={r.chain}>
+                        <span class="evrow__n num">{r.n}</span>
+                        <span class="evrow__what small">
+                          <Md text={r.what} />
+                        </span>
+                        <span class="evrow__tx">
+                          <CellText line={c.where} cls="evrow__where" />
+                          <CellText line={c.hash} cls="mono small" />
+                        </span>
+                        <span class="evrow__res small">
+                          <Md text={r.result} />
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ol>
+              </>
             )}
           </div>
         </div>

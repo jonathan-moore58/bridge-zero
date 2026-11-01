@@ -8,6 +8,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { decode, encodeCall } from "../../lib/abi.ts";
 import { DECIMALS, LC, MINTER, REPO, SEPOLIA_CHAIN_ID, SEPOLIA_LOGS, TOKEN, V3_EVM, VAULT, etherscanAddress, records, repoFile } from "../../lib/chains.ts";
 import { checksum } from "../../lib/display.ts";
+import { perChain } from "../../lib/evidence.ts";
 import { eventTopic, keccak256 } from "../../lib/hashes.ts";
 import { bytesToHex, type Hex } from "../../lib/hex.ts";
 import { lagMinutes, setsBehind, type ClientState } from "../../lib/lc-read.ts";
@@ -16,7 +17,7 @@ import { burnId } from "../../lib/proofs.ts";
 import { request } from "../../lib/rpc.ts";
 import { ROLLUPS, clientOf, destOf, destState, type Dest } from "../dests.ts";
 import { DESTS_WORD, FAST_CAP, IMPORT_GAS, LATER_CHAINS, OTHER_CHAINS, SPEED_NAME, V3_SCAN, timeOf } from "../facts.ts";
-import { RELAY_AFTER_CHANGE_MS, SET_CHANGES_TEXT } from "../handoff.ts";
+import { RELAY_EVERY_MIN, relayAutoWait, setChangesText } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
 import {
@@ -39,6 +40,12 @@ type Dot = "verify" | "trust" | "revert" | "muted";
 
 /** The relayer imports V3's head every 600 blocks, about an hour (README, the relayer's watch mode; relayer/src/relay.ts, CHAINS.v3.headEvery). */
 const HEAD_EVERY_V3 = 600;
+/**
+ * On each rollup the relayer's run, every 20 minutes (../handoff.ts, RELAY_EVERY_MIN), imports V3's
+ * head only once it is this many blocks past the client's latest, about 3 hours of V3's 6 s blocks
+ * (its --head-every there, since Oct 31, 20:33 UTC); a run that imports a set change imports the head too.
+ */
+const HEAD_EVERY_ROLLUP = 1_800;
 /** While the relayer runs, each client is at most about 70 min behind its chain (README, the relayer's watch mode). */
 const LAG_CEILING = 70;
 // As contracts/src/grandpa/GrandpaLightClient.sol declares it; its setId is the set that signed.
@@ -838,8 +845,9 @@ function RollupLcCard({ d }: { d: Dest & { key: RollupKey } }) {
       </dl>
       <p class="ncard__note">
         <span>
-          Kept at V3's validator set by one relayer run about {RELAY_AFTER_CHANGE_MS / 60_000} minutes after each set change ({SET_CHANGES_TEXT}); between runs, mints
-          import V3's head themselves, so the head lag grows to hours. Its address is also the old mainnet's client's on Sepolia: another chain, another contract.{" "}
+          Kept at V3's validator set by the relayer: a run every {RELAY_EVERY_MIN[d.key]} minutes imports any set change this client lacks, and V3's head once it is{" "}
+          {num(HEAD_EVERY_ROLLUP)} blocks (about {Math.round((HEAD_EVERY_ROLLUP * LC.v3.blockTimeSec) / 3600)} hours) past the client's; between those, mints import V3's head
+          themselves, so the head lag grows to hours. Its address is also the old mainnet's client's on Sepolia: another chain, another contract.{" "}
           <a class="text-link" href={keysHref(d.key)}>
             Where its keys come from
           </a>
@@ -916,7 +924,7 @@ function Topo({ net }: { net: NetState }) {
           where="watch mode"
           st={dot("verify")}
         >
-          every 10 min
+          every {RELAY_EVERY_MIN.sepolia} min
         </TopoNode>
         <TopoLink label="imports" />
         <TopoNode
@@ -1017,7 +1025,7 @@ function RelayerCard() {
           <h2 class="ncard__title" id="n-relayer">
             Relayer
           </h2>
-          <p class="ncard__sub">Watch mode · a run every 10 min, one key per chain</p>
+          <p class="ncard__sub">Watch mode · a run every {RELAY_EVERY_MIN.sepolia} min, one key per chain</p>
           <span class="ncard__asof">{Number.isFinite(RELAY_AT) ? `Recorded · as of ${dayTime(RELAY_AT)} UTC` : "Recorded"}</span>
         </div>
       </header>
@@ -1491,18 +1499,8 @@ function VaultCard({ phone, waiting, rollups }: { phone: boolean; waiting: Waiti
   );
 }
 
-/** The chains the README's evidence rows are on, in its order, as the note names them. */
-const EVIDENCE_CHAINS = [
-  ["sepolia", "Sepolia"],
-  ["v3", "V3"],
-  ["base-sepolia", "Base Sepolia"],
-  ["arbitrum-sepolia", "Arbitrum Sepolia"],
-  ["bsc-testnet", "BNB Smart Chain testnet"],
-] as const;
-
 function ContractsCard({ phone }: { phone: boolean }) {
   const rows = records.evidence;
-  const counts = EVIDENCE_CHAINS.map(([chain, name]) => [rows.filter((r) => r.chain === chain).length, name] as const).filter(([n]) => n > 0);
   return (
     <Fold phone={phone} wide id="n-contracts" icon="i-doc" title="Contracts" sub="BridgeMinter and wtPOT are source-verified on Etherscan">
       <ul class="clist">
@@ -1531,7 +1529,7 @@ function ContractsCard({ phone }: { phone: boolean }) {
             <a class="text-link" href={`${REPO}#evidence`} target="_blank" rel="noopener">
               evidence table
             </a>{" "}
-            numbers {num(rows.length)} transactions: {andList(counts.map(([n, name]) => `${num(n)} on ${name}`))}.
+            numbers {num(rows.length)} transactions: {perChain(rows)}.
           </span>
         </p>
       ) : null}
@@ -1583,13 +1581,13 @@ function PageNotice({ net }: { net: NetState }) {
       "Its finalized head can't be read, so neither can the light client's lag. Each card says whether its values are live or recorded. Retrying every 30 s.",
     ];
   } else if (net.key === "relay") {
-    const s = net.behind === 1 ? "" : "s";
     const to = chain.value?.setId;
+    // A mint the visitor sends imports the changes itself (sends.ts); auto-mint waits for the relayer (handoff.ts).
     n = [
       "notice--trust",
       "i-refresh",
-      `The V3 light client is ${net.behind} validator-set change${s} behind`,
-      `${to !== null && to !== undefined ? `V3 moved to set ${to}. ` : ""}A mint made now imports ${net.behind === 1 ? "the change" : "the changes"} first, through Multicall3, for about ${IMPORT_GAS} M gas more per change; nothing waits for the relayer, which imports ${net.behind === 1 ? "it" : "them"} on its next run.`,
+      `The V3 light client is ${setChangesText(net.behind)} behind`,
+      `${to !== null && to !== undefined ? `V3 moved to set ${to}. ` : ""}A mint you send now imports ${net.behind === 1 ? "the change" : "the changes"} first, through Multicall3, for about ${IMPORT_GAS} M gas more per change. ${relayAutoWait(destOf(net.dest), net.behind)}`,
     ];
   } else if (net.key === "paused") {
     n = lc.value?.halted
@@ -1638,7 +1636,9 @@ export function NetworkView({ net }: { net: NetState }) {
           <p class="eyebrow page__eyebrow">{eyebrow}</p>
           <h1 class="page__title">Network</h1>
           <p class="page__lead">
-            The light client every mint uses and the relayer that keeps it current, the same client on {andList([...OTHER_CHAINS])}, kept at V3's validator set by the relayer after each set change, the committee that runs the way back, the vault against wtPOT on all {DESTS_WORD} chains, and the contracts. Each card says when its values were read.
+            The light client every mint uses and the relayer that keeps it current, the same client on {andList([...OTHER_CHAINS])}, kept at V3's validator set by a relayer run
+            every {RELAY_EVERY_MIN["base-sepolia"]} minutes, the committee that runs the way back, the vault against wtPOT on all {DESTS_WORD} chains, and the contracts. Each
+            card says when its values were read.
           </p>
         </div>
       </header>

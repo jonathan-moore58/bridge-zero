@@ -16,6 +16,7 @@ import { SENDS, burnKey, deployed, destOf, destState, lockKey, pickRows, type De
 import {
   CH,
   DESTS_WORD,
+  FAST_BUDGET_LINE,
   FAST_CAP,
   IMPORT_GAS,
   LATER_CHAINS,
@@ -35,7 +36,7 @@ import {
   type Dir,
   type Speed,
 } from "../facts.ts";
-import { AUTO_MINT, RELAY_AFTER_CHANGE_MS, SET_CHANGES_TEXT, autoMints, mintDueAt, relayWait, utcClock } from "../handoff.ts";
+import { AUTO_MINT, RELAY_EVERY_MIN, autoMintAhead, autoMints, clientOn, relayAfterChange, relayNote, relayNotice, setChangesText } from "../handoff.ts";
 import { ChainMark } from "../marks.tsx";
 import type { NetState } from "../net.ts";
 import { loadChain, normalize, polka, polkaList, type PolkaState } from "../polkadot.ts";
@@ -75,6 +76,9 @@ const setForm = (p: Partial<Form>) => {
 };
 
 export const useCardDest = (): DestKey => useBox(cardDest);
+
+/** "≈ 2¼ min" in running text: "about 2¼ minutes". */
+const inWords = (t: string): string => t.replace(/^≈ /, "about ").replace(/ min$/, " minutes").replace(/ s$/, " seconds");
 
 /** "≈ 84 s" as the card's big figures set it: the number, and its unit apart. */
 function timeParts(t: string): [string, string] {
@@ -121,16 +125,6 @@ function cleanAmount(raw: string): string {
   return v;
 }
 
-/**
- * The way in's time for a lock to `dest` made at `now` whose auto-mint would wait for the relayer's
- * run after a V3 set change (handoff.ts, relayWait): until auto-mint usually mints it after that
- * run, by the clock. Null when it would not wait.
- */
-function relayTime(dest: DestKey, now: number): readonly [string, string] | null {
-  const w = relayWait(dest, now);
-  return w ? [`≈ ${Math.max(1, Math.round((mintDueAt(dest, now) - now) / 60_000))} min`, `after the relayer's run at about ${utcClock(w.relay)}`] : null;
-}
-
 /** What the card needs to know, worked out once per render. */
 interface Facts {
   dir: Dir;
@@ -149,7 +143,7 @@ interface Facts {
   wrong: boolean;
   fastOK: boolean;
   speed: Speed;
-  /** How long it usually takes, and where that comes from: on a rollup, the wait for the relayer's run when a lock made now would meet it (relayTime). */
+  /** How long it usually takes, and where that comes from. While the light client reads behind V3's set, the card's notice says a lock can take longer. */
   time: readonly [string, string];
   max: string;
   /** The way in from a Polkadot wallet's account: it signs the lock, and the recipient is the address given on the destination. */
@@ -197,7 +191,6 @@ function work(dir: Dir, f: Form, w: WalletState, p: PolkaState): Facts {
   if (raw != null) max = dir === "back" ? units(raw, 14) : String(Math.max(0, Math.floor(((bal ?? 0) - room) * 100) / 100));
   const { minter, token } = deployed(d);
   const rc = sub && p.account ? checkRecipient(f.to, { mapped: p.account.h160, others: othersOf(p), minter, token, vault: VAULT, chain: d.short }) : null;
-  const relay = auto ? relayTime(f.dest, Date.now()) : null;
   return {
     dir,
     d,
@@ -214,7 +207,7 @@ function work(dir: Dir, f: Form, w: WalletState, p: PolkaState): Facts {
     wrong: !sub && ready && w.chainId !== null && w.chainId !== from.chainId,
     fastOK: value <= FAST_CAP,
     speed,
-    time: relay ?? timeOf(f.dest, auto ? "auto" : dir === "in" ? "in" : speed),
+    time: timeOf(f.dest, auto ? "auto" : dir === "in" ? "in" : speed),
     max,
     sub,
     below,
@@ -658,25 +651,6 @@ function ReviewFoot({ k, value, amount, address, txs, sub }: { k: Facts; value: 
   );
 }
 
-/**
- * On a rollup, auto-mint waits for the relayer after each V3 set change (handoff.ts, relayWait): a
- * lock made now that would meet that wait, said with the times as the clock gives them. Whatever the
- * clock says, a light client that reads `behind` V3's set (net.ts) makes auto-mint wait for the
- * relayer's import: said too.
- */
-function relayWaitNow(d: Dest, behind: number): string | null {
-  const w = relayWait(d.key, Date.now());
-  if (w) {
-    return `V3 changes validator set at about ${utcClock(w.change)}, and the relayer brings the light client on ${d.short} to the new set at about ${utcClock(w.relay)}: auto-mint mints a lock made now after that run.`;
-  }
-  if (!behind) return null;
-  const client = d.key === "sepolia" ? "The V3 light client" : `The light client on ${d.short}`;
-  return `${client} is ${behind === 1 ? "a validator-set change" : `${behind} validator-set changes`} behind V3: auto-mint mints a lock made now once the relayer has imported ${behind === 1 ? "it" : "them"}.`;
-}
-
-/** When V3 changes set (UTC), for the copy: "01:54, 07:54, 13:54 and 19:54 UTC". */
-const CHANGES = SET_CHANGES_TEXT;
-
 function openReview(k: Facts, address: string, amount: string, net: NetState, sub: SubLock | null = null): void {
   // What Confirm sends, to its last decimal: the sends parse the field exactly, so no rounding here.
   const exact = parseAmount(amount);
@@ -690,9 +664,9 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
   // Who sends the mint when it is the visitor's: a Polkadot wallet's lock is minted from the Ethereum wallet.
   const minter = sub ? (sub.ethWallet ?? "Your Ethereum wallet") : "Your wallet";
   const txs = behind ? mintTxs(behind) : 1;
-  const wait = auto ? relayWaitNow(d, behind) : null;
-  // The time as of opening the review: a lock made now may meet a relayer wait the card's last render did not.
-  const T = auto ? (relayTime(d.key, Date.now()) ?? timeOf(d.key, "auto")) : k.time;
+  // While the light client reads behind V3's set (net.ts), auto-mint waits for the relayer: said with how soon it comes.
+  const wait = auto ? relayNote(d, behind) : null;
+  const T = k.time;
   if (sub && exact !== null) checkLock(sub.address, exact, sub.recipient, d);
   const sumRow = (label: string, c: ChainInfo) => (
     <div class="sum__row">
@@ -729,7 +703,8 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
     <>
       {step(1, "Lock on Portaldot V3", sub ? `${sub.walletName}, once` : "Your wallet, on V3", lockCost)}
       {auto
-        ? step(2, `Mint on ${d.short}`, `Auto-mint, ${T[0]} after your lock · nothing to sign`, null)
+        ? // While the light client reads behind V3's set, the relayer's import, as the note below says.
+          step(2, `Mint on ${d.short}`, autoMintAhead(d, behind, T[0]), null)
         : step(
             2,
             `Mint on ${d.short}`,
@@ -897,8 +872,8 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
             <p class="rnote">
               <Icon id="i-info" cls="i--14" />
               <span>
-                Fast takes up to 1 tPOT per burn, and up to 1 tPOT in all across fast releases not yet final, on every chain the committee serves. If other fast
-                burns are in flight, yours is released the standard way ({timeOf(d.key, "std")[0]}).
+                Fast takes up to {FAST_CAP} tPOT per burn, and shares one {FAST_CAP} tPOT budget across all chains: while another fast release is in flight,
+                your burn can wait for finality, as Standard does (<Nb>{timeOf(d.key, "std")[0]}</Nb>).
               </span>
             </p>
           ) : null}
@@ -906,13 +881,10 @@ function openReview(k: Facts, address: string, amount: string, net: NetState, su
             <p class="rnote">
               <Icon id="i-info" cls="i--14" />
               <span>
-                If auto-mint has not minted it within 5 minutes of your lock
-                {d.key === "sepolia" ? "" : `, or ${AUTO_MINT.afterRelayMs / 60_000} minutes after a relayer run it waits for`}, this page offers you the mint: any
-                Ethereum wallet with {d.short} ETH can send it. Auto-mint takes locks of {tpot(AUTO_MINT.min, 3)} tPOT or more.
-                {/* The live note below says it with the times when a lock made now would wait. */}
-                {d.key === "sepolia" || wait
-                  ? null
-                  : ` After V3 changes validator set (${CHANGES}), auto-mint waits for the relayer's run about ${RELAY_AFTER_CHANGE_MS / 60_000} minutes later, which brings the light client on ${d.short} to the new set: a lock made in those minutes is minted after it.`}
+                If auto-mint has not minted it within 5 minutes of your lock, this page offers you the mint: any Ethereum wallet with {d.short} ETH can send it.
+                Auto-mint takes locks of {tpot(AUTO_MINT.min, 3)} tPOT or more.
+                {/* While the light client reads behind V3's set, the live note below says so instead. */}
+                {d.key === "sepolia" || wait ? null : ` ${relayAfterChange(d, "auto-mint", `the light client on ${d.short}`)}: a lock made meanwhile is minted after that.`}
               </span>
             </p>
           ) : inDir && sub && !k.below ? (
@@ -960,6 +932,10 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
   const sep = d.key === "sepolia";
   // A rollup's first lock and burn, which the strip links to (./dests.ts firsts, README rows 98 to 113); none before a chain's first round trip.
   const firsts = sep ? null : d.firsts;
+  // Auto-mint's time as the card states it: Sepolia's run of Oct 27, a rollup's own of Oct 28 (facts.ts, ROLLUP_RUNS).
+  const autoTime = timeParts(timeOf(d.key, "auto")[0].replace(/^≈ /, ""));
+  // A chain with no run of its own yet (the BNB Smart Chain testnet's) states Sepolia's, an estimate, and says so as the card does.
+  const autoEst = timeOf(d.key, "auto")[1].startsWith("est.") ? timeOf(d.key, "auto")[1] : null;
   return (
     <aside class="proof" aria-labelledby="proof-title" data-dir={dir}>
       <div class="proof__head">
@@ -1090,9 +1066,11 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
             {auto ? (
               <li class="fact">
                 <span class="fact__num">
-                  <span class="fact__approx">≈</span>2½<span class="unit">min</span>
+                  <span class="fact__approx">≈</span>
+                  {autoTime[0]}
+                  <span class="unit">{autoTime[1]}</span>
                 </span>
-                <span class="fact__text">{sep ? "lock to mint, sent by auto-mint · measured Oct 27" : "lock to mint, sent by auto-mint · as measured on Sepolia, Oct 27"}</span>
+                <span class="fact__text">{sep ? "lock to mint, sent by auto-mint · measured Oct 27" : `lock to mint, sent by auto-mint · ${autoEst ?? `measured on ${d.short}, Oct 28`}`}</span>
               </li>
             ) : (
               <li class="fact">
@@ -1112,22 +1090,11 @@ function ProofStrip({ dir, auto, d }: { dir: Dir; auto: boolean; d: Dest }) {
             </li>
             <li class="fact">
               <a class="fact__link" href="#/network">
-                {sep ? (
-                  <>
-                    <span class="fact__num">
-                      10<span class="unit">min</span>
-                    </span>
-                    <span class="fact__text">between relayer runs; each client ≤ 70 min behind</span>
-                  </>
-                ) : (
-                  <>
-                    <span class="fact__num">
-                      {RELAY_AFTER_CHANGE_MS / 60_000}
-                      <span class="unit">min</span>
-                    </span>
-                    <span class="fact__text">after each V3 set change, the relayer brings this client to V3's set</span>
-                  </>
-                )}
+                <span class="fact__num">
+                  {RELAY_EVERY_MIN[d.key]}
+                  <span class="unit">min</span>
+                </span>
+                <span class="fact__text">{sep ? "between relayer runs; each client ≤ 70 min behind" : "between relayer runs; each brings this client to V3's validator set"}</span>
               </a>
             </li>
           </>
@@ -1365,15 +1332,13 @@ function Notice({ k, f, net }: { k: Facts; f: Form; net: NetState }) {
     // The mint imports what the relayer has not (sends.ts): six calls fit one transaction, so past
     // five changes it takes more than one.
     const txs = mintTxs(net.behind);
-    // A rollup's client is brought to V3's set by one relayer run 6 minutes after each change (handoff.ts).
-    const when = d.key === "sepolia" ? "usually within minutes" : `one run, about ${RELAY_AFTER_CHANGE_MS / 60_000} minutes after each set change`;
     n = [
       "notice--trust",
       "i-refresh",
-      `The light client${d.key === "sepolia" ? "" : ` on ${d.short}`} is ${net.behind} validator-set change${one ? "" : "s"} behind V3`,
+      `${clientOn(d, true)} is ${setChangesText(net.behind)} behind V3`,
       k.auto
         ? // Auto-mint imports no change itself: a lock after the client's latest header waits for the relayer's import (relayer/src/automint.ts).
-          `Auto-mint mints your lock once the relayer has imported ${one ? "it" : "them"} (${when}), so it can take longer than ${timeOf(d.key, "auto")[0]}. If it has not minted it within 5 minutes of your lock${d.key === "sepolia" ? "" : `, or ${AUTO_MINT.afterRelayMs / 60_000} minutes after the relayer run it waits for`}, this page offers you the mint, which imports ${one ? "the change" : "the changes"} itself.`
+          relayNotice(d, net.behind, timeOf(d.key, "auto")[0])
         : `You can lock and mint now: your mint imports ${one ? "the change" : `the ${net.behind} changes`} first, through Multicall3${txs > 1 ? `, in ${txs} transactions` : ""}, for about ${fmt(IMPORT_GAS * net.behind, 1)} M gas more (≈ ${mintGas(d, net.behind)} M in all, in ${d.short} ETH). Nothing waits for the relayer.`,
     ];
   } else if (k.dir === "in" && net.key === "paused") {
@@ -1418,15 +1383,6 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
 
   // The card's destination: its wtPOT and ETH are the ones read (App.tsx reads a rollup's light client for the status).
   useEffect(() => balancesOn(f.dest), [f.dest]);
-  // On a rollup the way in's time follows the clock around V3's set changes (relayTime): the card is drawn again every 30 s.
-  const [, redraw] = useState(0);
-  useEffect(() => {
-    if (dir !== "in" || f.dest === "sepolia") return;
-    const t = setInterval(() => {
-      if (!document.hidden) redraw((n) => n + 1);
-    }, 30_000);
-    return () => clearInterval(t);
-  }, [dir, f.dest]);
 
   const k = work(dir, f, w, p);
   const { from, to, d } = k;
@@ -1687,8 +1643,8 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               {d.short} checks 2 of 2 V3 validator signatures, a storage proof of your lock and its nonce. It still trusts V3's validator set (2 keys on the testnet),
               V3's sudo key and the light client's admin.{" "}
               {d.key === "sepolia"
-                ? `Auto-mint is the operator's process: about 2½ minutes after your lock it sends the mint from its own key and pays the gas, at most ${AUTO_MINT.dailyEth} ETH a day, on one machine.`
-                : `Auto-mint is the operator's process, one for Sepolia and the two rollups: about 2½ minutes after your lock it sends the mint on ${d.short} from its own key and pays the gas, at most ${AUTO_MINT.rollupDailyEth} ETH a day there, on one machine. After V3 changes validator set (${CHANGES}), it waits for the relayer to bring this client to the new set, about ${RELAY_AFTER_CHANGE_MS / 60_000} minutes later.`}{" "}
+                ? `Auto-mint is the operator's process: ${inWords(timeOf(d.key, "auto")[0])} after your lock it sends the mint from its own key and pays the gas, at most ${AUTO_MINT.dailyEth} ETH a day, on one machine.`
+                : `Auto-mint is the operator's process, one for Sepolia and the two rollups: ${inWords(timeOf(d.key, "auto")[0])} after your lock it sends the mint on ${d.short} from its own key and pays the gas, at most ${AUTO_MINT.rollupDailyEth} ETH a day there, on one machine. ${relayAfterChange(d, "it", "this client")}.`}{" "}
               It can only mint what your lock commits to. Anyone can still send the mint: if auto-mint has not minted it within 5 minutes, this page offers it to
               you.{" "}
               {AUTO_MINT.substrate
@@ -1791,6 +1747,10 @@ export function BridgeView({ route, net }: { route: Route; net: NetState }) {
               >
                 Send 1 for Fast
               </button>
+            </p>
+            {/* The watcher publishes no budget: the card says that it can be in use, not whether it is. None where a burn is never fast (oneSpeed). */}
+            <p class="speed__note" hidden={!k.fastOK || dir !== "back" || oneSpeed}>
+              {FAST_BUDGET_LINE}
             </p>
           </div>
 

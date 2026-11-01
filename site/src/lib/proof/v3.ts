@@ -16,29 +16,15 @@ import { provenValue } from "./trie.ts";
 export const GRANDPA_SET_ID_KEY: Hex = "0x5f9cc45b7a00c5899361e1c6099678dc8a2d09463effcc78a22d75b9cb87dffc";
 
 /**
- * V3 enacts a GRANDPA set change at fixed times of day, UTC: every one from #75,119 to #179,035
- * fell at one of these (research of Oct 24), 3,565 to 3,595 blocks apart; the seven from #182,605
- * to #204,108 came 3,578 to 3,591 blocks apart (Oct 26).
- */
-export const V3_SET_CHANGE_TIMES = ["01:54:06", "07:54:06", "13:54:06", "19:54:06"] as const;
-
-/** When V3 next changes its validator set, by its schedule (ms since the epoch). */
-export function nextV3SetChange(now = Date.now()): number {
-  const day = Math.floor(now / 86_400_000) * 86_400_000;
-  for (let d = 0; d < 2; d++) {
-    for (const t of V3_SET_CHANGE_TIMES) {
-      const [h, m, s] = t.split(":").map(Number);
-      const at = day + d * 86_400_000 + ((h ?? 0) * 3600 + (m ?? 0) * 60 + (s ?? 0)) * 1000;
-      if (at > now) return at;
-    }
-  }
-  throw new Error("unreachable: a set change comes every 6 hours");
-}
-
-/**
- * Where to ask grandpa_proveFinality for the change that ends a set: this many blocks after the
- * block that started it. A set lasts 3,565 to 3,595 blocks on V3, so the answer is the set's own
- * change with about 70 to 100 unknown headers (45 KB), not the next set's.
+ * Where to ask grandpa_proveFinality first for the change that ends a set: this many blocks after
+ * the block that started it, a count of blocks, not a time. Every V3 set from 19 to 73 but one
+ * lasted 3,565 to 3,595 blocks, so the answer is the set's own change with about 70 to 100 unknown
+ * headers (45 KB), not the whole set's. Across V3's stalls a set can end sooner: set 64 lasted
+ * 3,296 blocks (Oct 28 to 29) and set 74 2,179 (Oct 31, to #266,908). A guess past the set's
+ * end is answered with a later set's justification, which does not verify under this set, so
+ * setChanges asks again at the block after the client's latest, which is in the set for sure: a
+ * wrong guess costs one request and a longer answer (2,178 unknown headers for set 74, asked live on
+ * Oct 31 after 21:30 UTC), never the change found. Nothing here reads the time of day.
  */
 export const SET_CHANGE_GUESS = 3_500;
 

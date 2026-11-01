@@ -19,6 +19,8 @@ import {
   readAutoMints,
   readmeTimingSection,
 } from "../build/records.ts";
+import { ALL_DESTS } from "../src/app/dests.ts";
+import { EVIDENCE_CHAINS, chainOfWord, evidenceCell, perChain, type EvidenceChain } from "../src/lib/evidence.ts";
 import { formatDuration, formatInt, formatUnits } from "../src/lib/format.ts";
 import { checksumAddress } from "../src/lib/hex.ts";
 import { keccak256 } from "../src/lib/hashes.ts";
@@ -606,15 +608,132 @@ test("evidence rows: Sepolia links, the rollups' Basescan and Arbiscan links, an
     ],
   );
   // Only a V3 row's short hash is resolved: a row with neither an explorer link nor a V3 block
-  // keeps its hash as printed, though the V3 record holds that hash too.
+  // keeps its hash as printed, though the V3 record holds that hash too. Its Block cell names its chain.
   assert.equal(rows[5]?.n, 120);
   assert.equal(rows[5]?.tx, null);
   assert.equal(rows[5]?.txText, "0xaffaf9e0…70eefd2e");
+  assert.equal(rows[5]?.chain, "base-sepolia");
   // The repository's README: every row the page links on Sepolia's Etherscan links it there too.
   const readme = readFileSync(join(repo, "README.md"), "utf8").toLowerCase();
   for (const e of r.evidence.filter((x) => x.chain === "sepolia" && x.tx)) {
     assert.ok(readme.includes(`(https://sepolia.etherscan.io/tx/${e.tx})`), `row ${e.n}: ${e.tx} is not linked on Sepolia's Etherscan in the README`);
   }
+  // A row that links its transaction on one chain's explorer and puts its block on another fails the build.
+  const twoChains = `| 9 | Mixed | [\`0x4ef76f6f…\`](https://sepolia.basescan.org/tx/0x${"4e".repeat(32)}) | Arbitrum 323,329,901 | success |`;
+  assert.throws(() => parseEvidence(twoChains), /evidence row 9 links its transaction on Base Sepolia's explorer and puts its block on Arbitrum Sepolia/);
+});
+
+test("the status page's evidence list: every row of the README from 1 to the last, on the chain its link names, linked on that chain's explorer, as many on each chain as the README counts", () => {
+  const md = readFileSync(join(repo, "README.md"), "utf8");
+  const rows = r.evidence;
+  const last = rows.at(-1)?.n ?? 0;
+  assert.ok(last >= 128, `the README's last row is ${last}`);
+  assert.deepEqual(
+    rows.map((x) => x.n),
+    Array.from({ length: last }, (_, i) => i + 1),
+    "no row is missing, none is there twice",
+  );
+  // Each row's chain is the one its own line in the README links or names, and the list links it there.
+  const lines = new Map(md.split(/\r?\n/).flatMap((l) => {
+    const n = /^\|\s*\**(\d+)\**\s*\|/.exec(l)?.[1];
+    return n ? [[Number(n), l] as const] : [];
+  }));
+  for (const x of rows) {
+    const line = lines.get(x.n) ?? "";
+    const c = evidenceCell(x);
+    if (x.chain === "v3") {
+      assert.match(line, /\| V3 \[#[\d,]+\]\(https:\/\/node-console\.portaldot\.dev\//, `row ${x.n} is a V3 row in the README`);
+      // The link is on the block, the page it opens; the hash under it is not linked.
+      assert.equal(c.where.href, x.blockUrl, `row ${x.n}: its block on the Node Console`);
+      assert.ok(c.where.href?.startsWith(`${EVIDENCE_CHAINS.v3.explorer}/`), `row ${x.n}`);
+      assert.equal(c.where.text, `V3 #${x.block.toLocaleString("en-US")}`);
+      assert.equal(c.hash.href, null, `row ${x.n}`);
+    } else {
+      const explorer = EVIDENCE_CHAINS[x.chain].explorer;
+      assert.ok(x.tx && x.tx.length === 66, `row ${x.n}: a full transaction hash`);
+      assert.ok(line.toLowerCase().includes(`(${explorer}/tx/${x.tx})`), `row ${x.n}: the README links it on ${explorer}`);
+      assert.equal(c.hash.href, `${explorer}/tx/${x.tx}`, `row ${x.n}`);
+      assert.equal(c.where.text, `${EVIDENCE_CHAINS[x.chain].word} ${x.block.toLocaleString("en-US")}`);
+      assert.equal(c.where.href, null, `row ${x.n}`);
+    }
+  }
+  // The rollups' rows are all there: their deployments, relays, mints, burns and fundings.
+  for (const n of [61, 68, 76, 82, 88, 97, 100, 107, 115, 116, 118, 120, 121, 124]) assert.notEqual(rows.find((x) => x.n === n)?.chain, "sepolia", `row ${n}`);
+  // The README's own count, "The evidence tables number 128 transactions: 58 on Sepolia, 22 on V3 (…), 24 on Base Sepolia and 24 on Arbitrum Sepolia."
+  const said = /The \[evidence tables\]\(#evidence\) number (\d+) transactions: (\d+) on Sepolia, (\d+) on V3 \([^)]*\), (\d+) on Base Sepolia and (\d+) on Arbitrum Sepolia/.exec(md.replace(/\s+/g, " "));
+  assert.ok(said, "the README counts its rows");
+  const count = (c: EvidenceChain) => rows.filter((x) => x.chain === c).length;
+  assert.deepEqual(said.slice(1).map(Number), [rows.length, count("sepolia"), count("v3"), count("base-sepolia"), count("arbitrum-sepolia")]);
+  assert.equal(perChain(rows), `${count("sepolia")} on Sepolia, ${count("v3")} on V3, ${count("base-sepolia")} on Base Sepolia and ${count("arbitrum-sepolia")} on Arbitrum Sepolia`);
+  // A V3 row's hash would stay as the README prints it only while no record in deployments/ holds it in full: none does.
+  const held = new Set<string>();
+  for (const f of readdirSync(join(repo, "deployments"))) for (const h of readFileSync(join(repo, "deployments", f), "utf8").matchAll(/0x[0-9a-fA-F]{64}/g)) held.add(h[0].toLowerCase());
+  const open = rows.filter((x) => x.chain === "v3" && !x.tx);
+  for (const x of open) {
+    const [head, tail] = x.txText.toLowerCase().split("…");
+    assert.ok(head && tail, `row ${x.n}: ${x.txText}`);
+    assert.ok(![...held].some((h) => h.startsWith(head) && h.endsWith(tail)), `row ${x.n}: deployments/ holds ${x.txText}, and the list does not resolve it`);
+    assert.match(evidenceCell(x).hash.title, /No record in deployments\/ holds this hash in full/);
+  }
+  assert.equal(open.length, 0, `rows ${open.map((x) => x.n).join(", ")} have no full hash`);
+  // Rows 114, 117 and 119, which no tool recorded when they were sent: deployments/v3-app-transfers.json, read back from V3's EVM RPC.
+  const app = JSON.parse(readFileSync(join(repo, "deployments", "v3-app-transfers.json"), "utf8"));
+  assert.deepEqual(
+    app.transactions.map((t: any) => [t.row, t.txHash, t.block.number]),
+    [114, 117, 119].map((n) => {
+      const x = rows.find((y) => y.n === n);
+      return [n, x?.tx, x?.block];
+    }),
+  );
+});
+
+test("the evidence chains link where the app links them: Etherscan, Basescan and Arbiscan, BscScan for the hidden BNB Smart Chain testnet, and V3's blocks on the Node Console", () => {
+  // Each configured destination's own explorer (src/app/dests.ts), the hidden ones' too.
+  for (const d of ALL_DESTS) assert.equal(EVIDENCE_CHAINS[d.key].explorer, d.explorer.url, d.full);
+  assert.equal(chainOfWord("Base 51,177,673"), "base-sepolia");
+  assert.equal(chainOfWord("Arbitrum 323,663,335"), "arbitrum-sepolia");
+  assert.equal(chainOfWord("Sepolia 12,034,957"), "sepolia");
+  assert.equal(chainOfWord("V3 [#231,112]"), "v3");
+  assert.equal(chainOfWord("BSC 72,105,331"), "bsc-testnet");
+  assert.equal(chainOfWord("11,934,329"), null);
+  const tx = `0x${"ab".repeat(32)}` as const;
+  // A BNB Smart Chain testnet row, once its first round trip is recorded, links its transaction on BscScan; the README has none yet, and the count names no such chain.
+  const bsc = parseEvidence(`| 7 | A burn | [\`0xabababab…\`](https://testnet.bscscan.com/tx/${tx}) | BSC 72,105,331 | success |`);
+  assert.deepEqual(bsc.map((x) => [x.n, x.chain, x.tx, x.block]), [[7, "bsc-testnet", tx, 72_105_331]]);
+  assert.deepEqual(evidenceCell(bsc[0]!).hash, { text: "0xababab…abab", href: `https://testnet.bscscan.com/tx/${tx}`, title: "BNB Smart Chain testnet, block 72,105,331" });
+  assert.equal(r.evidence.filter((x) => x.chain === "bsc-testnet").length, 0);
+  assert.ok(!perChain(r.evidence).includes("BNB Smart Chain"), perChain(r.evidence));
+  assert.deepEqual(evidenceCell({ chain: "arbitrum-sepolia", tx, txText: "0xabababab…", block: 323_663_335, blockUrl: null }), {
+    where: { text: "Arbitrum 323,663,335", href: null, title: "Arbitrum Sepolia" },
+    hash: { text: "0xababab…abab", href: `https://sepolia.arbiscan.io/tx/${tx}`, title: "Arbitrum Sepolia, block 323,663,335" },
+  });
+  // A V3 row links its block, the page the Node Console has; its hash is not linked, as that page
+  // need not show it: the README prints a transaction sent through V3's EVM RPC by its Ethereum hash.
+  const url = "https://node-console.portaldot.dev/?rpc=x#/explorer/query/231112";
+  const full = "0x6b06421f2a62c9638ff5003e0a72fe197e8cec1016aa7620c0ea779cdd04ba45" as const;
+  assert.deepEqual(evidenceCell({ chain: "v3", tx: full, txText: "0x6b06421f…dd04ba45", block: 231_112, blockUrl: url }), {
+    where: { text: "V3 #231,112", href: url, title: "We found no indexed explorer for the V3 testnet: the Node Console shows block #231,112." },
+    hash: { text: "0x6b0642…ba45", href: null, title: full },
+  });
+});
+
+test("an evidence row without a full hash or a link: a V3 hash no record holds, a V3 block the README does not link, a row with neither an explorer link nor a chain", () => {
+  // A hash no record holds in full: as the README prints it, shortened the list's way, and said so.
+  const url = "https://node-console.portaldot.dev/?rpc=x#/explorer/query/231112";
+  const open = evidenceCell({ chain: "v3", tx: null, txText: "0x6b06421f…dd04ba45", block: 231_112, blockUrl: url });
+  assert.equal(open.hash.text, "0x6b0642…ba45");
+  assert.equal(open.hash.title, "No record in deployments/ holds this hash in full: the README prints it shortened.");
+  // A V3 row whose Block cell has no link links nothing.
+  const unlinked = evidenceCell({ chain: "v3", tx: null, txText: "0x6b06421f…dd04ba45", block: 231_112, blockUrl: null });
+  assert.deepEqual([unlinked.where.href, unlinked.hash.href], [null, null]);
+  // A row with neither an explorer link nor a chain in its Block cell is on Sepolia, whose first rows
+  // name none: its hash stays as printed, with nothing to link.
+  const bare = parseEvidence("| 5 | Bare | `0x076e061f…e24bc2ecfb` | 11,934,333 | success |");
+  assert.deepEqual(bare.map((x) => [x.n, x.chain, x.tx, x.txText, x.block]), [[5, "sepolia", null, "0x076e061f…e24bc2ecfb", 11934333]]);
+  assert.deepEqual(evidenceCell(bare[0]!), {
+    where: { text: "Sepolia 11,934,333", href: null, title: "Sepolia" },
+    hash: { text: "0x076e06…ecfb", href: null, title: "Sepolia, block 11,934,333" },
+  });
 });
 
 test("the README's verify block: descriptions, commands and recorded outputs", () => {

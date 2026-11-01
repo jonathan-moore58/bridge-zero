@@ -582,7 +582,7 @@ with `npm run kit`.
   contracts, the relayer (with the ten fixture directories and the kit's fixture) and the site on
   every push and pull request.
 - Tests: 370 forge tests (the 2 Sepolia fork tests skipped), 403 relayer tests (one skipped until
-  the BNB Smart Chain testnet's records exist), 296 site tests and 432 fixture checks (391 with
+  the BNB Smart Chain testnet's records exist), 314 site tests and 432 fixture checks (391 with
   `npm run check`, 41 with `npm run kit -- check`) pass, in CI and in
   [Verify it yourself](#verify-it-yourself).
 
@@ -1432,7 +1432,9 @@ these locks, which the app sent: auto-mint's histories
 and
 [`deployments/automint-arbitrum-sepolia-0x57cc….jsonl`](deployments/automint-arbitrum-sepolia-0x57cc2ba3b883339a9f32726e6d0d3a9ee861a113.jsonl)
 hold their mints, and [`deployments/v3-testnet.json`](deployments/v3-testnet.json) the releases,
-each with its burn.
+each with its burn. The funding and the two locks on V3 (rows 114, 117 and 119), which no tool
+recorded when they were sent, are in [`deployments/v3-app-transfers.json`](deployments/v3-app-transfers.json),
+read back from V3's EVM RPC: each one's full hash, sender, nonce and block.
 
 | # | What it shows | Transaction | Block | Result |
 |---|---|---|---|---|
@@ -1535,7 +1537,7 @@ Sepolia blocks 12,034,957 and 12,034,965, Oct 31 (UTC):
 | `relayer/` | TypeScript tools: fetch finality and storage proofs from Portaldot nodes, relay finality to the light clients on Sepolia, Base Sepolia and Arbitrum Sepolia, deploy and use the vault on V3, mint wtPOT, auto-mint each new lock, run the return path, and read proven V3 state with the proof kit (`npm run kit`) |
 | `fixtures/` | Captured chain data used by the tests, each file with its source |
 | `site/` | The status page and the bridge app (`site/app/`), in Vite, TypeScript and Preact: they read the chains, with the records as the fallback; deployed to GitHub Pages by `.github/workflows/pages.yml` |
-| `deployments/` | The tools' records, with addresses, hashes, blocks, gas and fees: each chain's deployments and the rollups' funding through their canonical bridges, the mints and burns, the proof kit's deployment, and on the V3 testnet the vault's deployment, the locks its tool sent, the committee's funding and every release; and copies of the relayer's histories (to Oct 28) and of auto-mint's. The plain transfers that funded the auto-mint key and the owner's MetaMask wallet, and the two locks the app sent, are only in the README's rows (83, 100, 101, 114 to 117 and 119). Seven plain transfers are in neither: the deployer's 0.1 and 0.05 ETH to the two relayer keys on Sepolia on Oct 23 (its nonces 81 and 82); and on V3, from `5ERJ…gPJ7`, 200 tPOT to the deployer's EVM account on Oct 18 (#92,643), the committee multisig's first 20 tPOT on Oct 19 (#101,134, in [docs/V3.md](docs/V3.md)) and 5 tPOT in three transfers to the owner's Portaldot wallet on Oct 27 (#221,828, #221,850 and #221,920) |
+| `deployments/` | The tools' records, with addresses, hashes, blocks, gas and fees: each chain's deployments and the rollups' funding through their canonical bridges, the mints and burns, the proof kit's deployment, and on the V3 testnet the vault's deployment, the locks its tool sent, the committee's funding and every release; and copies of the relayer's histories (to Oct 28) and of auto-mint's. The plain transfers that funded the auto-mint key and, on the rollups, the owner's MetaMask wallet are only in the README's rows (83, 100, 101, 115 and 116); the wallet's funding on V3 and the two locks the app sent (rows 114, 117 and 119) are in [`v3-app-transfers.json`](deployments/v3-app-transfers.json), read back from V3's EVM RPC. Seven plain transfers are in neither: the deployer's 0.1 and 0.05 ETH to the two relayer keys on Sepolia on Oct 23 (its nonces 81 and 82); and on V3, from `5ERJ…gPJ7`, 200 tPOT to the deployer's EVM account on Oct 18 (#92,643), the committee multisig's first 20 tPOT on Oct 19 (#101,134, in [docs/V3.md](docs/V3.md)) and 5 tPOT in three transfers to the owner's Portaldot wallet on Oct 27 (#221,828, #221,850 and #221,920) |
 | `docs/` | How to deploy it ([DEPLOY.md](docs/DEPLOY.md)), gas measurements, the bridge's design and runbook, V3 notes, decisions, the business model, the proof kit |
 | `ops/server/` | The systemd units, timers and scripts that run the relayers, the release watcher, auto-mint, the rollups' relay runs and a health check on a Linux server ([its README](ops/server/README.md)) |
 | `.github/workflows/` | `ci.yml`, the build and the tests on every push and pull request, and `pages.yml`, which builds and deploys the pages |
@@ -1546,11 +1548,11 @@ Every third-party library is listed in [NOTICE.md](NOTICE.md) with its source,
 pinned commit and licence, and so are the site's npm packages and its two fonts. Commits that add
 third-party code start with `vendor:`.
 
-Lines on Oct 31, counted with `wc -l` (blank lines and comments included):
+Lines on Nov 1, counted with `wc -l` (blank lines and comments included):
 
 | Code | Files | Lines |
 |---|---|---|
-| The project's own: `contracts/src` (without `trie/vendor/`), `contracts/test`, `contracts/script`, `relayer/src`, `site/src`, `site/build`, `site/test`, `ops` | 230 | 101,368 |
+| The project's own: `contracts/src` (without `trie/vendor/`), `contracts/test`, `contracts/script`, `relayer/src`, `site/src`, `site/build`, `site/test`, `ops` | 233 | 103,486 |
 | Vendored, unmodified: the Solidity of the four libraries in `contracts/lib/`, at the commits NOTICE.md pins | 149 | 62,200 |
 | Vendored and modified: `contracts/src/trie/vendor/PolkadotTrie.sol` | 1 | 176 |
 
