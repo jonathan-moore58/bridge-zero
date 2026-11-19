@@ -18,7 +18,7 @@
 import { ApiPromise, WsProvider } from "@polkadot/api";
 import type { SignerOptions, SubmittableExtrinsic } from "@polkadot/api/types";
 import { checksum } from "../../lib/display.ts";
-import { bytesToHex, type Hex } from "../../lib/hex.ts";
+import { bytesToHex, hexToBytes, type Hex } from "../../lib/hex.ts";
 import type { ReceiptLog } from "../txmath.ts";
 import { shortSs58 } from "./account.ts";
 import { ERA_PERIOD, V3_CHAIN, V3_GENESIS, eraWindow, limitsOf, lockData, payloadProblem, readDryRun, reviveCall, type DryRun, type PayloadJson } from "./call.ts";
@@ -274,13 +274,17 @@ export class V3Chain implements LockChain {
   }
 
   async validate(hex: Hex): Promise<string | null> {
-    const best = await this.api.rpc.chain.getBlockHash();
-    const fn = (this.api.call as unknown as Record<string, Record<string, AnyCall | undefined> | undefined>).taggedTransactionQueue?.validateTransaction;
-    if (!fn) return null;
-    const r = (await fn("External", hex, best)).toJSON() as { ok?: unknown; err?: unknown } | null;
-    if (r && r.ok !== undefined) return null;
-    const err = r?.err as { invalid?: Record<string, unknown> | string; unknown?: Record<string, unknown> | string } | undefined;
-    const kind = typeof err?.invalid === "string" ? err.invalid : err?.invalid ? Object.keys(err.invalid)[0] : null;
+    // V3's own check, called raw: source byte 0x02 (External), the extrinsic with its length prefix,
+    // a block hash. The typed api.call.taggedTransactionQueue.validateTransaction, given a hex string,
+    // wraps the bytes once more: V3's runtime cannot read them and traps (4003, wasm unreachable).
+    const best = (await this.api.rpc.chain.getBlockHash()).toHex();
+    const out = await this.api.rpc.state.call("TaggedTransactionQueue_validate_transaction", `0x02${hex.slice(2)}${best.slice(2)}`, best);
+    // Read the SCALE result by hand: @polkadot/types 17 cannot decode every TransactionValidityError.
+    const b = hexToBytes(out.toHex());
+    if (b[0] === 0) return null; // Ok(ValidTransaction)
+    const INVALID = ["call", "payment", "future", "stale", "badProof", "ancientBirthBlock", "exhaustsResources", "custom", "badMandatory", "mandatoryDispatch", "badSigner", "indeterminateImplicit", "unknownOrigin"];
+    const UNKNOWN = ["cannotLookup", "noUnsignedValidator", "custom"];
+    const kind = b[0] === 1 ? (b[1] === 0 ? INVALID[b[2] ?? -1] : UNKNOWN[b[2] ?? -1]) : undefined;
     const words: Record<string, string> = {
       badProof: "its signature does not check out",
       payment: "your account cannot pay its fee",
@@ -289,9 +293,11 @@ export class V3Chain implements LockChain {
       ancientBirthBlock: "its era has ended",
       exhaustsResources: "V3's blocks are full",
       badSigner: "V3 does not take its signer",
+      unknownOrigin: "V3 cannot tell which account signed it",
+      cannotLookup: "V3 cannot look up its signer",
     };
     if (kind) return `V3 says ${words[kind] ?? kind}`;
-    return `V3 says it is invalid: ${JSON.stringify(err ?? r).slice(0, 160)}`;
+    return `V3 says it is invalid: ${bytesToHex(b).slice(0, 40)}`;
   }
 
   async submit(hex: Hex): Promise<void> {
