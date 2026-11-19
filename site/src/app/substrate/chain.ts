@@ -53,7 +53,7 @@ export class ChainError extends Error {
   override name = "ChainError";
 }
 
-const CONNECT_MS = 20_000;
+const CONNECT_MS = 60_000;
 
 function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   let t: ReturnType<typeof setTimeout> | undefined;
